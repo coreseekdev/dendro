@@ -12,6 +12,7 @@ path = "src/main.rs"
 dendro-core.workspace = true
 dendro-pgwire.workspace = true
 dendro-mywire.workspace = true
+dendro-columnar.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber = "0.3"

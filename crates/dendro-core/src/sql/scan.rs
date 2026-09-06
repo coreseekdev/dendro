@@ -386,12 +386,227 @@ pub(crate) fn table_scan_by_name(db: &Database, sess: &mut Session, name: &str, 
 
 /// 带谓词的单表扫描：pk 等值/IN 下推走直查（TP 点查路径）
 fn table_scan_opt(db: &Database, sess: &mut Session, tf: &TableFactor, snapshot: u64, selection: Option<&Expr>) -> Result<TableView> {
-    // 快路径：单表 + pk 等值/IN 且无其他复杂谓词 → 直查
+    // 快路径 1：单表 + pk 等值/IN 且无其他复杂谓词 → 直查
     if let Some((schema, entry)) = try_pk_pushdown(db, sess, tf, selection, snapshot)? {
         let sel = selection.expect("pushdown implies selection");
         return Ok(build_point_view(db, sess, &schema, &entry, sel, snapshot)?);
     }
+    // 快路径 2：列存投影可用（AP 路径，>= 1 万行）→ CBF 扫描 + zone map 剪枝
+    if let Some(tv) = try_ap_scan(db, sess, tf, selection, snapshot)? {
+        return Ok(tv);
+    }
     table_scan(db, sess, tf, snapshot)
+}
+
+/// AP 路径：表有列存投影且行数达标时走 CBF 扫描
+fn try_ap_scan(
+    db: &Database,
+    sess: &mut Session,
+    tf: &TableFactor,
+    selection: Option<&Expr>,
+    snapshot: u64,
+) -> Result<Option<TableView>> {
+    let name = match tf {
+        TableFactor::Table { name, .. } => name
+            .0
+            .iter()
+            .filter_map(|p| p.as_ident())
+            .map(|i| i.value.clone())
+            .collect::<Vec<_>>()
+            .join("."),
+        _ => return Ok(None),
+    };
+    let Some(ap) = db.ap_scanner() else { return Ok(None) };
+    let short_name = name.rsplit('.').next().unwrap_or(&name).to_string();
+    let Ok((schema, entry)) = resolve_table(db, sess, &short_name) else { return Ok(None) };
+    let Some(path) = entry.col_path.clone() else { return Ok(None) };
+    if entry.col_rows < 10_000 {
+        return Ok(None);
+    }
+    // pk 范围提取（order 域，开区间语义收集）
+    let mut pk_range: Option<(Option<u64>, Option<u64>)> = None;
+    if schema.pk.len() == 1 {
+        let pk_name = schema.columns[schema.pk[0] as usize].name.clone();
+        if let Some(sel) = selection {
+            pk_range = extract_pk_range(sel, &pk_name);
+        }
+    }
+    let batches = ap.scan(db.obj_store(), &path, &schema, &pk_range)?;
+    let mut rows = Vec::with_capacity(batches.iter().map(|b| b.num_rows()).sum());
+    for b in &batches {
+        rows.extend(rows_from_batches(b, &schema)?);
+    }
+    // memtx overlay 合并：checkpoint 后的写仍在 memtx（WAL 尾部）
+    let b = db.branch(&sess.branch)?;
+    let overlay = b.mem.table(entry.id).snapshot_rows(snapshot);
+    if !overlay.is_empty() {
+        let pkc = schema.pk[0] as usize;
+        // BTreeMap：CBF 行按 pk 入表 → overlay 覆盖/删除
+        let mut keyed: std::collections::BTreeMap<Vec<u8>, Vec<SqlValue>> = std::collections::BTreeMap::new();
+        for r in &rows {
+            let k = crate::format::row::encode_key(&[r[pkc].clone()]);
+            keyed.insert(k, r.clone());
+        }
+        for (k, ov) in overlay {
+            match ov {
+                Some(v) => {
+                    if let Ok(r) = row_from_bytes(&schema, &v) {
+                        keyed.insert(k, r);
+                    }
+                }
+                None => {
+                    keyed.remove(&k);
+                }
+            }
+        }
+        rows = keyed.into_values().collect();
+    }
+    let names = schema.columns.iter().map(|c| c.name.clone()).collect();
+    Ok(Some(TableView { names, rows }))
+}
+
+/// order 域（定点解释）值：与 CBF footer 的 min/max 同口径
+fn order_domain(v: &SqlValue) -> Option<u64> {
+    Some(match v {
+        SqlValue::Int32(i) => (*i as i64 ^ i64::MIN) as u64,
+        SqlValue::Int64(i) => (i ^ i64::MIN) as u64,
+        SqlValue::Date32(d) => (*d as i64 ^ i64::MIN) as u64,
+        SqlValue::TimestampMs(t) => (t ^ i64::MIN) as u64,
+        SqlValue::Float64(f) => crate::format::row::f64_to_orderable(*f),
+        SqlValue::Utf8(s) => {
+            let mut b = [0u8; 8];
+            for (i, byte) in s.as_bytes().iter().take(8).enumerate() {
+                b[i] = *byte;
+            }
+            u64::from_be_bytes(b)
+        }
+        _ => return None,
+    })
+}
+
+/// 从 WHERE 提取单列 pk 的范围 (min_excl, max_incl)
+fn extract_pk_range(sel: &Expr, pk: &str) -> Option<(Option<u64>, Option<u64>)> {
+    fn lit_of(e: &Expr) -> Option<SqlValue> {
+        if let Expr::Value(vws) = e {
+            if !matches!(vws.value, sqlparser::ast::Value::Placeholder(_)) {
+                return Some(super::expr::value_from_parser(vws.value.clone()));
+            }
+        }
+        None
+    }
+    fn col_is(e: &Expr, pk: &str) -> bool {
+        match e {
+            Expr::Identifier(id) => id.value.eq_ignore_ascii_case(pk),
+            _ => false,
+        }
+    }
+    let mut lo: Option<u64> = None;
+    let mut hi: Option<u64> = None;
+    fn walk(
+        e: &Expr,
+        pk: &str,
+        lo: &mut Option<u64>,
+        hi: &mut Option<u64>,
+    ) {
+        match e {
+            Expr::BinaryOp { left, op: sqlparser::ast::BinaryOperator::And, right } => {
+                walk(left, pk, lo, hi);
+                walk(right, pk, lo, hi);
+            }
+            Expr::BinaryOp { left, op, right } => {
+                let (col, val, flip) = if col_is(left, pk) {
+                    (true, lit_of(right), false)
+                } else if col_is(right, pk) {
+                    (true, lit_of(left), true)
+                } else {
+                    (false, None, false)
+                };
+                if let (true, Some(v)) = (col, val) {
+                    let Some(d) = order_domain(&v) else { return };
+                    use sqlparser::ast::BinaryOperator as BO;
+                    let eff = match (op, flip) {
+                        (BO::Gt, false) | (BO::Lt, true) => Some(("gt", d)),
+                        (BO::GtEq, false) | (BO::LtEq, true) => Some(("gte", d)),
+                        (BO::Lt, false) | (BO::Gt, true) => Some(("lt", d)),
+                        (BO::LtEq, false) | (BO::GtEq, true) => Some(("lte", d)),
+                        (BO::Eq, _) => Some(("eq", d)),
+                        _ => None,
+                    };
+                    if let Some((kind, dv)) = eff {
+                        match kind {
+                            "gt" => {
+                                if lo.map_or(true, |l| dv > l) {
+                                    *lo = Some(dv);
+                                }
+                            }
+                            "gte" => {
+                                if lo.map_or(true, |l| dv.saturating_sub(1) > l) {
+                                    *lo = Some(dv.saturating_sub(1));
+                                }
+                            }
+                            "eq" => {
+                                *lo = Some(dv.saturating_sub(1));
+                                *hi = Some(dv + 1);
+                            }
+                            "lte" => {
+                                if hi.map_or(true, |h| dv < h) {
+                                    *hi = Some(dv);
+                                }
+                            }
+                            "lt" => {
+                                if hi.map_or(true, |h| dv.saturating_sub(1) < h) {
+                                    *hi = Some(dv.saturating_sub(1));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    walk(sel, pk, &mut lo, &mut hi);
+    if lo.is_none() && hi.is_none() {
+        None
+    } else {
+        Some((lo, hi))
+    }
+}
+
+/// Arrow 批 → 行（SqlValue），列型按 schema 收敛
+fn rows_from_batches(
+    batch: &arrow::record_batch::RecordBatch,
+    schema: &crate::versioned::TableSchema,
+) -> Result<Vec<Vec<SqlValue>>> {
+    use arrow::array::{Array, Date32Array, Float64Array, Int32Array, Int64Array, StringArray, BinaryArray, BooleanArray, TimestampMillisecondArray};
+    let mut rows = Vec::with_capacity(batch.num_rows());
+    for r in 0..batch.num_rows() {
+        let mut row = Vec::with_capacity(batch.num_columns());
+        for ci in 0..batch.num_columns() {
+            let col = batch.column(ci);
+            if col.is_null(r) {
+                row.push(SqlValue::Null);
+                continue;
+            }
+            let v = match col.data_type() {
+                arrow::datatypes::DataType::Boolean => col.as_any().downcast_ref::<BooleanArray>().map(|a| SqlValue::Bool(a.value(r))),
+                arrow::datatypes::DataType::Int32 => col.as_any().downcast_ref::<Int32Array>().map(|a| SqlValue::Int32(a.value(r))),
+                arrow::datatypes::DataType::Int64 => col.as_any().downcast_ref::<Int64Array>().map(|a| SqlValue::Int64(a.value(r))),
+                arrow::datatypes::DataType::Float64 => col.as_any().downcast_ref::<Float64Array>().map(|a| SqlValue::Float64(a.value(r))),
+                arrow::datatypes::DataType::Utf8 => col.as_any().downcast_ref::<StringArray>().map(|a| SqlValue::Utf8(a.value(r).to_string())),
+                arrow::datatypes::DataType::Binary => col.as_any().downcast_ref::<BinaryArray>().map(|a| SqlValue::Bytes(a.value(r).to_vec())),
+                arrow::datatypes::DataType::Date32 => col.as_any().downcast_ref::<Date32Array>().map(|a| SqlValue::Date32(a.value(r))),
+                arrow::datatypes::DataType::Timestamp(arrow::datatypes::TimeUnit::Millisecond, _) => col.as_any().downcast_ref::<TimestampMillisecondArray>().map(|a| SqlValue::TimestampMs(a.value(r))),
+                _ => None,
+            };
+            row.push(v.unwrap_or(SqlValue::Null));
+        }
+        // schema 演化：补 NULL
+        row.resize(schema.columns.len(), SqlValue::Null);
+        rows.push(row);
+    }
+    Ok(rows)
 }
 
 /// 判定 WHERE 是否为 pk 直查形态

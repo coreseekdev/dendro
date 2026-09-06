@@ -69,6 +69,12 @@ pub struct TableEntry {
     pub schema_addr: String,   // schema chunk base32
     pub table_root: Option<String>, // 表 prolly map 根（None=空表）
     pub row_count: u64,
+    /// 列存投影对象路径（col/{table}/{gen}.cbf），物化器写入
+    #[serde(default)]
+    pub col_path: Option<String>,
+    /// 列存投影覆盖行数
+    #[serde(default)]
+    pub col_rows: u64,
 }
 
 pub fn encode_table_entry(e: &TableEntry) -> Vec<u8> {
@@ -87,6 +93,10 @@ pub struct Versioned {
 impl Versioned {
     pub fn new(store: Arc<NodeStore>) -> Self {
         Self { store }
+    }
+
+    pub fn load_schema_with_entry(&self, entry: &TableEntry) -> Result<TableSchema> {
+        self.load_schema(&entry.schema_addr)
     }
 
     pub fn load_schema(&self, addr: &str) -> Result<TableSchema> {

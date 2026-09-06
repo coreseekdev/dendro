@@ -47,6 +47,7 @@ pub mod footer;
 pub mod reader;
 pub mod stats;
 pub mod writer;
+pub mod integrate;
 
 pub use codec::{choose_codec, CodecId};
 pub use footer::{BlockMeta, CbfFooter, ChunkMeta, RgMeta};

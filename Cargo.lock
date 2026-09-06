@@ -698,6 +698,7 @@ dependencies = [
  "arrow",
  "bytes",
  "crc32c",
+ "dendro-columnar",
  "parking_lot",
  "rand 0.9.5",
  "serde",
@@ -738,6 +739,7 @@ name = "dendro-server"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "dendro-columnar",
  "dendro-core",
  "dendro-mywire",
  "dendro-pgwire",

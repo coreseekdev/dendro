@@ -53,6 +53,8 @@ pub(crate) fn exec_create_table(db: &Database, sess: &mut Session, create: sqlpa
         table_root: None,
         row_count: 0,
         id: tid,
+        col_path: None,
+        col_rows: 0,
     };
     // schema chunk 先写
     db.cas.put_batch(&[schema.to_chunk()], &mut session_chunks).map_err(SqlError::from)?;

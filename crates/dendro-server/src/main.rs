@@ -5,6 +5,7 @@ mod bench;
 use clap::{Parser as ClapParser, Subcommand};
 use dendro_core::{Database, DbOptions, Durability, StoreConfig};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(ClapParser)]
 #[command(name = "dendro", version, about = "只写 · 分支化 · 云原生 SQL 数据库")]
@@ -83,6 +84,10 @@ fn main() {
                 checkpoint_interval_s: 30,
             };
             let db = Database::open(opts).unwrap_or_else(|e| panic!("open {}: {e}", data.display()));
+            db.set_materializer(Arc::new(dendro_columnar::integrate::CbfMaterializer {
+                row_group_rows: 1_048_576,
+            }));
+            db.set_ap_scan(Arc::new(dendro_columnar::integrate::CbfApScan));
             eprintln!("dendro opened at {}", data.display());
             let my_handle = if mysql_port > 0 {
                 let db_my = db.clone();

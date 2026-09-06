@@ -14,6 +14,7 @@ use crate::prolly::chunker::Mutation;
 use crate::prolly::NodeStore;
 use crate::types::{Output, SqlValue};
 use crate::versioned::commit::Commit;
+use crate::versioned::TableSchema;
 use crate::wal::WalWriter;
 use arc_swap::ArcSwap;
 use parking_lot::{Mutex, RwLock};
@@ -163,6 +164,26 @@ impl WireSession for Session {
     }
 }
 
+/// 物化器接口（列存投影由外部 crate 实现以避免依赖环；
+/// dendro-server 启动时注入 dendro-columnar 的 CBF 实现，SPEC 05 §1）
+pub trait Materializer: Send + Sync {
+    /// 把表树（root）物化为列存对象，返回 (对象路径, 行数)。
+    fn materialize(&self, obj: &Arc<dyn ObjStore>, store: &Arc<NodeStore>, root: &Hash, schema: &TableSchema) -> Result<(String, u64)>;
+}
+
+/// 列式扫描接口（AP 路径；实现在 dendro-columnar，SPEC 05 §7）
+pub trait ApScan: Send + Sync {
+    /// 扫描列存投影。pk_range = 第 0 列 order 域的开区间 (min_excl, max_incl)，
+    /// None 表示不限；返回的行组按 (rows, cols) 对齐 schema。
+    fn scan(
+        &self,
+        obj: &Arc<dyn ObjStore>,
+        path: &str,
+        schema: &TableSchema,
+        pk_range: &Option<(Option<u64>, Option<u64>)>,
+    ) -> Result<Vec<arrow::record_batch::RecordBatch>>;
+}
+
 /// 数据库门面
 pub struct Database {
     pub(crate) opts: DbOptions,
@@ -176,6 +197,31 @@ pub struct Database {
     /// 已写入 chunk 的进程内缓存（去重判定）
     pub(crate) chunk_seen: Mutex<HashSet<Hash>>,
     stop_cp: Arc<std::sync::atomic::AtomicBool>,
+    materializer: arc_swap::ArcSwap<Option<std::sync::Arc<dyn Materializer>>>,
+    ap_scan: arc_swap::ArcSwap<Option<std::sync::Arc<dyn ApScan>>>,
+}
+
+impl Database {
+    /// 注入 AP 列式扫描器
+    pub fn set_ap_scan(self: &Arc<Self>, a: std::sync::Arc<dyn ApScan>) {
+        self.ap_scan.store(std::sync::Arc::new(Some(a)));
+    }
+    pub(crate) fn ap_scanner(&self) -> Option<std::sync::Arc<dyn ApScan>> {
+        self.ap_scan.load().as_ref().clone()
+    }
+}
+
+impl Database {
+    /// 注入物化器（必须在打开后、写负载前）
+    pub fn set_materializer(self: &Arc<Self>, m: std::sync::Arc<dyn Materializer>) {
+        self.materializer.store(std::sync::Arc::new(Some(m)));
+    }
+    pub fn obj_store(&self) -> &Arc<dyn ObjStore> {
+        &self.obj
+    }
+    pub fn node_store(&self) -> &Arc<NodeStore> {
+        &self.store
+    }
 }
 
 impl Database {
@@ -205,6 +251,8 @@ impl Database {
             session_seq: AtomicU64::new(1),
             chunk_seen: Mutex::new(HashSet::new()),
             stop_cp: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            materializer: arc_swap::ArcSwap::from_pointee(None),
+            ap_scan: arc_swap::ArcSwap::from_pointee(None),
         });
         db.load_open_branches(ver)?;
         db.start_checkpoint_thread();
@@ -478,6 +526,20 @@ impl Database {
             let mut ne = entry.clone();
             ne.table_root = new_root.map(|h| h.to_base32());
             ne.row_count = count_rows(self.store.as_ref(), new_root.as_ref());
+            // 列存物化（有物化器且表非空时重建投影；增量投影 v2）
+            if let Some(root) = &new_root {
+                if let Ok(schema) = catalog.load_schema_with_entry(&ne) {
+                    if let Some(m) = self.materializer.load().as_ref() {
+                        match m.materialize(&self.obj, &self.store, root, &schema) {
+                            Ok((path, nrows)) => {
+                                ne.col_path = Some(path);
+                                ne.col_rows = nrows;
+                            }
+                            Err(e) => tracing::warn!("materialize {}: {e}", ne.name),
+                        }
+                    }
+                }
+            }
             changes.push((tname, Some(ne)));
         }
         let new_catalog = catalog.apply_catalog(old_catalog.as_ref(), changes, &mut session)?;
