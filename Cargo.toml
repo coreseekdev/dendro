@@ -1,0 +1,43 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/dendro-core",
+    "crates/dendro-columnar",
+    "crates/dendro-pgwire",
+    "crates/dendro-mywire",
+    "crates/dendro-server",
+    "crates/slt",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+authors = ["dendro contributors"]
+
+[workspace.dependencies]
+dendro-core = { path = "crates/dendro-core" }
+dendro-columnar = { path = "crates/dendro-columnar" }
+dendro-pgwire = { path = "crates/dendro-pgwire" }
+dendro-mywire = { path = "crates/dendro-mywire" }
+thiserror = "2"
+parking_lot = "0.12"
+arc-swap = "1"
+bytes = "1"
+sha2 = "0.10"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+crc32c = "0.6"
+zstd = "0.13"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+arrow = "59"
+sqlparser = { version = "0.62", features = ["visitor"] }
+rand = "0.9"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros", "signal"] }
+tracing = "0.1"
+sqllogictest = "0.28"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+debug = 1

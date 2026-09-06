@@ -1,0 +1,17 @@
+[package]
+name = "dendro-pgwire"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+dendro-core = { workspace = true }
+bytes.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+# 协议级单测需要构造 RecordSet（Arrow 批）；tokio/tokio-postgres 仅用于
+# 真实 PG 客户端兼容性集成测试（客户端侧运行时），不属于运行时依赖。
+arrow.workspace = true
+tokio.workspace = true
+tokio-postgres = "0.7"

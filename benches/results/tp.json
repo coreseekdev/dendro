@@ -1,0 +1,11 @@
+{
+  "suite": "tp",
+  "rows": [
+  {"name": "oltp_insert", "value": 157296.595, "unit": "txn/s"},
+  {"name": "oltp_insert_p50_us", "value": 4.869, "unit": "us"},
+  {"name": "oltp_insert_p99_us", "value": 16.120, "unit": "us"},
+  {"name": "oltp_point_select", "value": 162371.282, "unit": "txn/s"},
+  {"name": "oltp_point_select_p50_us", "value": 5.030, "unit": "us"},
+  {"name": "oltp_point_select_p99_us", "value": 11.773, "unit": "us"}
+  ]
+}

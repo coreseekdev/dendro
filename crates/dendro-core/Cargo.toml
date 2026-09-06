@@ -1,0 +1,24 @@
+[package]
+name = "dendro-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+parking_lot.workspace = true
+arc-swap.workspace = true
+bytes.workspace = true
+sha2.workspace = true
+xxhash-rust.workspace = true
+crc32c.workspace = true
+zstd.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+arrow.workspace = true
+sqlparser.workspace = true
+tracing.workspace = true
+rand.workspace = true
+
+[dev-dependencies]
+rand.workspace = true

@@ -1,0 +1,56 @@
+# 表达式与函数
+statement ok
+CREATE TABLE nums (a BIGINT PRIMARY KEY, b DOUBLE, s TEXT)
+
+statement ok
+INSERT INTO nums VALUES (10, 2.5, 'Hello'), (-4, 0.5, 'World')
+
+query I
+SELECT a + 1 FROM nums WHERE a = 10
+----
+11
+
+query R
+SELECT b * 2 FROM nums WHERE a = 10
+----
+5
+
+query I
+SELECT abs(a) FROM nums WHERE a = -4
+----
+4
+
+query T
+SELECT upper(s) FROM nums WHERE a = 10
+----
+HELLO
+
+query T
+SELECT substr(s, 1, 2) FROM nums WHERE a = 10
+----
+He
+
+query T
+SELECT concat(s, '!') FROM nums WHERE a = -4
+----
+World!
+
+query T
+SELECT length(s) FROM nums WHERE a = 10
+----
+5
+
+query I
+SELECT coalesce(NULL, 7) FROM nums WHERE a = 10
+----
+7
+
+query T
+SELECT CASE WHEN a > 0 THEN 'pos' ELSE 'neg' END FROM nums WHERE a = -4
+----
+neg
+
+query R
+SELECT round(b) FROM nums WHERE a = 10
+----
+3

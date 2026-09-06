@@ -1,0 +1,40 @@
+# 显式事务
+statement ok
+CREATE TABLE bank (id BIGINT PRIMARY KEY, bal DOUBLE)
+
+statement ok
+INSERT INTO bank VALUES (1, 100.0)
+
+statement ok
+INSERT INTO bank VALUES (2, 0.0)
+
+statement ok
+BEGIN
+
+statement ok
+UPDATE bank SET bal = bal - 40 WHERE id = 1
+
+statement ok
+UPDATE bank SET bal = bal + 40 WHERE id = 2
+
+statement ok
+COMMIT
+
+query R
+SELECT bal FROM bank WHERE id = 2
+----
+40
+
+statement ok
+BEGIN
+
+statement ok
+UPDATE bank SET bal = -1 WHERE id = 1
+
+statement ok
+ROLLBACK
+
+query R
+SELECT bal FROM bank WHERE id = 1
+----
+60

@@ -1,0 +1,1183 @@
+//! 查询执行：FROM 解析、快照扫描（prolly 树 ∪ memtx overlay）、过滤/投影/聚合/排序。
+
+use super::agg::{self, AggCall};
+use super::expr;
+use crate::engine::{Database, Session};
+use crate::error::{Result, SqlError};
+use crate::format::row::decode_row;
+use crate::types::{ColType, ColumnMeta, Output, RecordSet, SqlValue};
+use sqlparser::ast::{
+    Expr, FunctionArg, FunctionArgExpr, GroupByExpr, JoinOperator, ObjectName, OrderByExpr,
+    Query, Select, SelectItem, SetExpr, TableFactor, Value as PV,
+};
+use std::cmp::Ordering;
+use std::collections::HashMap;
+use std::sync::Arc;
+
+/// 扫描出来的表视图
+pub struct TableView {
+    pub names: Vec<String>,
+    pub rows: Vec<Vec<SqlValue>>,
+}
+
+pub(crate) fn exec_query(db: &Database, sess: &mut Session, q: Query, snapshot: u64) -> Result<Output> {
+    let view = eval_query(db, sess, &q, snapshot)?;
+    let colmeta: Vec<ColumnMeta> = view
+        .names
+        .iter()
+        .zip(view.rows.first().map(|r| r.as_slice()).unwrap_or(&[]).iter().map(|v| infer_type(v)).collect::<Vec<_>>().into_iter().chain(std::iter::repeat(ColType::Utf8)))
+        .take(view.names.len())
+        .map(|(n, t)| ColumnMeta { name: n.clone(), ty: t })
+        .collect();
+    // 列型按数据推断（空表回退 Utf8）
+    let colmeta = fix_colmeta(view.rows.first(), &view.names, colmeta);
+    Ok(Output::Rows(RecordSet { columns: colmeta, batches: rows_to_batches(&view.names, &view.rows)? }))
+}
+
+fn fix_colmeta(first_row: Option<&Vec<SqlValue>>, names: &[String], meta: Vec<ColumnMeta>) -> Vec<ColumnMeta> {
+    if let Some(r) = first_row {
+        meta.iter().zip(r.iter()).enumerate().map(|(i, (m, v))| ColumnMeta {
+            name: names[i].clone(),
+            ty: if v.is_null() { m.ty } else { infer_type(v) },
+        }).collect()
+    } else {
+        meta
+    }
+}
+
+fn infer_type(v: &SqlValue) -> ColType {
+    match v {
+        SqlValue::Null => ColType::Utf8,
+        SqlValue::Bool(_) => ColType::Bool,
+        SqlValue::Int32(_) => ColType::Int32,
+        SqlValue::Int64(_) => ColType::Int64,
+        SqlValue::Float64(_) => ColType::Float64,
+        SqlValue::Utf8(_) => ColType::Utf8,
+        SqlValue::Bytes(_) => ColType::Bytes,
+        SqlValue::Date32(_) => ColType::Date32,
+        SqlValue::TimestampMs(_) => ColType::TimestampMs,
+    }
+}
+
+/// 全查询求值（不含输出构造）
+pub(crate) fn eval_query(db: &Database, sess: &mut Session, q: &Query, snapshot: u64) -> Result<TableView> {
+    let set_expr = q.body.as_ref();
+    let select = match set_expr {
+        SetExpr::Select(s) => s.as_ref(),
+        other => return Err(SqlError::not_supported(format!("set op: {}", short_str(other)))),
+    };
+    // FROM（v1：单表，或一个 INNER 等值连接）
+    let mut tv = eval_from(db, sess, select, snapshot)?;
+    // WHERE
+    if let Some(w) = &select.selection {
+        let cols = col_lookup(&tv.names);
+        tv.rows.retain(|row| {
+            matches!(expr::eval(w, row, &cols), Ok(SqlValue::Bool(true)))
+        });
+    }
+    // GROUP BY / 聚合 / HAVING
+    let has_agg = projection_aggregates(&select.projection).is_some()
+        || select.having.as_ref().map(has_agg_expr).unwrap_or(false);
+    let group_exprs: Vec<Expr> = match &select.group_by {
+        GroupByExpr::All(_) => return Err(SqlError::not_supported("GROUP BY ALL")),
+        GroupByExpr::Expressions(e, _) => e.clone(),
+    };
+    let mut out_names: Vec<String> = Vec::new();
+    let mut out_rows: Vec<Vec<SqlValue>>;
+    if !group_exprs.is_empty() || has_agg {
+        let calls = collect_agg_calls(&select.projection, select.having.as_ref(), &group_exprs)?;
+        let cols = cols_lookup(&tv.names);
+        let res = agg::group_aggregate(&tv, &group_exprs, &calls, &cols)?;
+        // HAVING 过滤
+        let mut kept: Vec<usize> = Vec::new();
+        for i in 0..res.keys.len() {
+            if let Some(h) = &select.having {
+                let hv = agg::eval_having(h, &calls, &res.vals[i], &group_exprs, &res.keys[i], &cols)?;
+                if hv != SqlValue::Bool(true) {
+                    continue;
+                }
+            }
+            kept.push(i);
+        }
+        // 投影：每个 SelectItem expr → 组键位置或聚合值位置
+        let mut rows_out = Vec::with_capacity(kept.len());
+        for &i in &kept {
+            let mut row = Vec::with_capacity(select.projection.len());
+            for item in &select.projection {
+                let e = match item {
+                    SelectItem::UnnamedExpr(e) => Some(e),
+                    SelectItem::ExprWithAlias { expr, .. } => Some(expr),
+                    _ => None,
+                };
+                match e {
+                    Some(e) => {
+                        if let Some(ci) = calls.iter().position(|c| c.display == e.to_string()) {
+                            row.push(res.vals[i][ci].clone());
+                        } else if let Some(gi) = group_exprs.iter().position(|g| g.to_string() == e.to_string()) {
+                            row.push(res.keys[i][gi].clone());
+                        } else {
+                            return Err(SqlError::syntax("column must appear in GROUP BY or aggregation"));
+                        }
+                    }
+                    None => {
+                        return Err(SqlError::not_supported("SELECT * with GROUP BY"))
+                    }
+                }
+            }
+            rows_out.push(row);
+        }
+        out_rows = rows_out;
+        out_names = projection_names(&select.projection, &tv.names, &calls, &group_exprs)?;
+    } else {
+        // 投影
+        let (names, proj_rows) = project(&select.projection, &tv)?;
+        out_names = names;
+        out_rows = proj_rows;
+    }
+    // ORDER BY（优先输出列名；否则按原行求值——v1 简化：按输出列名/下标）
+    let order_exprs: &[OrderByExpr] = match q.order_by.as_ref().map(|o| &o.kind) {
+        Some(sqlparser::ast::OrderByKind::Expressions(exprs)) => exprs,
+        Some(sqlparser::ast::OrderByKind::All(_)) | None => &[],
+    };
+    if !order_exprs.is_empty() {
+        let has_input = out_rows.len() == tv.rows.len();
+        apply_order(&mut out_rows, &out_names, order_exprs, if has_input { Some(&tv) } else { None })?;
+    }
+    // OFFSET/LIMIT（0.62: limit_clause）
+    if let Some(lc) = &q.limit_clause {
+        match lc {
+            sqlparser::ast::LimitClause::LimitOffset { limit, offset, .. } => {
+                if let Some(off) = offset {
+                    let n = eval_const(&off.value)? as usize;
+                    out_rows = out_rows.into_iter().skip(n).collect();
+                }
+                if let Some(l) = limit {
+                    let n = eval_const(l)? as usize;
+                    out_rows.truncate(n);
+                }
+            }
+            other => return Err(SqlError::not_supported(format!("LIMIT form: {other}"))),
+        }
+    }
+    Ok(TableView { names: out_names, rows: out_rows })
+}
+
+fn short_str(s: &impl std::fmt::Display) -> String {
+    s.to_string().chars().take(40).collect()
+}
+
+pub(crate) fn describe_query(db: &Database, sess: &mut Session, q: &Query) -> Result<Vec<ColumnMeta>> {
+    // 优先静态推断（schema/聚合规则）；失败回退空跑 LIMIT 0
+    if let Some(meta) = describe_static(db, sess, q) {
+        return Ok(meta);
+    }
+    let snapshot = sess.implicit_snapshot(db)?;
+    let mut q2 = q.clone();
+    q2.limit_clause = Some(sqlparser::ast::LimitClause::LimitOffset {
+        limit: Some(Expr::Value(sqlparser::ast::ValueWithSpan {
+            value: PV::Number("0".into(), false),
+            span: sqlparser::tokenizer::Span::empty(),
+        })),
+        offset: None,
+        limit_by: vec![],
+    });
+    let view = eval_query(db, sess, &q2, snapshot)?;
+    let tys = if view.names.is_empty() {
+        vec![]
+    } else {
+        (0..view.names.len())
+            .map(|i| view.rows.first().map(|r| infer_type(&r[i])).unwrap_or(ColType::Utf8))
+            .collect()
+    };
+    Ok(view.names.iter().zip(tys).map(|(n, t)| ColumnMeta { name: n.clone(), ty: t }).collect())
+}
+
+/// 静态列型：单表 SELECT 的 schema 直查 + 聚合函数规则
+fn describe_static(db: &Database, sess: &mut Session, q: &Query) -> Option<Vec<ColumnMeta>> {
+    let select = match q.body.as_ref() {
+        SetExpr::Select(s) => s.as_ref(),
+        _ => return None,
+    };
+    // 单表且无 join 才做静态
+    let twj = select.from.first()?;
+    if !twj.joins.is_empty() {
+        return None;
+    }
+    let full = match &twj.relation {
+        TableFactor::Table { name, .. } => name
+            .0
+            .iter()
+            .filter_map(|p| p.as_ident())
+            .map(|i| i.value.clone())
+            .collect::<Vec<_>>()
+            .join("."),
+        TableFactor::Derived { .. } => {
+            // 子查询：递归 describe 取列
+            let inner = eval_query(db, sess, subquery_of(&twj.relation)?, 0).ok();
+            return inner.map(|v| {
+                v.names
+                    .iter()
+                    .enumerate()
+                    .map(|(i, n)| ColumnMeta {
+                        name: n.clone(),
+                        ty: v.rows.first().map(|r| infer_type(&r[i])).unwrap_or(ColType::Utf8),
+                    })
+                    .collect()
+            });
+        }
+        _ => return None,
+    };
+    let (schema, _) = resolve_table(db, sess, &full).ok()?;
+    let col_ty = |c: &str| schema.col_index(c).map(|i| schema.columns[i].ty);
+    let agg_ty = |name: &str, arg: Option<&Expr>| -> ColType {
+        match name {
+            "count" => ColType::Int64,
+            "avg" => ColType::Float64,
+            "sum" => arg.and_then(|e| match e {
+                Expr::Identifier(id) => col_ty(&id.value),
+                _ => None,
+            }).unwrap_or(ColType::Int64),
+            _ => arg.and_then(|e| match e {
+                Expr::Identifier(id) => col_ty(&id.value),
+                _ => None,
+            }).unwrap_or(ColType::Utf8),
+        }
+    };
+    let mut out = Vec::new();
+    for item in &select.projection {
+        match item {
+            SelectItem::Wildcard(_) => {
+                for c in &schema.columns {
+                    out.push(ColumnMeta { name: c.name.clone(), ty: c.ty });
+                }
+            }
+            SelectItem::QualifiedWildcard(_, _) => return None,
+            SelectItem::ExprWithAlias { expr, alias } => {
+                let ty = col_ty(&alias.value).unwrap_or_else(|| expr_ty(expr, &col_ty, &agg_ty));
+                out.push(ColumnMeta { name: alias.value.clone(), ty });
+            }
+            SelectItem::UnnamedExpr(e) => {
+                let name = match e {
+                    Expr::Identifier(id) => id.value.clone(),
+                    other => crate::sql::agg_display(other),
+                };
+                let ty = expr_ty(e, &col_ty, &agg_ty);
+                out.push(ColumnMeta { name, ty });
+            }
+            SelectItem::ExprWithAliases { .. } => return None,
+        }
+    }
+    Some(out)
+}
+
+fn subquery_of(tf: &TableFactor) -> Option<&Query> {
+    match tf {
+        TableFactor::Derived { subquery, .. } => Some(subquery),
+        _ => None,
+    }
+}
+
+fn expr_ty(e: &Expr, col_ty: &dyn Fn(&str) -> Option<ColType>, agg: &dyn Fn(&str, Option<&Expr>) -> ColType) -> ColType {
+    match e {
+        Expr::Identifier(id) => col_ty(&id.value).unwrap_or(ColType::Utf8),
+        Expr::CompoundIdentifier(parts) => parts
+            .last()
+            .map(|p| col_ty(&p.value).unwrap_or(ColType::Utf8))
+            .unwrap_or(ColType::Utf8),
+        Expr::Function(f) => {
+            let n = f.name.to_string().to_ascii_lowercase();
+            if matches!(n.as_str(), "count" | "sum" | "avg" | "min" | "max") {
+                let arg = crate::sql::scan::fn_args(f).first().and_then(|a| match a {
+                    FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) => Some(e),
+                    _ => None,
+                });
+                agg(&n, arg)
+            } else if matches!(n.as_str(), "length" | "char_length") {
+                ColType::Int32
+            } else if matches!(n.as_str(), "round" | "floor" | "ceil" | "sqrt" | "pow" | "avg") {
+                ColType::Float64
+            } else {
+                ColType::Utf8
+            }
+        }
+        Expr::Cast { data_type, .. } => ColType::from_parse(&data_type.to_string()).unwrap_or(ColType::Utf8),
+        Expr::BinaryOp { .. } => {
+            // 数值运算 → 保守 Float64；比较 → bool
+            ColType::Float64
+        }
+        _ => ColType::Utf8,
+    }
+}
+
+fn eval_const(v: &Expr) -> Result<i64> {
+    let v = expr::eval(v, &[], &|_| None)?;
+    expr::as_i64(&v)
+}
+
+fn col_lookup(names: &[String]) -> impl Fn(&str) -> Option<usize> + '_ {
+    move |name: &str| {
+        let low = name.to_ascii_lowercase();
+        names.iter().position(|n| n.to_ascii_lowercase() == low)
+    }
+}
+
+fn cols_lookup(names: &[String]) -> HashMap<String, usize> {
+    names
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.to_ascii_lowercase(), i))
+        .collect()
+}
+
+// ---------- FROM ----------
+
+fn eval_from(db: &Database, sess: &mut Session, select: &Select, snapshot: u64) -> Result<TableView> {
+    let twj = select
+        .from
+        .first()
+        .ok_or_else(|| SqlError::syntax("missing FROM"))?;
+    let mut tv = table_scan_opt(db, sess, &twj.relation, snapshot, select.selection.as_ref())?;
+    for j in &twj.joins {
+        match &j.join_operator {
+            JoinOperator::Inner(constraint) => {
+                let right = table_scan_opt(db, sess, &j.relation, snapshot, None)?;
+                let (l, _r) = match constraint {
+                    sqlparser::ast::JoinConstraint::On(e) => (e, None::<&Expr>),
+                    sqlparser::ast::JoinConstraint::Natural => {
+                        return Err(SqlError::not_supported("NATURAL JOIN"))
+                    }
+                    sqlparser::ast::JoinConstraint::Using(_) => {
+                        return Err(SqlError::not_supported("USING"))
+                    }
+                    sqlparser::ast::JoinConstraint::None => return Err(SqlError::syntax("join requires ON")),
+                };
+                tv = hash_join(tv, right, l)?;
+            }
+            JoinOperator::LeftOuter(constraint) => {
+                let right = table_scan_opt(db, sess, &j.relation, snapshot, None)?;
+                let e = match constraint {
+                    sqlparser::ast::JoinConstraint::On(e) => e,
+                    _ => return Err(SqlError::not_supported("LEFT JOIN constraint")),
+                };
+                tv = hash_join_left(tv, right, e)?;
+            }
+            _other => return Err(SqlError::not_supported("join type")),
+        }
+    }
+    Ok(tv)
+}
+
+/// 按表名扫描（ddl 的 DELETE/UPDATE 复用）
+pub(crate) fn table_scan_by_name(db: &Database, sess: &mut Session, name: &str, snapshot: u64) -> Result<TableView> {
+    let tf = TableFactor::Table {
+        name: ObjectName::from(vec![sqlparser::ast::Ident::new(name)]),
+        alias: None,
+        args: None,
+        with_hints: vec![],
+        version: None,
+        partitions: vec![],
+        index_hints: vec![],
+        json_path: None,
+        sample: None,
+        with_ordinality: false,
+    };
+    table_scan(db, sess, &tf, snapshot)
+}
+
+/// 带谓词的单表扫描：pk 等值/IN 下推走直查（TP 点查路径）
+fn table_scan_opt(db: &Database, sess: &mut Session, tf: &TableFactor, snapshot: u64, selection: Option<&Expr>) -> Result<TableView> {
+    // 快路径：单表 + pk 等值/IN 且无其他复杂谓词 → 直查
+    if let Some((schema, entry)) = try_pk_pushdown(db, sess, tf, selection, snapshot)? {
+        let sel = selection.expect("pushdown implies selection");
+        return Ok(build_point_view(db, sess, &schema, &entry, sel, snapshot)?);
+    }
+    table_scan(db, sess, tf, snapshot)
+}
+
+/// 判定 WHERE 是否为 pk 直查形态
+fn try_pk_pushdown(
+    db: &Database,
+    sess: &mut Session,
+    tf: &TableFactor,
+    selection: Option<&Expr>,
+    _snapshot: u64,
+) -> Result<Option<(crate::versioned::TableSchema, crate::versioned::TableEntry)>> {
+    let name = match tf {
+        TableFactor::Table { name, .. } => name
+            .0
+            .iter()
+            .filter_map(|p| p.as_ident())
+            .map(|i| i.value.clone())
+            .collect::<Vec<_>>()
+            .join("."),
+        _ => return Ok(None),
+    };
+    let low = name.to_ascii_lowercase();
+    if matches!(low.as_str(), "cambium.branches" | "branches" | "information_schema.tables" | "pg_catalog.pg_tables" | "pg_tables" | "information_schema.columns" | "pg_catalog.pg_columns" | "pg_columns" | "pg_catalog.pg_settings" | "pg_settings" | "cambium.commit_log" | "commit_log") {
+        return Ok(None);
+    }
+    let Some(sel) = selection else { return Ok(None) };
+    // 单列主键 + 顶层 Eq/IN 形态才走直查
+    let (schema, entry) = match resolve_table(db, sess, &name) {
+        Ok(v) => v,
+        Err(_) => return Ok(None),
+    };
+    if schema.pk.len() != 1 {
+        return Ok(None);
+    }
+    let pk_name = schema.columns[schema.pk[0] as usize].name.clone();
+    let ok = match sel {
+        Expr::BinaryOp { left, op: sqlparser::ast::BinaryOperator::Eq, right } => {
+            is_col_vs_value(left, right, &pk_name) || is_col_vs_value(right, left, &pk_name)
+        }
+        Expr::InList { expr, .. } => match expr.as_ref() {
+            Expr::Identifier(id) => id.value.eq_ignore_ascii_case(&pk_name),
+            _ => false,
+        },
+        _ => false,
+    };
+    Ok(if ok { Some((schema, entry)) } else { None })
+}
+
+fn is_col_vs_value(a: &Expr, b: &Expr, pk: &str) -> bool {
+    match (a, b) {
+        (Expr::Identifier(id), Expr::Value(_)) => id.value.eq_ignore_ascii_case(pk),
+        (Expr::Value(_), Expr::Identifier(id)) => id.value.eq_ignore_ascii_case(pk),
+        _ => false,
+    }
+}
+
+/// pk 直查视图：memtx ∪ 树
+fn build_point_view(
+    db: &Database,
+    sess: &mut Session,
+    schema: &crate::versioned::TableSchema,
+    entry: &crate::versioned::TableEntry,
+    selection: &Expr,
+    snapshot: u64,
+) -> Result<TableView> {
+    use sqlparser::ast::{BinaryOperator, Expr};
+    let pk_name = schema.columns[schema.pk[0] as usize].name.clone();
+    let keys: Vec<SqlValue> = match selection {
+        Expr::BinaryOp { left, op: BinaryOperator::Eq, right } => {
+            let v: &Expr = if is_col_vs_value(left, right, &pk_name) { right.as_ref() } else { left.as_ref() };
+            match v {
+                Expr::Value(vws) => vec![super::expr::value_from_parser(vws.value.clone())],
+                _ => vec![],
+            }
+        }
+        Expr::InList { expr, list, negated } if !*negated => {
+            let _ = expr;
+            list.iter()
+                .filter_map(|e| match e {
+                    Expr::Value(vws) => Some(super::expr::value_from_parser(vws.value.clone())),
+                    _ => None,
+                })
+                .collect()
+        }
+        _ => vec![],
+    };
+    let b = db.branch(&sess.branch)?;
+    let tm = b.mem.table(entry.id);
+    let tree_root = entry
+        .table_root
+        .as_ref()
+        .and_then(|s| crate::format::hash::Hash::from_base32(s));
+    let mut rows = Vec::with_capacity(keys.len());
+    for pkv in keys {
+        let key = crate::format::row::encode_key(&[pkv.clone()]);
+        // memtx 优先
+        let found: Option<Arc<Vec<u8>>> = match tm.get(&key, snapshot) {
+            Some(v) => Some(v),
+            None => match &tree_root {
+                Some(r) => crate::prolly::cursor::lookup(&db.store, r, &key)?.map(Arc::new),
+                None => None,
+            },
+        };
+        if let Some(v) = found {
+            rows.push(row_from_bytes(schema, &v)?);
+        }
+    }
+    let names = schema.columns.iter().map(|c| c.name.clone()).collect();
+    Ok(TableView { names, rows })
+}
+
+/// 单表扫描（含系统视图）；pk 等值条件下推走直查
+fn table_scan(db: &Database, sess: &mut Session, tf: &TableFactor, snapshot: u64) -> Result<TableView> {
+    match tf {
+        TableFactor::Table { name, .. } => {
+            let full = name
+                .0
+                .iter()
+                .map(|p| p.as_ident().map(|i| i.value.clone()).unwrap_or_else(|| p.to_string()))
+                .collect::<Vec<_>>()
+                .join(".");
+            let low = full.to_ascii_lowercase();
+            match low.as_str() {
+                "cambium.branches" | "branches" => return pseudo_branches(db),
+                "information_schema.tables" | "pg_catalog.pg_tables" | "pg_tables" => {
+                    return pseudo_tables(db)
+                }
+                "information_schema.columns" | "pg_catalog.pg_columns" | "pg_columns" => {
+                    return pseudo_columns(db, sess)
+                }
+                "pg_catalog.pg_settings" | "pg_settings" => {
+                    return Ok(TableView { names: vec!["name".into(), "setting".into()], rows: vec![] })
+                }
+                "cambium.commit_log" | "commit_log" => {
+                    // commit_log('branch') 不带参数时用当前分支
+                    return pseudo_commit_log(db, sess);
+                }
+                _ => {}
+            }
+            let (schema, entry) = resolve_table(db, sess, &full)?;
+            let b = db.branch(&sess.branch)?;
+            let _head = b.head.load_full();
+            let root = entry
+                .table_root
+                .as_ref()
+                .and_then(|s| crate::format::hash::Hash::from_base32(s));
+            let overlay = b.mem.table(entry.id).snapshot_rows(snapshot);
+            if std::env::var("DENDRO_SCAN_DEBUG").is_ok() {
+                eprintln!("[scan] table={full} root={root:?} overlay={overlay:?} schema={:?}", schema.columns.iter().map(|c| (c.name.clone(), c.ty)).collect::<Vec<_>>());
+            }
+            // 树 ∪ overlay（键序合并）
+            let mut rows = Vec::with_capacity(overlay.len().max(64));
+            let mut overlay_iter = overlay.into_iter().peekable();
+            if let Some(r) = root {
+                let mut it = crate::prolly::cursor::TreeIter::new(db.store.clone(), &r)?;
+                loop {
+                    // 树条目
+                    let item = it.next_item()?;
+                    // 先刷 overlay 中小于等于当前树 key 的
+                    loop {
+                        let peek = overlay_iter.peek();
+                        let take_ov = match (peek, &item) {
+                            (Some((_ok, _)), None) => true,
+                            (Some((ok, _)), Some((tk, _))) => ok.as_slice() <= tk.as_slice(),
+                            _ => false,
+                        };
+                        if take_ov {
+                            let (_ok, ov) = overlay_iter.next().unwrap();
+                            if let Some(v) = ov {
+                                rows.push(row_from_bytes(&schema, &v)?);
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                    match item {
+                        None => break,
+                        Some((k, v)) => {
+                            let dominated = overlay_iter
+                                .peek()
+                                .map(|(ok, _)| ok.as_slice() == k.as_slice())
+                                .unwrap_or(false);
+                            if dominated {
+                                let _ = overlay_iter.next();
+                                continue;
+                            }
+                            rows.push(row_from_bytes(&schema, &v)?);
+                        }
+                    }
+                }
+            } else {
+                for (k, v) in overlay_iter {
+                    let _ = k;
+                    if let Some(v) = v {
+                        let r = row_from_bytes(&schema, &v)?;
+                        if std::env::var("DENDRO_SCAN_DEBUG").is_ok() { eprintln!("[scan] key={k:?} row={r:?}"); }
+                        rows.push(r);
+                    }
+                }
+            }
+            let names = schema.columns.iter().map(|c| c.name.clone()).collect();
+            Ok(TableView { names, rows })
+        }
+        TableFactor::Derived { subquery, .. } => {
+            let view = eval_query(db, sess, subquery.as_ref(), snapshot)?;
+            Ok(view)
+        }
+        other => Err(SqlError::not_supported(format!("FROM: {}", short_str(other)))),
+    }
+}
+
+/// 解析表（catalog 查找；可能带 schema 前缀 public.t / t）
+pub(crate) fn resolve_table(
+    db: &Database,
+    sess: &Session,
+    name: &str,
+) -> Result<(crate::versioned::TableSchema, crate::versioned::TableEntry)> {
+    let short_name = name.rsplit(['.', '@']).next().unwrap_or(name);
+    let branch = db.branch(&sess.branch)?;
+    let head = branch.head.load_full();
+    let catalog = crate::versioned::Versioned::new(db.store.clone());
+    let found = catalog
+        .catalog_lookup(head.as_ref().as_ref().map(|c| c.root).as_ref(), short_name)?
+        .map(|e| -> Result<(crate::versioned::TableSchema, crate::versioned::TableEntry)> {
+            let schema = catalog.load_schema(&e.schema_addr)?;
+            Ok((schema, e))
+        })
+        .transpose()?;
+    found.ok_or_else(|| SqlError::undefined_table(format!("relation \"{name}\" does not exist")))
+}
+
+fn row_from_bytes(schema: &crate::versioned::TableSchema, bytes: &[u8]) -> Result<Vec<SqlValue>> {
+    let mut vals = decode_row(bytes)?;
+    // schema 演化：补 NULL / 截断
+    vals.resize(schema.columns.len(), SqlValue::Null);
+    Ok(vals)
+}
+
+// ---------- JOIN ----------
+
+fn hash_join(l: TableView, r: TableView, on: &Expr) -> Result<TableView> {
+    // 找等值条件 col_l = col_r（支持 AND 链中提取多个）
+    let eqs = extract_equi(on, &l.names, &r.names)?;
+    let mut names = l.names.clone();
+    names.extend(r.names.clone());
+    // 建右表哈希（文本键：类型内规范）
+    let mkkey = |row: &Vec<SqlValue>, idx: &[usize]| -> Option<Vec<String>> {
+        let mut k = Vec::with_capacity(idx.len());
+        for &i in idx {
+            let v = row.get(i)?;
+            if v.is_null() {
+                return None;
+            }
+            k.push(expr::to_text(v.clone()));
+        }
+        Some(k)
+    };
+    let mut hm: HashMap<Vec<String>, Vec<&Vec<SqlValue>>> = HashMap::new();
+    for rr in &r.rows {
+        if let Some(key) = mkkey(rr, &eqs.ridx) {
+            hm.entry(key).or_default().push(rr);
+        }
+    }
+    let mut rows = Vec::new();
+    for lr in &l.rows {
+        let key = match mkkey(lr, &eqs.lidx) {
+            Some(k) => k,
+            None => continue,
+        };
+        if let Some(matches) = hm.get(&key) {
+            for rr in matches {
+                let mut row = lr.clone();
+                row.extend(rr.iter().cloned());
+                rows.push(row);
+            }
+        }
+    }
+    Ok(TableView { names, rows })
+}
+
+fn hash_join_left(l: TableView, r: TableView, on: &Expr) -> Result<TableView> {
+    let eqs = extract_equi(on, &l.names, &r.names)?;
+    let mut names = l.names.clone();
+    names.extend(r.names.clone());
+    let mut hm: HashMap<Vec<String>, Vec<&Vec<SqlValue>>> = HashMap::new();
+    for rr in &r.rows {
+        let key: Vec<String> = eqs.ridx.iter().map(|&i| expr::to_text(rr[i].clone())).collect();
+        if key.iter().any(|k| k == "\x00NULL") {
+            continue;
+        }
+        hm.entry(key).or_default().push(rr);
+    }
+    let null_right = vec![SqlValue::Null; r.names.len()];
+    let mut rows = Vec::new();
+    for lr in &l.rows {
+        let key: Vec<String> = eqs.lidx.iter().map(|&i| expr::to_text(lr[i].clone())).collect();
+        let matched = if key.iter().any(|k| k == "\x00NULL") {
+            None
+        } else {
+            hm.get(&key)
+        };
+        match matched {
+            Some(ms) => {
+                for rr in ms {
+                    let mut row = lr.clone();
+                    row.extend(rr.iter().cloned());
+                    rows.push(row);
+                }
+            }
+            None => {
+                let mut row = lr.clone();
+                row.extend(null_right.iter().cloned());
+                rows.push(row);
+            }
+        }
+    }
+    Ok(TableView { names, rows })
+}
+
+struct EquiIdx {
+    lidx: Vec<usize>,
+    ridx: Vec<usize>,
+}
+
+/// 从 ON 条件提取 `l.c = r.c` 等值对（AND 链）
+fn extract_equi(e: &Expr, ln: &[String], rn: &[String]) -> Result<EquiIdx> {
+    let mut lidx = Vec::new();
+    let mut ridx = Vec::new();
+    fn walk(e: &Expr, ln: &[String], rn: &[String], li: &mut Vec<usize>, ri: &mut Vec<usize>) -> Result<bool> {
+        match e {
+            Expr::BinaryOp { left, op: sqlparser::ast::BinaryOperator::And, right } => {
+                walk(left, ln, rn, li, ri)?;
+                walk(right, ln, rn, li, ri)?;
+                Ok(true)
+            }
+            Expr::BinaryOp { left, op: sqlparser::ast::BinaryOperator::Eq, right } => {
+                // 两边各解析出一列：一属左表一属右表
+                let le = col_pos(left, ln);
+                let re = col_pos(right, rn);
+                let lo = col_pos(left, rn);
+                let ro = col_pos(right, ln);
+                if let (Some(a), Some(b)) = (le, re) {
+                    li.push(a);
+                    ri.push(b);
+                    Ok(true)
+                } else if let (Some(a), Some(b)) = (lo, ro) {
+                    li.push(b);
+                    ri.push(a);
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            }
+            _ => Ok(false),
+        }
+    }
+    if !walk(e, ln, rn, &mut lidx, &mut ridx)? {
+        return Err(SqlError::not_supported("JOIN ON: only equi-conditions supported"));
+    }
+    if lidx.is_empty() {
+        return Err(SqlError::not_supported("JOIN ON: no equi-condition found"));
+    }
+    Ok(EquiIdx { lidx, ridx })
+}
+
+fn col_pos(e: &Expr, names: &[String]) -> Option<usize> {
+    match e {
+        Expr::Identifier(id) => {
+            let low = id.value.to_ascii_lowercase();
+            names.iter().position(|n| n.to_ascii_lowercase() == low)
+        }
+        Expr::CompoundIdentifier(parts) => {
+            let last = parts.last()?.value.to_ascii_lowercase();
+            names.iter().position(|n| n.to_ascii_lowercase() == last)
+        }
+        _ => None,
+    }
+}
+
+// ---------- 投影/聚合 ----------
+
+fn project(p: &[SelectItem], tv: &TableView) -> Result<(Vec<String>, Vec<Vec<SqlValue>>)> {
+    let cols = cols_lookup(&tv.names);
+    let colfn = |name: &str| cols.get(&name.to_ascii_lowercase()).copied();
+    let mut names = Vec::new();
+    let mut items: Vec<(Expr, Option<String>)> = Vec::new();
+    for item in p {
+        match item {
+            SelectItem::Wildcard(_) | SelectItem::ExprWithAliases { .. } => {
+                for n in &tv.names {
+                    names.push(n.clone());
+                    items.push((
+                        Expr::Identifier(sqlparser::ast::Ident::new(n.clone())),
+                        None,
+                    ));
+                }
+            }
+            SelectItem::QualifiedWildcard(prefix, _) => {
+                let pre = prefix.to_string().to_ascii_lowercase();
+                for n in &tv.names {
+                    if n.to_ascii_lowercase().starts_with(&pre) {
+                        names.push(n.clone());
+                        items.push((
+                            Expr::Identifier(sqlparser::ast::Ident::new(n.clone())),
+                            None,
+                        ));
+                    }
+                }
+            }
+            SelectItem::ExprWithAlias { expr, alias, .. } => {
+                names.push(alias.value.clone());
+                items.push((expr.clone(), None));
+            }
+            SelectItem::UnnamedExpr(e) => {
+                names.push(short_str(e));
+                items.push((e.clone(), None));
+            }
+        }
+    }
+    let mut rows = Vec::with_capacity(tv.rows.len());
+    for row in &tv.rows {
+        let mut out = Vec::with_capacity(items.len());
+        for (e, _) in &items {
+            out.push(expr::eval(e, row, &colfn)?);
+        }
+        rows.push(out);
+    }
+    Ok((names, rows))
+}
+
+fn projection_names(p: &[SelectItem], tv: &[String], calls: &[AggCall], groups: &[Expr]) -> Result<Vec<String>> {
+    let mut names = Vec::new();
+    for item in p {
+        match item {
+            SelectItem::Wildcard(_) | SelectItem::ExprWithAliases { .. } => names.extend(tv.iter().cloned()),
+            SelectItem::QualifiedWildcard(prefix, _) => {
+                let pre = prefix.to_string().to_ascii_lowercase();
+                names.extend(tv.iter().filter(|n| n.to_ascii_lowercase().starts_with(&pre)).cloned());
+            }
+            SelectItem::ExprWithAlias { alias, .. } => names.push(alias.value.clone()),
+            SelectItem::UnnamedExpr(e) => {
+                if let Some(c) = calls.iter().find(|c| c.display == e.to_string()) {
+                    names.push(c.display.clone());
+                } else if groups.iter().any(|g| g.to_string() == e.to_string()) {
+                    names.push(short_str(e));
+                } else {
+                    names.push(short_str(e));
+                }
+            }
+        }
+    }
+    Ok(names)
+}
+
+fn projection_aggregates(p: &[SelectItem]) -> Option<()> {
+    for item in p {
+        let e = match item {
+            SelectItem::UnnamedExpr(e) => e,
+            SelectItem::ExprWithAlias { expr, .. } => expr,
+            _ => continue,
+        };
+        if has_agg_expr(e) {
+            return Some(());
+        }
+    }
+    None
+}
+
+pub(crate) fn fn_args(f: &sqlparser::ast::Function) -> &[FunctionArg] {
+    match &f.args {
+        sqlparser::ast::FunctionArguments::List(l) => &l.args,
+        _ => &[] as &[FunctionArg],
+    }
+}
+
+pub(crate) fn fn_distinct(f: &sqlparser::ast::Function) -> bool {
+    match &f.args {
+        sqlparser::ast::FunctionArguments::List(l) => {
+            matches!(l.duplicate_treatment, Some(sqlparser::ast::DuplicateTreatment::Distinct))
+        }
+        _ => false,
+    }
+}
+
+fn has_agg_expr(e: &Expr) -> bool {
+    // 深度优先找聚合函数名
+    match e {
+        Expr::Function(f) => {
+            let n = f.name.to_string().to_ascii_lowercase();
+            if matches!(n.as_str(), "count" | "sum" | "avg" | "min" | "max") {
+                return true;
+            }
+            fn_args(f).iter().any(|a| match a {
+                FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) => has_agg_expr(e),
+                _ => false,
+            })
+        }
+        Expr::BinaryOp { left, right, .. } => has_agg_expr(left) || has_agg_expr(right),
+        Expr::Nested(i) => has_agg_expr(i),
+        _ => false,
+    }
+}
+
+fn collect_agg_calls(
+    p: &[SelectItem],
+    having: Option<&Expr>,
+    _groups: &[Expr],
+) -> Result<Vec<AggCall>> {
+    let mut calls: Vec<AggCall> = Vec::new();
+    fn visit(e: &Expr, calls: &mut Vec<AggCall>) {
+        match e {
+            Expr::Function(f) => {
+                let n = f.name.to_string().to_ascii_lowercase();
+                if matches!(n.as_str(), "count" | "sum" | "avg" | "min" | "max") {
+                    let (arg_expr, distinct, is_star) = match fn_args(f).first() {
+                        Some(FunctionArg::Unnamed(FunctionArgExpr::Expr(e))) => (Some(e.clone()), fn_distinct(f), false),
+                        Some(FunctionArg::Unnamed(FunctionArgExpr::Wildcard)) => (None, false, true),
+                        _ => (None, false, false),
+                    };
+                    let display = e.to_string();
+                    if !calls.iter().any(|c| c.display == display) {
+                        calls.push(AggCall {
+                            func: n,
+                            arg: arg_expr,
+                            distinct,
+                            is_star,
+                            display,
+                        });
+                    }
+                    return;
+                }
+                for a in fn_args(f) {
+                    if let FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) = a {
+                        visit(e, calls);
+                    }
+                }
+            }
+            Expr::BinaryOp { left, right, .. } => {
+                visit(left, calls);
+                visit(right, calls);
+            }
+            Expr::Nested(i) => visit(i, calls),
+            Expr::Cast { expr, .. } => visit(expr, calls),
+            _ => {}
+        }
+    }
+    for item in p {
+        match item {
+            SelectItem::UnnamedExpr(e) => visit(e, &mut calls),
+            SelectItem::ExprWithAlias { expr, .. } => visit(expr, &mut calls),
+            _ => {}
+        }
+    }
+    if let Some(h) = having {
+        visit(h, &mut calls);
+    }
+    Ok(calls)
+}
+
+// ---------- ORDER ----------
+
+fn apply_order(
+    rows: &mut Vec<Vec<SqlValue>>,
+    names: &[String],
+    orders: &[OrderByExpr],
+    input: Option<&TableView>,
+) -> Result<()> {
+    let cols = cols_lookup(names);
+    let cols_in = input.map(|tv| cols_lookup(&tv.names));
+    let mut keys: Vec<Vec<SqlValue>> = Vec::with_capacity(rows.len());
+    for (ri, row) in rows.iter().enumerate() {
+        let mut ks = Vec::with_capacity(orders.len());
+        for o in orders {
+            // 别名/列名/位置/表达式
+            let v = match &o.expr {
+                Expr::Identifier(id) => {
+                    let low = id.value.to_ascii_lowercase();
+                    match cols.get(&low) {
+                        Some(&i) => row[i].clone(),
+                        // 未投影列：回退到输入行（FROM 表原始行）
+                        None => match (cols_in.as_ref(), input) {
+                            (Some(ic), Some(tv)) => {
+                                let in_row = &tv.rows[ri];
+                                match ic.get(&low) {
+                                    Some(&j) => in_row[j].clone(),
+                                    None => expr::eval(&o.expr, in_row, &|n| ic.get(&n.to_ascii_lowercase()).copied())?,
+                                }
+                            }
+                            _ => expr::eval(&o.expr, row, &|n| cols.get(&n.to_ascii_lowercase()).copied())?,
+                        },
+                    }
+                }
+                Expr::Value(vws) => {
+                    if let PV::Number(n, _) = &vws.value {
+                        let idx: usize = n.parse().map_err(|_| SqlError::syntax("bad ORDER BY ordinal"))?;
+                        row.get(idx - 1).cloned().ok_or_else(|| SqlError::syntax("ORDER BY out of range"))?
+                    } else {
+                        expr::eval(&o.expr, row, &|n| cols.get(&n.to_ascii_lowercase()).copied())?
+                    }
+                }
+                e => {
+                    if let (Some(ic), Some(tv)) = (cols_in.as_ref(), input) {
+                        let in_row = &tv.rows[ri];
+                        match expr::eval(e, in_row, &|n| ic.get(&n.to_ascii_lowercase()).copied()) {
+                            Ok(v) => v,
+                            Err(_) => expr::eval(e, row, &|n| cols.get(&n.to_ascii_lowercase()).copied())?,
+                        }
+                    } else {
+                        expr::eval(e, row, &|n| cols.get(&n.to_ascii_lowercase()).copied())?
+                    }
+                }
+            };
+            ks.push(v);
+        }
+        keys.push(ks);
+    }
+    // 排序（ Schwartzian：索引排序后重排）
+    let mut idx: Vec<usize> = (0..rows.len()).collect();
+    idx.sort_by(|&a, &b| {
+        for (i, o) in orders.iter().enumerate() {
+            let (x, y) = (&keys[a][i], &keys[b][i]);
+            let ord = if x.is_null() && y.is_null() {
+                Ordering::Equal
+            } else if x.is_null() {
+                Ordering::Greater // null 最后
+            } else if y.is_null() {
+                Ordering::Less
+            } else {
+                expr::cmp_values(x, y).unwrap_or(Ordering::Equal)
+            };
+            let ord = if o.options.asc.unwrap_or(true) { ord } else { ord.reverse() };
+            if ord != Ordering::Equal {
+                return ord;
+            }
+        }
+        Ordering::Equal
+    });
+    let sorted: Vec<Vec<SqlValue>> = idx.into_iter().map(|i| rows[i].clone()).collect();
+    *rows = sorted;
+    Ok(())
+}
+
+// ---------- 伪表 ----------
+
+fn pseudo_branches(db: &Database) -> Result<TableView> {
+    let names = vec!["branch".into(), "commit".into(), "parent".into()];
+    let mut rows = Vec::new();
+    for (n, h) in db.manifest().manifest.refs.clone() {
+        rows.push(vec![
+            SqlValue::Utf8(n),
+            SqlValue::Utf8(h.commit.unwrap_or_default()),
+            h.parent.map(SqlValue::Utf8).unwrap_or(SqlValue::Null),
+        ]);
+    }
+    Ok(TableView { names, rows })
+}
+
+fn pseudo_tables(db: &Database) -> Result<TableView> {
+    let names = vec!["table_schema".into(), "table_name".into()];
+    let mut rows = Vec::new();
+    let branch = db.branch("main")?;
+    let _ = branch;
+    for sess_name in ["main"] {
+        let b = db.branch(sess_name)?;
+        let head = b.head.load_full();
+        let catalog = crate::versioned::Versioned::new(db.store.clone());
+        for (n, _) in catalog.catalog_entries(head.as_ref().as_ref().map(|c| c.root).as_ref())? {
+            rows.push(vec![SqlValue::Utf8("public".into()), SqlValue::Utf8(n)]);
+        }
+    }
+    Ok(TableView { names, rows })
+}
+
+fn pseudo_columns(db: &Database, sess: &mut Session) -> Result<TableView> {
+    let names = vec!["table_schema".into(), "table_name".into(), "column_name".into(), "data_type".into()];
+    let mut rows = Vec::new();
+    let b = db.branch("main")?;
+    let head = b.head.load_full();
+    let catalog = crate::versioned::Versioned::new(db.store.clone());
+    for (n, _) in catalog.catalog_entries(head.as_ref().as_ref().map(|c| c.root).as_ref())? {
+        let (schema, _) = resolve_table(db, sess, &n)?;
+        for c in schema.columns {
+            rows.push(vec![
+                SqlValue::Utf8("public".into()),
+                SqlValue::Utf8(n.clone()),
+                SqlValue::Utf8(c.name),
+                SqlValue::Utf8(c.ty.type_name().into()),
+            ]);
+        }
+    }
+    Ok(TableView { names, rows })
+}
+
+fn pseudo_commit_log(db: &Database, sess: &mut Session) -> Result<TableView> {
+    let names = vec!["commit".into(), "height".into(), "ts_ms".into(), "message".into()];
+    let mut rows = Vec::new();
+    let b = db.branch(&sess.branch)?;
+    let mut cur = b.head.load_full();
+    let mut guard = 0;
+    while let Some(c) = cur.as_ref() {
+        rows.push(vec![
+            SqlValue::Utf8(c.addr().to_base32()),
+            SqlValue::Int64(c.height as i64),
+            SqlValue::TimestampMs(c.ts_ms),
+            SqlValue::Utf8(c.message.clone()),
+        ]);
+        guard += 1;
+        if guard > 1000 || c.parents.is_empty() {
+            break;
+        }
+        let (_ty, data) = db.cas.get(&c.parents[0])?;
+        cur = Arc::new(Some(crate::versioned::commit::Commit::decode(&data)?));
+    }
+    Ok(TableView { names, rows })
+}
+
+// ---------- 输出 ----------
+
+/// 行 → Arrow 批（8192 行/批）
+pub fn rows_to_batches(names: &[String], rows: &[Vec<SqlValue>]) -> Result<Vec<arrow::record_batch::RecordBatch>> {
+    let columns: Vec<ColumnMeta> = names
+        .iter()
+        .enumerate()
+        .map(|(i, n)| ColumnMeta {
+            name: n.clone(),
+            ty: rows.first().map(|r| infer_type(&r[i])).unwrap_or(ColType::Utf8),
+        })
+        .collect();
+    Ok(rows_to_batches_typed(&columns, rows))
+}
+
+pub fn rows_to_batches_typed(columns: &[ColumnMeta], rows: &[Vec<SqlValue>]) -> Vec<arrow::record_batch::RecordBatch> {
+    // 列型：描述口径优先；否则按该列首个非空值推断（首行可能是 NULL，导致整列值丢失）
+    let mut col_types: Vec<ColType> = Vec::with_capacity(columns.len());
+    for ci in 0..columns.len() {
+        let first_non_null = rows.iter().find_map(|r| r.get(ci).filter(|v| !v.is_null()).cloned());
+        col_types.push(match first_non_null {
+            Some(v) => infer_type(&v),
+            None => columns[ci].ty,
+        });
+    }
+    use arrow::array::{ArrayRef, BooleanArray, Date32Array, Float64Array, Int32Array, Int64Array, StringArray, BinaryArray, TimestampMillisecondArray};
+    use arrow::datatypes::{Field, Schema};
+    use std::sync::Arc;
+    let _schema = Arc::new(Schema::new(
+        columns.iter().map(|c| Field::new(c.name.clone(), c.ty.arrow(), true)).collect::<Vec<_>>(),
+    ));
+    let mut batches = Vec::new();
+    for chunk in rows.chunks(8192) {
+        let cols: Vec<ArrayRef> = columns
+            .iter()
+            .enumerate()
+            .map(|(ci, _c)| -> ArrayRef {
+                let mut vs: Vec<Option<SqlValue>> = Vec::with_capacity(chunk.len());
+                for r in chunk {
+                    // 按稳定列型收敛（Int32→Int64 宽化；类型不符置 NULL 不崩）
+                    vs.push(r.get(ci).cloned().map(|v| crate::types::coerce_to(v, col_types[ci])));
+                }
+                match col_types[ci] {
+                    ColType::Bool => Arc::new(BooleanArray::from(vs.iter().map(|v| v.as_ref().and_then(|x| if let SqlValue::Bool(b) = x { Some(*b) } else { None })).collect::<Vec<_>>())),
+                    ColType::Int32 => Arc::new(Int32Array::from(vs.iter().map(|v| v.as_ref().and_then(|x| if let SqlValue::Int32(i) = x { Some(*i) } else { None })).collect::<Vec<_>>())),
+                    ColType::Int64 => Arc::new(Int64Array::from(vs.iter().map(|v| v.as_ref().and_then(|x| if let SqlValue::Int64(i) = x { Some(*i) } else if let SqlValue::Int32(i) = x { Some(*i as i64) } else { None })).collect::<Vec<_>>())),
+                    ColType::Float64 => Arc::new(Float64Array::from(vs.iter().map(|v| v.as_ref().and_then(|x| if let SqlValue::Float64(f) = x { Some(*f) } else { None })).collect::<Vec<_>>())),
+                    ColType::Utf8 => Arc::new(StringArray::from(vs.iter().map(|v| v.as_ref().and_then(|x| if let SqlValue::Utf8(s) = x { Some(s.as_str()) } else { None })).collect::<Vec<_>>())),
+                    ColType::Bytes => Arc::new(BinaryArray::from(vs.iter().map(|v| v.as_ref().and_then(|x| if let SqlValue::Bytes(b) = x { Some(b.as_slice()) } else { None })).collect::<Vec<_>>())),
+                    ColType::Date32 => Arc::new(Date32Array::from(vs.iter().map(|v| v.as_ref().and_then(|x| if let SqlValue::Date32(d) = x { Some(*d) } else { None })).collect::<Vec<_>>())),
+                    ColType::TimestampMs => Arc::new(TimestampMillisecondArray::from(vs.iter().map(|v| v.as_ref().and_then(|x| if let SqlValue::TimestampMs(t) = x { Some(*t) } else { None })).collect::<Vec<_>>())),
+                }
+            })
+            .collect();
+        // 以稳定列型重建 schema
+        let real_schema = Arc::new(Schema::new(
+            columns.iter().enumerate().map(|(i, c)| {
+                Field::new(c.name.clone(), col_types[i].arrow(), true)
+            }).collect::<Vec<_>>(),
+        ));
+        let batch = arrow::record_batch::RecordBatch::try_new(real_schema, cols)
+            .expect("record batch build");
+        batches.push(batch);
+    }
+    batches
+}
+
+/// RecordSet 便捷构造
+pub fn rows_to_record_set(columns: &[ColumnMeta], rows: Vec<Vec<SqlValue>>) -> RecordSet {
+    RecordSet {
+        columns: columns.to_vec(),
+        batches: rows_to_batches_typed(columns, &rows),
+    }
+}

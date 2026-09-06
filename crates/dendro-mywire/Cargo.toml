@@ -1,0 +1,16 @@
+[package]
+name = "dendro-mywire"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+dendro-core = { workspace = true }
+sha1 = "0.10"
+tracing.workspace = true
+# 说明：运行时仅依赖 std::net + std::thread（SPEC 10 §7），无 tokio/bytes
+
+[dev-dependencies]
+mysql = "26"
+# 仅测试用：MockSession 构造 RecordSet 的 arrow 批（非运行时依赖）
+arrow.workspace = true

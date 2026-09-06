@@ -1,0 +1,17 @@
+[package]
+name = "dendro-columnar"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+dendro-core = { workspace = true }
+thiserror.workspace = true
+bytes.workspace = true
+crc32c.workspace = true
+zstd.workspace = true
+arrow.workspace = true
+tracing.workspace = true
+
+[features]
+parquet_export = []

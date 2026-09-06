@@ -1,0 +1,51 @@
+# 分支与合并（Agent 沙箱语义）
+statement ok
+CREATE TABLE doc (id BIGINT PRIMARY KEY, body TEXT)
+
+statement ok
+INSERT INTO doc VALUES (1, 'v1')
+
+statement ok
+CREATE BRANCH sandbox FROM main
+
+statement ok
+USE BRANCH sandbox
+
+statement ok
+INSERT INTO doc VALUES (2, 'draft')
+
+query I
+SELECT count(*) FROM doc
+----
+2
+
+statement ok
+USE BRANCH main
+
+query I
+SELECT count(*) FROM doc
+----
+1
+
+statement ok
+USE BRANCH sandbox
+
+statement ok
+CHECKPOINT
+
+statement ok
+USE BRANCH main
+
+statement ok
+MERGE BRANCH sandbox INTO main
+
+query I
+SELECT count(*) FROM doc
+----
+2
+
+statement ok
+DROP BRANCH sandbox
+
+statement error
+USE BRANCH sandbox

@@ -1,0 +1,43 @@
+# 聚合与 GROUP BY
+statement ok
+CREATE TABLE sales (region TEXT, amount DOUBLE, qty BIGINT, id BIGINT PRIMARY KEY)
+
+statement ok
+INSERT INTO sales VALUES ('east', 100.0, 3, 1)
+
+statement ok
+INSERT INTO sales VALUES ('east', 50.0, 1, 2)
+
+statement ok
+INSERT INTO sales VALUES ('west', 200.0, 4, 3)
+
+query R
+SELECT sum(amount) FROM sales
+----
+350
+
+query I
+SELECT count(*) FROM sales
+----
+3
+
+query R
+SELECT avg(qty) FROM sales
+----
+2.6666666666666665
+
+query R
+SELECT max(amount) FROM sales
+----
+200
+
+query T
+SELECT region, sum(amount) FROM sales GROUP BY region ORDER BY region
+----
+east 150
+west 200
+
+query I
+SELECT region FROM sales GROUP BY region HAVING sum(amount) > 150 ORDER BY region
+----
+west
