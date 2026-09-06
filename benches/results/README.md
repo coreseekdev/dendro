@@ -61,9 +61,27 @@ cargo build --release -p dendro-server
 ./target/release/dendro bench --out benches/results
 ```
 
+## AP 列式（CBF 投影 + zone map 剪枝，200k 行 lineitem 风格）
+
+| 指标 | 值 |
+|------|-----|
+| 装载 200k 行（分块 SQL）| 0.72 s |
+| GROUP BY region 聚合（AP 路径，CBF + 剪枝）| **53 ms** |
+
+列存微基准（dendro-columnar，1e6 行/列，release）：
+
+| 列 | codec | 解码吞吐 | 压缩比 R |
+|----|-------|---------|----------|
+| i64 顺序 | DELTA | 2,272 MB/s | 8.00 |
+| i64 顺序 | ZSTD3 | 1,124 MB/s | 7.60 |
+| utf8 低基数 | RLE_DICT | 2,279 MB/s | 47.96 |
+
+与 Python 原型（spec/08 §5）结论一致：DELTA 吃掉顺序列熵（GPU 可直解，
+热层免熵解码），ZSTD3 解码吞吐减半 → 冷块定位成立。
+
 ## 待办（v2）
 
 - 多客户端并发 TP（branch_scale：64 分支并行写入）
-- AP 列式：TPC-H Q1 型 + 冷/热 + OSS 延迟注入曲线（ThrottledObjStore 已实现）
-- pgwire 协议层开销（对照进程内数字）
-- 压缩衰退正式曲线（Rust 版；Python 原型结论见 spec/08 §5）
+- 向量化 AP 算子（当前算子层行式，扫描层已列式）
+- 冷/热分层 + OSS 延迟注入曲线（ThrottledObjStore 已实现）
+- CBF 增量投影（当前 checkpoint 全量重建该表投影）

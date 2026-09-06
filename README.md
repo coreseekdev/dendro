@@ -60,7 +60,30 @@ MERGE BRANCH dev INTO main;
 SELECT * FROM t;
 ```
 
-## 状态
+## 状态（2026-09-07，M0–M7 全部达成）
 
-工程阶段：SPEC 完成、Python 格式原型完成、Rust 核心实现中。
-详见 `spec/00-overview.md` 的路线图。
+| 里程碑 | 状态 | 证据 |
+|--------|------|------|
+| M0 SPEC + 骨架 | ✅ | spec/00–10 共 11 篇 |
+| M1 Python 原型 | ✅ | prototype/prolly（25/25 测试，节点分布≈理论 Weibull）；prototype/columnar（压缩衰退实证）|
+| M2 对象层+prolly+WAL+manifest | ✅ | 24 单测 |
+| M3 memtx OCC+SQL+pgwire | ✅ | e2e 5 测；tokio-postgres 真客户端对拍 |
+| M4 mywire+分支 SQL+merge | ✅ | mysql 真客户端对拍；分支/合并/冲突 e2e |
+| M5 CBF 列存+AP 执行+物化 | ✅ | columnar 12 测；AP 集成测试（CBF+WAL overlay 合并）|
+| M6 基准 | ✅ | benches/results/*.json（TP/组提交/分支/恢复/AP）|
+| M7 slt 基线 | ✅ | tests/slt 7/7 语料全绿 + BASELINE.md |
+
+**核心数字**（进程内引擎天花板，详见 benches/results/README.md）：
+
+- oltp_insert 157k txn/s（p50 4.9µs）；点查 162k txn/s（p50 5.0µs，PK 下推直查）
+- 组提交延迟 p50 ≈ flush_interval，p99≈p50+0.1ms（尾延迟压平）
+- CREATE BRANCH 225µs @1 万行（与数据量无关）；MERGE 306µs @千行 diff
+- 崩溃恢复 2 万事务 8ms（HEAD 探测，无 LIST）
+- CBF：DELTA 顺序列 R=8 解码 2.3GB/s；低基数文本 RLE_DICT 48×
+
+## 测试
+
+```bash
+cargo test --workspace          # 全部单元/集成/e2e 测试
+cargo build -p slt && ./target/debug/slt run tests/slt/dendro   # SQL 基线（7 文件）
+```

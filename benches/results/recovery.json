@@ -2,10 +2,10 @@
   "suite": "recovery",
   "rows": [
   {"name": "recover_txns_1000_s", "value": 0.000, "unit": "s"},
-  {"name": "recovered_rows_1000", "value": 943.000, "unit": "rows"},
-  {"name": "recover_txns_5000_s", "value": 0.002, "unit": "s"},
-  {"name": "recovered_rows_5000", "value": 4994.000, "unit": "rows"},
+  {"name": "recovered_rows_1000", "value": 955.000, "unit": "rows"},
+  {"name": "recover_txns_5000_s", "value": 0.003, "unit": "s"},
+  {"name": "recovered_rows_5000", "value": 4918.000, "unit": "rows"},
   {"name": "recover_txns_20000_s", "value": 0.008, "unit": "s"},
-  {"name": "recovered_rows_20000", "value": 19867.000, "unit": "rows"}
+  {"name": "recovered_rows_20000", "value": 19947.000, "unit": "rows"}
   ]
 }

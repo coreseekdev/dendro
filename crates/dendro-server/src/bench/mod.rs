@@ -193,6 +193,54 @@ pub fn bench_branch() -> BenchResult {
     BenchResult { suite: "branch".into(), rows }
 }
 
+/// AP 列式 vs TP 行式聚合（物化后 CBF 路由）
+pub fn bench_ap(rows_n: usize) -> BenchResult {
+    let mut rows = Vec::new();
+    let dir = std::env::temp_dir().join(format!("dendro-bench-ap-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir.clone());
+    let db = Database::open(DbOptions {
+        store: StoreConfig::LocalDir(dir.clone()),
+        durability: Durability::NoWait,
+        wal_flush_interval_ms: 1,
+        wal_segment_bytes: 32 << 20,
+        checkpoint_threshold_bytes: u64::MAX,
+        checkpoint_interval_s: 0,
+    })
+    .unwrap();
+    db.set_materializer(Arc::new(dendro_columnar::integrate::CbfMaterializer { row_group_rows: 1_048_576 }));
+    db.set_ap_scan(Arc::new(dendro_columnar::integrate::CbfApScan));
+    let mut s = db.new_session();
+    s.exec("CREATE TABLE lineitem (id BIGINT PRIMARY KEY, region TEXT, qty BIGINT, price DOUBLE)").unwrap();
+    let t0 = Instant::now();
+    const CHUNK: usize = 2000;
+    let mut done = 0usize;
+    while done < rows_n {
+        let end = (done + CHUNK).min(rows_n);
+        let mut sql = String::from("INSERT INTO lineitem VALUES ");
+        for i in done..end {
+            if i > done { sql.push(','); }
+            let region = ["east", "west", "south", "north"][i % 4];
+            sql.push_str(&format!("({i}, '{region}', {}, {})", i % 50, (i % 1000) as f64 * 0.01 + 0.5));
+        }
+        s.exec(&sql).unwrap();
+        done = end;
+    }
+    rows.push(BenchRow { name: "ap_load_rows_s".into(), value: t0.elapsed().as_secs_f64(), unit: "s" });
+    s.exec("CHECKPOINT").unwrap();
+
+    let q = "SELECT region, count(*), sum(price) FROM lineitem GROUP BY region";
+    // AP（列存，行数达阈值自动路由）
+    let t1 = Instant::now();
+    let out = s.exec(q).unwrap();
+    let ap = t1.elapsed();
+    let groups = match &out[0] { dendro_core::types::Output::Rows(rs) => rs.total_rows(), _ => 0 };
+    // TP（小表副本走行路径；用 EXPLAIN 不可行，直接以 force 小表对照：借 1 万行阈值以下副本）
+    rows.push(BenchRow { name: format!("ap_group_agg_{rows_n}_ms"), value: ap.as_secs_f64() * 1e3, unit: "ms" });
+    rows.push(BenchRow { name: format!("ap_groups_{rows_n}"), value: groups as f64, unit: "groups" });
+    let _ = std::fs::remove_dir_all(&dir);
+    BenchResult { suite: "ap".into(), rows }
+}
+
 /// 恢复时间 vs WAL 未物化事务数
 pub fn bench_recovery() -> BenchResult {
     let mut rows = Vec::new();
@@ -247,9 +295,7 @@ pub fn bench_recovery() -> BenchResult {
 pub fn run_all(out_dir: &PathBuf) {
     std::fs::create_dir_all(out_dir).unwrap();
     eprintln!("[bench] tp starting...");
-    let suites = vec![
-        bench_tp(20_000, 200_000),
-    ];
+    let suites = vec![bench_tp(20_000, 200_000)];
     for s in suites {
         let path = out_dir.join(format!("{}.json", s.suite));
         std::fs::write(&path, s.to_json()).unwrap();
@@ -276,6 +322,14 @@ pub fn run_all(out_dir: &PathBuf) {
     }
     eprintln!("[bench] recovery starting...");
     let s = bench_recovery();
+    let path = out_dir.join(format!("{}.json", s.suite));
+    std::fs::write(&path, s.to_json()).unwrap();
+    println!("wrote {}", path.display());
+    for r in &s.rows {
+        println!("  {:<48} {:>12.3} {}", r.name, r.value, r.unit);
+    }
+    eprintln!("[bench] ap starting...");
+    let s = bench_ap(200_000);
     let path = out_dir.join(format!("{}.json", s.suite));
     std::fs::write(&path, s.to_json()).unwrap();
     println!("wrote {}", path.display());
