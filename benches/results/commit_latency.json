@@ -1,21 +1,21 @@
 {
   "suite": "commit_latency",
   "rows": [
-  {"name": "commit_no_wait_interval1_ms_p50", "value": 0.005, "unit": "ms"},
-  {"name": "commit_no_wait_interval1_ms_p99", "value": 0.008, "unit": "ms"},
-  {"name": "commit_no_wait_interval5_ms_p50", "value": 0.011, "unit": "ms"},
-  {"name": "commit_no_wait_interval5_ms_p99", "value": 0.040, "unit": "ms"},
+  {"name": "commit_no_wait_interval1_ms_p50", "value": 0.013, "unit": "ms"},
+  {"name": "commit_no_wait_interval1_ms_p99", "value": 0.023, "unit": "ms"},
+  {"name": "commit_no_wait_interval5_ms_p50", "value": 0.012, "unit": "ms"},
+  {"name": "commit_no_wait_interval5_ms_p99", "value": 0.025, "unit": "ms"},
   {"name": "commit_no_wait_interval25_ms_p50", "value": 0.011, "unit": "ms"},
-  {"name": "commit_no_wait_interval25_ms_p99", "value": 0.019, "unit": "ms"},
-  {"name": "commit_no_wait_interval50_ms_p50", "value": 0.011, "unit": "ms"},
-  {"name": "commit_no_wait_interval50_ms_p99", "value": 0.017, "unit": "ms"},
-  {"name": "commit_group_interval1_ms_p50", "value": 1.068, "unit": "ms"},
-  {"name": "commit_group_interval1_ms_p99", "value": 1.135, "unit": "ms"},
-  {"name": "commit_group_interval5_ms_p50", "value": 5.073, "unit": "ms"},
-  {"name": "commit_group_interval5_ms_p99", "value": 5.203, "unit": "ms"},
-  {"name": "commit_group_interval25_ms_p50", "value": 25.142, "unit": "ms"},
-  {"name": "commit_group_interval25_ms_p99", "value": 25.197, "unit": "ms"},
+  {"name": "commit_no_wait_interval25_ms_p99", "value": 0.017, "unit": "ms"},
+  {"name": "commit_no_wait_interval50_ms_p50", "value": 0.012, "unit": "ms"},
+  {"name": "commit_no_wait_interval50_ms_p99", "value": 0.023, "unit": "ms"},
+  {"name": "commit_group_interval1_ms_p50", "value": 1.119, "unit": "ms"},
+  {"name": "commit_group_interval1_ms_p99", "value": 3.688, "unit": "ms"},
+  {"name": "commit_group_interval5_ms_p50", "value": 5.213, "unit": "ms"},
+  {"name": "commit_group_interval5_ms_p99", "value": 8.167, "unit": "ms"},
+  {"name": "commit_group_interval25_ms_p50", "value": 25.223, "unit": "ms"},
+  {"name": "commit_group_interval25_ms_p99", "value": 28.558, "unit": "ms"},
   {"name": "commit_group_interval50_ms_p50", "value": 50.158, "unit": "ms"},
-  {"name": "commit_group_interval50_ms_p99", "value": 50.222, "unit": "ms"}
+  {"name": "commit_group_interval50_ms_p99", "value": 53.838, "unit": "ms"}
   ]
 }
