@@ -172,6 +172,16 @@ memtx 一致性 = **"单写者 + 全序重放"**：任一时刻只有一个 memt
 接管时新 memtx 由全序日志唯一确定。**不需要 memtx 同步协议**——
 这正是把 memtx 设计成"可从 WAL 完全重建的派生态"的回报。
 
+### 3.3 多实例接管 e2e（已实现，tests/multi_node.rs）
+
+```
+实例 A（E1）：建表 + 2 行 → drop（模拟崩溃）
+实例 B（E2）：A 掉线后打开 → epoch 自动 +1 → A 数据可见 → 写 1 行 → drop
+实例 C（E3）：打开 → 3 行全部可见（跨 epoch 恢复 ✓）
+```
+
+同时验证：TTL 过期是接管的前提（B 需等 A 的 600ms 租约过期后才接管）。
+
 ### 3.3 脑裂分析
 
 | 场景 | 结果 |
@@ -256,7 +266,20 @@ Resolver:
 | 5 | Txn 读集记录（P3 前置）| `memtx.rs::Txn` | 中 |
 | 6 | 日志服务（openraft 3 副本）| 新 crate | 大 |
 
-## 8. 参考
+## 8. P1 实施状态
+
+| 项 | 状态 | 代码 |
+|----|------|------|
+| FenceStore（epoch CAS 租约 + 并发竞争）| ✅ | `objstore/fence.rs` |
+| WAL 段路径 epoch 化 | ✅ | `wal.rs::seg_path` |
+| 复合时间戳（epoch<<32 \| seq）| ✅ | `recovery.rs::composite_ts` |
+| 多 epoch 恢复回放（陈旧写抑制）| ✅ | `recovery.rs::replay_branch` |
+| 分支打开即领租约（epoch 自动 +1）| ✅ | `engine.rs::branch` |
+| 双实例接管 + 跨 epoch 恢复 e2e | ✅ | `tests/multi_node.rs` |
+| 提交转发 RPC（非写者→写者）| ⬜ P2 | — |
+| 心跳续期后台线程（当前依赖打开时新鲜度）| ⬜ P2 | — |
+
+## 参考
 
 同[多节点 TP 调研](../research/多节点TP事务调研.md) §4。与本文直接对应的机制：
 FoundationDB 的 Resolver（P3 裁决）、Neon safekeeper（P2 日志多数派）、

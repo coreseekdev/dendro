@@ -381,7 +381,7 @@ impl Database {
         let fence = crate::objstore::fence::FenceStore::new(self.obj.clone());
         let holder = format!("{}-{}", std::process::id(), self.session_seq.load(Ordering::Relaxed));
         let lease_epoch = fence
-            .acquire(name, &holder, self.opts.lease_ttl_ms as i64, head_info.epoch.max(1))
+            .acquire(name, &holder, self.opts.lease_ttl_ms as i64, head_info.epoch)
             .map_err(SqlError::from)?;
         // 回放所有旧 epoch（1..=lease_epoch-1）；新 epoch 目录为空，随后写入
         let wal = WalWriter::open(
