@@ -113,6 +113,12 @@ struct ConnState {
 /// 阻塞监听（server 装配用）
 pub fn serve(addr: &str, db: Arc<Database>, default_branch: &str) -> std::io::Result<()> {
     let listener = TcpListener::bind(addr)?;
+    serve_listener(listener, db, default_branch)
+}
+
+/// 在给定 listener 上服务（装配前置 bind 用）
+pub fn serve_listener(listener: TcpListener, db: Arc<Database>, default_branch: &str) -> std::io::Result<()> {
+    let addr = listener.local_addr()?;
     tracing::info!(%addr, "dendro kv-resp: listening");
     for conn in listener.incoming() {
         match conn {

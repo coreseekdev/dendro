@@ -165,13 +165,30 @@ fn main() {
             }));
             
             eprintln!("dendro opened at {}", data.display());
+            // **前置 bind**（第九轮 R9-4）：全部监听器先绑定成功才打印 ready
+            // 并 spawn——此前 bind 在各自线程内发生，pg 端口冲突时照常打印
+            // ready 且进程永不退出
+            let mut listeners: Vec<(&str, std::net::TcpListener)> = Vec::new();
+            for (name, port) in [("metrics", metrics_port), ("pg", pg_port), ("mysql", mysql_port), ("kv", kv_port)] {
+                if port == 0 {
+                    continue;
+                }
+                match std::net::TcpListener::bind(format!("{host}:{port}")) {
+                    Ok(l) => listeners.push((name, l)),
+                    Err(e) => {
+                        eprintln!("dendro: {name} listen {host}:{port} failed: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+
             let metrics_handle = if metrics_port > 0 {
                 let db_m = db.clone();
-                let m_addr = format!("{host}:{metrics_port}");
+                let (_, l) = listeners.remove(0);
                 Some(
                     std::thread::Builder::new()
                         .name("metrics-listener".into())
-                        .spawn(move || dendro_server::metrics::serve(&m_addr, db_m).expect("metrics listener"))
+                        .spawn(move || dendro_server::metrics::serve_listener(l, db_m).expect("metrics listener"))
                         .unwrap(),
                 )
             } else {
@@ -180,10 +197,11 @@ fn main() {
             let kv_handle = if kv_port > 0 {
                 let db_kv = db.clone();
                 let kv_addr = format!("{host}:{kv_port}");
+                let (_, l) = listeners.remove(0);
                 Some(
                     std::thread::Builder::new()
                         .name("kv-resp-listener".into())
-                        .spawn(move || kv_resp::serve(&kv_addr, db_kv, "main").expect("kv listener"))
+                        .spawn(move || dendro_server::kv_resp::serve_listener(l, db_kv, "main").expect("kv listener"))
                         .unwrap(),
                 )
             } else {
@@ -191,13 +209,19 @@ fn main() {
             };
             let my_handle = if mysql_port > 0 {
                 let db_my = db.clone();
-                let my_addr = format!("{host}:{mysql_port}");
                 let cfg = dendro_mywire::MyConfig { password: password.clone(), ..Default::default() };
+                let (_, l) = listeners.remove(0);
                 Some(
                     std::thread::Builder::new()
                         .name("my-listener".into())
                         .spawn(move || {
-                            dendro_mywire::serve(&my_addr, db_my, cfg).expect("mysql listener")
+                            let factory: dendro_mywire::SessionFactory = {
+                                let db = db_my.clone();
+                                std::sync::Arc::new(move || -> Box<dyn dendro_core::WireSession> {
+                                    Box::new(db.new_session())
+                                })
+                            };
+                            dendro_mywire::serve_listener(l, cfg, factory).expect("mysql listener")
                         })
                         .unwrap(),
                 )
@@ -208,12 +232,13 @@ fn main() {
                 let db_pg = db.clone();
                 let pg_sock: std::net::SocketAddr =
                     format!("{host}:{pg_port}").parse().expect("pg addr");
+                let (_, l) = listeners.remove(0);
                 Some(
                     std::thread::Builder::new()
                         .name("pg-listener".into())
                         .spawn(move || {
                             let cfg = dendro_pgwire::PgConfig { password: password.clone() };
-                            dendro_pgwire::serve_with_config(pg_sock, db_pg, cfg).expect("pg listener")
+                            dendro_pgwire::serve_listener(l, db_pg, cfg).expect("pg listener")
                         })
                         .unwrap(),
                 )

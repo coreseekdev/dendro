@@ -99,6 +99,11 @@ pub fn serve_with(addr: &str, cfg: MyConfig, factory: SessionFactory) -> io::Res
     MyServer::bind(addr, cfg, factory)?.run()
 }
 
+/// 在给定 listener 上服务（装配前置 bind 用：端口冲突在打印 ready 前暴露）
+pub fn serve_listener(listener: std::net::TcpListener, cfg: MyConfig, factory: SessionFactory) -> io::Result<()> {
+    MyServer::bind_on(listener, cfg, factory)?.run()
+}
+
 /// 可探测绑定地址的阻塞式服务（`:0` 端口 + 后台线程场景）。
 pub struct MyServer {
     listener: TcpListener,
@@ -108,7 +113,13 @@ pub struct MyServer {
 
 impl MyServer {
     pub fn bind(addr: &str, cfg: MyConfig, factory: SessionFactory) -> io::Result<Self> {
-        Ok(Self { listener: TcpListener::bind(addr)?, cfg, factory })
+        let listener = std::net::TcpListener::bind(addr)?;
+        Self::bind_on(listener, cfg, factory)
+    }
+
+    /// 在给定 listener 上构造（装配前置 bind 用）
+    pub fn bind_on(listener: std::net::TcpListener, cfg: MyConfig, factory: SessionFactory) -> io::Result<Self> {
+        Ok(Self { listener, cfg, factory })
     }
 
     pub fn local_addr(&self) -> io::Result<std::net::SocketAddr> {

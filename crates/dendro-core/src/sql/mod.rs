@@ -208,6 +208,18 @@ pub(crate) enum BranchKind {
     Reopen,
 }
 
+pub(crate) fn kind_name(k: BranchKind) -> &'static str {
+    match k {
+        BranchKind::Create => "CREATE BRANCH",
+        BranchKind::Drop => "DROP BRANCH",
+        BranchKind::Use => "USE BRANCH",
+        BranchKind::Show => "SHOW BRANCHES",
+        BranchKind::Merge => "MERGE BRANCH",
+        BranchKind::Checkpoint => "CHECKPOINT",
+        BranchKind::Reopen => "REOPEN BRANCH",
+    }
+}
+
 fn branch_sql_kind(sql: &str) -> Option<BranchKind> {
     let up = top_keyword(sql);
     match up.as_str() {
@@ -239,6 +251,17 @@ fn top_keyword(sql: &str) -> String {
 }
 
 fn exec_branch_statement(db: &Database, sess: &mut Session, sql: &str) -> Result<Vec<Output>> {
+    // 事务内拒绝会自伤/破坏隔离的分支语句（第九轮 R9-2）：CHECKPOINT 推进
+    // covered_min → 本事务提交撞 Q-9 40001；CREATE/DROP/MERGE/REOPEN 是
+    // catalog 写且不可回滚（Q-10 事务化前的保守口径）
+    if sess.txn.is_some() {
+        if let Some(kind) = branch_sql_kind(sql) {
+            return Err(SqlError::new(
+                "25001",
+                format!("cannot execute {} inside a transaction", kind_name(kind)),
+            ));
+        }
+    }
     let kind = branch_sql_kind(sql).unwrap();
     let ddl = crate::versioned::Versioned::new(db.store.clone());
     match kind {
@@ -409,6 +432,8 @@ pub(crate) fn exec_statement(db: &Database, sess: &mut Session, stmt: Statement)
             // 会随 checkpoint 推进在事务内翻转
             txn.head_root = b.head.load_full().as_ref().as_ref().map(|c| c.root);
             txn.explicit = true;
+            // 注册活跃快照（第九轮 R9-1）：checkpoint 的截断水位尊重本事务
+            b.active_snaps.lock().insert(txn.snapshot);
             sess.txn = Some(txn);
             Ok(Some(Output::Command { tag: "BEGIN".into(), affected: 0 }))
         }

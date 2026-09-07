@@ -131,6 +131,9 @@ pub struct Branch {
     /// 已截断 memtx 历史的最高 covered seq（Q-9：显式事务快照低于此值 =
     /// 冲突检测盲区 → 提交时显式 40001，杜绝静默丢失更新）
     pub covered_min: AtomicU64,
+    /// 活跃显式事务快照注册表（R9-1：truncate 水位 = min(最老活跃快照,
+    /// covered)——否则冻结读被 checkpoint 截断击穿，事务内行静默消失）
+    pub active_snaps: Mutex<std::collections::BTreeSet<u64>>,
     /// 写者租约 keep（与 flush_loop 的保活回调共享；P1 运行时拒写 + 空闲保活）
     pub lease: Arc<LeaseKeeper>,
     /// 已安装（可见）的提交水位
@@ -600,6 +603,7 @@ impl Database {
             lease_epoch: AtomicU64::new(lease_epoch),
             read_only: self.opts.read_only,
             covered_min: AtomicU64::new(0),
+            active_snaps: Mutex::new(std::collections::BTreeSet::new()),
             lease: keeper,
             watermark: AtomicU64::new(0),
             pending: Mutex::new(HashMap::new()),
@@ -1057,8 +1061,18 @@ impl Database {
             Ok(true)
         })?;
         b.wal.set_first_seg(seg_now);
-        // 释放 memtx 历史版本
-        b.mem.truncate_all(covered);
+        // 释放 memtx 历史版本。**截断水位尊重最老活跃快照**（第九轮 R9-1）：
+        // 显式事务冻结读依赖 memtx 保留其快照可见的版本——无脑截断到 covered
+        // 会把"BEGIN 前已提交、BEGIN 后首次物化"的行从事务内静默抹掉。
+        // （Q-9 的写侧 40001 不变：写冲突检测的盲区与读保留是两回事。）
+        let has_active = !b.active_snaps.lock().is_empty();
+        if has_active {
+            // 存在活跃显式事务 ⇒ 本轮不截断：其冻结读依赖 memtx 保留快照
+            // 可见版本（v1 保守口径——内存随最老事务生命周期增长，已知权衡，
+            // 精细化按版本保留列 TASK Q-13）。无活跃事务时正常截断。
+        } else {
+            b.mem.truncate_all(covered);
+        }
         // 记录盲区水位（Q-9）：此后提交的显式事务若快照低于此值即拒
         b.covered_min.store(covered, Ordering::Release);
         Ok(Some(commit.addr()))
@@ -1177,7 +1191,21 @@ pub struct Session {
     pub(crate) dialect: crate::sql::SqlDialect,
 }
 
+impl Drop for Session {
+    fn drop(&mut self) {
+        if let Some(t) = self.txn.take() {
+            self.unregister_snapshot(&t.snapshot);
+        }
+    }
+}
+
 impl Session {
+    /// 注销活跃快照（事务结束或会话放弃；分支可能已被驱逐——查无则忽略）
+    pub(crate) fn unregister_snapshot(&self, snapshot: &u64) {
+        if let Ok(b) = self.db.branch(&self.branch) {
+            b.active_snaps.lock().remove(snapshot);
+        }
+    }
     /// 执行一段 SQL（可含多语句，`;` 分隔）；空/纯注释 → 空 Vec
     pub fn exec(&mut self, sql: &str) -> Result<Vec<Output>> {
         let db = self.db.clone();

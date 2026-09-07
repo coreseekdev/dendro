@@ -256,3 +256,64 @@ fn q11_use_branch_inside_txn_rejected() {
     assert_eq!(e.state, "25001", "{e}");
     s.exec("COMMIT").unwrap();
 }
+
+#[test]
+fn r9_1_frozen_reads_survive_checkpoint() {
+    // 第九轮 R9-1（P0）：BEGIN 前提交的行若在 BEGIN 后才首次被物化
+    // （checkpoint 截断 memtx 版本），冻结读会把该行静默抹掉（count 1→0）。
+    // 截断水位现尊重最老活跃快照——只读显式事务跨 checkpoint 稳定。
+    let db = Database::open(DbOptions::memory()).unwrap();
+    {
+        let mut s = db.new_session();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+        s.exec("INSERT INTO t VALUES (1, 'a')").unwrap();
+    }
+    let mut s = db.new_session();
+    s.exec("BEGIN").unwrap();
+    let q = |s: &mut dendro_core::Session| -> String {
+        match &s.exec("SELECT count(*) FROM t").unwrap()[0] {
+            dendro_core::Output::Rows(rs) => rs.text_rows()[0][0].clone().unwrap(),
+            _ => panic!(),
+        }
+    };
+    assert_eq!(q(&mut s), "1");
+    // 并发：另一事务写入新行 + checkpoint（触发 memtx 截断）
+    {
+        let mut s2 = db.new_session();
+        s2.exec("INSERT INTO t VALUES (2, 'b')").unwrap();
+        db.checkpoint_branch("main").unwrap();
+    }
+    assert_eq!(q(&mut s), "1", "冻结读被 checkpoint 截断击穿（行静默消失）");
+    // 新会话看到 2 行（物化后可见）
+    {
+        let mut s2 = db.new_session();
+        match &s2.exec("SELECT count(*) FROM t").unwrap()[0] {
+            dendro_core::Output::Rows(rs) => assert_eq!(rs.text_rows()[0][0].as_deref(), Some("2")),
+            _ => panic!(),
+        }
+    }
+    // 事务继续：仍恒 1，COMMIT 后新快照可见 2
+    assert_eq!(q(&mut s), "1");
+    s.exec("COMMIT").unwrap();
+    assert_eq!(q(&mut s), "2");
+}
+
+#[test]
+fn r9_2_checkpoint_and_branch_ddl_rejected_inside_txn() {
+    // 第九轮 R9-2：事务内 CHECKPOINT / CREATE BRANCH 会在提交时刻自伤
+    // （checkpoint 推进 covered_min → 本事务提交撞 Q-9 的 40001）——
+    // 与隔离语义冲突的语句在 BEGIN 后直接拒绝（25001）。
+    let db = Database::open(DbOptions::memory()).unwrap();
+    let mut s = db.new_session();
+    s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY)").unwrap();
+    // PG aborted 语义：事务内首个错误后 25P02 接管——逐事务验证每条语句
+    for sql in ["CHECKPOINT", "CREATE BRANCH bx FROM main", "DROP BRANCH bx", "MERGE BRANCH bx INTO main"] {
+        s.exec("BEGIN").unwrap();
+        let e = match s.exec(sql) {
+            Ok(_) => panic!("事务内不应允许：{sql}"),
+            Err(e) => e,
+        };
+        assert_eq!(e.state, "25001", "{sql}: {e}");
+        s.exec("ROLLBACK").unwrap();
+    }
+}

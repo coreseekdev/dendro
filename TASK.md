@@ -146,6 +146,25 @@
 | Q-11 | 显式事务内 USE BRANCH 拒绝（25001） | P2 | 一行守卫 |
 | Q-12 | 优雅关闭（SIGTERM → 停监听 → flush → exit 0）+ /readyz live/readiness 分离 | P2 | k8s 终止语义 |
 
+## 九轮评审修复（2026-09-08）
+
+| # | 任务 | 状态 | 证据 |
+|---|------|:----:|------|
+| R9-P0 | 冻结读被 checkpoint 截断击穿（BEGIN 前提交的行在事务内静默消失） | ✅ | 截断水位尊重活跃快照：Branch.active_snaps 注册表（BEGIN 注册 / COMMIT/ROLLBACK/Drop 注销），存在活跃快照即不截断（保守 v1 口径；精细化保留列 Q-13）。回归 `sql_semantics::r9_1_frozen_reads_survive_checkpoint` |
+| R9-P1 | 事务内 CHECKPOINT/CREATE/DROP/MERGE/REOPEN 自伤（提交时刻撞 Q-9 40001） | ✅ | exec_branch_statement 入口 25001 拒绝；回归 `r9_2_checkpoint_and_branch_ddl_rejected_inside_txn`（PG aborted 语义逐事务验证） |
+| R9-P1 | R8-6 修复默认配置无效（bind 在线程内 + join 首位永不返回） | ✅ | 全部监听器**前置 bind**（任一冲突 exit(1) 且不打印 ready）+ pgwire/mywire/kv_resp 增 serve_listener/bind_on 变体；端到端验证：占用端口的第二实例 exit=1 |
+| R9-P2 | KV 层双洞（事务内 GET 返回整行编码 / SCAN 不合并写集） | ✅ | GET 解码取值列；SCAN 增加写集层（最后覆盖，删除生效）。回归 `kv_wire::kv_txn_reads_own_writes_and_decoded_values` |
+
+### 第九轮登记
+
+| # | 任务 | 优先级 | 备注 |
+|---|------|:----:|------|
+| Q-13 | memtx 版本保留精细化（活跃快照存在即全量保留 → 内存随最老事务增长） | P2 | 按版本/per-key 保留；与 Q-9 的 40001 口径联动 |
+| Q-14 | AP 列存路径（≥1 万行）读自己的写 + 冻结根（R9-3，本轮未完成） | P1 | 显式事务内大表 AP 查询的可见性与行路径不一致 |
+| Q-15 | SPEC 03/04 + tutorial 同步 Q-9/Q-11/毒化语义（DoD #3） | P2 | |
+| Q-16 | 事务内重复 INSERT 同一新键 → 23505（当前静默覆盖） | P3 | |
+| Q-17 | slt runner 显式设置 checkpoint_interval_s=0（避免环境泄漏） | P3 | |
+
 ## P2' — 提交管线（2026-09-08 起动）
 
 | # | 任务 | 状态 | 证据 |

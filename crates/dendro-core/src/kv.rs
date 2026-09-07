@@ -108,10 +108,18 @@ impl Kv {
         let snapshot = self.snapshot()?;
         let entry = self.kv_entry()?;
         let k = enc_key(key);
-        // 写集优先（显式事务内的读己之写）
+        // 写集优先（显式事务内的读己之写）。
+        // ⚠ 写集值是**整行编码**（enc_row）——必须解码后取值列，直接返回
+        // 会把行编码当值交给客户端（第九轮 R9-5）
         if let Some(t) = &self.txn {
             if let Some(v) = t.local_get(entry.id, &k) {
-                return Ok(v.map(|x| x.to_vec()));
+                return match v.as_deref() {
+                    Some(row_bytes) => {
+                        let row = decode_row(row_bytes)?;
+                        Ok(row.get(1).and_then(val_bytes))
+                    }
+                    None => Ok(None), // 事务内删除的键
+                };
             }
         }
         if let Some(v) = b.mem.table(entry.id).get(&k, snapshot) {
@@ -141,7 +149,6 @@ impl Kv {
         let snapshot = self.snapshot()?;
         let entry = self.kv_entry()?;
         let mut out: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
-
         // 1) 树侧（已物化，键序）
         if let Some(root) = entry
             .table_root
@@ -195,6 +202,41 @@ impl Kv {
                 }
             }
         }
+        // 3) 会话显式事务自身写（R9-5：此前 scan 不合并写集——事务内
+        //    SCAN 看不到自己的写）。**最后覆盖**（树/overlay 会把事务内
+        //    删除的键写回）。写集值为整行编码，解码取值列。
+        if let Some(t) = &self.txn {
+            for ((_tid, k), m) in &t.writes {
+                if *_tid != entry.id {
+                    continue;
+                }
+                let key = match crate::format::row::decode_key(k, &[ColType::Bytes]) {
+                    Ok(vals) => match vals.into_iter().next() {
+                        Some(SqlValue::Bytes(b)) => b,
+                        _ => continue,
+                    },
+                    Err(_) => continue,
+                };
+                if let (Some(s), Some(e)) = (start, end) {
+                    if key.as_slice() < s || key.as_slice() >= e {
+                        continue;
+                    }
+                }
+                match m {
+                    crate::prolly::Mutation::Put(row) => {
+                        if let Ok(r) = decode_row(row) {
+                            if let Some(val) = r.get(1).and_then(val_bytes) {
+                                out.insert(key, val);
+                            }
+                        }
+                    }
+                    crate::prolly::Mutation::Delete => {
+                        out.remove(&key);
+                    }
+                }
+            }
+        }
+
         Ok(out.into_iter().collect())
     }
 

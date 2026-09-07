@@ -1,5 +1,6 @@
 #![allow(clippy::all)]
 //! KV RESP wire 对拍：原生 TCP 客户端走 RESP 协议访问 dendro KV 层。
+use dendro_core::objstore::ObjStore;
 use dendro_core::{Database, DbOptions};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
@@ -83,4 +84,32 @@ fn kv_resp_wire_end_to_end() {
     // DBSIZE 只统计当前键空间
     let sz = cmd(&mut s, &["DBSIZE"]);
     assert!(!sz.is_empty());
+}
+
+#[test]
+fn kv_txn_reads_own_writes_and_decoded_values() {
+    // 第九轮 R9-5：KV 层两洞——①显式事务内 GET 返回未解码整行编码；
+    // ②事务内 SCAN 不合并写集（看不到自己的写）。
+    let obj: std::sync::Arc<dyn ObjStore> = std::sync::Arc::new(dendro_core::objstore::memory::MemoryObjStore::new());
+    let db = Database::open(DbOptions { store: dendro_core::StoreConfig::Obj(obj), ..DbOptions::default() }).unwrap();
+    let mut kv = dendro_core::kv::Kv::open(&db, "main").unwrap();
+    kv.put("k1", b"v1").unwrap();
+
+    kv.begin().unwrap();
+    // ① 事务内 GET：值必须是解码后的 v1，而非整行编码
+    assert_eq!(kv.get("k1").unwrap().as_deref(), Some(&b"v1"[..]), "事务内 GET 必须返回解码值");
+    kv.put("k2", b"v2").unwrap();
+    // ② 事务内 SCAN：必须看到自己的写
+    let rows = kv.scan(None, None).unwrap();
+    let got: Vec<(Vec<u8>, Vec<u8>)> = rows;
+    assert!(got.contains(&(b"k1".to_vec(), b"v1".to_vec())));
+    assert!(got.contains(&(b"k2".to_vec(), b"v2".to_vec())), "事务内 SCAN 必须读自己的写");
+    // 事务内删除 → SCAN/GET 均消失
+    kv.delete("k1").unwrap();
+    assert_eq!(kv.get("k1").unwrap(), None);
+    assert!(!kv.scan(None, None).unwrap().iter().any(|(k, _)| k == b"k1"));
+    kv.commit().unwrap();
+    // COMMIT 后持久视图一致
+    assert_eq!(kv.get("k1").unwrap(), None);
+    assert_eq!(kv.get("k2").unwrap().as_deref(), Some(&b"v2"[..]));
 }

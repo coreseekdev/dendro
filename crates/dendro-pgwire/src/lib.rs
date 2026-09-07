@@ -78,6 +78,12 @@ pub fn serve(addr: SocketAddr, db: Arc<Database>) -> io::Result<()> {
 /// 带认证配置的监听（trust / cleartext，SPEC 10 §8；第四轮评审 §3 认证接线）
 pub fn serve_with_config(addr: SocketAddr, db: Arc<Database>, cfg: PgConfig) -> io::Result<()> {
     let listener = TcpListener::bind(addr)?;
+    serve_listener(listener, db, cfg)
+}
+
+/// 在给定 listener 上服务（装配前置 bind 用：任一端口冲突在打印 ready 前暴露）
+pub fn serve_listener(listener: TcpListener, db: Arc<Database>, cfg: PgConfig) -> io::Result<()> {
+    let addr = listener.local_addr()?;
     tracing::info!(%addr, auth = %if cfg.password.is_some() { "cleartext" } else { "trust" }, "dendro-pgwire: listening");
     for conn in listener.incoming() {
         match conn {
