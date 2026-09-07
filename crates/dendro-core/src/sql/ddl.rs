@@ -408,13 +408,21 @@ fn insert_row(
         return Err(SqlError::new("23502", "null value in primary key column"));
     }
     let key = encode_key(&pk_vals);
-    // 主键冲突检查（快照内已存在 + 事务写集）
+    // 主键冲突检查（快照内已存在 + 事务写集）。
+    // **墓碑感知**（第七轮 R7-1 伴生）：DELETE 是 overlay 墓碑（树旧行在下次
+    // checkpoint 前仍物理存在）——可见墓碑（latest_ts <= 快照）下重插同键
+    // 必须允许，否则删除后重插报 23505（PG 语义为允许）。
     let b = db.branch(&sess.branch)?;
     let tm = b.mem.table(table_id);
+    let tombstoned = tm.latest_ts(&key).is_some_and(|ts| ts <= txn.snapshot);
     let exists_mem = tm.get(&key, txn.snapshot).is_some();
-    let exists_tree = match &entry_root(db, sess, table_id)? {
-        Some(r) => crate::prolly::cursor::lookup(&db.store, r, &key)?.is_some(),
-        None => false,
+    let exists_tree = if tombstoned {
+        false
+    } else {
+        match &entry_root(db, sess, table_id)? {
+            Some(r) => crate::prolly::cursor::lookup(&db.store, r, &key)?.is_some(),
+            None => false,
+        }
     };
     if exists_mem || exists_tree {
         return Err(SqlError::duplicate_key("duplicate key value violates primary key constraint".to_string()));

@@ -269,7 +269,7 @@ pub fn map_state(state: &str) -> (u16, &'static str) {
         "58030" => (2013, "08S01"), // CR_SERVER_LOST（IO 类）
         // completion_unknown（WAL 毒化，P0-D）：MySQL 无对应错误码，
         // code 用 ER_UNKNOWN_ERROR，但 sql_state 原样携带 40003——客户端
-        // 可据此区分"结果未知"与普通错误（语义见 SPEC 02 §4.1）
+        // 可据此区分"结果未知"与普通错误（语义见 SPEC 02 §3.5）
         "40003" => (1105, "40003"),
         _ => (1105, "HY000"),       // ER_UNKNOWN_ERROR（XX000 等）
     }

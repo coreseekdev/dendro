@@ -87,3 +87,79 @@ fn s4_integer_overflow_reports_22003_not_wraparound() {
     let e = s.exec("SELECT 9223372036854775807 + 1 FROM t").unwrap_err();
     assert_eq!(e.state, "22003", "i64 溢出应为 out of range 而非回绕/internal");
 }
+
+#[test]
+fn r7_2_read_only_rejects_catalog_writes() {
+    // 第七轮 R7-2：只读副本此前可执行 DROP BRANCH（manifest CAS 在副本上
+    // 成功 → 持久删除分支 + 墓碑化对象）。守卫在 update_manifest 单一咽喉。
+    let dir = std::env::temp_dir().join(format!("dendro-ro-cat-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    {
+        let db = Database::open(DbOptions {
+            store: dendro_core::StoreConfig::LocalDir(dir.clone()),
+            ..DbOptions::default()
+        })
+        .unwrap();
+        let mut s = db.new_session();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY)").unwrap();
+        s.exec("CREATE BRANCH b2 FROM main").unwrap();
+    }
+    let ro = Database::open(DbOptions {
+        store: dendro_core::StoreConfig::LocalDir(dir.clone()),
+        read_only: true,
+        ..DbOptions::default()
+    })
+    .unwrap();
+    let mut s = ro.new_session();
+    for sql in ["DROP BRANCH b2", "CREATE TABLE x (id BIGINT PRIMARY KEY)"] {
+        let e = match s.exec(sql) {
+            Ok(_) => panic!("只读副本不应允许：{sql}"),
+            Err(e) => e,
+        };
+        assert_eq!(e.state, "25006", "{sql}: {e}");
+    }
+    // 数据完好：正常实例重新打开，b2 仍在
+    drop(ro);
+    let w = Database::open(DbOptions {
+        store: dendro_core::StoreConfig::LocalDir(dir.clone()),
+        ..DbOptions::default()
+    })
+    .unwrap();
+    let mut s = w.new_session();
+    s.exec("USE BRANCH b2").unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn r7_3_explicit_txn_read_visibility_frozen() {
+    // 第七轮 R7-3：显式事务内树的可见性以 BEGIN 冻结的 catalog 根为准，
+    // 不随并发 checkpoint 推进翻转（此前同 一 count(*) 在事务内从空翻 1）。
+    let db = Database::open(DbOptions::memory()).unwrap();
+    {
+        let mut s = db.new_session();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY)").unwrap();
+    }
+    let mut s = db.new_session();
+    s.exec("BEGIN").unwrap();
+    let q = |s: &mut dendro_core::Session| -> String {
+        match &s.exec("SELECT count(*) FROM t").unwrap()[0] {
+            dendro_core::Output::Rows(rs) => rs.text_rows()[0][0].clone().unwrap(),
+            _ => panic!(),
+        }
+    };
+    assert_eq!(q(&mut s), "0", "事务内初始不可见");
+    // 并发提交 + checkpoint（另一会话推进树）
+    {
+        let mut s2 = db.new_session();
+        s2.exec("INSERT INTO t VALUES (1)").unwrap();
+        db.checkpoint_branch("main").unwrap();
+    }
+    assert_eq!(q(&mut s), "0", "显式事务内可见性被 checkpoint 翻转");
+    s.exec("COMMIT").unwrap();
+    // 新快照可见
+    let o = s.exec("SELECT count(*) FROM t").unwrap();
+    match &o[0] {
+        dendro_core::Output::Rows(rs) => assert_eq!(rs.text_rows()[0][0].as_deref(), Some("1")),
+        _ => panic!(),
+    }
+}

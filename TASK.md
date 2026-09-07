@@ -103,6 +103,29 @@
 | M-4 | GPU/CBF 解码对拍 | P2 | 未动（前轮登记） |
 | M-3 | G6 压缩量化衰退 | P2 | 未动（前轮登记） |
 
+## 七轮评审修复（2026-09-08）
+
+| # | 任务 | 状态 | 证据 |
+|---|------|:----:|------|
+| R7-P0 | checkpoint 后 UPDATE/DELETE 读路径失真（UPDATE 双行 / DELETE 复活 / 点查墓碑回退树 / 空表 count 0 行） | ✅ | 归并预刷 `<=`→`<` + 等键分支输出 overlay 值；点查 latest_ts 墓碑判定；全局聚合空输入一行。语料 `009_checkpoint_visibility.slt`（checkpoint→变更→查询 组合首次入 corpus）+ INSERT 重插墓碑键墓碑感知（ddl 23505） |
+| R7-P1 | 只读副本可执行 DROP BRANCH（manifest CAS 在副本成功） | ✅ | update_manifest 单一咽喉 25006 守卫 + RO writer append 25006（DDL 的 WAL 帧先于 manifest）；回归 `r7_2_read_only_rejects_catalog_writes` |
+| R7-P1 | 显式事务隔离混合（overlay 按 BEGIN 快照、树按当前 head） | ✅ | BEGIN 冻结 catalog 根（Txn.head_root）；table_scan/点查下推以冻结根解析；回归 `r7_3_explicit_txn_read_visibility_frozen` |
+| R7-P2 | has_agg_expr 不递归 Cast（count(*)::text 报错） | ✅ | Cast 分支补齐（与 collect_agg_calls 对称） |
+| R7-P2 | SPEC 02 §4.1 幻影引用 ×4 | ✅ | 全部改指 §3.5 |
+
+### 第七轮登记（读路径与产品面——前六轮盲区）
+
+| # | 任务 | 优先级 | 备注 |
+|---|------|:----:|------|
+| Q-1 | 读路径内存上界 + LIMIT 下推 + 游标（DECLARE CURSOR/FETCH；执行器全程物化、LIMIT 全扫后截断） | P1 | 与 S-3 同族但独立列；"用户 90% 交互是读" |
+| Q-2 | 跨进程 DROP 不驱逐外部写者（僵尸写者 ack + 对象泄漏 + 高 epoch 复活） | P2 | 方向：DROP 领新 epoch + fence_gate 校验租约存在性/manifest ref |
+| Q-3 | 启动 O(分支数) HEAD 校验 → 抽样/懒校验；NoWait × DROP ack 丢失文档化 | P2 | |
+| Q-4 | 二级索引缺失作为产品决策入册（非 pk 谓词恒全表扫） | P2 | SPEC 07 明示 v1 无二级索引或立任务 |
+| Q-5 | SET 参数静默 OK 无效果（isolation/timezone 假象） | P2 | 至少返回 not_supported 或真实生效 |
+| Q-6 | pseudo_tables 恒读 main 分支（非 main 会话 information_schema 显示错表） | P2 | |
+| Q-7 | stop_cp 死字段（无写者） | P3 | Database::close 收口时处理 |
+| Q-8 | P1-7 并发测试的第一个具体用例 = 显式事务跨并发提交+checkpoint（R7-3 场景固化） | P1 | 已有 r7_3 单线程版；多线程版随 P1-7 |
+
 ## P2' — 提交管线（2026-09-08 起动）
 
 | # | 任务 | 状态 | 证据 |

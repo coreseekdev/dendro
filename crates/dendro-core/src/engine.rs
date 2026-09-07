@@ -474,7 +474,7 @@ impl Database {
     /// 把驻留分支从 writer 注册表驱逐（旧 Arc 上的在途会话继续用旧 writer
     /// 并按毒化语义失败），随后按正常打开路径重新领取 epoch + 恢复回放——
     /// 恢复以 manifest + WAL 为准，裁决毒化期间的真实状态（WAL 失败 =
-    /// 未提交；Uncertain 落盘者此时可见，客户端须对账，见 SPEC 02 §4.1）。
+    /// 未提交；Uncertain 落盘者此时可见，客户端须对账，见 SPEC 02 §3.5）。
     pub fn reopen_branch(&self, name: &str) -> Result<Arc<Branch>> {
         // 每-名字串行化（第六轮 P1 并发边界）：并发 reopen / 并发 open 同名
         // 分支在此排队，不会出现双 epoch + 孤儿写者
@@ -798,6 +798,13 @@ impl Database {
         &self,
         f: impl Fn(&mut Manifest) -> Result<bool>,
     ) -> Result<()> {
+        // 只读库单一咽喉守卫（第七轮 R7-2）：此前只读副本可执行 DROP BRANCH
+        // 等 manifest 写（CAS 在副本上成功 → 持久删除分支 + 墓碑化其对象）。
+        // commit_tx / checkpoint 已由 fence_gate 各自拒绝；本函数覆盖其余
+        // 全部 catalog 写（DROP/CREATE/MERGE/catalog_commit/…）。
+        if self.opts.read_only {
+            return Err(SqlError::new("25006", "read-only database: cannot execute statements that modify the catalog"));
+        }
         for _ in 0..64 {
             let (ver, m) = self.manifest_store.load_latest().map_err(SqlError::from)?;
             let mut m = m;

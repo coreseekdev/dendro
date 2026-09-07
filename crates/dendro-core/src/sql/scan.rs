@@ -680,9 +680,17 @@ fn try_pk_pushdown(
     }
     let Some(sel) = selection else { return Ok(None) };
     // 单列主键 + 顶层 Eq/IN 形态才走直查
-    let (schema, entry) = match resolve_table(db, &sess.branch, &name) {
-        Ok(v) => v,
-        Err(_) => return Ok(None),
+    // （显式事务：以 BEGIN 冻结的 catalog 根解析，R7-3）
+    let frozen = match &sess.txn {
+        Some(t) if t.explicit => t.head_root,
+        _ => None,
+    };
+    let (schema, entry) = match frozen {
+        Some(r) => resolve_table_at(db, Some(&r), &name.rsplit(['.', '@']).next().unwrap_or(&name))?,
+        None => match resolve_table(db, &sess.branch, &name) {
+            Ok(v) => v,
+            Err(_) => return Ok(None),
+        },
     };
     if schema.pk.len() != 1 {
         return Ok(None);
@@ -748,13 +756,21 @@ fn build_point_view(
     let mut rows = Vec::with_capacity(keys.len());
     for pkv in keys {
         let key = crate::format::row::encode_key(std::slice::from_ref(&pkv));
-        // memtx 优先
+        // memtx 优先；**墓碑判定**（第七轮 R7-1 伴生①）：memtx 无值时可能是
+        // "可见墓碑"（该 key 在快照前已被删除）——此时不得回退树复活被删行
         let found: Option<Arc<Vec<u8>>> = match tm.get(&key, snapshot) {
             Some(v) => Some(v),
-            None => match &tree_root {
-                Some(r) => crate::prolly::cursor::lookup(&db.store, r, &key)?.map(Arc::new),
-                None => None,
-            },
+            None => {
+                let tombstoned = tm.latest_ts(&key).is_some_and(|ts| ts <= snapshot);
+                if tombstoned {
+                    None
+                } else {
+                    match &tree_root {
+                        Some(r) => crate::prolly::cursor::lookup(&db.store, r, &key)?.map(Arc::new),
+                        None => None,
+                    }
+                }
+            }
         };
         if let Some(v) = found {
             rows.push(row_from_bytes(schema, &v)?);
@@ -792,7 +808,15 @@ fn table_scan(db: &Database, sess: &mut Session, tf: &TableFactor, snapshot: u64
                 }
                 _ => {}
             }
-            let (schema, entry) = resolve_table(db, &sess.branch, &full)?;
+            // 显式事务：读以 BEGIN 冻结的 catalog 根为准（R7-3）
+            let frozen = match &sess.txn {
+                Some(t) if t.explicit => t.head_root,
+                _ => None,
+            };
+            let (schema, entry) = match frozen {
+                Some(r) => resolve_table_at(db, Some(&r), &full.rsplit(['.', '@']).next().unwrap_or(&full))?,
+                None => resolve_table(db, &sess.branch, &full)?,
+            };
             let b = db.branch(&sess.branch)?;
             let _head = b.head.load_full();
             let root = entry
@@ -811,12 +835,15 @@ fn table_scan(db: &Database, sess: &mut Session, tf: &TableFactor, snapshot: u64
                 loop {
                     // 树条目
                     let item = it.next_item()?;
-                    // 先刷 overlay 中小于等于当前树 key 的
+                    // 先刷 overlay 中**严格小于**当前树 key 的
+                    // （⚠ 曾为 `<=`：等键条目在 dominated 判定前被消费，
+                    // 树旧行恒被输出 → checkpoint 后 UPDATE 返回两行 /
+                    // DELETE 后被删行复活，第七轮 R7-1 探针实锤）
                     loop {
                         let peek = overlay_iter.peek();
                         let take_ov = match (peek, &item) {
                             (Some((_ok, _)), None) => true,
-                            (Some((ok, _)), Some((tk, _))) => ok.as_slice() <= tk.as_slice(),
+                            (Some((ok, _)), Some((tk, _))) => ok.as_slice() < tk.as_slice(),
                             _ => false,
                         };
                         if take_ov {
@@ -831,12 +858,17 @@ fn table_scan(db: &Database, sess: &mut Session, tf: &TableFactor, snapshot: u64
                     match item {
                         None => break,
                         Some((k, v)) => {
+                            // 等键 overlay 支配树行：Put = 输出新值，Delete
+                            // （None）= 行消失——两种情况树行都不输出
                             let dominated = overlay_iter
                                 .peek()
                                 .map(|(ok, _)| ok.as_slice() == k.as_slice())
                                 .unwrap_or(false);
                             if dominated {
-                                let _ = overlay_iter.next();
+                                let (_ok, ov) = overlay_iter.next().unwrap();
+                                if let Some(v) = ov {
+                                    rows.push(row_from_bytes(&schema, &v)?);
+                                }
                                 continue;
                             }
                             rows.push(row_from_bytes(&schema, &v)?);
@@ -873,15 +905,25 @@ pub fn resolve_table(
     let short_name = name.rsplit(['.', '@']).next().unwrap_or(name);
     let branch = db.branch(branch_name)?;
     let head = branch.head.load_full();
+    resolve_table_at(db, head.as_ref().as_ref().map(|c| c.root).as_ref(), short_name)
+}
+
+/// 以**给定 catalog 根**解析（显式事务冻结读，第七轮 R7-3：事务内树的
+/// 可见性以 BEGIN 时的根为准，不随 checkpoint 推进翻转）
+fn resolve_table_at(
+    db: &Database,
+    root: Option<&crate::format::hash::Hash>,
+    short_name: &str,
+) -> Result<(crate::versioned::TableSchema, crate::versioned::TableEntry)> {
     let catalog = crate::versioned::Versioned::new(db.store.clone());
     let found = catalog
-        .catalog_lookup(head.as_ref().as_ref().map(|c| c.root).as_ref(), short_name)?
+        .catalog_lookup(root, short_name)?
         .map(|e| -> Result<(crate::versioned::TableSchema, crate::versioned::TableEntry)> {
             let schema = catalog.load_schema(&e.schema_addr)?;
             Ok((schema, e))
         })
         .transpose()?;
-    found.ok_or_else(|| SqlError::undefined_table(format!("relation \"{name}\" does not exist")))
+    found.ok_or_else(|| SqlError::undefined_table(format!("relation \"{short_name}\" does not exist")))
 }
 
 fn row_from_bytes(schema: &crate::versioned::TableSchema, bytes: &[u8]) -> Result<Vec<SqlValue>> {
@@ -1153,6 +1195,9 @@ fn has_agg_expr(e: &Expr) -> bool {
         }
         Expr::BinaryOp { left, right, .. } => has_agg_expr(left) || has_agg_expr(right),
         Expr::Nested(i) => has_agg_expr(i),
+        // 与 collect_agg_calls 的 Cast 分支对称：count(*)::text 曾被当普通
+        // 表达式而报错（第七轮 R7-8）
+        Expr::Cast { expr, .. } => has_agg_expr(expr),
         _ => false,
     }
 }

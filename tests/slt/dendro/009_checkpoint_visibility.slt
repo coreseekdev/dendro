@@ -1,0 +1,72 @@
+# checkpoint → 变更 → 查询（第七轮 R7-1 P0 回归防线）
+# 此前 slt 语料从不 checkpoint——"树 + overlay 双源读"这条生产主路径零覆盖：
+# checkpoint 后 UPDATE 返回两行（主键重复）、DELETE 后被删行复活、点查墓碑
+# 回退树、count(*) 空表返回 0 行。本文件是这四个缺陷的永久防线。
+
+statement ok
+CREATE TABLE vis (id BIGINT PRIMARY KEY, v TEXT)
+
+statement ok
+INSERT INTO vis VALUES (1, 'a'), (2, 'b'), (3, 'c')
+
+statement ok
+CHECKPOINT
+
+# ---- checkpoint 后 UPDATE：新值唯一，树旧行不得复活 ----
+statement ok
+UPDATE vis SET v = 'A' WHERE id = 1
+
+query T
+SELECT v FROM vis WHERE id = 1
+----
+A
+
+query I
+SELECT count(*) FROM vis
+----
+3
+
+# checkpoint 后 UPDATE 的完整结果集（旧行不得并存）
+query IT
+SELECT id, v FROM vis ORDER BY id
+----
+1 A
+2 b
+3 c
+
+# ---- checkpoint 后 DELETE：行消失（归并 + 点查两路径）----
+statement ok
+DELETE FROM vis WHERE id = 2
+
+query I
+SELECT count(*) FROM vis
+----
+2
+
+query IT
+SELECT id, v FROM vis ORDER BY id
+----
+1 A
+3 c
+
+query I
+SELECT id FROM vis WHERE id = 2
+----
+
+# ---- 空表聚合：全局 count 返回一行 0（而非 0 行）----
+statement ok
+CREATE TABLE empty_t (id BIGINT PRIMARY KEY)
+
+query I
+SELECT count(*) FROM empty_t
+----
+0
+
+# ---- 混合：checkpoint → 重插已删键 → 唯一可见 ----
+statement ok
+INSERT INTO vis VALUES (2, 'B2')
+
+query IT
+SELECT id, v FROM vis WHERE id = 2
+----
+2 B2

@@ -242,13 +242,16 @@ struct WalShared {
     /// flush_loop 停止上传（确定失败的帧绝不持久化——错误 = 未提交）；
     /// 唯一恢复路径是 reopen（新 writer + 恢复回放裁决真实状态）。
     /// Uncertain（PUT 可能已成功）：帧保留在缓冲但不上传，对象若已落盘
-    /// 则 reopen 后回放可见——该事务结果**未知**，客户端须对账（SPEC 02 §4.1）。
+    /// 则 reopen 后回放可见——该事务结果**未知**，客户端须对账（SPEC 02 §3.5）。
     poisoned: bool,
 }
 
 pub struct WalWriter {
     obj: Arc<dyn ObjStore>,
     branch: String,
+    /// 只读 writer（读副本）：append 一律 25006（第七轮 R7-2——DDL 的 WAL
+    /// 帧先于 update_manifest 到达，需在此给出正确错误码而非 58030）
+    read_only: bool,
     epoch: u64,
     cfg: WalConfig,
     shared: Mutex<WalShared>,
@@ -267,6 +270,7 @@ impl WalWriter {
         let w = Arc::new(Self {
             obj,
             branch: branch.to_string(),
+            read_only: false,
             epoch,
             cfg,
             shared: Mutex::new(WalShared {
@@ -321,6 +325,7 @@ impl WalWriter {
         Arc::new(Self {
             obj,
             branch: branch.to_string(),
+            read_only: true,
             epoch,
             cfg,
             shared: Mutex::new(WalShared {
@@ -352,6 +357,9 @@ impl WalWriter {
     /// 追加一帧并按 durability 语义等待。返回 durable（或缓冲后）seq。
     /// 毒化后一律拒绝（P0-D：不得在结果未知的状态上叠加写）。
     pub fn append(&self, ty: FrameType, seq: u64, payload: &[u8], durability: crate::engine::Durability) -> Result<()> {
+        if self.read_only {
+            return Err(SqlError::new("25006", "read-only branch: cannot write"));
+        }
         if self.shared.lock().poisoned {
             return Err(SqlError::new("40003",
                 "wal writer poisoned by an earlier upload failure; reopen the branch to recover (transaction outcome may be unknown)"));
@@ -442,7 +450,7 @@ impl WalWriter {
             // PUT 失败：**毒化写者**（P0-D 定案）。帧留缓冲但不再上传——
             // 确定性失败 ⇒ 这些事务未提交，恢复回放永不可见，错误如实。
             // （Uncertain 场景：对象可能已落盘，reopen 后回放裁决真实状态，
-            // 客户端须对账——见 WalShared.poisoned 注释与 SPEC 02 §4.1。）
+            // 客户端须对账——见 WalShared.poisoned 注释与 SPEC 02 §3.5。）
             // cur_seg 不动；reopen 前不再有任何上传（flush_loop 停）。
             let body_len = bytes.len() - TRAILER_LEN;
             let mut g = self.shared.lock();

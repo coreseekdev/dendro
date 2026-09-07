@@ -400,8 +400,13 @@ pub(crate) fn exec_statement(db: &Database, sess: &mut Session, stmt: Statement)
                 return Err(SqlError::new("25001", "transaction already active"));
             }
             let b = db.branch(&sess.branch)?;
-            sess.txn = Some(crate::memtx::Txn::new(b.snapshot()));
-            sess.txn.as_mut().unwrap().explicit = true;
+            let mut txn = crate::memtx::Txn::new(b.snapshot());
+            // 冻结 catalog 根（第七轮 R7-3）：显式事务内的树读以 BEGIN 时的
+            // 根为准——否则 overlay 按 BEGIN 快照、树按当前 head，同一 count(*)
+            // 会随 checkpoint 推进在事务内翻转
+            txn.head_root = b.head.load_full().as_ref().as_ref().map(|c| c.root);
+            txn.explicit = true;
+            sess.txn = Some(txn);
             Ok(Some(Output::Command { tag: "BEGIN".into(), affected: 0 }))
         }
         Statement::Commit { .. } => {

@@ -172,11 +172,14 @@ pub struct Txn {
     pub writes: BTreeMap<(u32, Vec<u8>), crate::prolly::Mutation>,
     /// 显式事务标记
     pub explicit: bool,
+    /// 显式事务冻结的 catalog 根（BEGIN 时的树状态；读路径专用——写路径仍
+    /// 按当前 head 解析，第七轮 R7-3）
+    pub head_root: Option<crate::format::hash::Hash>,
 }
 
 impl Txn {
     pub fn new(snapshot: u64) -> Self {
-        Self { snapshot, writes: BTreeMap::new(), explicit: false }
+        Self { snapshot, writes: BTreeMap::new(), explicit: false, head_root: None }
     }
     pub fn put(&mut self, table_id: u32, key: Vec<u8>, val: Vec<u8>) {
         self.writes.insert((table_id, key), crate::prolly::Mutation::Put(val));

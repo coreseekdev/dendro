@@ -156,6 +156,14 @@ pub fn group_aggregate(
         keys.push(kv.clone());
         vals.push(accums.iter().zip(calls).map(|(a, c)| a.finish(&c.func, c.distinct)).collect());
     }
+    // 无 GROUP BY 的全局聚合对空输入仍产出**一行**（count(*)=0，PG 语义；
+    // 第七轮 R7-1 伴生②：此前空输入返回 0 行）
+    if order.is_empty() && group_exprs.is_empty() && !calls.is_empty() {
+        let accums = vec![Accum::new(); calls.len()];
+        let row = accums.iter().zip(calls).map(|(a, c)| a.finish(&c.func, c.distinct)).collect();
+        keys.push(Vec::new());
+        vals.push(row);
+    }
     Ok(AggResult { keys, vals })
 }
 
