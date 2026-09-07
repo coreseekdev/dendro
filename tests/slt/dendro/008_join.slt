@@ -1,0 +1,121 @@
+# JOIN（hash_join / hash_join_left）：评审 P1-6——执行器最深零覆盖路径的基线
+# 列名刻意跨表不重名（ON 解析按列名最后一段匹配，投影按名定位）
+
+statement ok
+CREATE TABLE users (u_id BIGINT PRIMARY KEY, uname TEXT)
+
+statement ok
+CREATE TABLE orders (o_id BIGINT PRIMARY KEY, o_uid BIGINT, amt DOUBLE)
+
+statement ok
+CREATE TABLE items (i_id BIGINT PRIMARY KEY, i_oid BIGINT, label TEXT)
+
+statement ok
+INSERT INTO users VALUES (1, 'alice'), (2, 'bob'), (3, 'carol')
+
+statement ok
+INSERT INTO orders VALUES (10, 1, 5.0), (11, 1, 7.0), (12, 2, 3.0), (13, 99, 100.0)
+
+statement ok
+INSERT INTO items VALUES (100, 10, 'widget'), (101, 10, 'gadget'), (102, 12, 'toy')
+
+# ---- INNER JOIN：匹配行，两侧投影拼接 ----
+query I
+SELECT count(*) FROM users JOIN orders ON u_id = o_uid
+----
+3
+
+# 未匹配的 order（o_uid=99）被丢弃；alice 的两单都保留
+query IT
+SELECT o_id, uname FROM users JOIN orders ON u_id = o_uid ORDER BY o_id
+----
+10 alice
+11 alice
+12 bob
+
+# ---- LEFT JOIN：左行无匹配 → 右侧 NULL 填充 ----
+query TIT
+SELECT uname, o_id, amt FROM users LEFT JOIN orders ON u_id = o_uid ORDER BY u_id, o_id
+----
+alice 10 5
+alice 11 7
+bob 12 3
+carol NULL NULL
+
+# LEFT JOIN + IS NULL：反连接（无订单的用户）
+query T
+SELECT uname FROM users LEFT JOIN orders ON u_id = o_uid WHERE o_id IS NULL
+----
+carol
+
+# ---- NULL 键不参与匹配 ----
+statement ok
+INSERT INTO users VALUES (4, 'nullkey_user')
+
+statement ok
+INSERT INTO orders VALUES (14, NULL, 1.0)
+
+# NULL = NULL 不成立：u_id=4 无右键可配（orders 侧 NULL 被跳过），
+# 左侧非 NULL 键不受影响
+query I
+SELECT count(*) FROM users JOIN orders ON u_id = o_uid
+----
+3
+
+# alice 2 行 + bob 1 + carol 1（NULL 填充）+ nullkey_user 1（NULL 填充）= 5
+query I
+SELECT count(*) FROM users LEFT JOIN orders ON u_id = o_uid
+----
+5
+
+# ---- 一对多放大（items × orders）----
+query IT
+SELECT o_id, label FROM orders JOIN items ON o_id = i_oid ORDER BY i_id
+----
+10 widget
+10 gadget
+12 toy
+
+# ---- 三表链式 join（users→orders→items）----
+query TTT
+SELECT uname, amt, label FROM users
+  JOIN orders ON u_id = o_uid
+  JOIN items ON o_id = i_oid
+  ORDER BY o_id, i_id
+----
+alice 5 widget
+alice 5 gadget
+bob 3 toy
+
+# ---- 复合键（AND 双列等值）----
+statement ok
+CREATE TABLE stock (sid BIGINT PRIMARY KEY, s_w INT, s_p INT, qty BIGINT)
+
+statement ok
+CREATE TABLE demand (did BIGINT PRIMARY KEY, d_w INT, d_p INT, need BIGINT)
+
+statement ok
+INSERT INTO stock VALUES (1, 1, 1, 10), (2, 1, 2, 20), (3, 2, 1, 30)
+
+statement ok
+INSERT INTO demand VALUES (1, 1, 2, 5), (2, 2, 1, 6), (3, 3, 3, 7)
+
+query IIII
+SELECT s_w, s_p, d_w, d_p FROM stock JOIN demand ON s_w = d_w AND s_p = d_p ORDER BY s_w, s_p
+----
+1 2 1 2
+2 1 2 1
+
+# ---- JOIN + GROUP BY 聚合 ----
+query TR
+SELECT uname, sum(amt) FROM users JOIN orders ON u_id = o_uid GROUP BY uname ORDER BY uname
+----
+alice 12
+bob 3
+
+# ---- 派生表（FROM 子查询）----
+query TR
+SELECT uname, total FROM users JOIN (SELECT o_uid AS uid, sum(amt) AS total FROM orders GROUP BY o_uid) ON u_id = uid ORDER BY uname
+----
+alice 12
+bob 3

@@ -7,6 +7,7 @@
 | 日期 | 引擎 commit 语料 | 文件数 | 通过 | 失败 |
 |------|------------------|--------|------|------|
 | 2026-09-07 | dendro 0.1.0（M0-M7 全量首版） | 7 | 7 | 0 |
+| 2026-09-07 | + JOIN 基线（008，评审 P1-6） | 8 | 8 | 0 |
 
 ## 语料矩阵
 
@@ -19,6 +20,7 @@
 | 005_tx.slt | BEGIN/COMMIT/ROLLBACK（显式事务原子性）|
 | 006_null_order.slt | NULL 三值逻辑、IS (NOT) NULL、ORDER BY DESC NULLS FIRST（PG 语义）|
 | 007_system.slt | cambium.branches / cambium.commit_log 系统视图 |
+| 008_join.slt | INNER/LEFT JOIN、NULL 键不匹配、一对多放大、三表链、复合键（AND）、JOIN+GROUP BY、派生表 |
 
 ## 语义注记（与 PG 对齐的行为）
 

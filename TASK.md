@@ -36,7 +36,7 @@
 | P1-1 | 只读打开模式（不领 epoch、不起 WAL writer） | ⬜ | `engine.rs::Database::open`；读副本前置 |
 | P1-4 | GC：旧段删除时序定案（P0-3 并入）+ manifest 旧版本 + 旧 chunk + 旧 WAL 段回收 + 孤儿段墓碑 | ⬜ | `ManifestStore::retained` 接入 |
 | ~~P1-5~~ | ~~SQL 语义修复（S1–S6）~~ | ✅ | `53f2c74`/`92dcb35`/`f1bca77`；S4 偏离记录见上 |
-| P1-6 | JOIN/派生表测试（scan.rs hash_join 零覆盖） | ⬜ | 补 slt + 集成测试（评审最看重项） |
+| ~~P1-6~~ | ~~JOIN/派生表测试（hash_join 零覆盖）~~ | ✅ | 本提交：`tests/slt/dendro/008_join.slt`（INNER/LEFT/NULL 键/一对多/三表链/复合键/JOIN+GROUP BY/派生表）。语料当场暴露真 bug：sqlparser 0.62 把裸 `JOIN`(Join) 与 `INNER JOIN`(Inner) 分为不同枚举——标准写法 `A JOIN B` 直接报 not_supported，hash_join 此前经由该路径**不可达**。已修（scan.rs eval_from 匹配 Join/Inner、Left/LeftOuter） |
 | P1-7 | 多线程 OCC 并发测试 | ⬜ | `tests/concurrent.rs` |
 | P1-8 | 真 kill 崩溃恢复测试（子进程 SIGKILL） | ⬜ | 替代 `drop(db)` 模拟 |
 | ~~P1-9~~ | ~~fencing 安全性质测试~~ | ✅ | 本提交：`fence_expired_writer_rejected` 即评审要的"旧实例写被拒"断言 |
@@ -72,6 +72,6 @@
 
 1. ~~P0 修复 + 回归测试~~ ✅（含二轮收尾）
 2. ~~fencing 运行时拒写 + 续期~~ ✅
-3. P1-1 只读模式
-4. P1-6 JOIN 测试（评审最看重）
+3. ~~P1-6 JOIN 测试（评审最看重）~~ ✅
+4. P1-1 只读模式
 5. P1-4 GC 定案（含 P0-3 真删除时序）

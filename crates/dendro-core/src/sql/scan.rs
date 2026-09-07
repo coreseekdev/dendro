@@ -347,7 +347,9 @@ fn eval_from(db: &Database, sess: &mut Session, select: &Select, snapshot: u64) 
     let mut tv = table_scan_opt(db, sess, &twj.relation, snapshot, select.selection.as_ref())?;
     for j in &twj.joins {
         match &j.join_operator {
-            JoinOperator::Inner(constraint) => {
+            // sqlparser 0.62 区分裸 `JOIN`(Join) 与 `INNER JOIN`(Inner)、
+            // 裸 `LEFT JOIN`(Left) 与 `LEFT OUTER JOIN`(LeftOuter)——语义相同
+            JoinOperator::Join(constraint) | JoinOperator::Inner(constraint) => {
                 let right = table_scan_opt(db, sess, &j.relation, snapshot, None)?;
                 let (l, _r) = match constraint {
                     sqlparser::ast::JoinConstraint::On(e) => (e, None::<&Expr>),
@@ -361,7 +363,7 @@ fn eval_from(db: &Database, sess: &mut Session, select: &Select, snapshot: u64) 
                 };
                 tv = hash_join(tv, right, l)?;
             }
-            JoinOperator::LeftOuter(constraint) => {
+            JoinOperator::Left(constraint) | JoinOperator::LeftOuter(constraint) => {
                 let right = table_scan_opt(db, sess, &j.relation, snapshot, None)?;
                 let e = match constraint {
                     sqlparser::ast::JoinConstraint::On(e) => e,
