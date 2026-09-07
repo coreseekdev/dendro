@@ -267,3 +267,100 @@ fn fence_renew_keeps_healthy_writer_writing() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn idle_writer_stays_writable() {
+    // ⚠ flush_loop 的保活调用曾被误删（第六轮 P0 回归：空闲超过 TTL 即永久
+    // 40001，且无任何测试拦截——196 全绿放行了回归）。本测试是它的防线：
+    // 空闲窗口（2.5×TTL，期间零提交）后必须仍可写。
+    let dir = std::env::temp_dir().join(format!("dendro-idle-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let db = Database::open(opts(&dir, 200)).unwrap();
+    {
+        let mut s = db.new_session();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY)").unwrap();
+        s.exec("INSERT INTO t VALUES (1)").unwrap();
+    }
+    std::thread::sleep(Duration::from_millis(500)); // 空闲 > TTL：保活必须兜住
+    {
+        let mut s = db.new_session();
+        s.exec("INSERT INTO t VALUES (2)")
+            .expect("空闲超过 TTL 的写者必须仍可写（保活职责）");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn reopen_branch_sql_recovers_poisoned_writer() {
+    // REOPEN BRANCH：毒化写者的 SQL 级恢复入口（第六轮 P1：reopen_branch
+    // 曾零调用方）。注入持续 WAL 故障 → 毒化 → 提交 40003 → REOPEN BRANCH
+    // → 新 writer 可写。
+    use std::sync::atomic::{AtomicU32, Ordering};
+    struct WalFailStore {
+        inner: dendro_core::objstore::memory::MemoryObjStore,
+        fail_wal: AtomicU32,
+    }
+    impl dendro_core::objstore::ObjStore for WalFailStore {
+        fn get(&self, p: &str) -> dendro_core::objstore::ObjResult<bytes::Bytes> { self.inner.get(p) }
+        fn get_range(&self, p: &str, o: u64, l: usize) -> dendro_core::objstore::ObjResult<bytes::Bytes> { self.inner.get_range(p, o, l) }
+        fn put(&self, p: &str, d: bytes::Bytes) -> dendro_core::objstore::ObjResult<()> {
+            if p.starts_with("wal/") {
+                // CAS 消耗预算（fetch_sub 在 0 上会回绕为 u32::MAX 污染后续 put）
+                let mut cur = self.fail_wal.load(Ordering::SeqCst);
+                loop {
+                    if cur == 0 {
+                        break;
+                    }
+                    match self.fail_wal.compare_exchange_weak(cur, cur - 1, Ordering::SeqCst, Ordering::SeqCst) {
+                        Ok(_) => return Err(dendro_core::objstore::ObjError::Io("wal down".into())),
+                        Err(x) => cur = x,
+                    }
+                }
+            }
+            self.inner.put(p, d)
+        }
+        fn put_if_absent(&self, p: &str, d: bytes::Bytes) -> dendro_core::objstore::ObjResult<()> { self.inner.put_if_absent(p, d) }
+        fn delete(&self, p: &str) -> dendro_core::objstore::ObjResult<()> { self.inner.delete(p) }
+        fn head(&self, p: &str) -> dendro_core::objstore::ObjResult<Option<dendro_core::objstore::HeadInfo>> { self.inner.head(p) }
+        fn list_prefix(&self, p: &str) -> dendro_core::objstore::ObjResult<Vec<String>> { self.inner.list_prefix(p) }
+        fn copy(&self, f: &str, t: &str) -> dendro_core::objstore::ObjResult<()> { self.inner.copy(f, t) }
+    }
+    let store = std::sync::Arc::new(WalFailStore {
+        inner: dendro_core::objstore::memory::MemoryObjStore::new(),
+        fail_wal: AtomicU32::new(0),
+    });
+    let obj: std::sync::Arc<dyn dendro_core::objstore::ObjStore> = store.clone();
+    let db = Database::open(DbOptions {
+        store: StoreConfig::Obj(obj.clone()),
+        durability: dendro_core::Durability::Group,
+        wal_flush_interval_ms: 5,
+        ..DbOptions::default()
+    })
+    .unwrap();
+    {
+        let mut s = db.new_session();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY)").unwrap();
+        s.exec("INSERT INTO t VALUES (1)").unwrap();
+    }
+    // 注入 WAL 故障 → 毒化
+    store.fail_wal.store(5_000, Ordering::SeqCst);
+    {
+        let mut s = db.new_session();
+        let e = s.exec("INSERT INTO t VALUES (2)").unwrap_err();
+        assert_eq!(e.state, "40003", "{e}");
+    }
+    // REOPEN BRANCH：SQL 级恢复（故障仍持续也不阻碍 reopen——新 writer 先毒
+    // 化前可写第一笔；此处注入保持，reopen 后首笔会再毒化，先清故障验证恢复）
+    store.fail_wal.store(0, Ordering::SeqCst);
+    {
+        let mut s = db.new_session();
+        s.exec("REOPEN BRANCH main").unwrap();
+        s.exec("INSERT INTO t VALUES (2)").unwrap();
+    }
+    // 旧会话视角新 writer 可见
+    let mut s = db.new_session();
+    let o = s.exec("SELECT count(*) FROM t").unwrap();
+    if let dendro_core::Output::Rows(rs) = &o[0] {
+        assert_eq!(rs.text_rows()[0][0].as_deref(), Some("2"), "reopen 后恢复写入");
+    }
+}

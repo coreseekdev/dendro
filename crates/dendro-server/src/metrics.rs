@@ -112,6 +112,8 @@ fn render_metrics(db: &Arc<Database>) -> String {
     let _ = writeln!(out, "# TYPE dendro_branch_pending_bytes gauge");
     let _ = writeln!(out, "# TYPE dendro_branch_watermark gauge");
     let _ = writeln!(out, "# TYPE dendro_branch_wal_durable_seq gauge");
+    let _ = writeln!(out, "# HELP dendro_branch_poisoned writer poisoned by WAL upload failure (writes rejected until reopen)");
+    let _ = writeln!(out, "# TYPE dendro_branch_poisoned gauge");
     let _ = writeln!(out, "# TYPE dendro_branch_lease_epoch gauge");
     let _ = writeln!(out, "# HELP dendro_branch_lease_ttl_ms writer lease time-to-live");
     let _ = writeln!(out, "# TYPE dendro_branch_lease_ttl_ms gauge");
@@ -122,6 +124,7 @@ fn render_metrics(db: &Arc<Database>) -> String {
         let watermark = b.snapshot();
         let pending = b.pending_bytes.load(std::sync::atomic::Ordering::Relaxed);
         let durable = b.wal.durable_watermark();
+        let poisoned = b.wal.poisoned();
         let (epoch, ttl_ms) = {
             let st = b.lease.state.lock();
             (st.lease.epoch, st.lease.expires_at_ms - now)
@@ -129,6 +132,7 @@ fn render_metrics(db: &Arc<Database>) -> String {
         let _ = writeln!(out, "dendro_branch_pending_bytes{{branch=\"{name}\"}} {pending}");
         let _ = writeln!(out, "dendro_branch_watermark{{branch=\"{name}\"}} {watermark}");
         let _ = writeln!(out, "dendro_branch_wal_durable_seq{{branch=\"{name}\"}} {durable}");
+        let _ = writeln!(out, "dendro_branch_poisoned{{branch=\"{name}\"}} {}", if poisoned { 1 } else { 0 });
         let _ = writeln!(out, "dendro_branch_lease_epoch{{branch=\"{name}\"}} {epoch}");
         if b.read_only {
             // 只读分支无真实租约（占位 expires_at_ms=0）——输出 TTL 会是巨负数，

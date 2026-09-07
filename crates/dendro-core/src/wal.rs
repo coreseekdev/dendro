@@ -476,9 +476,15 @@ impl WalWriter {
             };
             if poisoned {
                 // 毒化后停止一切上传（确定失败的帧绝不持久化，错误 = 未提交）；
-                // **同时停租约保活**（第五轮 P1）：毒化写者已不可用，继续续租
-                // 会占住租约堵死 TTL 接管——让它自然过期，接管者 reopen 恢复
+                // **保活也停止**：毒化写者已不可用，继续续租会占住租约——
+                // 让它自然过期，接管者 reopen 恢复（第五轮 P1）
                 continue;
+            }
+            // 租约保活（必须在毒化检查**之后**）：空闲分支靠它免于 TTL 失约。
+            // ⚠ 曾被误删（第六轮 P0 回归：空闲 30s 即永久 40001）——
+            // tests/multi_node.rs::idle_writer_stays_writable 是其回归防线。
+            if let Some(ka) = &self.cfg.keepalive {
+                ka(); // 自限频：内部比较 next_renew_ms，未到期即返回
             }
             if pending > 0 {
                 if let Err(e) = self.flush_now() {

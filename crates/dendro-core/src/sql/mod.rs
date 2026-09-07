@@ -203,6 +203,9 @@ pub(crate) enum BranchKind {
     Show,
     Merge,
     Checkpoint,
+    /// REOPEN BRANCH <name>——毒化写者的 SQL 级恢复入口（第六轮 P1：
+    /// reopen_branch 此前零调用方，40003 指引的操作对 SQL 客户端不存在）
+    Reopen,
 }
 
 fn branch_sql_kind(sql: &str) -> Option<BranchKind> {
@@ -214,6 +217,7 @@ fn branch_sql_kind(sql: &str) -> Option<BranchKind> {
         "SHOW BRANCHES" => Some(BranchKind::Show),
         "MERGE BRANCH" => Some(BranchKind::Merge),
         "CHECKPOINT" => Some(BranchKind::Checkpoint),
+        "REOPEN BRANCH" => Some(BranchKind::Reopen),
         _ => None,
     }
 }
@@ -322,6 +326,17 @@ fn exec_branch_statement(db: &Database, sess: &mut Session, sql: &str) -> Result
             let name = sess.branch.clone();
             db.checkpoint_branch(&name)?;
             Ok(vec![Output::Command { tag: "CHECKPOINT".into(), affected: 0 }])
+        }
+        BranchKind::Reopen => {
+            // REOPEN BRANCH [name]：缺省 = 当前分支
+            let text = skip_keyword(sql, "REOPEN BRANCH");
+            let name = text
+                .split(|c: char| c.is_whitespace() || c == ';')
+                .find(|t| !t.is_empty())
+                .map(|t| t.to_string())
+                .unwrap_or_else(|| sess.branch.clone());
+            db.reopen_branch(&name)?;
+            Ok(vec![Output::Command { tag: "REOPEN".into(), affected: 0 }])
         }
     }
     .inspect(|_outs| {

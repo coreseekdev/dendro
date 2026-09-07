@@ -79,6 +79,30 @@
 | R5-P2 | 毒化语义零 SPEC 化 | ✅ | 新增 SPEC 02 §3.5（40003/毒化/保活停止/reopen/Uncertain 对账/NoWait/双协议映射） |
 | R5-P2 | cached 零读者死状态 + "cached 不再只写"表述失实 | ✅ | 字段与 adopt() 删除；空洞测试改写为 `list_authoritative_reads_survive_gc_holes`；注释修正；本回应 §3 更正 |
 
+## 六轮评审修复（2026-09-08）
+
+| # | 任务 | 状态 | 证据 |
+|---|------|:----:|------|
+| R6-P0 | **回归（研发自引入）**：第五轮修复把 flush_loop 保活调用整体删除而非移位——空闲超过 TTL 即永久 40001，第三轮修复被静默撤销，196 测试全绿放行（无空闲场景回归） | ✅ | keepalive 恢复至毒化检查之后 + `multi_node::idle_writer_stays_writable` 防线（2.5×TTL 空闲后必须可写）；回应文件含根因分析 |
+| R6-P1 | reopen_branch 零调用方（40003 指引的操作对 SQL 客户端不存在） | ✅ | `REOPEN BRANCH [name]` 语句（缺省当前分支）；回归 `reopen_branch_sql_recovers_poisoned_writer` |
+| R6-P1 | reopen_branch 并发边界（双 epoch / 孤儿写者 / 驱逐健康写者 / 42P01 窗口） | ✅ | 每-名字打开互斥（branch 创建全程持锁，双检）+ 仅允许驱逐毒化写者（poisoned() 访问器投入使用）+ 驱逐前 commit_mu 清空在途 |
+| R6-P1 | 毒化分支上 commit 路径 fence_gate 仍续租 | ✅ | fence_gate 毒化快速失败（40003）且不续租；SPEC 02 §3.5 机制描述修正（接管本不依赖过期，停止续租的意义是诚实/审计） |
+| R6-P2 | backup 撕裂守卫零回归覆盖（"由 roundtrip 覆盖"为虚假声称） | ✅ | `backup_repairs_truncated_files`（预置截断文件 → 重备修复 → 恢复可开） |
+| R6-P2 | SPEC 02 "§4.1" 幻影引用 ×4 + §3.5 疑问句未定稿 | ✅ | 全部改指 §3.5；疑问句改为对账语义定案（主键覆盖天然幂等 + 业务键提示） |
+| R6-P2 | 毒化无 metric | ✅ | `dendro_branch_poisoned` gauge + HELP/TYPE |
+
+### 全新扫描登记（第六轮 §新视野，此前未覆盖面）
+
+| # | 任务 | 优先级 | 备注 |
+|---|------|:----:|------|
+| S-1 | 启动全量打开所有分支（每分支线程+租约+fence 写）——万级分支不可行 | P1 | 惰性打开（会话/查询触达时 branch()）+ load_open_branches 仅恢复有租约分支 |
+| S-2 | DROP BRANCH 永久泄漏该分支 WAL/fence 对象 | P1 | 删除分支时墓碑化其全部对象（复用 GC 机制） |
+| S-3 | 资源上界：连接数 / 分支数 / 单事务大小无守卫 | P2 | 配置上限 + 超限错误码 |
+| S-4 | SQL 面缺口：UNION / 视图 / 权限（GRANT/REVOKE） | P2 | GRAMMAR 已列 ⬜ |
+| M-5 | metrics 直方图（commit/flush/manifest 延迟） | P2 | 未动（前轮登记） |
+| M-4 | GPU/CBF 解码对拍 | P2 | 未动（前轮登记） |
+| M-3 | G6 压缩量化衰退 | P2 | 未动（前轮登记） |
+
 ## P2' — 提交管线（2026-09-08 起动）
 
 | # | 任务 | 状态 | 证据 |

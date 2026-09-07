@@ -214,6 +214,12 @@ impl Branch {
         if self.read_only {
             return Err(SqlError::new("25006", "read-only branch: cannot write (open without read_only to acquire a lease)"));
         }
+        if self.wal.poisoned() {
+            // 毒化分支：快速失败且**不再续租**（第六轮委托点 b——否则 commit
+            // 路径的 gate 会替不可用写者续命）。租约自然过期，接管者可接管。
+            return Err(SqlError::new("40003",
+                "wal writer poisoned by an earlier upload failure; reopen the branch to recover (transaction outcome may be unknown)"));
+        }
         self.lease.check()?;
         self.lease.renew_if_due();
         Ok(())
@@ -330,6 +336,8 @@ pub struct Database {
     pub(crate) manifest_store: Arc<ManifestStore>,
     pub(crate) state: ArcSwap<DbSnapshot>,
     pub(crate) branches: RwLock<HashMap<String, Arc<Branch>>>,
+    /// 每-名字打开互斥（branch 创建 / reopen 驱逐串行化）
+    open_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     pub(crate) session_seq: AtomicU64,
     /// 已写入 chunk 的进程内缓存（去重判定）
     #[allow(dead_code)]
@@ -416,6 +424,7 @@ impl Database {
             manifest_store,
             state: ArcSwap::from_pointee(DbSnapshot { manifest }),
             branches: RwLock::new(HashMap::new()),
+            open_locks: Mutex::new(HashMap::new()),
             session_seq: AtomicU64::new(1),
             chunk_seen: Mutex::new(HashSet::new()),
             stop_cp: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -464,15 +473,35 @@ impl Database {
     /// 恢复以 manifest + WAL 为准，裁决毒化期间的真实状态（WAL 失败 =
     /// 未提交；Uncertain 落盘者此时可见，客户端须对账，见 SPEC 02 §4.1）。
     pub fn reopen_branch(&self, name: &str) -> Result<Arc<Branch>> {
-        let old = self.branches.write().remove(name);
-        if let Some(old) = old {
-            // 旧写者退役：停 flush 线程（毒化下本就停），租约不再续期
-            old.wal.close();
+        // 每-名字串行化（第六轮 P1 并发边界）：并发 reopen / 并发 open 同名
+        // 分支在此排队，不会出现双 epoch + 孤儿写者
+        let _guard = self.open_lock(name);
+        let old = self.branches.read().get(name).cloned();
+        let Some(old) = old else {
+            return self.branch_locked(name); // 未驻留：正常打开
+        };
+        // 守卫：只允许驱逐**毒化**写者——健康写者不可被 reopen 静默替换
+        //（poisoned() 访问器的第二个读者，第六轮 P1）
+        if !old.wal.poisoned() {
+            return Ok(old);
         }
-        self.branch(name)
+        // 清空在途提交后驱逐（commit_mu：在途会话要么完成要么已失败）
+        let _g = old.commit_mu.lock();
+        self.branches.write().remove(name);
+        old.wal.close();
+        self.branch_locked(name)
     }
 
-    /// 读/建分支运行态（恢复路径也走这里：从 manifest 构造）
+    /// 每-名字打开互斥（创建/驱逐串行化；读快照路径不受影响）
+    fn open_lock(&self, name: &str) -> Arc<Mutex<()>> {
+        let mut g = self.open_locks.lock();
+        g.entry(name.to_string()).or_insert_with(|| Arc::new(Mutex::new(()))).clone()
+    }
+
+    /// 读/建分支运行态（恢复路径也走这里：从 manifest 构造）。
+    /// 创建段持每-名字互斥——此前两个线程同时首次打开同名分支会各自
+    /// 领 epoch/起 WAL writer，败者仅靠 or_insert 丢弃（副作用已发生，
+    /// 第六轮 P1 并发边界）。
     pub fn branch(&self, name: &str) -> Result<Arc<Branch>> {
         {
             let g = self.branches.read();
@@ -480,6 +509,19 @@ impl Database {
                 return Ok(b.clone());
             }
         }
+        let _guard = self.open_lock(name);
+        {
+            // 双检：等锁期间可能已被其他线程创建
+            let g = self.branches.read();
+            if let Some(b) = g.get(name) {
+                return Ok(b.clone());
+            }
+        }
+        self.branch_locked(name)
+    }
+
+    /// 需已持 open_lock(name)
+    fn branch_locked(&self, name: &str) -> Result<Arc<Branch>> {
         let snap = self.manifest();
         let head_info = snap
             .manifest

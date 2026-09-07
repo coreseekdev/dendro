@@ -80,3 +80,33 @@ fn backup_rejects_non_dendro_dir() {
     let _ = std::fs::remove_dir_all(&empty);
     let _ = std::fs::remove_dir_all(&out);
 }
+
+#[test]
+fn backup_repairs_truncated_files() {
+    // 第五轮 P1 守卫的回归：上次中断留下的**截断文件**必须被重拷修复，
+    // 而不是被幂等跳过固化（截断的 manifest = 恢复即失败）。
+    let src = tmpdir("tr-src");
+    let dst = tmpdir("tr-dst");
+    {
+        let db = Database::open(DbOptions { store: dendro_core::StoreConfig::LocalDir(src.clone()), ..DbOptions::default() }).unwrap();
+        let mut s = db.new_session();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY)").unwrap();
+        s.exec("INSERT INTO t VALUES (1)").unwrap();
+        db.checkpoint_branch("main").unwrap();
+    }
+    // 先正常备份一次，然后把备份里的 manifest/1 截断到一半（模拟中断）
+    dendro_server::backup::backup_dir(&src, &dst).unwrap();
+    let m1 = dst.join("manifest").join("00000000000000000001.json");
+    let full_len = std::fs::metadata(&m1).unwrap().len();
+    let f = std::fs::OpenOptions::new().write(true).open(&m1).unwrap();
+    f.set_len(full_len / 2).unwrap();
+    drop(f);
+    // 重备：尺寸守卫检测到不符 → 重拷修复
+    dendro_server::backup::backup_dir(&src, &dst).unwrap();
+    assert_eq!(std::fs::metadata(&m1).unwrap().len(), full_len, "截断文件必须被守卫修复");
+    // 修复后恢复路径可打开
+    let restored = Database::open(DbOptions { store: dendro_core::StoreConfig::LocalDir(dst.clone()), ..DbOptions::default() }).unwrap();
+    assert_eq!(count(&restored, "SELECT count(*) FROM t"), "1");
+    let _ = std::fs::remove_dir_all(&src);
+    let _ = std::fs::remove_dir_all(&dst);
+}
