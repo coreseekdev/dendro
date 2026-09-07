@@ -35,6 +35,13 @@ Aurora/Neon/Socrates、CockroachDB/TiKV、FoundationDB、Aurora DSQL、
 Calvin、ForkBase 的参考架构，给出 Dendro 的四阶段演进路线
 （读副本 → 分支租约 fencing → 日志服务 → 分布式 OCC）。
 
+## 设计：负载自感知与弹性调度
+
+[docs/research/负载自感知与弹性调度.md](docs/research/负载自感知与弹性调度.md) —
+引擎负载信号目录（组提交队列/checkpoint 积压/冲突率…）、/metrics 与 /readyz
+暴露设计、K8s 三种执行器映射（HPA 读副本 · DendroOperator 分支再均衡 ·
+scale-to-zero 沙箱）、反压与负载卸载次序、实施路线 M1-M5。
+
 ## 深度教程（推荐从 01 章读起）
 
 [docs/tutorial/](docs/tutorial/README.md) — 教程风格的逐层拆解，颗粒度到字节：
