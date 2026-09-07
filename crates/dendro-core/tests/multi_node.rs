@@ -162,20 +162,68 @@ fn lease_takeover_epoch_monotonic() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// fence/ 前缀只允许前 N 次 put 成功（模拟"租约领取后 OSS 分区，续期全部失败"）
+struct FenceFailAfterStore {
+    inner: dendro_core::objstore::memory::MemoryObjStore,
+    ok_left: std::sync::atomic::AtomicI32,
+}
+impl dendro_core::objstore::ObjStore for FenceFailAfterStore {
+    fn get(&self, p: &str) -> dendro_core::objstore::ObjResult<bytes::Bytes> { self.inner.get(p) }
+    fn get_range(&self, p: &str, o: u64, l: usize) -> dendro_core::objstore::ObjResult<bytes::Bytes> { self.inner.get_range(p, o, l) }
+    fn put(&self, p: &str, d: bytes::Bytes) -> dendro_core::objstore::ObjResult<()> {
+        if p.starts_with("fence/") {
+            let prev = self.ok_left.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            if prev <= 0 {
+                return Err(dendro_core::objstore::ObjError::Io("fence unavailable (partitioned)".into()));
+            }
+        }
+        self.inner.put(p, d)
+    }
+    fn put_if_absent(&self, p: &str, d: bytes::Bytes) -> dendro_core::objstore::ObjResult<()> {
+        if p.starts_with("fence/") {
+            let prev = self.ok_left.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            if prev <= 0 {
+                return Err(dendro_core::objstore::ObjError::Io("fence unavailable (partitioned)".into()));
+            }
+        }
+        self.inner.put_if_absent(p, d)
+    }
+    fn delete(&self, p: &str) -> dendro_core::objstore::ObjResult<()> { self.inner.delete(p) }
+    fn head(&self, p: &str) -> dendro_core::objstore::ObjResult<Option<dendro_core::objstore::HeadInfo>> { self.inner.head(p) }
+    fn list_prefix(&self, p: &str) -> dendro_core::objstore::ObjResult<Vec<String>> { self.inner.list_prefix(p) }
+    fn copy(&self, f: &str, t: &str) -> dendro_core::objstore::ObjResult<()> { self.inner.copy(f, t) }
+}
+
 #[test]
 fn fence_expired_writer_rejected() {
-    // 运行时拒写（fence_gate）：TTL=80ms；写者暂停超过 TTL（无提交 → 无续期）
-    // 后，下一次提交被拒（SQLSTATE 40001）。健康写者（持续提交）不受影响——
-    // 见 fence_renew_keeps_healthy_writer_writing。
-    let dir = std::env::temp_dir().join(format!("dendro-mn3-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    let db = Database::open(opts(&dir, 80)).unwrap();
+    // 运行时拒写（fence_gate）：TTL=80ms。空闲保活（flush_loop 回调）会持续
+    // 续期——健康写者不再因空闲而失约（自毒化已修）。真实失约场景 = 续期
+    // PUT 持续失败（OSS 分区）：本测试从领取租约后立即切断 fence/ 写入，
+    // 保活与惰性续期全部失败 → 租约到期 → 下一次提交被拒（40001）。
+    let store = FenceFailAfterStore {
+        inner: dendro_core::objstore::memory::MemoryObjStore::new(),
+        ok_left: std::sync::atomic::AtomicI32::new(1), // 仅 acquire 成功
+    };
+    let obj: std::sync::Arc<dyn dendro_core::objstore::ObjStore> = std::sync::Arc::new(store);
+    let opts = DbOptions {
+        store: StoreConfig::Obj(obj),
+        durability: dendro_core::Durability::Group,
+        wal_flush_interval_ms: 10,
+        wal_segment_bytes: 4 << 20,
+        checkpoint_threshold_bytes: u64::MAX,
+        checkpoint_interval_s: 0,
+        cache_budget_bytes: 256 << 20,
+        lease_ttl_ms: 80,
+        read_only: false,
+        gc_retention_ms: 24 * 3600 * 1000,
+    };
+    let db = Database::open(opts).unwrap();
     {
         let mut s = db.new_session();
         s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
-        s.exec("INSERT INTO t VALUES (1, 'ok')").unwrap(); // 提交时惰性续期
+        s.exec("INSERT INTO t VALUES (1, 'ok')").unwrap(); // TTL 内提交成功
     }
-    // 暂停超过 TTL：租约过期，无 commit 路径触发续期
+    // 超过 TTL：保活续期持续失败（分区）→ 租约过期
     std::thread::sleep(Duration::from_millis(150));
     let err = {
         let mut s = db.new_session();
@@ -192,7 +240,6 @@ fn fence_expired_writer_rejected() {
             assert_eq!(rs.text_rows()[0][0].as_deref(), Some("1"), "过期写者的行未提交");
         }
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

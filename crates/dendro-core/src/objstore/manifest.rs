@@ -128,27 +128,30 @@ impl ManifestStore {
         Ok(())
     }
 
-    /// 读最新版本（探测优先，LIST 兜底）
+    /// 读最新版本（探测加速；**遇任何空洞回落 LIST**）。
+    /// 空洞来源：GC 删除 `latest-16` 以下的版本对象。若在空洞处"就近停下"，
+    /// 停滞写者会把提交写进已删版本号的空洞（put_if_absent 在不存在路径上
+    /// 成功）→ 影子谱系，其 ack 的分支头注定被 GC 删除（P1-C）。
+    /// 故 NotFound 一律以 LIST 的结果为准——LIST 频率 = 空洞命中率 + 探测
+    /// 窗口用尽，GC 节奏下可忽略。
     pub fn load_latest(&self) -> ObjResult<(u64, Manifest)> {
         let cached = *self.cached.lock();
         if cached > 0 {
-            // 从 cached+1 探测
             for v in (cached + 1)..=(cached + MAX_PROBES) {
                 match self.read_version(v) {
-                    Ok(_) => continue, // 继续找更高
-                    Err(ObjError::NotFound(_)) => {
-                        // v-1 是最高（从 cached+1 到 v-1 至少有一个存在才走到这；
-                        // 若 cached+1 就 NotFound，则 cached 是最高）
-                        let top = if v == cached + 1 { cached } else { v - 1 };
-                        let m = self.read_version(top)?;
-                        *self.cached.lock() = top;
-                        return Ok((top, m));
-                    }
+                    Ok(_) => continue, // 连续存在，继续找更高
+                    Err(ObjError::NotFound(_)) => return self.load_latest_via_list(),
                     Err(e) => return Err(e),
                 }
             }
+            // 探测窗口内全部存在 → 可能还有更高版本，LIST 兜底
+            return self.load_latest_via_list();
         }
-        // 兜底：LIST manifest/ 前缀取最大
+        self.load_latest_via_list()
+    }
+
+    /// LIST manifest/ 前缀取最大版本（权威路径；天然兼容空洞）
+    fn load_latest_via_list(&self) -> ObjResult<(u64, Manifest)> {
         let mut vers = Vec::new();
         for p in self.obj.list_prefix("manifest/")? {
             if let Some(stem) = p.strip_prefix("manifest/") {
@@ -196,7 +199,8 @@ impl ManifestStore {
         }
     }
 
-    /// GC：可清理的 manifest 版本（保留最近 K + 被引用的）
+    /// GC：可清理的 manifest 版本——只按数量保留最近 `keep_recent` 个
+    /// （旧版本无引用语义；`load_latest` 的 LIST 路径天然兼容由此产生的空洞）
     pub fn retained(&self, latest: u64, keep_recent: u64) -> Vec<u64> {
         let lo = latest.saturating_sub(keep_recent);
         (1..=lo).collect()
@@ -228,16 +232,16 @@ mod tests {
     use super::*;
     use crate::objstore::memory::MemoryObjStore;
 
-    fn store() -> ManifestStore {
+    fn store() -> (ManifestStore, Arc<dyn ObjStore>) {
         let m: Arc<dyn ObjStore> = Arc::new(MemoryObjStore::new());
-        let s = ManifestStore::new(m);
+        let s = ManifestStore::new(m.clone());
         s.init(1000).unwrap();
-        s
+        (s, m)
     }
 
     #[test]
     fn optimistic_commit_chain() {
-        let s = store();
+        let (s, _obj) = store();
         let (v0, mut m) = s.load_latest().unwrap();
         assert_eq!(v0, 1);
         m.refs.insert("agent42".into(), BranchHead { wal_seg: 3, ..Default::default() });
@@ -247,5 +251,34 @@ mod tests {
         assert!(matches!(s.commit(v0, m.clone()), Err(ObjError::Exists(_))));
         let (_, m2) = s.load_latest().unwrap();
         assert!(m2.refs.contains_key("agent42"));
+    }
+
+    #[test]
+    fn load_latest_falls_back_to_list_on_gc_holes() {
+        // P1-C 回归：GC 删除中间版本对象后，**停滞写者**（cached 停在 v1）
+        // 的探测在 cached+1 处撞洞——必须回落 LIST 拿到真最新版本，
+        // 否则其提交会写进已删版本号的空洞形成影子谱系。
+        let (s, obj) = store();
+        let mut m = s.load_latest().unwrap().1;
+        for _ in 0..9 {
+            m.refs.insert("b".into(), BranchHead { wal_seg: m.version, ..Default::default() });
+            m = s.read_version(s.commit(m.version, m.clone()).unwrap()).unwrap();
+        }
+        let latest = s.load_latest().unwrap().0;
+        assert_eq!(latest, 10);
+        // 模拟另一实例 GC：删除 2..=9（保留 1 与 10）→ 版本号空间出现空洞
+        for v in 2..=9 {
+            obj.delete(&format!("manifest/{v:020}.json")).unwrap();
+        }
+        // 停滞写者：新的 ManifestStore，cached 强制停在 1（同模块可访问私有字段）
+        let stalled = ManifestStore::new(obj.clone());
+        *stalled.cached.lock() = 1;
+        let (top, m10) = stalled.load_latest().unwrap();
+        assert_eq!(top, 10, "撞洞必须回落 LIST 而非把 cached 当最新");
+        assert_eq!(m10.version, 10);
+        // 停滞写者从真最新版本继续提交：不产生影子谱系
+        let v = stalled.commit(10, m10).unwrap();
+        assert_eq!(v, 11);
+        assert!(stalled.load_latest().unwrap().0 >= 11);
     }
 }

@@ -222,6 +222,10 @@ pub struct WalConfig {
     pub flush_interval: Duration,
     pub segment_bytes: u64,
     pub durability: crate::engine::Durability,
+    /// 租约保活回调（engine 注入；flush_loop 每次醒来调用一次，回调自限频）。
+    /// 解决"空闲写者自毒化"：惰性续期只挂在 commit 路径上，无流量的分支
+    /// TTL 到期后所有提交被 40001 拒绝且无自愈（第三轮评审 §3.1）。
+    pub keepalive: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
 }
 
 struct WalShared {
@@ -242,6 +246,8 @@ pub struct WalWriter {
     cfg: WalConfig,
     shared: Mutex<WalShared>,
     cv: Condvar,
+    /// 上传单飞互斥（P0-A）：同一时刻至多一个 flush_now 在途
+    flush_mu: Mutex<()>,
     /// GC 起始段号：之前的段已登记墓碑且 covered（GC 定案）
     first_seg: AtomicU64,
     /// 首个未上传段号（恢复起点提示；进程内缓存）
@@ -267,6 +273,7 @@ impl WalWriter {
                 pending_frames: 0,
             }),
             cv: Condvar::new(),
+            flush_mu: Mutex::new(()),
             first_seg: AtomicU64::new(start_seg),
             stop: Mutex::new(false),
             handle: Mutex::new(None),
@@ -307,6 +314,7 @@ impl WalWriter {
                 pending_frames: 0,
             }),
             cv: Condvar::new(),
+            flush_mu: Mutex::new(()),
             first_seg: AtomicU64::new(start_seg),
             stop: Mutex::new(true),
             handle: Mutex::new(None),
@@ -366,15 +374,17 @@ impl WalWriter {
     }
 
     /// 立即把当前缓冲上传为段对象。
-    /// PUT 失败时数据放回缓冲头部，等下次重试（P0-1 修复：不丢帧）。
-    /// 段号仅在 PUT **成功后**推进：失败重试复用同一段号。若失败也推进，
-    /// 会留下段号空洞，probe_tail 的连续性假设会把空洞后的段全部判为
-    /// 不存在 → 恢复丢数据（回归测试 wal_corruption 捕获）。
-    /// Uncertain 语义：同路径重试 PUT 覆盖写，内容为超集，最后写者胜。
-    /// 计数器在锁内、缓冲被取走时清零——此刻计数只含本段，之后的 append 属于下一段；
-    /// 失败路径把本段计数归还（恢复的帧仍占缓冲），上传期间的新 append 不受影响。
-    /// 段体以 Bytes 持有：失败回拷从 Bytes 切片拷回，成功路径零额外 memcpy。
+    /// **单飞互斥（P0-A 修复）**：同一时刻只允许一个上传在途。此前的并发窗口：
+    /// flush_loop 取走段 N 缓冲正在慢速 PUT，期间 Always 提交以同段号 N 再次
+    /// PUT——两个不同内容写同一路径，最后写者胜，先落盘的已 ack 帧被静默覆盖
+    /// （第三轮评审探针实证）。`flush_mu` 串行化后，段号推进（成功后 +1）在
+    /// 下一个 flush 开始前完成，同段号并发从机制上不可能。
+    /// PUT 失败时数据放回缓冲头部，等下次重试（不丢帧）；段号仅在成功后推进
+    /// （失败重试复用同段号，不留空洞——空洞会使 probe_tail 丢失其后所有段）。
+    /// Uncertain 语义：同路径重试 PUT 为超集覆盖，最后写者胜。
+    /// 计数器在锁内、缓冲被取走时清零；失败路径把本段计数归还。
     pub fn flush_now(&self) -> Result<u64> {
+        let _single = self.flush_mu.lock();
         let (seg, bytes, max_seq, seg_frames, seg_min) = {
             let mut g = self.shared.lock();
             if g.buf.is_empty() {
@@ -411,6 +421,7 @@ impl WalWriter {
         let mut g = self.shared.lock();
         g.cur_seg = g.cur_seg.max(seg + 1);
         drop(g);
+        drop(_single);
         Ok(seg)
     }
 
@@ -431,6 +442,9 @@ impl WalWriter {
                 return;
             }
             std::thread::sleep(self.cfg.flush_interval);
+            if let Some(ka) = &self.cfg.keepalive {
+                ka(); // 自限频：内部比较 next_renew_ms，未到期即返回
+            }
             let pending = { let g = self.shared.lock(); g.pending_frames };
             if pending > 0 {
                 if let Err(e) = self.flush_now() {
@@ -519,6 +533,7 @@ mod tests {
             flush_interval: Duration::from_millis(20),
             segment_bytes: 1 << 20,
             durability: Durability::Group,
+            keepalive: None,
         }
     }
 

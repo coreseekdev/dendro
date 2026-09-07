@@ -57,7 +57,19 @@ fn serve_conn(stream: TcpStream, db: &Arc<Database>) -> std::io::Result<()> {
         }
     }
     match path {
-        "/readyz" => http(stream, 200, "ok\n"),
+        // readiness（非 liveness）：任一驻留**写者**租约过期 → 503。
+        // 过期写者只能返回 40001，继续接流量只会放大错误（评审 §3.4）。
+        "/readyz" => {
+            let now = now_ms();
+            let ready = db.active_branches().iter().all(|b| {
+                b.read_only || b.lease.state.lock().lease.expires_at_ms > now
+            });
+            if ready {
+                http(stream, 200, "ok\n")
+            } else {
+                http(stream, 503, "writer lease expired\n")
+            }
+        }
         "/metrics" => {
             let body = render_metrics(db);
             http(stream, 200, &body)
@@ -79,16 +91,20 @@ fn http(mut s: TcpStream, code: u16, body: &str) -> std::io::Result<()> {
     s.flush()
 }
 
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}
+
 fn render_metrics(db: &Arc<Database>) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
     let _ = writeln!(out, "# HELP dendro_up process serving requests");
     let _ = writeln!(out, "# TYPE dendro_up gauge");
     let _ = writeln!(out, "dendro_up 1");
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64;
+    let now = now_ms();
     let mut branches = db.active_branches();
     branches.sort_by(|a, b| a.name.cmp(&b.name));
     // HELP/TYPE 每个指标族只出现一次（Prometheus 文本格式）
@@ -105,14 +121,20 @@ fn render_metrics(db: &Arc<Database>) -> String {
         let pending = b.pending_bytes.load(std::sync::atomic::Ordering::Relaxed);
         let durable = b.wal.durable_watermark();
         let (epoch, ttl_ms) = {
-            let st = b.lease_state.lock();
+            let st = b.lease.state.lock();
             (st.lease.epoch, st.lease.expires_at_ms - now)
         };
         let _ = writeln!(out, "dendro_branch_pending_bytes{{branch=\"{name}\"}} {pending}");
         let _ = writeln!(out, "dendro_branch_watermark{{branch=\"{name}\"}} {watermark}");
         let _ = writeln!(out, "dendro_branch_wal_durable_seq{{branch=\"{name}\"}} {durable}");
         let _ = writeln!(out, "dendro_branch_lease_epoch{{branch=\"{name}\"}} {epoch}");
-        let _ = writeln!(out, "dendro_branch_lease_ttl_ms{{branch=\"{name}\"}} {ttl_ms}");
+        if b.read_only {
+            // 只读分支无真实租约（占位 expires_at_ms=0）——输出 TTL 会是巨负数，
+            // 污染告警面板；以 read_only 标记代替
+            let _ = writeln!(out, "dendro_branch_read_only{{branch=\"{name}\"}} 1");
+        } else {
+            let _ = writeln!(out, "dendro_branch_lease_ttl_ms{{branch=\"{name}\"}} {ttl_ms}");
+        }
     }
     out
 }

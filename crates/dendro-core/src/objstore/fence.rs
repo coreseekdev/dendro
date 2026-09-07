@@ -34,6 +34,7 @@ pub struct Lease {
     pub expires_at_ms: i64,
 }
 
+#[derive(Clone)]
 pub struct FenceStore {
     obj: Arc<dyn ObjStore>,
 }
@@ -100,7 +101,9 @@ impl FenceStore {
         }
     }
 
-    /// 续期（仅 epoch 持有者调用；覆盖写同路径，幂等）
+    /// 续期（覆盖写同路径，幂等）。**调用者必须已验证自己持有该 epoch**
+    /// （LeaseKeeper::renew_if_due 在 check 通过后调用）——盲目续期他人的
+    /// 租约等于替别人保活。
     pub fn renew(&self, branch: &str, lease: &Lease) -> Result<()> {
         self.obj
             .put(&Self::lease_path(branch, lease.epoch), serde_json::to_vec(lease).unwrap().into())

@@ -124,11 +124,8 @@ pub struct Branch {
     pub lease_epoch: AtomicU64,
     /// 只读分支（读副本）：不领租约、不起 WAL writer；fence_gate 拒绝一切写
     pub read_only: bool,
-    /// 写者租约状态（fence_gate 过期检查 + 惰性续期；P1 运行时拒写）
-    pub lease_state: Mutex<LeaseState>,
-    /// fence 对象存储访问（续期 PUT）
-    pub fence: crate::objstore::fence::FenceStore,
-    pub lease_ttl_ms: i64,
+    /// 写者租约 keep（与 flush_loop 的保活回调共享；P1 运行时拒写 + 空闲保活）
+    pub lease: Arc<LeaseKeeper>,
     /// 已安装（可见）的提交水位
     pub watermark: AtomicU64,
     /// 自上次 checkpoint 的累积 pending 变更：table → (key → mut)
@@ -140,6 +137,51 @@ pub struct Branch {
 pub struct LeaseState {
     pub lease: crate::objstore::fence::Lease,
     pub next_renew_ms: i64,
+}
+
+/// 分支写者租约的持有端：fence_gate 的检查/续期 + flush_loop 空闲保活共用。
+pub struct LeaseKeeper {
+    pub branch: String,
+    pub ttl_ms: i64,
+    pub fence: crate::objstore::fence::FenceStore,
+    pub state: Mutex<LeaseState>,
+}
+
+impl LeaseKeeper {
+    /// fence_gate 的**拒写检查**：租约过期 → 40001（自知失约者停止写入）
+    pub fn check(&self) -> Result<()> {
+        let st = self.state.lock();
+        if st.lease.expires_at_ms <= crate::objstore::fence::now_ms() {
+            return Err(SqlError::serialization(format!(
+                "fencing: branch \"{}\" lease epoch {} expired — writer must re-open to acquire a new epoch",
+                self.branch, st.lease.epoch
+            )));
+        }
+        Ok(())
+    }
+
+    /// **惰性续期**：每 ttl/3 至多一次 PUT；失败仅告警（下次提交/保活重试，
+    /// 过期后被 check 拒绝）。两个调用方：commit 路径的 fence_gate、
+    /// flush_loop 的空闲保活（解决"30 秒无提交即永久 40001"的自毒化）。
+    pub fn renew_if_due(&self) {
+        let now = crate::objstore::fence::now_ms();
+        let mut st = self.state.lock();
+        if now < st.next_renew_ms || st.lease.expires_at_ms <= now {
+            return; // 未到续期点 / 已过期（保活无权救活失约者，重开才能重获写权）
+        }
+        let ttl = self.ttl_ms;
+        let mut fresh = st.lease.clone();
+        fresh.expires_at_ms = now + ttl;
+        match self.fence.renew(&self.branch, &fresh) {
+            Ok(()) => {
+                st.lease = fresh;
+                st.next_renew_ms = now + ttl / 3;
+            }
+            Err(e) => {
+                tracing::warn!(branch = %self.branch, error = %e, "fence renew failed; retry on next commit/keepalive");
+            }
+        }
+    }
 }
 
 impl Branch {
@@ -154,36 +196,14 @@ impl Branch {
         self.next_seq.store(seq, Ordering::Release);
         self.watermark.store(seq, Ordering::Release);
     }
-    /// P1 fencing 运行时拒写（需已持 commit_mu）：
-    /// 租约过期 → 40001 拒绝提交（自知失约者停止写入）；
-    /// 健康路径惰性续期——每 ttl/3 至多一次 PUT，失败仅告警（下次提交重试，
-    /// 若已过期则被上面的检查拒绝）。无后台续期线程。
+    /// P1 fencing 运行时拒写（需已持 commit_mu）：过期 → 40001；健康路径
+    /// 惰性续期。空闲流量下的保活由 flush_loop 回调承担（LeaseKeeper::renew_if_due）。
     pub(crate) fn fence_gate(&self) -> Result<()> {
         if self.read_only {
             return Err(SqlError::new("25006", "read-only branch: cannot write (open without read_only to acquire a lease)"));
         }
-        let now = crate::objstore::fence::now_ms();
-        let mut st = self.lease_state.lock();
-        if st.lease.expires_at_ms <= now {
-            return Err(SqlError::serialization(format!(
-                "fencing: branch \"{}\" lease epoch {} expired — writer must re-open to acquire a new epoch",
-                self.name, st.lease.epoch
-            )));
-        }
-        if now >= st.next_renew_ms {
-            let ttl = self.lease_ttl_ms;
-            let mut fresh = st.lease.clone();
-            fresh.expires_at_ms = now + ttl;
-            match self.fence.renew(&self.name, &fresh) {
-                Ok(()) => {
-                    st.lease = fresh;
-                    st.next_renew_ms = now + ttl / 3;
-                }
-                Err(e) => {
-                    tracing::warn!(branch = %self.name, error = %e, "fence renew failed; retry on next commit");
-                }
-            }
-        }
+        self.lease.check()?;
+        self.lease.renew_if_due();
         Ok(())
     }
 }
@@ -452,21 +472,50 @@ impl Database {
         // 只读模式（读副本）：不领租约（不产生 fence 对象、不推进 epoch 序列）、
         // 不起 WAL flush 线程——评审 A7：此前读打开也制造新写者世代。
         let fence = crate::objstore::fence::FenceStore::new(self.obj.clone());
-        let (lease_epoch, lease_state, wal) = if self.opts.read_only {
+        let (lease_epoch, keeper, cfg) = if self.opts.read_only {
             let e = head_info.epoch.max(1);
-            (
-                e,
-                None,
-                WalWriter::open_read_only(self.obj.clone(), name, e, 1, crate::wal::WalConfig::from(&self.opts)),
-            )
+            let cfg = crate::wal::WalConfig::from(&self.opts);
+            (e, None, cfg)
         } else {
             let holder = format!("{}-{}", std::process::id(), self.session_seq.load(Ordering::Relaxed));
             let lease = fence.acquire(name, &holder, self.opts.lease_ttl_ms, head_info.epoch)?;
             let e = lease.epoch;
-            let wal = WalWriter::open(self.obj.clone(), name, e, 1, crate::wal::WalConfig::from(&self.opts));
-            (e, Some(LeaseState { lease, next_renew_ms: 0 }), wal)
+            // 租约 keep 与 WAL flush 线程共享：flush_loop 每次醒来调用保活回调
+            // （自限频），空闲分支不再因 TTL 过期而永久 40001（评审 §3.1）
+            let keeper = Arc::new(LeaseKeeper {
+                branch: name.to_string(),
+                ttl_ms: self.opts.lease_ttl_ms,
+                fence: fence.clone(),
+                state: Mutex::new(LeaseState { lease, next_renew_ms: 0 }),
+            });
+            let mut cfg = crate::wal::WalConfig::from(&self.opts);
+            let k = keeper.clone();
+            cfg.keepalive = Some(Arc::new(move || k.renew_if_due()));
+            (e, Some(keeper), cfg)
         };
+        let keeper = keeper.unwrap_or_else(|| {
+            // 只读分支占位租约（expires_at_ms=0）；fence_gate 的 read_only 检查先于
+            // check 拒绝一切写，metrics 跳过其 TTL 输出
+            Arc::new(LeaseKeeper {
+                branch: name.to_string(),
+                ttl_ms: self.opts.lease_ttl_ms,
+                fence: fence.clone(),
+                state: Mutex::new(LeaseState {
+                    lease: crate::objstore::fence::Lease {
+                        epoch: lease_epoch,
+                        holder: "read-only".into(),
+                        expires_at_ms: 0,
+                    },
+                    next_renew_ms: 0,
+                }),
+            })
+        });
         // 回放所有旧 epoch（1..=lease_epoch-1）；新 epoch 目录为空，随后写入
+        let wal = if self.opts.read_only {
+            WalWriter::open_read_only(self.obj.clone(), name, lease_epoch, 1, cfg)
+        } else {
+            WalWriter::open(self.obj.clone(), name, lease_epoch, 1, cfg)
+        };
         let b = Arc::new(Branch {
             name: name.to_string(),
             head: ArcSwap::from_pointee(commit),
@@ -476,16 +525,7 @@ impl Database {
             next_seq: AtomicU64::new(0),
             lease_epoch: AtomicU64::new(lease_epoch),
             read_only: self.opts.read_only,
-            lease_state: Mutex::new(lease_state.unwrap_or(LeaseState {
-                lease: crate::objstore::fence::Lease {
-                    epoch: lease_epoch,
-                    holder: "read-only".into(),
-                    expires_at_ms: 0,
-                },
-                next_renew_ms: 0,
-            })),
-            fence,
-            lease_ttl_ms: self.opts.lease_ttl_ms,
+            lease: keeper,
             watermark: AtomicU64::new(0),
             pending: Mutex::new(HashMap::new()),
             pending_bytes: AtomicU64::new(0),
@@ -702,12 +742,20 @@ impl Database {
         Err(SqlError::internal("manifest commit: too many conflicts"))
     }
 
-    /// checkpoint 一个分支：pending 变更物化为树 + commit 对象 + manifest 推进
+    /// checkpoint 一个分支：pending 变更物化为树 + commit 对象 + manifest 推进。
+    /// GC sweep 在 commit_mu **释放后**执行（含最多 256 次远端 DELETE，
+    /// 锁内执行会阻塞该分支全部提交，评审 §3.2）
     pub fn checkpoint_branch(&self, branch_name: &str) -> Result<Option<Hash>> {
         let b = self.branch(branch_name)?;
-        let _g = b.commit_mu.lock();
-        b.fence_gate()?;
-        self.checkpoint_locked(&b)
+        let out = {
+            let _g = b.commit_mu.lock();
+            b.fence_gate()?;
+            self.checkpoint_locked(&b)
+        };
+        if let Err(e) = self.gc_sweep() {
+            tracing::warn!("gc sweep: {e}");
+        }
+        out
     }
 
     /// 增量列存物化（需已持 commit_mu）：SPEC 05 §6。
@@ -772,28 +820,52 @@ impl Database {
         Ok(retired)
     }
 
-    /// 需已持 commit_mu
+    /// 需已持 commit_mu。
+    /// **失败安全（P0-B 修复）**：pending 被 take 后任何 OSS 错误都把它**合并
+    /// 归还**（键覆盖合并，commit_mu 保证无并发写者）——否则下次成功 checkpoint
+    /// 会推进 covered_seq，越过这些已 ack 事务的 WAL 帧，重启回放跳过 = 数据
+    /// 永久丢失。归还不改 memtx/head（checkpoint 的全部远端写失败即无效果）；
+    /// 若错误发生在 head.store 之后（WAL ck 帧失败），head 已前进而 manifest
+    /// 未动——归还的 pending 会在下次 checkpoint 以新 head 为父重新发布，收敛。
     pub(crate) fn checkpoint_locked(&self, b: &Branch) -> Result<Option<Hash>> {
         let pending: HashMap<u32, BTreeMap<Vec<u8>, Mutation>> =
             std::mem::take(&mut *b.pending.lock());
         b.pending_bytes.store(0, Ordering::Release);
+        let out = self.checkpoint_locked_inner(b, &pending);
+        if out.is_err() {
+            let mut bytes = 0usize;
+            {
+                let mut pend = b.pending.lock();
+                for (tid, muts) in pending {
+                    let slot = pend.entry(tid).or_default();
+                    for (k, v) in muts {
+                        bytes += k.len() + match &v {
+                            crate::prolly::Mutation::Put(val) => val.len(),
+                            crate::prolly::Mutation::Delete => 0,
+                        };
+                        slot.insert(k.clone(), v);
+                    }
+                }
+            }
+            b.pending_bytes.fetch_add(bytes as u64, Ordering::Release);
+        }
+        out
+    }
+
+    fn checkpoint_locked_inner(
+        &self,
+        b: &Branch,
+        pending: &HashMap<u32, BTreeMap<Vec<u8>, Mutation>>,
+    ) -> Result<Option<Hash>> {
         let old_head = b.head.load_full();
         let old_catalog = old_head.as_ref().as_ref().map(|c| c.root);
-        // 分支在 manifest 中的前一个 epoch（判断"本 epoch 首次 checkpoint"）
-        let prev_epoch = self
-            .manifest()
-            .manifest
-            .refs
-            .get(&b.name)
-            .map(|h| h.epoch)
-            .unwrap_or(0);
         let mut session: HashSet<Hash> = HashSet::new();
         let catalog = crate::versioned::Versioned::new(self.store.clone());
         let mut changes: Vec<(String, Option<crate::versioned::TableEntry>)> = Vec::new();
         let mut gc_retired: Vec<String> = Vec::new(); // 本次替换的列存段（墓碑登记）
         // pending 按表应用
         let _snap = self.manifest();
-        for (tid, muts) in &pending {
+        for (tid, muts) in pending {
             // 找表名/当前 root
             let entries = catalog.catalog_entries(old_catalog.as_ref())?;
             let (tname, entry) = entries
@@ -865,9 +937,11 @@ impl Database {
         for seg in first..seg_now {
             tombstone.push(crate::wal::WalWriter::seg_path(&b.name, cur_epoch, seg));
         }
-        if prev_epoch != cur_epoch {
-            // 本 epoch 的首次 checkpoint：旧 epoch 目录已全部 covered，逐段登记
-            // （低频路径，允许 LIST；墓碑去重使重复登记无害）
+        if cur_epoch > 1 {
+            // 旧 epoch 目录已全部 covered，逐段登记墓碑。**每次 checkpoint 重
+            // 新 LIST**（而非仅本 epoch 首次）：失约写者可能在接管者的首次
+            // 快照之后仍向旧 epoch 追加滞后段，重 LIST 保证最终覆盖（评审
+            // "僵尸 epoch 段"）。低频路径，允许 LIST；墓碑按 path 去重。
             for epoch in 1..cur_epoch {
                 let prefix = format!("wal/{}/e{epoch:020}/", b.name);
                 if let Ok(paths) = self.obj.list_prefix(&prefix) {
@@ -895,10 +969,6 @@ impl Database {
         b.wal.set_first_seg(seg_now);
         // 释放 memtx 历史版本
         b.mem.truncate_all(covered);
-        // 到期对象回收（窗口未过的会被跳过；批内有界）
-        if let Err(e) = self.gc_sweep() {
-            tracing::warn!("gc sweep: {e}");
-        }
         Ok(Some(commit.addr()))
     }
 
@@ -921,19 +991,33 @@ impl Database {
             .take(256)
             .collect();
         if !due.is_empty() {
+            let mut removed: Vec<String> = Vec::new();
             for p in &due {
                 if self.obj.delete(p).is_ok() {
                     deleted += 1;
+                    removed.push(p.clone());
                 }
+                // 删除失败的对象**保留墓碑**（at_ms 不变），下轮重试；
+                // 剔除失败者会造成永久孤儿（评审 §3.2）
             }
-            self.update_manifest(|m2| {
-                m2.tombstones.retain(|t| !due.contains(&t.path));
-                Ok(true)
-            })?;
+            if !removed.is_empty() {
+                self.update_manifest(|m2| {
+                    m2.tombstones.retain(|t| !removed.contains(&t.path));
+                    Ok(true)
+                })?;
+            }
         }
-        // 旧 manifest 版本：保留最近 16（滞后读者兜底；JSON 极小、探测/LIST 兼容空洞）
+        // 旧 manifest 版本：保留最近 16（滞后读者兜底；JSON 极小、LIST 路径兼容空洞）
         let vers = self.manifest_store.retained(latest, 16);
         deleted += self.manifest_store.delete_versions(&vers);
+        // 记录水位（既有字段 gc_last_sweep_ver 首次投入使用；审计/运维可读）
+        let _ = self.update_manifest(|m2| {
+            if m2.gc_last_sweep_ver < latest {
+                m2.gc_last_sweep_ver = latest;
+                return Ok(true);
+            }
+            Ok(false)
+        });
         Ok(deleted)
     }
 
@@ -966,7 +1050,9 @@ impl Database {
                         continue;
                     }
                     if b.pending_bytes.load(Ordering::Relaxed) >= threshold {
-                        let _ = db.checkpoint_branch(&n);
+                        if let Err(e) = db.checkpoint_branch(&n) {
+                    tracing::error!(branch = %n, error = %e, "auto checkpoint failed; pending retained");
+                }
                     }
                 }
             })
@@ -981,6 +1067,7 @@ impl From<&DbOptions> for crate::wal::WalConfig {
             flush_interval: std::time::Duration::from_millis(o.wal_flush_interval_ms.max(1)),
             segment_bytes: o.wal_segment_bytes,
             durability: o.durability,
+            keepalive: None,
         }
     }
 }

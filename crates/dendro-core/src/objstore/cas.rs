@@ -77,7 +77,7 @@ impl CasStore {
         const PAR: usize = 8;
         let obj = &self.obj;
         let err: std::sync::Mutex<Option<super::ObjError>> = std::sync::Mutex::new(None);
-        let result: std::result::Result<(), super::ObjError> = std::thread::scope(|s| {
+        std::thread::scope(|s| {
             for group in jobs.chunks(PAR) {
                 for (c, h) in group {
                     let err = &err;
@@ -91,14 +91,17 @@ impl CasStore {
                         }
                     });
                 }
-                // scope 结束时 join；每组结束后检查错误，尽早失败
-                if err.lock().unwrap().is_some() {
-                    return Err(super::ObjError::Transient("put batch failed".into()));
-                }
             }
-            Ok(())
+            // scope 出口 join 全部 worker；此后 err 才是最终状态
         });
-        result.map_err(|_| err.lock().unwrap().take().expect("error"))?;
+        // **权威错误检查必须在 join 之后**：此前的"每组后尽早失败"检查与
+        // worker 执行存在竞态——spawn 是异步的，检查时 worker 往往未跑，
+        // 错误被吞、调用方照常发布引用缺失 chunk 的 manifest（回归：
+        // wal_corruption::checkpoint_failure_preserves_committed_data）
+        match err.lock().unwrap().take() {
+            Some(e) => return Err(e),
+            None => {}
+        }
         for (_, h) in &jobs {
             session_cache.insert(*h);
         }

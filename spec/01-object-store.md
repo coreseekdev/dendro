@@ -118,13 +118,20 @@ loop:
 
 ## 6. GC
 
-标记：从全部 refs 出发——commit → 树根 → prolly 节点内嵌地址（节点格式带地址偏移表，
-见 SPEC 03 §4）→ 行块内引用（子节点地址）→ col 段引用（tables[i].col_seg_range）。
-清扫：对象 age ≥ min_age(默认 300s) 且不被任何 ≥ 当前 manifest.version 的引用集包含
-才删。延迟删除队列 + 删除前 head 复核 manifest（防竞态）。
-manifest 版本链：保留最近 K=128 个 + 全部被快照/分支引用的版本，其余可 GC。
+**已实现（v1，机制 = 墓碑 + 保留窗口，权威口径见 `docs/design/GC定案.md`）**：
 
-## 7. 本地缓存（读路径）
+- 列存段（全量重建被替换）/ WAL 旧 epoch 目录 / WAL 当前 epoch 前缀段：
+  墓碑随"新 manifest 停止引用"**同一版本原子发布**，`gc_retention_ms`
+  （默认 24h）后由 `engine.rs::gc_sweep` 物理删除（checkpoint 尾部与打库
+  各一次；单批 ≤256）。恢复路径经 `BranchHead.wal_first_seg` 容忍 WAL
+  前缀空洞。
+- manifest 版本：保留最近 **K=16** 个（`ManifestStore::retained`），
+  其余直接删除；`load_latest` 探测遇空洞回落 LIST（影子谱系防护）。
+- **CAS chunk（prolly 节点 / commit 对象）v1 不回收**（time travel 依赖 +
+  全根可达性分析成本），v2 候选：引用计数入 manifest 快照。旧标记-清扫
+  设计（min_age + 引用集）保留为 v2 方案参考。
+
+7. 本地缓存（读路径）
 
 `CachedObjStore`：包装底层 store，LRU(字节配额, 默认 2GiB)缓存 byte-range GET 与整对象；
 对 CBF/parquet 的 footer、prolly 节点命中友好。本地盘目录 `{cache_root}`，
