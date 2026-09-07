@@ -13,7 +13,7 @@
 |---|------|:----:|------|
 | ~~P0-1~~ | ~~WAL flush 失败丢帧 + 挂死~~ | ✅ | `92dcb35`/`f1bca77`：restore+retry；本提交收尾——计数器"成功清零/失败归还"、Bytes 去全量克隆、TRAILER_LEN 常量；**测试捕获真 bug：段号空洞**（失败也推进 cur_seg → probe_tail 连续性假设丢数据），已改为成功后才推进。回归：`tests/wal_corruption.rs::{flush_put_failure_no_frame_loss_no_hang, transient_flush_failure_self_heals}` |
 | ~~P0-2~~ | ~~恢复路径对坏数据 panic~~ | ✅ | `92dcb35` FrameIter len 守卫 + underflow 守卫；回归：`tests/wal_corruption.rs`（坏 len / 坏 CRC / 截断 payload / 截断帧头 / ≤32B 撕尾容忍 / e2e open fail-fast），`decode_row` 定宽守卫随 `68de926` |
-| ~~P0-3~~ | ~~列存旧段删除时序（崩溃窗口）~~ | ✅（止血） | `68de926` 删除推迟；真删除时序（发布新 manifest 后删本次替换段）并入 P1-4 GC 一并定案，勿两处口径 |
+| ~~P0-3~~ | ~~列存旧段删除时序（崩溃窗口）~~ | ✅ | `68de926` 止血（删除推迟）；真删除时序已随 P1-4 GC 落地（墓碑随 manifest 原子发布，见 `docs/design/GC定案.md`）|
 | ~~P0-4~~ | ~~P1 fencing 文档诚实化~~ | ✅ | `92dcb35` 设计文档/multi_node 头；本提交：fence.rs 模块注释随**运行时拒写实现**改写（不再是注释先行） |
 | ~~P0-5~~ | ~~GitHub Actions CI~~ | ✅ | `53f2c74`；`f1bca77` 起 clippy 非阻塞过渡；本提交 clippy --all-targets 清零，恢复 `-D warnings` |
 
@@ -34,7 +34,7 @@
 | ~~P1-2~~ | ~~fencing 运行时拒写~~ | ✅ | 本提交：`engine.rs::Branch::fence_gate`——三个写入口（commit_tx / write_branch_commit / checkpoint_branch）在 commit_mu 内检查；过期 → 40001。回归：`tests/multi_node.rs::{fence_expired_writer_rejected, fence_renew_keeps_healthy_writer_writing}` |
 | ~~P1-3~~ | ~~fencing 续期~~ | ✅ | 本提交：惰性续期（commit 路径，每 ttl/3 ≤1 次 PUT，失败仅告警下次重试；无后台线程——文档口径已同步） |
 | ~~P1-1~~ | ~~只读打开模式~~ | ✅ | 本提交：`DbOptions.read_only` + `serve --read-only`。不领 epoch（零 fence 对象）、不起 WAL writer、空存储拒绝打开；写路径经 fence_gate 拒绝（25006）。回归：`tests/multi_node.rs::{read_only_open_does_not_pollute_epoch_sequence, read_only_open_missing_store_errors}` |
-| P1-4 | GC：旧段删除时序定案（P0-3 并入）+ manifest 旧版本 + 旧 chunk + 旧 WAL 段回收 + 孤儿段墓碑 | ⬜ | `ManifestStore::retained` 接入 |
+| ~~P1-4~~ | ~~GC：旧段删除时序定案 + manifest 旧版本 + WAL 段回收~~ | ✅ | 本提交：墓碑随 manifest 原子发布（P0-3 正式修复）+ `gc_retention_ms` 保留窗口 + `gc_sweep`（checkpoint 尾部/打库各一次，单批 ≤256）；WAL 旧 epoch 目录与当前 epoch 前缀段回收，`BranchHead.wal_first_seg` 保证恢复容忍前缀空洞；manifest 旧版本保留 16。CAS chunk GC 明确划入 v2（`docs/design/GC定案.md` §4.4）。回归：`crates/dendro-server/tests/gc.rs`（3 测试） |
 | ~~P1-5~~ | ~~SQL 语义修复（S1–S6）~~ | ✅ | `53f2c74`/`92dcb35`/`f1bca77`；S4 偏离记录见上 |
 | ~~P1-6~~ | ~~JOIN/派生表测试（hash_join 零覆盖）~~ | ✅ | 本提交：`tests/slt/dendro/008_join.slt`（INNER/LEFT/NULL 键/一对多/三表链/复合键/JOIN+GROUP BY/派生表）。语料当场暴露真 bug：sqlparser 0.62 把裸 `JOIN`(Join) 与 `INNER JOIN`(Inner) 分为不同枚举——标准写法 `A JOIN B` 直接报 not_supported，hash_join 此前经由该路径**不可达**。已修（scan.rs eval_from 匹配 Join/Inner、Left/LeftOuter） |
 | P1-7 | 多线程 OCC 并发测试 | ⬜ | `tests/concurrent.rs` |
@@ -73,5 +73,6 @@
 1. ~~P0 修复 + 回归测试~~ ✅（含二轮收尾）
 2. ~~fencing 运行时拒写 + 续期~~ ✅
 3. ~~P1-6 JOIN 测试（评审最看重）~~ ✅
-4. P1-1 只读模式
-5. P1-4 GC 定案（含 P0-3 真删除时序）
+4. ~~P1-1 只读模式~~ ✅
+5. ~~P1-4 GC 定案（含 P0-3 真删除时序）~~ ✅
+6. 下一批：P2-1 slt 语料扩展 / P2-3 基准证据链 / P2' Journal+Adjudicator 深化

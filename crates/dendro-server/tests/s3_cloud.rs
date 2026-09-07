@@ -63,6 +63,7 @@ fn s3_lifecycle_and_crash_recovery() {
         cache_budget_bytes: 512 << 20,
         lease_ttl_ms: 1500,
         read_only: false,
+        gc_retention_ms: 24 * 3600 * 1000,
     };
     let db = Database::open(opts).unwrap();
     db.set_columnar(Arc::new(dendro_columnar::integrate::CbfColumnar { row_group_rows: 4096 }));
@@ -109,6 +110,7 @@ fn s3_lifecycle_and_crash_recovery() {
         cache_budget_bytes: 512 << 20,
         lease_ttl_ms: 1500,
         read_only: false,
+        gc_retention_ms: 24 * 3600 * 1000,
     })
     .unwrap();
     db2.set_columnar(Arc::new(dendro_columnar::integrate::CbfColumnar { row_group_rows: 4096 }));

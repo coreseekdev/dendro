@@ -64,6 +64,9 @@ pub struct DbOptions {
     /// 只读打开（读副本）：不领 epoch、不起 WAL writer、拒绝一切写。
     /// 打开已存在的库；空存储打开即报错（绝不创建对象）。
     pub read_only: bool,
+    /// GC 保留窗口（毫秒）：墓碑对象登记后至少保留这么久，覆盖滞后读者。
+    /// 默认 24h；< 0 = 禁用回收。
+    pub gc_retention_ms: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,6 +88,7 @@ impl Default for DbOptions {
             cache_budget_bytes: 1 << 30,
             lease_ttl_ms: 30_000,
             read_only: false,
+        gc_retention_ms: 24 * 3600 * 1000,
         }
     }
 }
@@ -387,6 +391,10 @@ impl Database {
         });
         db.load_open_branches(ver)?;
         db.start_checkpoint_thread();
+        // 打库回收 pass：清理上次运行遗留的到期墓碑（失败不阻塞打开）
+        if let Err(e) = db.gc_sweep() {
+            tracing::warn!("gc sweep on open: {e}");
+        }
         Ok(db)
     }
 
@@ -517,6 +525,7 @@ impl Database {
                     fork_wal_seg: src_seg,
                     epoch: 0,
                     covered_seq: 0,
+                    wal_first_seg: 0,
                 },
             );
             Ok(true)
@@ -701,7 +710,8 @@ impl Database {
         self.checkpoint_locked(&b)
     }
 
-    /// 增量列存物化（需已持 commit_mu）：SPEC 05 §6
+    /// 增量列存物化（需已持 commit_mu）：SPEC 05 §6。
+    /// 返回被全量重建替换的旧段路径（调用方在同一 manifest 发布中登记墓碑）。
     fn materialize_delta(
         &self,
         col: &Arc<dyn ColumnarStore>,
@@ -709,9 +719,10 @@ impl Database {
         ne: &mut crate::versioned::TableEntry,
         new_root: &Option<Hash>,
         schema: &TableSchema,
-    ) -> Result<()> {
+    ) -> Result<Vec<String>> {
         const COMPACT_SEGMENTS: usize = 8;
         const DELETE_CAP: usize = 10_000;
+        let mut retired: Vec<String> = Vec::new();
         let snapshot = b.watermark.load(Ordering::Acquire);
         let overlay = b.mem.table(ne.id).snapshot_rows(snapshot);
         let delta_deletes: Vec<String> = overlay
@@ -735,8 +746,8 @@ impl Database {
                     col.write_full(&self.obj, &self.store, root, schema, &ne.col_segments)?;
                 ne.col_segments = vec![seg];
                 ne.col_deletes.clear();
-                // old_paths 由调用方通过 ne.col_segments 对比管理（GC 回收，v2）
-                let _ = old_paths;
+                // 旧段不再被新 manifest 引用——墓碑随本次发布登记（GC 定案）
+                retired.extend(old_paths);
             }
         } else if !delta_rows.is_empty() {
             let seg = col.write_segment(&self.obj, &ne.name, schema, &delta_rows)?;
@@ -758,7 +769,7 @@ impl Database {
             }
         }
         ne.col_rows = ne.col_segments.iter().map(|s| s.rows).sum();
-        Ok(())
+        Ok(retired)
     }
 
     /// 需已持 commit_mu
@@ -768,9 +779,18 @@ impl Database {
         b.pending_bytes.store(0, Ordering::Release);
         let old_head = b.head.load_full();
         let old_catalog = old_head.as_ref().as_ref().map(|c| c.root);
+        // 分支在 manifest 中的前一个 epoch（判断"本 epoch 首次 checkpoint"）
+        let prev_epoch = self
+            .manifest()
+            .manifest
+            .refs
+            .get(&b.name)
+            .map(|h| h.epoch)
+            .unwrap_or(0);
         let mut session: HashSet<Hash> = HashSet::new();
         let catalog = crate::versioned::Versioned::new(self.store.clone());
         let mut changes: Vec<(String, Option<crate::versioned::TableEntry>)> = Vec::new();
+        let mut gc_retired: Vec<String> = Vec::new(); // 本次替换的列存段（墓碑登记）
         // pending 按表应用
         let _snap = self.manifest();
         for (tid, muts) in &pending {
@@ -800,10 +820,9 @@ impl Database {
             ne.col_rows = ne.col_segments.iter().map(|s| s.rows).sum();
             if let Some(col) = self.columnar() {
                 if let Ok(schema) = catalog.load_schema_with_entry(&ne) {
-                    if let Err(e) = self.materialize_delta(
-                        &col, b, &mut ne, &new_root, &schema,
-                    ) {
-                        tracing::warn!("materialize {}: {e}", ne.name);
+                    match self.materialize_delta(&col, b, &mut ne, &new_root, &schema) {
+                        Ok(mut old) => gc_retired.append(&mut old),
+                        Err(e) => tracing::warn!("materialize {}: {e}", ne.name),
                     }
                 }
             }
@@ -834,20 +853,88 @@ impl Database {
         b.wal
             .append(crate::wal::FrameType::Checkpoint, seq, &crate::wal::encode_checkpoint(&ck), Durability::Always)?;
         // manifest：commit + 当前已 flush 段 + covered_seq
+        // GC 墓碑（与"停止引用"同一原子发布，GC 定案）：
+        // ① 全量重建替换的列存段；② WAL 当前 epoch 前缀段（checkpoint 帧之前的
+        //    段全部 covered）；③ 旧 epoch 整目录（本分支首个 checkpoint 后全部
+        //    covered——回放水位含旧 epoch 的全部 ts）
         let seg_now = b.wal.current_seg().saturating_sub(1);
         let covered = ck.seq_covered;
+        let cur_epoch = b.lease_epoch.load(Ordering::Acquire);
+        let mut tombstone: Vec<String> = std::mem::take(&mut gc_retired);
+        let first = b.wal.first_seg();
+        for seg in first..seg_now {
+            tombstone.push(crate::wal::WalWriter::seg_path(&b.name, cur_epoch, seg));
+        }
+        if prev_epoch != cur_epoch {
+            // 本 epoch 的首次 checkpoint：旧 epoch 目录已全部 covered，逐段登记
+            // （低频路径，允许 LIST；墓碑去重使重复登记无害）
+            for epoch in 1..cur_epoch {
+                let prefix = format!("wal/{}/e{epoch:020}/", b.name);
+                if let Ok(paths) = self.obj.list_prefix(&prefix) {
+                    tombstone.extend(paths);
+                }
+            }
+        }
+        let t_now = now_ms();
         let bname = b.name.clone();
+        let epoch_for_head = cur_epoch;
         self.update_manifest(|m| {
             let h = m.refs.get_mut(&bname).ok_or_else(|| SqlError::internal("branch vanished"))?;
             h.commit = Some(commit.addr().to_base32());
             h.wal_seg = seg_now.max(h.wal_seg);
             h.covered_seq = covered;
-            h.epoch = b.lease_epoch.load(Ordering::Acquire);
+            h.epoch = epoch_for_head;
+            h.wal_first_seg = seg_now.max(h.wal_first_seg);
+            for p in &tombstone {
+                if !m.tombstones.iter().any(|t| t.path == *p) {
+                    m.tombstones.push(crate::objstore::manifest::Tombstone { path: p.clone(), at_ms: t_now });
+                }
+            }
             Ok(true)
         })?;
+        b.wal.set_first_seg(seg_now);
         // 释放 memtx 历史版本
         b.mem.truncate_all(covered);
+        // 到期对象回收（窗口未过的会被跳过；批内有界）
+        if let Err(e) = self.gc_sweep() {
+            tracing::warn!("gc sweep: {e}");
+        }
         Ok(Some(commit.addr()))
+    }
+
+    /// GC 回收 pass（GC 定案，docs/design/GC定案.md）：
+    /// ① 删除保留窗口已过的墓碑对象（单批 ≤256 个，有界）；② 压缩墓碑清单；
+    /// ③ 回收旧 manifest 版本（保留最近 16 个）。
+    /// 只读库/禁用（gc_retention_ms < 0）时为空操作。
+    pub fn gc_sweep(&self) -> Result<usize> {
+        if self.opts.read_only || self.opts.gc_retention_ms < 0 {
+            return Ok(0);
+        }
+        let deadline = now_ms() - self.opts.gc_retention_ms;
+        let (latest, m) = self.manifest_store.load_latest().map_err(SqlError::from)?;
+        let mut deleted = 0usize;
+        let due: Vec<String> = m
+            .tombstones
+            .iter()
+            .filter(|t| t.at_ms <= deadline)
+            .map(|t| t.path.clone())
+            .take(256)
+            .collect();
+        if !due.is_empty() {
+            for p in &due {
+                if self.obj.delete(p).is_ok() {
+                    deleted += 1;
+                }
+            }
+            self.update_manifest(|m2| {
+                m2.tombstones.retain(|t| !due.contains(&t.path));
+                Ok(true)
+            })?;
+        }
+        // 旧 manifest 版本：保留最近 16（滞后读者兜底；JSON 极小、探测/LIST 兼容空洞）
+        let vers = self.manifest_store.retained(latest, 16);
+        deleted += self.manifest_store.delete_versions(&vers);
+        Ok(deleted)
     }
 
     fn load_open_branches(&self, _ver: u64) -> Result<()> {

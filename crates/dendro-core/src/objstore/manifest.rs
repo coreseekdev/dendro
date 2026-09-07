@@ -29,6 +29,9 @@ pub struct BranchHead {
     /// 已物化进 commit 树的最高 txn seq（恢复时跳过 ≤ 此 seq 的帧）
     #[serde(default)]
     pub covered_seq: u64,
+    /// 本 epoch WAL 的 GC 起始段号（之前的段已墓碑回收；0=视作 1。GC 定案）
+    #[serde(default)]
+    pub wal_first_seg: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -64,6 +67,17 @@ pub struct Manifest {
     pub gc_last_sweep_ver: u64,
     /// 全库创建时间戳 ms
     pub created_ms: i64,
+    /// GC 墓碑：已无新 manifest 引用、等待保留窗口过期的对象（GC 定案，docs/design/GC定案.md）
+    #[serde(default)]
+    pub tombstones: Vec<Tombstone>,
+}
+
+/// 一条待回收对象。登记与"新 manifest 停止引用"在同一版本原子发布——
+/// 崩溃窗口内旧 manifest 仍引用的对象绝不会被删除；保留窗口覆盖滞后读者。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Tombstone {
+    pub path: String,
+    pub at_ms: i64,
 }
 
 impl Manifest {
@@ -79,6 +93,7 @@ impl Manifest {
             next_table_id: 1,
             gc_last_sweep_ver: 0,
             created_ms,
+            tombstones: Vec::new(),
         }
     }
 }
@@ -185,6 +200,18 @@ impl ManifestStore {
     pub fn retained(&self, latest: u64, keep_recent: u64) -> Vec<u64> {
         let lo = latest.saturating_sub(keep_recent);
         (1..=lo).collect()
+    }
+
+    /// GC：删除旧 manifest 版本对象（load_latest 的探测/LIST 双路径兼容空洞）。
+    /// 返回实际删除数；个别删除失败仅计数（下轮重试）。
+    pub fn delete_versions(&self, vers: &[u64]) -> usize {
+        let mut n = 0;
+        for v in vers {
+            if self.obj.delete(&Self::path(*v)).is_ok() {
+                n += 1;
+            }
+        }
+        n
     }
 }
 

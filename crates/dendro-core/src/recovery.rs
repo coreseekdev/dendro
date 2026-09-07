@@ -47,7 +47,13 @@ pub(crate) fn replay_branch(
     let mut pending_bytes = 0u64;
 
     for epoch in 1..=max_epoch {
-        let lo = 1u64;
+        // 当前 epoch 的 WAL 前缀可能已被 GC 回收（GC 定案）：从 manifest
+        // 记录的 first_seg 起探测；旧 epoch 目录可能整体已回收（探测返回 0 → 零帧）
+        let lo = if epoch == head.epoch {
+            head.wal_first_seg.max(1)
+        } else {
+            1
+        };
         let tail = crate::wal::probe_tail(&db.obj, &b.name, epoch, lo);
         for seg in lo..=tail {
             let data = crate::wal::read_segment(&db.obj, &b.name, epoch, seg)?;

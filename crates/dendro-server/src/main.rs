@@ -50,6 +50,9 @@ enum Cmd {
         /// 只读模式（读副本）：不领写者租约，拒绝一切写
         #[arg(long, default_value_t = false)]
         read_only: bool,
+        /// GC 保留窗口毫秒（墓碑对象登记后至少保留时长；<0 禁用）
+        #[arg(long, default_value_t = 24 * 3600 * 1000)]
+        gc_retention_ms: i64,
         /// PG 监听端口（0 = 关闭）
         #[arg(long, default_value_t = 5432)]
         pg_port: u16,
@@ -94,6 +97,7 @@ fn main() {
             kv_port,
             metrics_port,
             read_only,
+            gc_retention_ms,
             s3_endpoint,
             s3_bucket,
             s3_access_key,
@@ -136,6 +140,7 @@ fn main() {
                 checkpoint_interval_s: 30,
                 lease_ttl_ms: 30_000,
                 read_only,
+            gc_retention_ms,
             };
             let db = Database::open(opts).unwrap_or_else(|e| panic!("open {}: {e}", data.display()));
             db.set_columnar(Arc::new(dendro_columnar::integrate::CbfColumnar {

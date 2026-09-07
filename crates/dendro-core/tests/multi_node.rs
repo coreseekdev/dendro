@@ -18,6 +18,7 @@ fn opts(dir: &std::path::Path, ttl_ms: i64) -> DbOptions {
         cache_budget_bytes: 256 << 20,
         lease_ttl_ms: ttl_ms,
         read_only: false,
+        gc_retention_ms: 24 * 3600 * 1000,
     }
 }
 

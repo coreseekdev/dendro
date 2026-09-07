@@ -7,6 +7,7 @@ use crate::objstore::ObjStore;
 use bytes::Bytes;
 use parking_lot::{Condvar, Mutex};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 pub const FRAME_MAGIC: u32 = 0x4F524E44; // "DRNO" LE 视觉可辨
@@ -241,6 +242,8 @@ pub struct WalWriter {
     cfg: WalConfig,
     shared: Mutex<WalShared>,
     cv: Condvar,
+    /// GC 起始段号：之前的段已登记墓碑且 covered（GC 定案）
+    first_seg: AtomicU64,
     /// 首个未上传段号（恢复起点提示；进程内缓存）
     stop: Mutex<bool>,
     handle: Mutex<Option<std::thread::JoinHandle<()>>>,
@@ -264,6 +267,7 @@ impl WalWriter {
                 pending_frames: 0,
             }),
             cv: Condvar::new(),
+            first_seg: AtomicU64::new(start_seg),
             stop: Mutex::new(false),
             handle: Mutex::new(None),
         });
@@ -303,6 +307,7 @@ impl WalWriter {
                 pending_frames: 0,
             }),
             cv: Condvar::new(),
+            first_seg: AtomicU64::new(start_seg),
             stop: Mutex::new(true),
             handle: Mutex::new(None),
         })
@@ -441,6 +446,16 @@ impl WalWriter {
 
     pub fn current_seg(&self) -> u64 {
         self.shared.lock().cur_seg
+    }
+
+    /// GC 起始段号（之前的段已被墓碑覆盖；恢复从这段开始探测）
+    pub fn first_seg(&self) -> u64 {
+        self.first_seg.load(Ordering::Acquire)
+    }
+
+    /// GC 推进起始段号（checkpoint 发布后调用）
+    pub fn set_first_seg(&self, seg: u64) {
+        self.first_seg.fetch_max(seg, Ordering::AcqRel);
     }
 
     pub fn close(&self) {

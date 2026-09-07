@@ -24,6 +24,7 @@ fn opts_store(store: StoreConfig) -> DbOptions {
         cache_budget_bytes: 256 << 20,
         lease_ttl_ms: 60_000,
         read_only: false,
+        gc_retention_ms: 24 * 3600 * 1000,
     }
 }
 
