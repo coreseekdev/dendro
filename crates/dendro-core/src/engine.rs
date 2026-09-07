@@ -867,13 +867,9 @@ pub(crate) fn commit_tx(db: &Database, sess_branch: &str, txn: &Txn) -> Result<u
     let epoch = b.lease_epoch.load(Ordering::Acquire);
     let seq = b.alloc_seq();
     let ts = crate::recovery::composite_ts(epoch, seq);
-    // OCC：写写冲突检测（SPEC 04 §3 first-committer-wins）
-    // 收集涉及的表
-    let mut tables: Vec<u32> = txn.writes.keys().map(|(t, _)| *t).collect();
-    tables.sort_unstable();
-    tables.dedup();
+    // Phase 1: OCC 裁决（写写冲突检测，SPEC 04 §3 first-committer-wins）
     crate::memtx::validate_and_install(&b.mem, &[], txn, ts)?;
-    // pending 登记 + WAL 帧
+    // Phase 2: pending 登记 + WAL 帧
     let mut recs: Vec<crate::wal::TxnRecord> = Vec::new();
     {
         let mut pend = b.pending.lock();
@@ -887,9 +883,11 @@ pub(crate) fn commit_tx(db: &Database, sess_branch: &str, txn: &Txn) -> Result<u
         }
     }
     b.pending_bytes.fetch_add(payload_len(&recs) as u64, Ordering::Release);
+    // Phase 3: 持久化（组提交）
     b.wal.append(crate::wal::FrameType::Txn, ts, &crate::wal::encode_txn(&recs), db.opts.durability)?;
+    // Phase 4: 可见性推进
     b.watermark.store(ts, Ordering::Release);
-    Ok(seq)
+    Ok(ts)
 }
 
 fn iter_writes(txn: &Txn) -> impl Iterator<Item = (u32, &Vec<u8>, &Mutation)> {
