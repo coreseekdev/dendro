@@ -446,8 +446,6 @@ pub fn read_segment(obj: &Arc<dyn ObjStore>, branch: &str, epoch: u64, seg: u64)
     Ok(data.to_vec())
 }
 
-/// 已发布的树根视图（供 catalog 快照引用）
-pub type RootView = ArcSwap<Hash>;
 
 #[cfg(test)]
 mod tests {

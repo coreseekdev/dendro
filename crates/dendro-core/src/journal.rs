@@ -17,7 +17,6 @@
 use raft::prelude::*;
 use raft::{Config, Storage};
 use crate::error::SqlError;
-// slog::Drain removed
 
 /// 提交批次：一次事务的全部变更
 #[derive(Debug, Clone)]

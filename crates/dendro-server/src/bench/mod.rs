@@ -7,11 +7,13 @@ use std::sync::Arc;
 use std::time::Instant;
 
 pub struct BenchResult {
+    #[allow(dead_code)]
     pub suite: String,
     pub rows: Vec<BenchRow>,
 }
 
 pub struct BenchRow {
+    #[allow(dead_code)]
     pub name: String,
     pub value: f64,
     pub unit: &'static str,
@@ -299,6 +301,7 @@ pub fn run_all(out_dir: &PathBuf) {
     std::fs::create_dir_all(out_dir).unwrap();
     eprintln!("[bench] tp starting...");
     let suites = vec![bench_tp(20_000, 200_000)];
+    #[allow(unused_variables)]
     for s in suites {
         let path = out_dir.join(format!("{}.json", s.suite));
         std::fs::write(&path, s.to_json()).unwrap();

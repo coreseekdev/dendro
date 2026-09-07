@@ -45,6 +45,7 @@ impl FenceStore {
         format!("fence/{branch}/{epoch:020}.json")
     }
 
+    #[allow(dead_code)]
     fn read_lease(&self, branch: &str, epoch: u64) -> Result<Option<Lease>> {
         match self.obj.get(&Self::lease_path(branch, epoch)) {
             Ok(b) => serde_json::from_slice(&b)

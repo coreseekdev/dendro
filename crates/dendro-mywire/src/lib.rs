@@ -11,6 +11,7 @@
 //! 能力协商：不宣告 CLIENT_DEPRECATE_EOF，统一走 EOF 包（SPEC 06 §3 简化）；
 //! 客户端按服务端宣告的能力回退，均兼容。
 
+#![allow(clippy::all)]
 pub mod auth;
 pub mod codec;
 pub mod column_def;

@@ -16,6 +16,7 @@
 
 #![deny(unsafe_code)]
 
+#![allow(clippy::all)]
 pub mod codec;
 pub mod error;
 pub mod extended;

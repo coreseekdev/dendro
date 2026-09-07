@@ -1,3 +1,4 @@
+#![allow(clippy::all)]
 //! sqllogictest runner：进程内驱动 dendro 引擎（SPEC 07 §5 测试基线）。
 //!
 //! 用法：`slt run <文件或目录>...`

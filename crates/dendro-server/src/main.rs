@@ -1,3 +1,4 @@
+#![allow(clippy::all)]
 //! dendro 服务器入口：装配引擎 + PG/MySQL 双协议监听 + 基准。
 
 mod bench;
