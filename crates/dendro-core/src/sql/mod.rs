@@ -286,11 +286,23 @@ fn exec_branch_statement(db: &Database, sess: &mut Session, sql: &str) -> Result
             }
             let b = db.branch(&name)?;
             b.wal.close();
+            // 分支私有对象墓碑化（S-2：此前 DROP 永久泄漏 WAL 段与 fence 对象）。
+            // 树 chunk 为跨分支共享内容寻址，不可删（GC 定案 §4.4）。
             db.update_manifest(|m| {
                 m.refs.remove(&name);
+                let now = crate::engine::now_ms();
+                // WAL：全部 epoch 的现存段（低频路径，允许 LIST）
+                let mut paths = db.obj.list_prefix(&format!("wal/{name}/")).unwrap_or_default();
+                paths.extend(db.obj.list_prefix(&format!("fence/{name}/")).unwrap_or_default());
+                for p in paths {
+                    if !m.tombstones.iter().any(|t| t.path == p) {
+                        m.tombstones.push(crate::objstore::manifest::Tombstone { path: p, at_ms: now });
+                    }
+                }
                 Ok(true)
             })?;
             db.remove_branch_runtime(&name);
+            db.gc_sweep().ok();
             Ok(vec![Output::Command { tag: "DROP BRANCH".into(), affected: 0 }])
         }
         BranchKind::Show => {

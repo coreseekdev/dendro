@@ -364,3 +364,67 @@ fn reopen_branch_sql_recovers_poisoned_writer() {
         assert_eq!(rs.text_rows()[0][0].as_deref(), Some("2"), "reopen 后恢复写入");
     }
 }
+
+#[test]
+fn lazy_open_and_drop_branch_gc() {
+    // S-1：启动不全量打开分支（每分支一线程+租约+fence 写在万级分支下不可行）
+    // S-2：DROP BRANCH 的私有对象（WAL 段/fence）墓碑化 → GC 回收（此前永久泄漏）
+    let dir = std::env::temp_dir().join(format!("dendro-lazy-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // 两个分支
+    {
+        let db = Database::open(opts(&dir, 300)).unwrap();
+        let mut s = db.new_session();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY)").unwrap();
+        s.exec("CREATE BRANCH b2 FROM main").unwrap();
+        s.exec("INSERT INTO t VALUES (1)").unwrap();
+        db.checkpoint_branch("main").unwrap();
+    }
+    // 打开（惰性）：不触达则零驻留分支
+    {
+        let db = Database::open(opts(&dir, 300)).unwrap();
+        assert!(db.active_branches().is_empty(), "启动不得预打开任何分支");
+        let _ = db.branch("b2").unwrap(); // 只触达 b2
+        assert_eq!(db.active_branches().len(), 1, "仅触达的分支驻留");
+    }
+    // DROP BRANCH b2：私有对象墓碑化 → 保留窗口后回收
+    {
+        let db = Database::open(opts(&dir, 300)).unwrap();
+        let mut s = db.new_session();
+        s.exec("DROP BRANCH b2").unwrap();
+        assert!(std::fs::read_dir(dir.join("fence").join("b2")).is_ok(), "窗口内 fence 对象仍在");
+        std::thread::sleep(Duration::from_millis(350));
+        let db = Database::open(DbOptions {
+            store: StoreConfig::LocalDir(dir.clone()),
+            durability: dendro_core::Durability::Group,
+            wal_flush_interval_ms: 10,
+            wal_segment_bytes: 4 << 20,
+            checkpoint_threshold_bytes: u64::MAX,
+            checkpoint_interval_s: 0,
+            cache_budget_bytes: 256 << 20,
+            lease_ttl_ms: 300,
+            read_only: false,
+            gc_retention_ms: 300,
+        })
+        .unwrap();
+        {
+            let man = std::fs::read_dir(dir.join("manifest")).unwrap().flatten().map(|e| e.path()).max().unwrap();
+            let text = std::fs::read_to_string(&man).unwrap();
+            let tombs: Vec<&str> = text.split("\"path\"").skip(1).collect();
+            println!("[dbg] tombstones in {}: {:?}", man.display(), tombs.len());
+            println!("[dbg] b2 tombs: {}", tombs.iter().filter(|t| t.contains("b2")).count());
+        }
+        std::thread::sleep(Duration::from_millis(350));
+        db.gc_sweep().unwrap(); // 幂等：open 时的 sweep 可能已回收
+        assert!(
+            std::fs::read_dir(dir.join("fence").join("b2")).map(|d| d.count()).unwrap_or(0) == 0,
+            "DROP 后 fence 对象应被回收（不再永久泄漏）"
+        );
+        assert!(
+            std::fs::read_dir(dir.join("wal").join("b2")).map(|d| d.count()).unwrap_or(0) == 0,
+            "DROP 后 WAL 段应被回收"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

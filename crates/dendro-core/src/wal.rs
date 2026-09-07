@@ -286,15 +286,27 @@ impl WalWriter {
             stop: Mutex::new(false),
             handle: Mutex::new(None),
         });
-        // 后台 flush 线程
-        let w2 = w.clone();
+        // 后台 flush 线程：**持 Weak**（第六轮发现——线程持 Arc 自环 ⇒ Drop
+        // 永不触发，遗弃分支（drop/reopen 后）的线程+租约保活永生，会在 GC
+        // 删除后"复活"已删分支的 fence 对象）。外部 Arc 全部释放 ⇒ upgrade
+        // 失败 ⇒ 线程退出。
+        let w2 = Arc::downgrade(&w);
         let h = std::thread::Builder::new()
             .name(format!("wal-{branch}-e{epoch}"))
-            .spawn(move || w2.flush_loop())
+            .spawn(move || {
+                while let Some(w) = w2.upgrade() {
+                    if w.tick_once() {
+                        return;
+                    }
+                    std::thread::sleep(w.cfg.flush_interval);
+                }
+            })
             .expect("spawn wal thread");
         *w.handle.lock() = Some(h);
         w
     }
+
+
 
     /// 只读构造（读副本）：不占段号、不起 flush 线程（stop=true 且无 handle）。
     /// append 永不应到达此处——上游 fence_gate 已拒绝只读写；即使到达，
@@ -463,35 +475,36 @@ impl WalWriter {
         self.cv.notify_all();
     }
 
-    fn flush_loop(self: Arc<Self>) {
-        loop {
-            if *self.stop.lock() {
-                return;
-            }
-            std::thread::sleep(self.cfg.flush_interval);
-
-            let (pending, poisoned) = {
-                let g = self.shared.lock();
-                (g.pending_frames, g.poisoned)
-            };
-            if poisoned {
-                // 毒化后停止一切上传（确定失败的帧绝不持久化，错误 = 未提交）；
-                // **保活也停止**：毒化写者已不可用，继续续租会占住租约——
-                // 让它自然过期，接管者 reopen 恢复（第五轮 P1）
-                continue;
-            }
-            // 租约保活（必须在毒化检查**之后**）：空闲分支靠它免于 TTL 失约。
-            // ⚠ 曾被误删（第六轮 P0 回归：空闲 30s 即永久 40001）——
-            // tests/multi_node.rs::idle_writer_stays_writable 是其回归防线。
-            if let Some(ka) = &self.cfg.keepalive {
-                ka(); // 自限频：内部比较 next_renew_ms，未到期即返回
-            }
-            if pending > 0 {
-                if let Err(e) = self.flush_now() {
-                    tracing::error!("wal flush: {e}");
-                }
+    /// 单次 tick（保活/上传）；返回 true = 应退出（stop 或外部 Arc 全释放）。
+    /// 由持 Weak 的后台线程周期调用（Weak 打破自环：线程若持 Arc，Drop 永不
+    /// 触发，遗弃分支（drop/reopen 后）的线程 + 租约保活永生，会在 GC 删除后
+    /// "复活"已删分支的 fence 对象——第六轮发现）。
+    fn tick_once(&self) -> bool {
+        if *self.stop.lock() {
+            return true;
+        }
+        let (pending, poisoned) = {
+            let g = self.shared.lock();
+            (g.pending_frames, g.poisoned)
+        };
+        if poisoned {
+            // 毒化后停止一切上传（确定失败的帧绝不持久化，错误 = 未提交）；
+            // **保活也停止**：毒化写者已不可用，继续续租会占住租约——
+            // 让它自然过期，接管者 reopen 恢复（第五轮 P1）
+            return false;
+        }
+        // 租约保活（必须在毒化检查**之后**）：空闲分支靠它免于 TTL 失约。
+        // ⚠ 曾被误删（第六轮 P0 回归：空闲 30s 即永久 40001）——
+        // tests/multi_node.rs::idle_writer_stays_writable 是其回归防线。
+        if let Some(ka) = &self.cfg.keepalive {
+            ka(); // 自限频：内部比较 next_renew_ms，未到期即返回
+        }
+        if pending > 0 {
+            if let Err(e) = self.flush_now() {
+                tracing::error!("wal flush: {e}");
             }
         }
+        false
     }
 
     pub fn durable_watermark(&self) -> u64 {
@@ -523,6 +536,14 @@ impl WalWriter {
         if let Some(h) = self.handle.lock().take() {
             let _ = h.join();
         }
+    }
+}
+
+/// 外部最后一个 Arc 释放 ⇒ 后台线程不再 upgrade 成功 ⇒ 自行退出；
+/// 此处置 stop 双保险（若线程尚在 upgrade 窗口内）
+impl Drop for WalWriter {
+    fn drop(&mut self) {
+        *self.stop.lock() = true;
     }
 }
 

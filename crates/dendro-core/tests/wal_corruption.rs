@@ -135,9 +135,18 @@ fn open_rejects_corrupted_wal_segment() {
     std::fs::create_dir_all(&dir).unwrap();
     seed_db(&dir);
     corrupt_first_frame_len(&dir);
-    // len=u32::MAX 曾经会直接越界 panic；现在必须返回 Err
-    let err = match Database::open(opts_store(StoreConfig::LocalDir(dir.clone()))) {
-        Ok(_) => panic!("损坏段应导致 open 失败"),
+    // len=u32::MAX 曾经会直接越界 panic；现在必须返回 Err。
+    // 惰性打开（S-1）后恢复回放发生在分支首次触达——损坏在触达时暴露。
+    let db = match Database::open(opts_store(StoreConfig::LocalDir(dir.clone()))) {
+        Ok(db) => db,
+        Err(e) => {
+            assert!(e.message.contains("wal"), "错误应来自 WAL 解析：{e}");
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+    };
+    let err = match db.branch("main") {
+        Ok(_) => panic!("损坏段应导致分支恢复失败"),
         Err(e) => e,
     };
     assert!(err.message.contains("wal"), "错误应来自 WAL 解析：{err}");

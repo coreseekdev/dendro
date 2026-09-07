@@ -430,7 +430,10 @@ impl Database {
             stop_cp: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             columnar: arc_swap::ArcSwap::from_pointee(None),
         });
-        db.load_open_branches(ver)?;
+        // 惰性打开（S-1）：不再启动即打开全部分支——每分支一线程 + 一租约
+        // + 一次 fence 写，万级分支场景下弹性叙事不成立。分支在首次会话
+        // 触达时按需创建（branch() 自带恢复回放）。
+        let _ = ver;
         db.start_checkpoint_thread();
         // 打库回收 pass：清理上次运行遗留的到期墓碑（失败不阻塞打开）
         if let Err(e) = db.gc_sweep() {
@@ -1093,25 +1096,28 @@ impl Database {
         Ok(deleted)
     }
 
-    fn load_open_branches(&self, _ver: u64) -> Result<()> {
-        let names: Vec<String> = self.manifest().manifest.refs.keys().cloned().collect();
-        for n in names {
-            let _ = self.branch(&n)?; // 失败（如坏 commit）则跳过该分支
-        }
-        Ok(())
-    }
 
     fn start_checkpoint_thread(self: &Arc<Self>) {
-        let db = self.clone();
+        // **持 Weak**（第六轮发现）：线程持 Arc<Database> 自环 ⇒ Database 永不
+        // Drop ⇒ 遗弃分支的 Branch/WalWriter/租约保活全部永生——GC 删除已删
+        // 分支的 fence 对象后会被"复活"（回归 lazy_open_and_drop_branch_gc）。
+        let db = Arc::downgrade(self);
         let interval = self.opts.checkpoint_interval_s.max(1);
         let threshold = self.opts.checkpoint_threshold_bytes;
         std::thread::Builder::new()
             .name("dendro-checkpoint".into())
             .spawn(move || loop {
+                // **先 sleep 再 upgrade**（第六轮发现）：若在 upgrade 持有期
+                // sleep，Database 在整个 sleep 期间存活（30s/轮）——遗弃分支
+                // 的 Branch/WalWriter/租约保活随之"永生"，GC 删除已删分支的
+                // fence 对象后会被复活（回归 lazy_open_and_drop_branch_gc）。
+                std::thread::sleep(std::time::Duration::from_secs(interval));
+                let Some(db) = db.upgrade() else {
+                    return; // 外部 Arc 全释放：Database 已死，检查点线程随之退出
+                };
                 if db.stop_cp.load(Ordering::Relaxed) {
                     return;
                 }
-                std::thread::sleep(std::time::Duration::from_secs(interval));
                 let names: Vec<String> = {
                     let g = db.branches.read();
                     g.keys().cloned().collect()
