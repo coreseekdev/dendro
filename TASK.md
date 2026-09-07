@@ -126,6 +126,26 @@
 | Q-7 | stop_cp 死字段（无写者） | P3 | Database::close 收口时处理 |
 | Q-8 | P1-7 并发测试的第一个具体用例 = 显式事务跨并发提交+checkpoint（R7-3 场景固化） | P1 | 已有 r7_3 单线程版；多线程版随 P1-7 |
 
+## 八轮评审修复（2026-09-08）
+
+| # | 任务 | 状态 | 证据 |
+|---|------|:----:|------|
+| R8-P1 | 显式事务不读自己的写（SQL 读路径从不合并 sess.txn.writes） | ✅ | table_scan 可见性归并**收敛为单一抽象**（树→overlay→会话事务写 三层 map 覆盖——评审建议的结构性方案，键序错误无处可写）+ 点查路径自身写覆盖。回归 `sql_semantics::r8_1_explicit_txn_reads_own_writes`（INSERT/DELETE/UPDATE/COMMIT 全链） |
+| R8-P1 | 服务端日志为零（17 处 tracing 无 subscriber） | ✅ | main 入口 tracing_subscriber fmt + EnvFilter（RUST_LOG 可调，默认 info） |
+| R8-P2 | 监听器 bind 失败照常 ready 且永不退出 | ✅ | 全部 handle join，任一失败 exit(1)；此前 join 顺序 + panic 吞噬 |
+| R8-P2 | OCC 冲突检测窗口止于 checkpoint（40001 退化为静默 last-writer-wins） | ⬜ 入册 | 结构性：validate 依赖 memtx 版本链，checkpoint 截断历史后无从比较。方向：validate 阶段回退树版本（prolly 版本链）或缩短 truncate 窗口。见 Q-9 |
+| R8-P2 | 事务内 DDL 立即生效且 ROLLBACK 不撤销 | ⬜ 入册 Q-10 | 需 catalog 写集事务化（v2） |
+| R8-P2 | BEGIN 后 USE BRANCH 不设防 | ⬜ 入册 Q-11 | 事务内 USE → 25001 或自动 ROLLBACK |
+
+### 第八轮登记
+
+| # | 任务 | 优先级 | 备注 |
+|---|------|:----:|------|
+| Q-9 | OCC 冲突检测窗口越过 checkpoint（30s 必然发生 → 40001 失效） | P1 | 修法：validate 回退树版本链 vs truncate 保留窗口 |
+| Q-10 | 事务内 DDL 事务化（catalog 写集进 Txn，ROLLBACK 可撤销） | P2 | |
+| Q-11 | 显式事务内 USE BRANCH 拒绝（25001） | P2 | 一行守卫 |
+| Q-12 | 优雅关闭（SIGTERM → 停监听 → flush → exit 0）+ /readyz live/readiness 分离 | P2 | k8s 终止语义 |
+
 ## P2' — 提交管线（2026-09-08 起动）
 
 | # | 任务 | 状态 | 证据 |

@@ -163,3 +163,43 @@ fn r7_3_explicit_txn_read_visibility_frozen() {
         _ => panic!(),
     }
 }
+
+#[test]
+fn r8_1_explicit_txn_reads_own_writes() {
+    // 第八轮 R8-1：SQL 读路径从不合并 sess.txn.writes——
+    // BEGIN;INSERT 后 SELECT 看不到、BEGIN;DELETE 后 UPDATE 空转且 COMMIT
+    // 后被删行复活。显式事务必须读自己的写。
+    let db = Database::open(DbOptions::memory()).unwrap();
+    let mut s = db.new_session();
+    s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+    s.exec("INSERT INTO t VALUES (1, 'a')").unwrap();
+    s.exec("BEGIN").unwrap();
+    s.exec("INSERT INTO t VALUES (2, 'b')").unwrap();
+    // 读自己的 INSERT
+    let q = |s: &mut dendro_core::Session, sql: &str| -> Vec<Vec<String>> {
+        match &s.exec(sql).unwrap()[0] {
+            dendro_core::Output::Rows(rs) => rs
+                .text_rows()
+                .iter()
+                .map(|r| r.iter().map(|c| c.clone().unwrap_or_default()).collect())
+                .collect(),
+            _ => panic!(),
+        }
+    };
+    assert_eq!(q(&mut s, "SELECT count(*) FROM t")[0][0], "2", "事务内读自己的 INSERT");
+    assert_eq!(q(&mut s, "SELECT v FROM t WHERE id = 2")[0][0], "b", "事务内新行可点查");
+    // 读自己的 DELETE：行消失，且 UPDATE 空转（匹配 0 行）而非报错/复活
+    s.exec("DELETE FROM t WHERE id = 1").unwrap();
+    assert_eq!(q(&mut s, "SELECT count(*) FROM t")[0][0], "1");
+    assert_eq!(q(&mut s, "SELECT id FROM t WHERE id = 1").len(), 0, "事务内被删行不可见");
+    s.exec("UPDATE t SET v = 'x' WHERE id = 1").unwrap(); // 匹配 0 行，不报错
+    assert_eq!(q(&mut s, "SELECT count(*) FROM t")[0][0], "1");
+    // 读自己的 UPDATE
+    s.exec("UPDATE t SET v = 'B' WHERE id = 2").unwrap();
+    assert_eq!(q(&mut s, "SELECT v FROM t WHERE id = 2")[0][0], "B");
+    s.exec("COMMIT").unwrap();
+    // COMMIT 后与事务内一致（无幽灵行、写入持久）
+    assert_eq!(q(&mut s, "SELECT count(*) FROM t")[0][0], "1");
+    assert_eq!(q(&mut s, "SELECT v FROM t WHERE id = 2")[0][0], "B");
+    assert_eq!(q(&mut s, "SELECT id FROM t WHERE id = 1").len(), 0);
+}

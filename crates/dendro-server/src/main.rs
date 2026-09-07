@@ -99,6 +99,14 @@ enum Cmd {
 }
 
 fn main() {
+    // 日志初始化（第八轮 R8-5：此前 17 处 tracing 全部无 subscriber——毒化/
+    // WAL 失败/checkpoint 失败等关键事件生产环境全部静默）
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
     let cli = Cli::parse();
     match cli.cmd {
         Cmd::Serve {
@@ -217,17 +225,18 @@ fn main() {
                 if s3_endpoint.is_some() { "s3" } else { "local" },
                 data.display()
             );
-            if let Some(h) = metrics_handle {
-                h.join().unwrap();
-            }
-            if let Some(h) = pg_handle {
-                h.join().unwrap();
-            }
-            if let Some(h) = my_handle {
-                h.join().unwrap();
-            }
-            if let Some(h) = kv_handle {
-                h.join().unwrap();
+            // 任一监听器失败（bind 冲突等）都会使 join 返回 Err → 进程非零
+            // 退出（第八轮 R8-6：此前 pg bind 失败时照常打印 ready 且永不退出）
+            let mut handles: Vec<(&str, std::thread::JoinHandle<()>)> = Vec::new();
+            if let Some(h) = metrics_handle { handles.push(("metrics", h)); }
+            if let Some(h) = pg_handle { handles.push(("pg", h)); }
+            if let Some(h) = my_handle { handles.push(("mysql", h)); }
+            if let Some(h) = kv_handle { handles.push(("kv", h)); }
+            for (name, h) in handles {
+                if h.join().is_err() {
+                    eprintln!("dendro: listener '{name}' failed — exiting");
+                    std::process::exit(1);
+                }
             }
         }
         Cmd::Backup { data, out } => {

@@ -758,7 +758,7 @@ fn build_point_view(
         let key = crate::format::row::encode_key(std::slice::from_ref(&pkv));
         // memtx 优先；**墓碑判定**（第七轮 R7-1 伴生①）：memtx 无值时可能是
         // "可见墓碑"（该 key 在快照前已被删除）——此时不得回退树复活被删行
-        let found: Option<Arc<Vec<u8>>> = match tm.get(&key, snapshot) {
+        let mut found: Option<Arc<Vec<u8>>> = match tm.get(&key, snapshot) {
             Some(v) => Some(v),
             None => {
                 let tombstoned = tm.latest_ts(&key).is_some_and(|ts| ts <= snapshot);
@@ -772,6 +772,17 @@ fn build_point_view(
                 }
             }
         };
+        // 会话显式事务自身写（R8-1）：点查同样读自己的写
+        if let Some(t) = &sess.txn {
+            if t.explicit {
+                if let Some(m) = t.writes.get(&(entry.id, key.clone())) {
+                    match m {
+                        crate::prolly::Mutation::Put(v) => found = Some(Arc::new(v.clone())),
+                        crate::prolly::Mutation::Delete => found = None,
+                    }
+                }
+            }
+        }
         if let Some(v) = found {
             rows.push(row_from_bytes(schema, &v)?);
         }
@@ -827,63 +838,53 @@ fn table_scan(db: &Database, sess: &mut Session, tf: &TableFactor, snapshot: u64
             if std::env::var("DENDRO_SCAN_DEBUG").is_ok() {
                 eprintln!("[scan] table={full} root={root:?} overlay={overlay:?} schema={:?}", schema.columns.iter().map(|c| (c.name.clone(), c.ty)).collect::<Vec<_>>());
             }
-            // 树 ∪ overlay（键序合并）
-            let mut rows = Vec::with_capacity(overlay.len().max(64));
-            let mut overlay_iter = overlay.into_iter().peekable();
-            if let Some(r) = root {
-                let mut it = crate::prolly::cursor::TreeIter::new(db.store.clone(), &r)?;
-                loop {
-                    // 树条目
-                    let item = it.next_item()?;
-                    // 先刷 overlay 中**严格小于**当前树 key 的
-                    // （⚠ 曾为 `<=`：等键条目在 dominated 判定前被消费，
-                    // 树旧行恒被输出 → checkpoint 后 UPDATE 返回两行 /
-                    // DELETE 后被删行复活，第七轮 R7-1 探针实锤）
-                    loop {
-                        let peek = overlay_iter.peek();
-                        let take_ov = match (peek, &item) {
-                            (Some((_ok, _)), None) => true,
-                            (Some((ok, _)), Some((tk, _))) => ok.as_slice() < tk.as_slice(),
-                            _ => false,
-                        };
-                        if take_ov {
-                            let (_ok, ov) = overlay_iter.next().unwrap();
-                            if let Some(v) = ov {
-                                rows.push(row_from_bytes(&schema, &v)?);
-                            }
-                        } else {
-                            break;
-                        }
+            // 可见性归并（**单一抽象**，第七轮评审建议）：树 → checkpointed
+            // overlay → 会话显式事务自身写，三层按序覆盖。
+            // ⚠ 此处曾是键序双指针归并（`<=` vs `<` 之差产生过 R7-1 P0：
+            // checkpoint 后 UPDATE 双行/DELETE 复活）——收敛为 map 覆盖语义
+            // 后，键序错误在结构上无处可写。
+            let mut visible: std::collections::BTreeMap<Vec<u8>, Arc<Vec<u8>>> = std::collections::BTreeMap::new();
+            // ① 树（checkpoint 物化态）
+            if let Some(r) = &root {
+                let mut it = crate::prolly::cursor::TreeIter::new(db.store.clone(), r)?;
+                while let Some((k, v)) = it.next_item()? {
+                    visible.insert(k, Arc::new(v));
+                }
+            }
+            // ② memtx overlay（checkpoint 之后的已提交变更）；None = 墓碑
+            for (k, ov) in overlay {
+                match ov {
+                    Some(v) => {
+                        visible.insert(k, v);
                     }
-                    match item {
-                        None => break,
-                        Some((k, v)) => {
-                            // 等键 overlay 支配树行：Put = 输出新值，Delete
-                            // （None）= 行消失——两种情况树行都不输出
-                            let dominated = overlay_iter
-                                .peek()
-                                .map(|(ok, _)| ok.as_slice() == k.as_slice())
-                                .unwrap_or(false);
-                            if dominated {
-                                let (_ok, ov) = overlay_iter.next().unwrap();
-                                if let Some(v) = ov {
-                                    rows.push(row_from_bytes(&schema, &v)?);
-                                }
-                                continue;
+                    None => {
+                        visible.remove(&k);
+                    }
+                }
+            }
+            // ③ 会话显式事务自身写（R8-1：读自己的写——此前 SQL 读路径从不
+            // 合并 sess.txn.writes，BEGIN;INSERT 后 SELECT 看不到、
+            // BEGIN;DELETE 后 UPDATE 空转且 COMMIT 后幽灵行）
+            if let Some(t) = &sess.txn {
+                if t.explicit {
+                    for ((tid, k), m) in &t.writes {
+                        if *tid != entry.id {
+                            continue;
+                        }
+                        match m {
+                            crate::prolly::Mutation::Put(v) => {
+                                visible.insert(k.clone(), Arc::new(v.clone()));
                             }
-                            rows.push(row_from_bytes(&schema, &v)?);
+                            crate::prolly::Mutation::Delete => {
+                                visible.remove(k);
+                            }
                         }
                     }
                 }
-            } else {
-                for (k, v) in overlay_iter {
-                    let _ = k;
-                    if let Some(v) = v {
-                        let r = row_from_bytes(&schema, &v)?;
-                        if std::env::var("DENDRO_SCAN_DEBUG").is_ok() { eprintln!("[scan] key={k:?} row={r:?}"); }
-                        rows.push(r);
-                    }
-                }
+            }
+            let mut rows = Vec::with_capacity(visible.len().max(64));
+            for (_k, v) in &visible {
+                rows.push(row_from_bytes(&schema, v)?);
             }
             let names = schema.columns.iter().map(|c| c.name.clone()).collect();
             Ok(TableView { names, rows })
