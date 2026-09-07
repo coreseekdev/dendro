@@ -2,3 +2,4 @@
 #![allow(clippy::all)]
 pub mod bench;
 pub mod kv_resp;
+pub mod metrics;

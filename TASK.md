@@ -41,7 +41,7 @@
 | P1-8 | 真 kill 崩溃恢复测试（子进程 SIGKILL） | ⬜ | 替代 `drop(db)` 模拟 |
 | ~~P1-9~~ | ~~fencing 安全性质测试~~ | ✅ | 本提交：`fence_expired_writer_rejected` 即评审要的"旧实例写被拒"断言 |
 | P1-10 | time travel SQL 入口（`AS OF` / `FOR SYSTEM_TIME`） | ⬜ | 数据层已支持，缺 SQL 面 |
-| P1-11 | `/metrics` `/readyz` 端点 | ⬜ | k8s 探针依赖 |
+| ~~P1-11~~ | ~~`/metrics` `/readyz` 端点~~ | ✅ | 本提交：`dendro-server/src/metrics.rs`（serve `--metrics-port`，默认 9469）。/metrics 暴露每驻留分支 pending_bytes（扩容信号）/watermark/durable 水位/lease 剩余 TTL；`Database::active_branches()` 只读快照，绝不懒加载分支。回归：`tests/metrics_endpoint.rs` |
 
 ## P2 — 质量 / 性能 / 证据链
 

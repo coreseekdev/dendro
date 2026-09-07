@@ -397,6 +397,13 @@ impl Database {
         self.state.load_full()
     }
 
+    /// 已驻留内存的分支快照（监控/负载自感知用）。
+    /// 注意：与 `branch()` 不同，这里**绝不**懒加载——不会为仅存在于
+    /// manifest 的分支领 epoch/起 WAL writer（否则读监控会产生写副作用）。
+    pub fn active_branches(&self) -> Vec<Arc<Branch>> {
+        self.branches.read().values().cloned().collect()
+    }
+
     /// 读/建分支运行态（恢复路径也走这里：从 manifest 构造）
     pub fn branch(&self, name: &str) -> Result<Arc<Branch>> {
         {

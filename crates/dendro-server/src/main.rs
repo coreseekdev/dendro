@@ -44,6 +44,9 @@ enum Cmd {
         /// RESP(KV) 监听端口（0 = 关闭）
         #[arg(long, default_value_t = 0)]
         kv_port: u16,
+        /// 运维 HTTP 端口（/readyz /metrics；0 = 关闭）
+        #[arg(long, default_value_t = 9469)]
+        metrics_port: u16,
         /// PG 监听端口（0 = 关闭）
         #[arg(long, default_value_t = 5432)]
         pg_port: u16,
@@ -86,6 +89,7 @@ fn main() {
         Cmd::Serve {
             data,
             kv_port,
+            metrics_port,
             s3_endpoint,
             s3_bucket,
             s3_access_key,
@@ -134,6 +138,18 @@ fn main() {
             }));
             
             eprintln!("dendro opened at {}", data.display());
+            let metrics_handle = if metrics_port > 0 {
+                let db_m = db.clone();
+                let m_addr = format!("{host}:{metrics_port}");
+                Some(
+                    std::thread::Builder::new()
+                        .name("metrics-listener".into())
+                        .spawn(move || dendro_server::metrics::serve(&m_addr, db_m).expect("metrics listener"))
+                        .unwrap(),
+                )
+            } else {
+                None
+            };
             let kv_handle = if kv_port > 0 {
                 let db_kv = db.clone();
                 let kv_addr = format!("{host}:{kv_port}");
@@ -175,10 +191,13 @@ fn main() {
                 None
             };
             println!(
-                "dendro ready: pg={host}:{pg_port} mysql={host}:{mysql_port} backend={} data={}",
+                "dendro ready: pg={host}:{pg_port} mysql={host}:{mysql_port} metrics={host}:{metrics_port} backend={} data={}",
                 if s3_endpoint.is_some() { "s3" } else { "local" },
                 data.display()
             );
+            if let Some(h) = metrics_handle {
+                h.join().unwrap();
+            }
             if let Some(h) = pg_handle {
                 h.join().unwrap();
             }
