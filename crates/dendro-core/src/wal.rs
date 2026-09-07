@@ -231,6 +231,7 @@ struct WalShared {
 pub struct WalWriter {
     obj: Arc<dyn ObjStore>,
     branch: String,
+    epoch: u64,
     cfg: WalConfig,
     shared: Mutex<WalShared>,
     cv: Condvar,
@@ -241,10 +242,11 @@ pub struct WalWriter {
 }
 
 impl WalWriter {
-    pub fn open(obj: Arc<dyn ObjStore>, branch: &str, start_seg: u64, cfg: WalConfig) -> Arc<WalWriter> {
+    pub fn open(obj: Arc<dyn ObjStore>, branch: &str, epoch: u64, start_seg: u64, cfg: WalConfig) -> Arc<WalWriter> {
         let w = Arc::new(Self {
             obj,
             branch: branch.to_string(),
+            epoch,
             cfg,
             shared: Mutex::new(WalShared {
                 buf: Vec::new(),
@@ -264,15 +266,18 @@ impl WalWriter {
         // 后台 flush 线程
         let w2 = w.clone();
         let h = std::thread::Builder::new()
-            .name(format!("wal-{branch}"))
+            .name(format!("wal-{branch}-e{epoch}"))
             .spawn(move || w2.flush_loop())
             .expect("spawn wal thread");
         *w.handle.lock() = Some(h);
         w
     }
 
-    pub fn seg_path(branch: &str, seg: u64) -> String {
-        format!("wal/{branch}/{seg:020}.wal")
+    /// 段路径：wal/{branch}/e{epoch:020}/{seg:020}.wal
+    /// epoch 进路径 ⇒ 陈旧写者的段落在低 epoch 目录，恢复按 epoch 升序重放、
+    /// 高 epoch 覆盖（脑裂安全，P1 设计文档 §3.2）
+    pub fn seg_path(branch: &str, epoch: u64, seg: u64) -> String {
+        format!("wal/{branch}/e{epoch:020}/{seg:020}.wal")
     }
 
     /// 追加一帧并按 durability 语义等待。返回 durable（或缓冲后）seq。
@@ -339,7 +344,7 @@ impl WalWriter {
             g.cur_seg += 1;
             (seg, data, max_seq)
         };
-        let path = Self::seg_path(&self.branch, seg);
+        let path = Self::seg_path(&self.branch, self.epoch, seg);
         self.obj
             .put(&path, Bytes::from(data))
             .map_err(|e| SqlError::io(format!("wal put: {e}")))?;
@@ -395,9 +400,9 @@ impl WalWriter {
 // ---------------------------------------------------------------------------
 
 /// 找到分支 WAL 的最高已存在段号（指数探测+二分）
-pub fn probe_tail(obj: &Arc<dyn ObjStore>, branch: &str, lo_seg: u64) -> u64 {
+pub fn probe_tail(obj: &Arc<dyn ObjStore>, branch: &str, epoch: u64, lo_seg: u64) -> u64 {
     let exists = |seg: u64| -> bool {
-        obj.head(&WalWriter::seg_path(branch, seg)).ok().flatten().is_some()
+        obj.head(&WalWriter::seg_path(branch, epoch, seg)).ok().flatten().is_some()
     };
     if !exists(lo_seg) {
         return lo_seg.saturating_sub(1);
@@ -424,8 +429,8 @@ pub fn probe_tail(obj: &Arc<dyn ObjStore>, branch: &str, lo_seg: u64) -> u64 {
 }
 
 /// 读取并解码一个段
-pub fn read_segment(obj: &Arc<dyn ObjStore>, branch: &str, seg: u64) -> Result<Vec<u8>> {
-    let path = WalWriter::seg_path(branch, seg);
+pub fn read_segment(obj: &Arc<dyn ObjStore>, branch: &str, epoch: u64, seg: u64) -> Result<Vec<u8>> {
+    let path = WalWriter::seg_path(branch, epoch, seg);
     let data = obj.get(&path).map_err(|e| SqlError::io(format!("wal read: {e}")))?;
     Ok(data.to_vec())
 }
@@ -466,7 +471,7 @@ mod tests {
     #[test]
     fn group_commit_durability() {
         let mem: Arc<dyn ObjStore> = Arc::new(MemoryObjStore::new());
-        let w = WalWriter::open(mem.clone(), "main", 1, cfg());
+        let w = WalWriter::open(mem.clone(), "main", 1, 1, cfg());
         for i in 0..10u64 {
             let rec = TxnRecord { table_id: 1, ops: vec![(format!("k{i}").into_bytes(), Some(b"v".to_vec()))] };
             w.append(FrameType::Txn, i + 1, &encode_txn(&[rec]), Durability::Group).unwrap();
@@ -496,10 +501,10 @@ mod tests {
     fn probe_tail_finds_segments() {
         let mem: Arc<dyn ObjStore> = Arc::new(MemoryObjStore::new());
         for seg in [1u64, 2, 3] {
-            mem.put(&WalWriter::seg_path("main", seg), Bytes::from_static(b"x")).unwrap();
+            mem.put(&WalWriter::seg_path("main", 1, seg), Bytes::from_static(b"x")).unwrap();
         }
-        assert_eq!(probe_tail(&mem, "main", 1), 3);
-        assert_eq!(probe_tail(&mem, "main", 4), 3); // lo 不存在
-        assert_eq!(probe_tail(&mem, "nope", 1), 0);
+        assert_eq!(probe_tail(&mem, "main", 1, 1), 3);
+        assert_eq!(probe_tail(&mem, "main", 1, 4), 3); // lo 不存在
+        assert_eq!(probe_tail(&mem, "nope", 1, 1), 0);
     }
 }

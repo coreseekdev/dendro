@@ -58,6 +58,8 @@ pub struct DbOptions {
     pub checkpoint_interval_s: u64,
     /// 读路径缓存字节预算（S3 后端；0 = 1GiB）
     pub cache_budget_bytes: u64,
+    /// 写者租约 TTL（毫秒；P1 fencing，SPEC 02 §6）
+    pub lease_ttl_ms: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,6 +79,7 @@ impl Default for DbOptions {
             checkpoint_threshold_bytes: 16 << 20,
             checkpoint_interval_s: 30,
             cache_budget_bytes: 1 << 30,
+            lease_ttl_ms: 30_000,
         }
     }
 }
@@ -108,6 +111,8 @@ pub struct Branch {
     /// 提交串行化锁（OCC 验证+安装+WAL 序列 的原子域）
     pub commit_mu: Mutex<()>,
     next_seq: AtomicU64,
+    /// 本进程持有的写者世代（P1 fencing；0=未领取）
+    pub lease_epoch: AtomicU64,
     /// 已安装（可见）的提交水位
     pub watermark: AtomicU64,
     /// 自上次 checkpoint 的累积 pending 变更：table → (key → mut)
@@ -351,7 +356,7 @@ impl Database {
     }
 
     /// 读/建分支运行态（恢复路径也走这里：从 manifest 构造）
-    pub(crate) fn branch(&self, name: &str) -> Result<Arc<Branch>> {
+    pub fn branch(&self, name: &str) -> Result<Arc<Branch>> {
         {
             let g = self.branches.read();
             if let Some(b) = g.get(name) {
@@ -372,10 +377,18 @@ impl Database {
             }
             None => None,
         };
+        // P1：进程打开分支即领取新 epoch（世代化；fence 条件写保证唯一）
+        let fence = crate::objstore::fence::FenceStore::new(self.obj.clone());
+        let holder = format!("{}-{}", std::process::id(), self.session_seq.load(Ordering::Relaxed));
+        let lease_epoch = fence
+            .acquire(name, &holder, self.opts.lease_ttl_ms as i64, head_info.epoch.max(1))
+            .map_err(SqlError::from)?;
+        // 回放所有旧 epoch（1..=lease_epoch-1）；新 epoch 目录为空，随后写入
         let wal = WalWriter::open(
             self.obj.clone(),
             name,
-            head_info.wal_seg + 1,
+            lease_epoch,
+            1,
             crate::wal::WalConfig::from(&self.opts),
         );
         let b = Arc::new(Branch {
@@ -385,12 +398,13 @@ impl Database {
             mem: BranchMem::default(),
             commit_mu: Mutex::new(()),
             next_seq: AtomicU64::new(0),
+            lease_epoch: AtomicU64::new(lease_epoch),
             watermark: AtomicU64::new(0),
             pending: Mutex::new(HashMap::new()),
             pending_bytes: AtomicU64::new(0),
         });
         // 恢复：回放 WAL 中未物化的事务（covered_seq 之后）
-        crate::recovery::replay_branch(self, &b, head_info)?;
+        crate::recovery::replay_branch(self, &b, head_info, lease_epoch)?;
         {
             let mut g = self.branches.write();
             g.entry(name.to_string()).or_insert(b.clone());
@@ -563,6 +577,7 @@ impl Database {
             h.commit = Some(commit.addr().to_base32());
             h.wal_seg = seg_now.max(h.wal_seg);
             h.covered_seq = covered;
+            h.epoch = b.lease_epoch.load(Ordering::Acquire);
             Ok(true)
         })?;
         Ok(commit.addr())
@@ -732,7 +747,7 @@ impl Database {
         self.cas.put_batch(&[cchunk], &mut session).map_err(SqlError::from)?;
         b.head.store(Arc::new(Some(commit.clone())));
         // WAL CHECKPOINT 帧 + 立即 flush
-        let seq = b.alloc_seq();
+        let seq = crate::recovery::composite_ts(b.lease_epoch.load(Ordering::Acquire), b.alloc_seq());
         let ck = crate::wal::CheckpointRecord {
             catalog_root: commit.root,
             commit_addr: commit.addr(),
@@ -749,6 +764,7 @@ impl Database {
             h.commit = Some(commit.addr().to_base32());
             h.wal_seg = seg_now.max(h.wal_seg);
             h.covered_seq = covered;
+            h.epoch = b.lease_epoch.load(Ordering::Acquire);
             Ok(true)
         })?;
         // 释放 memtx 历史版本
@@ -848,13 +864,15 @@ impl Session {
 pub(crate) fn commit_tx(db: &Database, sess_branch: &str, txn: &Txn) -> Result<u64> {
     let b = db.branch(sess_branch)?;
     let _g = b.commit_mu.lock();
+    let epoch = b.lease_epoch.load(Ordering::Acquire);
     let seq = b.alloc_seq();
+    let ts = crate::recovery::composite_ts(epoch, seq);
     // OCC：写写冲突检测（SPEC 04 §3 first-committer-wins）
     // 收集涉及的表
     let mut tables: Vec<u32> = txn.writes.keys().map(|(t, _)| *t).collect();
     tables.sort_unstable();
     tables.dedup();
-    crate::memtx::validate_and_install(&b.mem, &[], txn, seq)?;
+    crate::memtx::validate_and_install(&b.mem, &[], txn, ts)?;
     // pending 登记 + WAL 帧
     let mut recs: Vec<crate::wal::TxnRecord> = Vec::new();
     {
@@ -869,8 +887,8 @@ pub(crate) fn commit_tx(db: &Database, sess_branch: &str, txn: &Txn) -> Result<u
         }
     }
     b.pending_bytes.fetch_add(payload_len(&recs) as u64, Ordering::Release);
-    b.wal.append(crate::wal::FrameType::Txn, seq, &crate::wal::encode_txn(&recs), db.opts.durability)?;
-    b.watermark.store(seq, Ordering::Release);
+    b.wal.append(crate::wal::FrameType::Txn, ts, &crate::wal::encode_txn(&recs), db.opts.durability)?;
+    b.watermark.store(ts, Ordering::Release);
     Ok(seq)
 }
 

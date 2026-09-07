@@ -87,6 +87,7 @@ pub(crate) fn exec_create_table(db: &Database, sess: &mut Session, create: sqlpa
         h.commit = Some(commit.addr().to_base32());
         h.wal_seg = seg_now.max(h.wal_seg);
         h.covered_seq = covered;
+        h.epoch = b.lease_epoch.load(std::sync::atomic::Ordering::Acquire);
         Ok(true)
     })?;
     Ok(Some(Output::Command { tag: "CREATE TABLE".into(), affected: 0 }))
@@ -206,6 +207,7 @@ pub(crate) fn catalog_commit(
         h.commit = Some(commit.addr().to_base32());
         h.wal_seg = seg_now.max(h.wal_seg);
         h.covered_seq = covered;
+        h.epoch = b.lease_epoch.load(std::sync::atomic::Ordering::Acquire);
         Ok(true)
     })?;
     Ok(())

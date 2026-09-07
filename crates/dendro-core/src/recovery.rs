@@ -1,10 +1,19 @@
 //! 恢复（SPEC 02 §4）：manifest + WAL 探测回放，重建分支内存态。
+//! P1 多 epoch：按 epoch 升序回放（复合时间戳 ts = epoch<<32 | seq），
+//! 高 epoch 事务自然覆盖低 epoch 陈旧写（脑裂安全）。
 
 use crate::error::{Result, SqlError};
 use crate::format::hash::Hash;
 use crate::objstore::manifest::{BranchHead, Manifest};
 use crate::objstore::ObjStore;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
+
+/// 复合事务时间戳：ts = (epoch << 32) | (seq & 0xFFFF_FFFF)
+pub fn composite_ts(epoch: u64, seq: u64) -> u64 {
+    (epoch << 32) | (seq & 0xFFFF_FFFF)
+}
 
 /// 打库时校验：全部分支引用的 commit chunk 存在性（抽样 HEAD）
 pub fn recover_branches(obj: &Arc<dyn ObjStore>, manifest: &Manifest) -> Result<()> {
@@ -22,64 +31,68 @@ pub fn recover_branches(obj: &Arc<dyn ObjStore>, manifest: &Manifest) -> Result<
     Ok(())
 }
 
-/// 回放一个分支的未物化 WAL（covered_seq 之后）到内存态。
-/// 由 Database::branch() 在构造分支运行态时调用。
+/// 回放一个分支的未物化 WAL：epoch 1..=max 升序，每 epoch 内段号/seq 升序。
+/// 跳过 ts ≤ covered_seq（已物化）；陈旧写（同 key 更高 ts 已存在）被抑制。
 pub(crate) fn replay_branch(
     db: &crate::engine::Database,
     b: &Arc<crate::engine::Branch>,
     head: &BranchHead,
+    lease_epoch: u64,
 ) -> Result<()> {
-    let lo = head.wal_seg;
-    let tail = crate::wal::probe_tail(&db.obj, &b.name, lo.max(1));
-    if tail < lo.max(1) {
-        return Ok(()); // 无段
-    }
+    // 回放所有旧 epoch（1..=本进程租约 epoch-1）；本 epoch 目录打开时为空
+    let max_epoch = lease_epoch.saturating_sub(1).max(head.epoch.max(1)).max(1) - 1;
+    let max_epoch = max_epoch + 1;
     let covered = head.covered_seq;
-    let mut max_seq = covered;
-    let mut pending = b.pending.lock();
-    let mut pending_bytes = 0usize;
-    for seg in (lo.max(1))..=tail {
-        let data = crate::wal::read_segment(&db.obj, &b.name, seg)?;
-        let mut it = crate::wal::FrameIter::new(&data);
-        while let Some(f) = it.next_frame() {
-            let (ty, seq, payload) = f.map_err(SqlError::from)?;
-            match ty {
-                crate::wal::FrameType::Txn => {
-                    if seq <= covered {
-                        continue; // 已物化
-                    }
-                    let recs = crate::wal::decode_txn(payload)?;
-                    for r in recs {
-                        for (key, val) in r.ops {
-                            let m = match &val {
-                                Some(v) => crate::prolly::Mutation::Put(v.clone()),
-                                None => crate::prolly::Mutation::Delete,
-                            };
-                            let vb = pending_bytes
-                                + key.len()
-                                + val.as_ref().map(|v| v.len()).unwrap_or(0);
-                            pending.entry(r.table_id).or_default().insert(key.clone(), m);
-                            b.mem
-                                .table(r.table_id)
-                                .install(key, seq, val.map(Arc::new));
-                            pending_bytes = vb;
+    let mut max_ts = covered;
+    let mut pend = b.pending.lock();
+    let mut pending_bytes = 0u64;
+
+    for epoch in 1..=max_epoch {
+        let lo = 1u64;
+        let tail = crate::wal::probe_tail(&db.obj, &b.name, epoch, lo);
+        for seg in lo..=tail {
+            let data = crate::wal::read_segment(&db.obj, &b.name, epoch, seg)?;
+            let mut it = crate::wal::FrameIter::new(&data);
+            while let Some(f) = it.next_frame() {
+                let (ty, seq, payload) = f.map_err(SqlError::from)?;
+                let ts = composite_ts(epoch, seq);
+                match ty {
+                    crate::wal::FrameType::Txn => {
+                        if ts <= covered {
+                            continue; // 已物化进树
                         }
+                        let recs = crate::wal::decode_txn(payload)?;
+                        for r in recs {
+                            let tm = b.mem.table(r.table_id);
+                            for (key, val) in r.ops {
+                                let m = match &val {
+                                    Some(v) => crate::prolly::Mutation::Put(v.clone()),
+                                    None => crate::prolly::Mutation::Delete,
+                                };
+                                // 陈旧写抑制：同 key 已有更高 ts（新 epoch 写过）→ 跳过
+                                if tm.latest_ts(&key).map_or(false, |t| t >= ts) {
+                                    continue;
+                                }
+                                pend.entry(r.table_id).or_default().insert(key.clone(), m);
+                                tm.install(key.clone(), ts, val.clone().map(Arc::new));
+                                pending_bytes +=
+                                    (key.len() + val.as_ref().map(|v| v.len()).unwrap_or(0)) as u64;
+                            }
+                        }
+                        max_ts = max_ts.max(ts);
                     }
-                    max_seq = max_seq.max(seq);
+                    crate::wal::FrameType::Checkpoint => {
+                        let ck = crate::wal::decode_checkpoint(payload)?;
+                        max_ts = max_ts.max(ck.seq_covered);
+                    }
+                    _ => {}
                 }
-                crate::wal::FrameType::Checkpoint => {
-                    let ck = crate::wal::decode_checkpoint(payload)?;
-                    // checkpoint 帧本身描述完整树状态；其后的 Txn 才需要叠加。
-                    // manifest.covered_seq 是权威；这里兜底推进。
-                    max_seq = max_seq.max(ck.seq_covered);
-                }
-                _ => {}
             }
         }
     }
-    drop(pending);
-    b.pending_bytes.store(pending_bytes as u64, std::sync::atomic::Ordering::Release);
-    b.watermark.store(max_seq, std::sync::atomic::Ordering::Release);
-    b.restore_seq(max_seq);
+    drop(pend);
+    b.pending_bytes.store(pending_bytes, Ordering::Release);
+    b.watermark.store(max_ts, Ordering::Release);
+    b.restore_seq(max_ts);
     Ok(())
 }

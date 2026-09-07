@@ -125,6 +125,7 @@ fn main() {
                 durability: dur,
                 checkpoint_threshold_bytes: checkpoint_bytes,
                 checkpoint_interval_s: 30,
+                lease_ttl_ms: 30_000,
             };
             let db = Database::open(opts).unwrap_or_else(|e| panic!("open {}: {e}", data.display()));
             db.set_columnar(Arc::new(dendro_columnar::integrate::CbfColumnar {

@@ -2,6 +2,7 @@
 
 pub mod cached;
 pub mod cas;
+pub mod fence;
 pub mod local;
 pub mod manifest;
 pub mod s3;

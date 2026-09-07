@@ -856,7 +856,7 @@ fn table_scan(db: &Database, sess: &mut Session, tf: &TableFactor, snapshot: u64
 }
 
 /// 解析表（catalog 查找；可能带 schema 前缀 public.t / t）
-pub(crate) fn resolve_table(
+pub fn resolve_table(
     db: &Database,
     branch_name: &str,
     name: &str,
