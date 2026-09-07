@@ -654,11 +654,8 @@ impl Database {
                     col.write_full(&self.obj, &self.store, root, schema, &ne.col_segments)?;
                 ne.col_segments = vec![seg];
                 ne.col_deletes.clear();
-                // 旧段延迟删除（manifest 落盘后由 GC/下次清理；此处立即删亦可，
-                // 因为引用它的 manifest 还未发布——保守起见延后）
-                for p in old_paths {
-                    let _ = self.obj.delete(&p);
-                }
+                // old_paths 由调用方通过 ne.col_segments 对比管理（GC 回收，v2）
+                let _ = old_paths;
             }
         } else if !delta_rows.is_empty() {
             let seg = col.write_segment(&self.obj, &ne.name, &schema, &delta_rows)?;

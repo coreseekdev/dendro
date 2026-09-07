@@ -70,6 +70,7 @@ pub fn decode_key(bytes: &[u8], types: &[ColType]) -> Result<Vec<SqlValue>> {
         match tag {
             K_NULL => vals.push(SqlValue::Null),
             K_BOOL => {
+                if r.is_empty() { return Err(SqlError::internal("row truncated: bool")); }
                 vals.push(SqlValue::Bool(r[0] == 1));
                 r = &r[1..];
             }
@@ -224,18 +225,25 @@ pub fn decode_row(bytes: &[u8]) -> Result<Vec<SqlValue>> {
         match tag {
             V_NULL => vals.push(SqlValue::Null),
             V_BOOL => {
+                if r.is_empty() { return Err(SqlError::internal("row truncated: bool")); }
                 vals.push(SqlValue::Bool(r[0] == 1));
                 r = &r[1..];
             }
             V_I32 => {
+                if r.len() < 4 { return Err(SqlError::internal("row truncated: i32")); }
+                if r.len() < 4 { return Err(SqlError::internal("row truncated: i32")); }
                 vals.push(SqlValue::Int32(i32::from_le_bytes(r[..4].try_into().unwrap())));
                 r = &r[4..];
             }
             V_I64 => {
+                if r.len() < 8 { return Err(SqlError::internal("row truncated: i64")); }
+                if r.len() < 8 { return Err(SqlError::internal("row truncated: i64")); }
                 vals.push(SqlValue::Int64(i64::from_le_bytes(r[..8].try_into().unwrap())));
                 r = &r[8..];
             }
             V_F64 => {
+                if r.len() < 8 { return Err(SqlError::internal("row truncated: f64")); }
+                if r.len() < 8 { return Err(SqlError::internal("row truncated: f64")); }
                 vals.push(SqlValue::Float64(f64::from_le_bytes(r[..8].try_into().unwrap())));
                 r = &r[8..];
             }
@@ -252,10 +260,12 @@ pub fn decode_row(bytes: &[u8]) -> Result<Vec<SqlValue>> {
                 r = rest;
             }
             V_DATE => {
+                if r.len() < 4 { return Err(SqlError::internal("row truncated: date")); }
                 vals.push(SqlValue::Date32(i32::from_le_bytes(r[..4].try_into().unwrap())));
                 r = &r[4..];
             }
             V_TS => {
+                if r.len() < 8 { return Err(SqlError::internal("row truncated: ts")); }
                 vals.push(SqlValue::TimestampMs(i64::from_le_bytes(r[..8].try_into().unwrap())));
                 r = &r[8..];
             }

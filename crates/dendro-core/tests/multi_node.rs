@@ -1,6 +1,7 @@
-//! 多实例租约接管 e2e（P1）：三个"计算节点"先后打开同一存储根，
+//! 多实例租约接管 e2e（P1）：
 //! 验证 epoch 单调递进、接管后写入、跨 epoch 恢复的完整性。
-//! 同时验证写者租约过期期间，旧实例的写被拒绝（fencing 生效）。
+//! 注意：当前 fencing 为"epoch 路径隔离 + 恢复期抑制"（被动），
+//! 运行时拒写（commit 前的 epoch 校验）尚未实现。
 
 use dendro_core::{Database, DbOptions, StoreConfig};
 use std::time::{Duration, Instant};

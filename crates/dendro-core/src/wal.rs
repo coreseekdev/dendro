@@ -325,29 +325,32 @@ impl WalWriter {
         Ok(())
     }
 
-    /// 立即把当前缓冲上传为段对象；成功后推进 durable 水位（段内最大 seq）。
+    /// 立即把当前缓冲上传为段对象。
+    /// PUT 失败时数据放回缓冲头部，等下次重试（P0-1 修复：不丢帧）。
     pub fn flush_now(&self) -> Result<u64> {
-        let (seg, data, max_seq) = {
+        let (seg, segment_data, max_seq) = {
             let mut g = self.shared.lock();
             if g.buf.is_empty() {
                 return Ok(g.flushed_seg);
             }
             let seg = g.cur_seg;
-            let max_seq = g.max_seq; // 段内最大 seq：清零前捕获
+            let max_seq = g.max_seq;
             let mut data = std::mem::take(&mut g.buf);
             let trailer = encode_trailer(g.frames, g.min_seq, g.max_seq);
             data.extend_from_slice(&trailer);
-            g.frames = 0;
-            g.min_seq = 0;
-            g.max_seq = 0;
-            g.pending_frames = 0;
             g.cur_seg += 1;
             (seg, data, max_seq)
         };
         let path = Self::seg_path(&self.branch, self.epoch, seg);
-        self.obj
-            .put(&path, Bytes::from(data))
-            .map_err(|e| SqlError::io(format!("wal put: {e}")))?;
+        if let Err(e) = self.obj.put(&path, Bytes::from(segment_data.clone())) {
+            // PUT 失败：放回缓冲以便重试
+            let body = &segment_data[..segment_data.len() - 32];
+            let mut g = self.shared.lock();
+            let mut restored = body.to_vec();
+            restored.extend_from_slice(&g.buf);
+            g.buf = restored;
+            return Err(SqlError::io(format!("wal put: {e}")));
+        }
         self.advance_durable(seg, max_seq);
         Ok(seg)
     }
