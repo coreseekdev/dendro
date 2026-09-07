@@ -67,6 +67,18 @@
 | R4-P2 | LeaseKeeper 续期 PUT 持锁（RTT 阻塞提交/readyz/metrics） | ✅ | 锁内 clone → 锁外 PUT → 写回取 max 防倒退；`engine.rs::LeaseKeeper::renew_if_due` |
 | R4-杂 | 缩进×2 / SPEC 01 §7 标题 / metrics read_only HELP / write_branch_commit in-doubt 注释 / s3_cloud 显式 SKIPPED / **PG cleartext 认证接线** | ✅ | pgwire `serve_with_config` + main.rs 传入 password（trust/cleartext，SPEC 10 §8） |
 
+## 五轮评审修复（2026-09-08）
+
+| # | 任务 | 状态 | 证据 |
+|---|------|:----:|------|
+| R5-P1 | 毒化无可达恢复路径（keepalive 续租堵死接管 + 无 reopen 入口） | ✅ | flush_loop 保活移到毒化检查后（毒化分支租约自然过期可接管）；`engine.rs::reopen_branch`（驱逐旧 writer + 重新领 epoch + 恢复回放） |
+| R5-P1 | backup 撕裂写 × 幂等固化截断 | ✅ | tmp+rename 原子拷贝 + 尺寸不符重拷守卫；`backup.rs` |
+| R5-P2 | NoWait × 毒化 ack 后静默丢失 | ✅ | 契约显式化：SPEC 02 §3.5 + `Durability::NoWait` 文档 |
+| R5-P2 | 40003 MySQL 退化 HY000 | ✅ | `map_state("40003") => (1105, "40003")` sql_state 透传 + 单测 |
+| R5-P2 | backup 失败退出码 0 | ✅ | 失败 `exit(1)` |
+| R5-P2 | 毒化语义零 SPEC 化 | ✅ | 新增 SPEC 02 §3.5（40003/毒化/保活停止/reopen/Uncertain 对账/NoWait/双协议映射） |
+| R5-P2 | cached 零读者死状态 + "cached 不再只写"表述失实 | ✅ | 字段与 adopt() 删除；空洞测试改写为 `list_authoritative_reads_survive_gc_holes`；注释修正；本回应 §3 更正 |
+
 ## P2' — 提交管线（2026-09-08 起动）
 
 | # | 任务 | 状态 | 证据 |

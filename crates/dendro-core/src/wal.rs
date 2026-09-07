@@ -469,15 +469,15 @@ impl WalWriter {
                 return;
             }
             std::thread::sleep(self.cfg.flush_interval);
-            if let Some(ka) = &self.cfg.keepalive {
-                ka(); // 自限频：内部比较 next_renew_ms，未到期即返回
-            }
+
             let (pending, poisoned) = {
                 let g = self.shared.lock();
                 (g.pending_frames, g.poisoned)
             };
-            // 毒化后停止一切上传：确定失败的帧绝不持久化（错误 = 未提交）
             if poisoned {
+                // 毒化后停止一切上传（确定失败的帧绝不持久化，错误 = 未提交）；
+                // **同时停租约保活**（第五轮 P1）：毒化写者已不可用，继续续租
+                // 会占住租约堵死 TTL 接管——让它自然过期，接管者 reopen 恢复
                 continue;
             }
             if pending > 0 {
@@ -490,6 +490,11 @@ impl WalWriter {
 
     pub fn durable_watermark(&self) -> u64 {
         self.shared.lock().durable_seq
+    }
+
+    /// 写者是否已毒化（P0-D；engine::reopen_branch 与监控用）
+    pub fn poisoned(&self) -> bool {
+        self.shared.lock().poisoned
     }
 
     pub fn current_seg(&self) -> u64 {

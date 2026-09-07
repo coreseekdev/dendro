@@ -279,16 +279,18 @@ fn wal_failure_poisons_writer_until_reopen() {
 fn transient_flush_failure_self_heals_via_reopen() {
     // P0-D 定案后无"透明自愈"：单次故障同样毒化（错误语义必须与故障持续
     // 时间无关）。自愈发生在 reopen 层：新 writer 未毒化，可继续写入。
+    // fail_prefix="wal/"：keepalive 的 fence/ PUT 不消耗预算（确定性）
     let obj = Arc::new(FlakyPutStore {
         inner: MemoryObjStore::new(),
         fail_puts_left: AtomicU32::new(0),
-        fail_prefix: String::new(),
+        fail_prefix: "wal/".into(),
     });
     let db = Database::open(opts_store(StoreConfig::Obj(obj.clone()))).unwrap();
     {
         let mut s = db.new_session();
         s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
     }
+    // 注入仅限 wal/ 前缀（keepalive 的 fence/ PUT 不消耗预算 → 确定性）
     obj.fail_puts_left.store(1, Ordering::SeqCst);
     let err = {
         let mut s = db.new_session();

@@ -267,6 +267,10 @@ pub fn map_state(state: &str) -> (u16, &'static str) {
         "3D000" => (1049, "42000"), // ER_BAD_DB_ERROR
         "42000" => (1044, "42000"), // ER_DBACCESS_DENIED_ERROR 兜位
         "58030" => (2013, "08S01"), // CR_SERVER_LOST（IO 类）
+        // completion_unknown（WAL 毒化，P0-D）：MySQL 无对应错误码，
+        // code 用 ER_UNKNOWN_ERROR，但 sql_state 原样携带 40003——客户端
+        // 可据此区分"结果未知"与普通错误（语义见 SPEC 02 §4.1）
+        "40003" => (1105, "40003"),
         _ => (1105, "HY000"),       // ER_UNKNOWN_ERROR（XX000 等）
     }
 }
@@ -285,6 +289,7 @@ mod tests {
     fn state_mapping_covers_core_errors() {
         // SPEC 06 §3：表不存在 → 1146 / 42S02
         assert_eq!(map_state("42P01"), (1146, "42S02"));
+        assert_eq!(map_state("40003"), (1105, "40003"), "completion_unknown 的 sql_state 必须透传");
         assert_eq!(map_state("42601"), (1064, "42000"));
         assert_eq!(map_state("23505"), (1062, "23000"));
         assert_eq!(map_state("3D000"), (1049, "42000"));

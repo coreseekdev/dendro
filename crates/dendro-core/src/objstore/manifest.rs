@@ -102,12 +102,11 @@ impl Manifest {
 
 pub struct ManifestStore {
     obj: Arc<dyn ObjStore>,
-    cached: parking_lot::Mutex<u64>,
 }
 
 impl ManifestStore {
     pub fn new(obj: Arc<dyn ObjStore>) -> Self {
-        Self { obj, cached: parking_lot::Mutex::new(0) }
+        Self { obj }
     }
 
     fn path(ver: u64) -> String {
@@ -134,7 +133,6 @@ impl ManifestStore {
         let m = Manifest::empty(1, now_ms);
         self.obj
             .put_if_absent(&Self::path(1), serde_json::to_vec(&m).unwrap().into())?;
-        *self.cached.lock() = 1;
         Ok(())
     }
 
@@ -147,11 +145,6 @@ impl ManifestStore {
     /// 保留窗口），换取消除整类正确性风险。
     pub fn load_latest(&self) -> ObjResult<(u64, Manifest)> {
         self.load_latest_via_list()
-    }
-
-    /// 本进程刚提交的版本直接采纳为缓存快照（无 LIST；update_manifest 自发布用）
-    pub fn adopt(&self, ver: u64) {
-        *self.cached.lock() = ver;
     }
 
     /// LIST manifest/ 前缀取最大版本（权威路径；天然兼容空洞）
@@ -169,7 +162,6 @@ impl ManifestStore {
         vers.sort_unstable();
         let top = vers.pop().ok_or_else(|| ObjError::NotFound("manifest/".into()))?;
         let m = self.read_version(top)?;
-        *self.cached.lock() = top;
         Ok((top, m))
     }
 
@@ -184,17 +176,11 @@ impl ManifestStore {
             .obj
             .put_if_absent(&path, serde_json::to_vec(&new).unwrap().into())
         {
-            Ok(()) => {
-                *self.cached.lock() = cur + 1;
-                Ok(cur + 1)
-            }
+            Ok(()) => Ok(cur + 1),
             Err(ObjError::Uncertain(_)) => {
                 // 可能已成功：GET 反查 putid
                 match self.read_version(cur + 1) {
-                    Ok(m) if m.writer_putid.as_deref() == Some(putid.as_str()) => {
-                        *self.cached.lock() = cur + 1;
-                        Ok(cur + 1)
-                    }
+                    Ok(m) if m.writer_putid.as_deref() == Some(putid.as_str()) => Ok(cur + 1),
                     Ok(_) => Err(ObjError::Exists(path)), // 别人写赢了
                     Err(e) => Err(e),
                 }
@@ -273,31 +259,30 @@ mod tests {
     }
 
     #[test]
-    fn load_latest_falls_back_to_list_on_gc_holes() {
-        // P1-C 回归：GC 删除中间版本对象后，**停滞写者**（cached 停在 v1）
-        // 的探测在 cached+1 处撞洞——必须回落 LIST 拿到真最新版本，
-        // 否则其提交会写进已删版本号的空洞形成影子谱系。
+    fn list_authoritative_reads_survive_gc_holes() {
+        // P1-C/P1-F 回归：GC 删除中间版本对象（2..=9）造成版本号空洞后，
+        // **任何**读路径（含停滞写者）都必须拿到真最新版本——LIST 为权威，
+        // 读路径不信任任何本地记忆，影子谱系（把提交写进已删版本号的空洞）
+        // 从机制上不可能。
         let (s, obj) = store();
         let mut m = s.load_latest().unwrap().1;
         for _ in 0..9 {
             m.refs.insert("b".into(), BranchHead { wal_seg: m.version, ..Default::default() });
             m = s.read_version(s.commit(m.version, m.clone()).unwrap()).unwrap();
         }
-        let latest = s.load_latest().unwrap().0;
-        assert_eq!(latest, 10);
-        // 模拟另一实例 GC：删除 2..=9（保留 1 与 10）→ 版本号空间出现空洞
+        assert_eq!(s.load_latest().unwrap().0, 10);
+        // 模拟 GC：删除 2..=9（保留 1 与 10）→ 版本号空间出现空洞
         for v in 2..=9 {
             obj.delete(&format!("manifest/{v:020}.json")).unwrap();
         }
-        // 停滞写者：新的 ManifestStore，cached 强制停在 1（同模块可访问私有字段）
+        // 新实例（无任何本地记忆）在空洞之上读到真最新版本
         let stalled = ManifestStore::new(obj.clone());
-        *stalled.cached.lock() = 1;
         let (top, m10) = stalled.load_latest().unwrap();
-        assert_eq!(top, 10, "撞洞必须回落 LIST 而非把 cached 当最新");
+        assert_eq!(top, 10);
         assert_eq!(m10.version, 10);
-        // 停滞写者从真最新版本继续提交：不产生影子谱系
+        // 从真最新版本继续提交：不落入已删版本号的空洞
         let v = stalled.commit(10, m10).unwrap();
         assert_eq!(v, 11);
-        assert!(stalled.load_latest().unwrap().0 >= 11);
+        assert_eq!(stalled.load_latest().unwrap().0, 11);
     }
 }

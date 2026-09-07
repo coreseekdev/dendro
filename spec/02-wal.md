@@ -65,6 +65,24 @@ append 帧 → seq 申请      │→ MPMC 队列 ─→ 聚帧器(当前段缓�
 - Latch 表：`DashMap<seq, broadcast>` 或原子 bitmap + condvar；实现用 `parking_lot`。
 - 写放大控制：CHECKPOINT 段(树物化)合并 TXN 段上传时机，避免双写抖动。
 
+## 3.5 上传失败错误语义（毒化，v1.1 定案）
+
+**SQLSTATE 40003（completion_unknown）**。任何 flush PUT 失败即**毒化写者**：
+
+- `append` 一律拒绝（不得在结果未知的状态上叠加写）；`flush_now`/`flush_loop`
+  停止一切上传——**确定性失败的帧绝不持久化，失败 = 未提交**（进程内无痕，
+  重启无幽灵行）；`await_durable` 见毒化立即返回 40003；
+- 毒化写者的**租约保活同时停止**——让它自然过期，接管者可接管；
+- **唯一恢复路径 = reopen**（`engine.rs::reopen_branch` 或重启进程）：新 writer
+  未毒化，恢复回放裁决真实状态。**Uncertain 边界**：失败若为超时/断连，PUT
+  可能已在服务端成功——该对象 reopen 后回放可见，事务结果**未知**，客户端
+  须按幂等键对账（409? 不，重复执行以主键覆盖语义兜底）。
+- **NoWait 契约边界**：NoWait 提交在毒化窗口内仍会 ack 成功——其帧随后不再
+  上传，重启即失。这是 NoWait"可能丢尾"契约在毒化下的表现，选择 NoWait
+  即接受该语义（默认 durability=group 不受影响）。
+- MySQL wire 映射：code=1105(ER_UNKNOWN_ERROR)、sql_state 原样携带 40003；
+  PG 透传 40003（合法 SQLSTATE：statement_completion_unknown）。
+
 ## 4. 恢复
 
 ```

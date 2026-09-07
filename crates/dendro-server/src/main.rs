@@ -235,7 +235,10 @@ fn main() {
                 Ok((objects, bytes)) => {
                     println!("backup complete: {objects} objects, {bytes} bytes -> {}", out.display());
                 }
-                Err(e) => eprintln!("backup failed: {e}"),
+                Err(e) => {
+                    eprintln!("backup failed: {e}");
+                    std::process::exit(1);
+                }
             }
         }
         Cmd::Bench { out } => {

@@ -82,16 +82,25 @@ fn copy_tree_rooted(
         }
         let target = dst_root.join(rel);
         files += 1; // 计数含幂等跳过者（调用方以"是否见过对象"判断，非拷贝数）
-        if target.exists() {
-            continue; // 幂等：append-only ⇒ 同路径同内容
+        if let Ok(dst_meta) = std::fs::metadata(&target) {
+            // 幂等 + 守卫（第五轮 P1）：append-only ⇒ 同路径同内容；但上次
+            // 中断可能留下**截断文件**（旧版直接 fs::copy 非原子）——尺寸
+            // 不符即重拷修复，绝不让撕裂文件固化。
+            if dst_meta.len() == p.metadata().map_err(|e| ObjError::Io(e.to_string()))?.len() {
+                continue;
+            }
         }
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| ObjError::Io(format!("mkdir {}: {e}", parent.display())))?;
         }
-        let n = std::fs::copy(&p, &target)
+        // **原子写**：临时文件 + rename——备份进程中断/并发运行都不会在
+        // 最终路径留下截断对象（manifest 恰是一致性点本身，必须原子）
+        let tmp = target.with_extension("dendro-bak-tmp");
+        let n = std::fs::copy(&p, &tmp)
             .map_err(|e| ObjError::Io(format!("copy {}: {e}", p.display())))?;
-        files += 1;
+        std::fs::rename(&tmp, &target)
+            .map_err(|e| ObjError::Io(format!("rename {}: {e}", target.display())))?;
         bytes += n;
     }
     Ok((files, bytes))

@@ -71,8 +71,12 @@ pub struct DbOptions {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Durability {
+    /// 缓冲即 ack，不等上传。契约：崩溃/上传失败可能丢尾（毒化窗口内
+    /// ack 的提交重启即失）——SPEC 02 §3.5；默认应为 Group。
     NoWait,
+    /// 等待组提交落盘（本次或同批 flush durable 后返回）。
     Group,
+    /// 等待自己的帧所在段上传成功。
     Always,
 }
 
@@ -454,6 +458,20 @@ impl Database {
         self.branches.read().values().cloned().collect()
     }
 
+    /// **重开分支**（毒化写者的进程内恢复入口，第五轮 P1）：
+    /// 把驻留分支从 writer 注册表驱逐（旧 Arc 上的在途会话继续用旧 writer
+    /// 并按毒化语义失败），随后按正常打开路径重新领取 epoch + 恢复回放——
+    /// 恢复以 manifest + WAL 为准，裁决毒化期间的真实状态（WAL 失败 =
+    /// 未提交；Uncertain 落盘者此时可见，客户端须对账，见 SPEC 02 §4.1）。
+    pub fn reopen_branch(&self, name: &str) -> Result<Arc<Branch>> {
+        let old = self.branches.write().remove(name);
+        if let Some(old) = old {
+            // 旧写者退役：停 flush 线程（毒化下本就停），租约不再续期
+            old.wal.close();
+        }
+        self.branch(name)
+    }
+
     /// 读/建分支运行态（恢复路径也走这里：从 manifest 构造）
     pub fn branch(&self, name: &str) -> Result<Arc<Branch>> {
         {
@@ -740,16 +758,14 @@ impl Database {
             let mut m = m;
             let changed = f(&mut m)?;
             if !changed {
-                // 无需变更：仍把读到的版本采纳为缓存（下一次 load_latest 省一次 LIST）
-                self.manifest_store.adopt(ver);
+                // 无需变更：快照仍刷新为刚读到的版本
                 self.state.store(Arc::new(DbSnapshot { manifest: m }));
                 return Ok(());
             }
             match self.manifest_store.commit(ver, m.clone()) {
-                Ok(new_ver) => {
+                Ok(_new_ver) => {
                     // 自发布：commit 的就是我们刚构造的 m（版本号 new_ver），
-                    // 无需再 LIST 刷新一次（P1-F：每次发布省 1 个 LIST 请求）
-                    self.manifest_store.adopt(new_ver);
+                    // 直接作为本进程快照，无需再 LIST 刷新（P1-F：每次发布省 1 LIST）
                     self.state.store(Arc::new(DbSnapshot { manifest: m }));
                     return Ok(());
                 }
