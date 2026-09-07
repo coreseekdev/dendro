@@ -243,6 +243,9 @@ fn exec_branch_statement(db: &Database, sess: &mut Session, sql: &str) -> Result
     let ddl = crate::versioned::Versioned::new(db.store.clone());
     match kind {
         BranchKind::Use => {
+            if sess.txn.is_some() {
+                return Err(SqlError::new("25001", "cannot switch branch inside a transaction"));
+            }
             let name = parse_ident_after(sql, "USE BRANCH")?;
             // 确认存在
             db.branch(&name)?;

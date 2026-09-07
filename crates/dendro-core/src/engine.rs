@@ -128,6 +128,9 @@ pub struct Branch {
     pub lease_epoch: AtomicU64,
     /// 只读分支（读副本）：不领租约、不起 WAL writer；fence_gate 拒绝一切写
     pub read_only: bool,
+    /// 已截断 memtx 历史的最高 covered seq（Q-9：显式事务快照低于此值 =
+    /// 冲突检测盲区 → 提交时显式 40001，杜绝静默丢失更新）
+    pub covered_min: AtomicU64,
     /// 写者租约 keep（与 flush_loop 的保活回调共享；P1 运行时拒写 + 空闲保活）
     pub lease: Arc<LeaseKeeper>,
     /// 已安装（可见）的提交水位
@@ -596,6 +599,7 @@ impl Database {
             next_seq: AtomicU64::new(0),
             lease_epoch: AtomicU64::new(lease_epoch),
             read_only: self.opts.read_only,
+            covered_min: AtomicU64::new(0),
             lease: keeper,
             watermark: AtomicU64::new(0),
             pending: Mutex::new(HashMap::new()),
@@ -1055,6 +1059,8 @@ impl Database {
         b.wal.set_first_seg(seg_now);
         // 释放 memtx 历史版本
         b.mem.truncate_all(covered);
+        // 记录盲区水位（Q-9）：此后提交的显式事务若快照低于此值即拒
+        b.covered_min.store(covered, Ordering::Release);
         Ok(Some(commit.addr()))
     }
 
@@ -1213,6 +1219,14 @@ pub(crate) fn commit_tx(db: &Database, sess_branch: &str, txn: &Txn) -> Result<u
     let b = db.branch(sess_branch)?;
     let _g = b.commit_mu.lock();
     b.fence_gate()?;
+    // Q-9：显式事务快照早于最近一次 checkpoint 的截断水位 ⇒ 该事务的冲突
+    // 检测存在盲区（memtx 历史已截断、树只有最新态）——静默 last-writer-wins
+    // 会造成丢失更新，改为显式 40001（客户端重试即获得完整视图）
+    if txn.explicit && txn.snapshot < b.covered_min.load(Ordering::Acquire) {
+        return Err(SqlError::serialization(
+            "transaction spans a checkpoint; conflict detection unavailable — retry",
+        ));
+    }
     let epoch = b.lease_epoch.load(Ordering::Acquire);
     let seq = b.alloc_seq();
     let ts = crate::recovery::composite_ts(epoch, seq);

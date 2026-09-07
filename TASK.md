@@ -133,9 +133,9 @@
 | R8-P1 | 显式事务不读自己的写（SQL 读路径从不合并 sess.txn.writes） | ✅ | table_scan 可见性归并**收敛为单一抽象**（树→overlay→会话事务写 三层 map 覆盖——评审建议的结构性方案，键序错误无处可写）+ 点查路径自身写覆盖。回归 `sql_semantics::r8_1_explicit_txn_reads_own_writes`（INSERT/DELETE/UPDATE/COMMIT 全链） |
 | R8-P1 | 服务端日志为零（17 处 tracing 无 subscriber） | ✅ | main 入口 tracing_subscriber fmt + EnvFilter（RUST_LOG 可调，默认 info） |
 | R8-P2 | 监听器 bind 失败照常 ready 且永不退出 | ✅ | 全部 handle join，任一失败 exit(1)；此前 join 顺序 + panic 吞噬 |
-| R8-P2 | OCC 冲突检测窗口止于 checkpoint（40001 退化为静默 last-writer-wins） | ⬜ 入册 | 结构性：validate 依赖 memtx 版本链，checkpoint 截断历史后无从比较。方向：validate 阶段回退树版本（prolly 版本链）或缩短 truncate 窗口。见 Q-9 |
+| R8-P2 | OCC 冲突检测窗口止于 checkpoint | ✅（定案） | 跨越 checkpoint 的显式事务提交**显式 40001**（盲区拒绝，客户端重试获得完整视图）——静默丢失更新消除。`Branch.covered_min` + commit_tx 检查；回归 `q9_txn_spanning_checkpoint_rejected_not_silent`。Q-9 保留"validate 回退树版本链"为 v2 增强 |
 | R8-P2 | 事务内 DDL 立即生效且 ROLLBACK 不撤销 | ⬜ 入册 Q-10 | 需 catalog 写集事务化（v2） |
-| R8-P2 | BEGIN 后 USE BRANCH 不设防 | ⬜ 入册 Q-11 | 事务内 USE → 25001 或自动 ROLLBACK |
+| R8-P2 | BEGIN 后 USE BRANCH 不设防 | ✅ | 事务内 USE → 25001；回归 `q11_use_branch_inside_txn_rejected` |
 
 ### 第八轮登记
 

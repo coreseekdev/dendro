@@ -203,3 +203,56 @@ fn r8_1_explicit_txn_reads_own_writes() {
     assert_eq!(q(&mut s, "SELECT v FROM t WHERE id = 2")[0][0], "B");
     assert_eq!(q(&mut s, "SELECT id FROM t WHERE id = 1").len(), 0);
 }
+
+#[test]
+fn q9_txn_spanning_checkpoint_rejected_not_silent() {
+    // 第八轮 R8-4/Q-9：显式事务的冲突检测盲区——事务与提交之间隔着一次
+    // checkpoint（memtx 历史被截断）时，此前的 40001 退化为静默
+    // last-writer-wins（丢失更新无报错）。现定案：跨越 checkpoint 的显式
+    // 事务提交显式 40001，客户端重试即获得完整视图。
+    let db = Database::open(DbOptions::memory()).unwrap();
+    {
+        let mut s = db.new_session();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+        s.exec("INSERT INTO t VALUES (1, 'a')").unwrap();
+        db.checkpoint_branch("main").unwrap();
+    }
+    let mut s = db.new_session();
+    s.exec("BEGIN").unwrap();
+    s.exec("UPDATE t SET v = 'mine' WHERE id = 1").unwrap();
+    // 并发提交 + checkpoint（截断 memtx 历史 → 冲突检测盲区）
+    {
+        let mut s2 = db.new_session();
+        s2.exec("UPDATE t SET v = 'theirs' WHERE id = 1").unwrap();
+        db.checkpoint_branch("main").unwrap();
+    }
+    let e = match s.exec("COMMIT") {
+        Ok(_) => panic!("跨越 checkpoint 的事务必须显式拒绝，而非静默丢失更新"),
+        Err(e) => e,
+    };
+    assert_eq!(e.state, "40001", "{e}");
+    // 重试（新事务）获得完整视图：对方的更新在，我的更新按新视图生效
+    s.exec("BEGIN").unwrap();
+    s.exec("UPDATE t SET v = 'mine-retry' WHERE id = 1").unwrap();
+    s.exec("COMMIT").unwrap();
+    let mut s2 = db.new_session();
+    match &s2.exec("SELECT v FROM t WHERE id = 1").unwrap()[0] {
+        dendro_core::Output::Rows(rs) => assert_eq!(rs.text_rows()[0][0].as_deref(), Some("mine-retry")),
+        _ => panic!(),
+    }
+}
+
+#[test]
+fn q11_use_branch_inside_txn_rejected() {
+    let db = Database::open(DbOptions::memory()).unwrap();
+    let mut s = db.new_session();
+    s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY)").unwrap();
+    s.exec("CREATE BRANCH b2 FROM main").unwrap();
+    s.exec("BEGIN").unwrap();
+    let e = match s.exec("USE BRANCH b2") {
+        Ok(_) => panic!("事务内 USE BRANCH 应被拒"),
+        Err(e) => e,
+    };
+    assert_eq!(e.state, "25001", "{e}");
+    s.exec("COMMIT").unwrap();
+}
