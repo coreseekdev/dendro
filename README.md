@@ -27,6 +27,13 @@
 - **SQL 必须可用**：sqlparser-rs 解析(PG/MySQL 方言) + 自研执行器，
   sqllogictest 基线在 `tests/slt/`。
 
+## 深度教程（推荐从 01 章读起）
+
+[docs/tutorial/](docs/tutorial/README.md) — 教程风格的逐层拆解，颗粒度到字节：
+对象存储与 manifest 逐字段 · 内容寻址与保序键编码（逐字节示例）· prolly 树节点
+二进制布局 · WAL 24B 帧头与组提交时序 · memtx OCC · CBF 列存 64B 块头与 5 种
+codec 字节布局 · 分支合并 · PG/MySQL 消息流 · S3 云原生实战（RustFS 实测）。
+
 ## 目录
 
 ```
