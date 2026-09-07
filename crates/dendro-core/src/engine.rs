@@ -835,7 +835,11 @@ impl Session {
     /// 执行一段 SQL（可含多语句，`;` 分隔）；空/纯注释 → 空 Vec
     pub fn exec(&mut self, sql: &str) -> Result<Vec<Output>> {
         let db = self.db.clone();
-        crate::sql::exec_batch(&db, self, sql)
+        let result = crate::sql::exec_batch(&db, self, sql);
+        if result.is_err() && self.txn.is_some() {
+            self.failed_txn = true;
+        }
+        result
     }
     /// PG extended：Parse
     pub fn prepare(

@@ -325,6 +325,7 @@ pub(crate) fn exec_insert(db: &Database, sess: &mut Session, insert: Insert) -> 
     let snapshot = sess.implicit_snapshot(db)?;
     let mut txn = sess.txn.take().unwrap_or_else(|| Txn::new(snapshot));
     let mut count = 0u64;
+    let mut seen_keys: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
     match *source.body {
         sqlparser::ast::SetExpr::Values(values) => {
             let value_rows = values.rows;
@@ -349,6 +350,13 @@ pub(crate) fn exec_insert(db: &Database, sess: &mut Session, insert: Insert) -> 
                 let mut row = vec![SqlValue::Null; schema.columns.len()];
                 for (v, &ci) in vr.iter().zip(&col_idx) {
                     row[ci] = expr::eval(v, &[], &|_| None)?;
+                }
+                let pk_vals: Vec<SqlValue> = schema.pk.iter().map(|&i| row[i as usize].clone()).collect();
+                let key = encode_key(&pk_vals);
+                if !seen_keys.insert(key.clone()) {
+                    return Err(SqlError::duplicate_key(format!(
+                        "duplicate key value violates primary key constraint (key in same INSERT)"
+                    )));
                 }
                 insert_row(db, sess, &schema, entry.id, &mut txn, row)?;
                 count += 1;

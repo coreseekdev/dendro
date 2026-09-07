@@ -399,12 +399,7 @@ fn arith(op: BO, l: SqlValue, r: SqlValue) -> Result<SqlValue> {
         _ => unreachable!(),
     };
     let v = out.ok_or_else(|| SqlError::internal("integer overflow"))?;
-    // 保持原精度：两边都是 i32 且不溢出 → i32
-    if matches!(l, SqlValue::Int32(_)) && matches!(r, SqlValue::Int32(_)) {
-        Ok(SqlValue::Int32(v as i32))
-    } else {
-        Ok(SqlValue::Int64(v))
-    }
+    Ok(SqlValue::Int64(v))
 }
 
 /// 三态比较（数值跨型比较；字符串字节序；null 已由调用方过滤）

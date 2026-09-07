@@ -71,9 +71,16 @@ pub(crate) fn eval_query(db: &Database, sess: &mut Session, q: &Query, snapshot:
     // WHERE
     if let Some(w) = &select.selection {
         let cols = col_lookup(&tv.names);
-        tv.rows.retain(|row| {
-            matches!(expr::eval(w, row, &cols), Ok(SqlValue::Bool(true)))
-        });
+        // WHERE 过滤（求值错误 → 语句失败，不静默吞）
+        let mut filtered = Vec::with_capacity(tv.rows.len());
+        for row in tv.rows.drain(..) {
+            match expr::eval(w, &row, &cols) {
+                Ok(SqlValue::Bool(true)) => filtered.push(row),
+                Ok(_) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        tv.rows = filtered;
     }
     // GROUP BY / 聚合 / HAVING
     let has_agg = projection_aggregates(&select.projection).is_some()
@@ -897,7 +904,8 @@ fn hash_join(l: TableView, r: TableView, on: &Expr) -> Result<TableView> {
             if v.is_null() {
                 return None;
             }
-            k.push(expr::to_text(v.clone()));
+            // 类型 tag + 文本：防 Int64(1) 与 Utf8("1") 碰撞
+            k.push(format!("{}\u{0}{}", v.type_name(), expr::to_text(v.clone())));
         }
         Some(k)
     };
