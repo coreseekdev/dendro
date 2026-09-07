@@ -27,6 +27,14 @@
 - **SQL 必须可用**：sqlparser-rs 解析(PG/MySQL 方言) + 自研执行器，
   sqllogictest 基线在 `tests/slt/`。
 
+## 调研：多节点 TP 事务
+
+[docs/research/多节点TP事务调研.md](docs/research/多节点TP事务调研.md) —
+把"多节点处理 TP 事务"拆成 R/W1/W2/B 四个问题，逐一对照
+Aurora/Neon/Socrates、CockroachDB/TiKV、FoundationDB、Aurora DSQL、
+Calvin、ForkBase 的参考架构，给出 Dendro 的四阶段演进路线
+（读副本 → 分支租约 fencing → 日志服务 → 分布式 OCC）。
+
 ## 深度教程（推荐从 01 章读起）
 
 [docs/tutorial/](docs/tutorial/README.md) — 教程风格的逐层拆解，颗粒度到字节：
