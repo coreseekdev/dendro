@@ -61,6 +61,13 @@ tikv/raft-rs vs openraft vs hashicorp/raft vs Kafka KRaft 的工业验证对比�
 Dendro Journal 的三层演进（单节点 → Quorum Append → Raft 升级路径）、
 以及"Aurora 洞察：有外部单写者时 Raft 的 leader 选举是多余的"。
 
+## 选型：共识实现对比（Raft vs Quorum Log）
+
+[docs/research/共识实现选型.md](docs/research/共识实现选型.md) —
+tikv/raft-rs vs openraft vs hashicorp/raft vs Kafka KRaft 的工业验证对比、
+Dendro Journal 的三层演进（单节点 → Quorum Append → Raft 升级路径）、
+以及"Aurora 洞察：有外部单写者时 Raft 的 leader 选举是多余的"。
+
 ## 设计：多节点 memtx 事务一致性
 
 [docs/design/多节点memtx一致性.md](docs/design/多节点memtx一致性.md) —
