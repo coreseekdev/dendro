@@ -237,6 +237,13 @@ struct WalShared {
     flushed_seg: u64,        // 已成功上传的最高段
     durable_seq: u64,        // 已 durable 的最高 seq
     pending_frames: u64,     // 当前缓冲帧数（唤醒用）
+    /// **写者毒化（P0-D 错误语义定案）**：任何 flush PUT 失败后置位。
+    /// 置位后：append 一律拒绝（SQLSTATE 40003 completion_unknown），
+    /// flush_loop 停止上传（确定失败的帧绝不持久化——错误 = 未提交）；
+    /// 唯一恢复路径是 reopen（新 writer + 恢复回放裁决真实状态）。
+    /// Uncertain（PUT 可能已成功）：帧保留在缓冲但不上传，对象若已落盘
+    /// 则 reopen 后回放可见——该事务结果**未知**，客户端须对账（SPEC 02 §4.1）。
+    poisoned: bool,
 }
 
 pub struct WalWriter {
@@ -271,6 +278,7 @@ impl WalWriter {
                 flushed_seg: start_seg.saturating_sub(1),
                 durable_seq: 0,
                 pending_frames: 0,
+                poisoned: false,
             }),
             cv: Condvar::new(),
             flush_mu: Mutex::new(()),
@@ -312,6 +320,7 @@ impl WalWriter {
                 flushed_seg: start_seg.saturating_sub(1),
                 durable_seq: 0,
                 pending_frames: 0,
+                poisoned: false,
             }),
             cv: Condvar::new(),
             flush_mu: Mutex::new(()),
@@ -329,7 +338,12 @@ impl WalWriter {
     }
 
     /// 追加一帧并按 durability 语义等待。返回 durable（或缓冲后）seq。
+    /// 毒化后一律拒绝（P0-D：不得在结果未知的状态上叠加写）。
     pub fn append(&self, ty: FrameType, seq: u64, payload: &[u8], durability: crate::engine::Durability) -> Result<()> {
+        if self.shared.lock().poisoned {
+            return Err(SqlError::new("40003",
+                "wal writer poisoned by an earlier upload failure; reopen the branch to recover (transaction outcome may be unknown)"));
+        }
         let frame = encode_frame(ty, seq, payload);
         let _size = frame.len();
         {
@@ -362,6 +376,10 @@ impl WalWriter {
             if *self.stop.lock() {
                 return Err(SqlError::io("wal writer stopped"));
             }
+            if g.poisoned {
+                return Err(SqlError::new("40003",
+                    "wal writer poisoned by an earlier upload failure; reopen the branch to recover (transaction outcome may be unknown)"));
+            }
             let t = self.cv.wait_for(&mut g, self.cfg.flush_interval);
             let durabled = g.durable_seq >= seq;
             if !durabled && t.timed_out() {
@@ -387,6 +405,11 @@ impl WalWriter {
         let _single = self.flush_mu.lock();
         let (seg, bytes, max_seq, seg_frames, seg_min) = {
             let mut g = self.shared.lock();
+            // 毒化后不再上传（P0-D）：确定失败的帧绝不持久化；
+            // 调用方经 await_durable 的毒化检查得到 40003
+            if g.poisoned {
+                return Ok(g.flushed_seg);
+            }
             if g.buf.is_empty() {
                 return Ok(g.flushed_seg);
             }
@@ -404,10 +427,14 @@ impl WalWriter {
         };
         let path = Self::seg_path(&self.branch, self.epoch, seg);
         if let Err(e) = self.obj.put(&path, bytes.clone()) {
-            // PUT 失败：段体放回缓冲头部（旧帧在前，上传期间的新 append 在后）；
-            // cur_seg 不动，重试仍写同一段号（不留空洞）
+            // PUT 失败：**毒化写者**（P0-D 定案）。帧留缓冲但不再上传——
+            // 确定性失败 ⇒ 这些事务未提交，恢复回放永不可见，错误如实。
+            // （Uncertain 场景：对象可能已落盘，reopen 后回放裁决真实状态，
+            // 客户端须对账——见 WalShared.poisoned 注释与 SPEC 02 §4.1。）
+            // cur_seg 不动；reopen 前不再有任何上传（flush_loop 停）。
             let body_len = bytes.len() - TRAILER_LEN;
             let mut g = self.shared.lock();
+            g.poisoned = true;
             let mut restored = bytes[..body_len].to_vec();
             restored.extend_from_slice(&g.buf);
             g.buf = restored;
@@ -415,7 +442,7 @@ impl WalWriter {
             g.pending_frames += seg_frames;
             g.min_seq = if g.min_seq == 0 { seg_min } else { seg_min.min(g.min_seq) };
             g.max_seq = g.max_seq.max(max_seq);
-            return Err(SqlError::io(format!("wal put: {e}")));
+            return Err(SqlError::new("40003", format!("wal put failed, writer poisoned; reopen required: {e}")));
         }
         self.advance_durable(seg, max_seq);
         let mut g = self.shared.lock();
@@ -445,7 +472,14 @@ impl WalWriter {
             if let Some(ka) = &self.cfg.keepalive {
                 ka(); // 自限频：内部比较 next_renew_ms，未到期即返回
             }
-            let pending = { let g = self.shared.lock(); g.pending_frames };
+            let (pending, poisoned) = {
+                let g = self.shared.lock();
+                (g.pending_frames, g.poisoned)
+            };
+            // 毒化后停止一切上传：确定失败的帧绝不持久化（错误 = 未提交）
+            if poisoned {
+                continue;
+            }
             if pending > 0 {
                 if let Err(e) = self.flush_now() {
                     tracing::error!("wal flush: {e}");

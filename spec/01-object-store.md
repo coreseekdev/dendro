@@ -110,8 +110,10 @@ loop:
   on Exists → 读最新 manifest，回到 loop（有界重试，默认 64）
 ```
 
-- **读最新版本**绝不依赖 LIST 常态路径：`head(manifest/{cached+1})`、`{cached+2}`…
-  命中即新；32 次未命中退回 list。
+- **读最新版本以 LIST 为权威路径**（v1.1 修订）：GC 删除使版本号空间存在
+  任意空洞，探测无法区分"已是最新"与"撞洞"（后者会放行停滞写者写进已删
+  版本号 → 影子谱系）。manifest 版本数 ≤17（GC 保留窗口），每次
+  `load_latest` 恰 1 个 LIST；写者发布后自采纳缓存（不再额外 LIST）。
 - manifest 对象写入后不可变 ⇒ 读者拿到 (version) 即拿到一致快照，无需读锁。
 - 快照引用计数：分支引用的 commit/wal 段被 GC 保护；`branch create` 时在 fork 处
   记 `fork_at`，父分支 GC 不得越过任何子分支 fork 点（neon retain_lsns 同思路）。
@@ -131,7 +133,7 @@ loop:
   全根可达性分析成本），v2 候选：引用计数入 manifest 快照。旧标记-清扫
   设计（min_age + 引用集）保留为 v2 方案参考。
 
-7. 本地缓存（读路径）
+## 7. 本地缓存（读路径）
 
 `CachedObjStore`：包装底层 store，LRU(字节配额, 默认 2GiB)缓存 byte-range GET 与整对象；
 对 CBF/parquet 的 footer、prolly 节点命中友好。本地盘目录 `{cache_root}`，

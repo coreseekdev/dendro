@@ -88,7 +88,7 @@ impl Default for DbOptions {
             cache_budget_bytes: 1 << 30,
             lease_ttl_ms: 30_000,
             read_only: false,
-        gc_retention_ms: 24 * 3600 * 1000,
+            gc_retention_ms: 24 * 3600 * 1000,
         }
     }
 }
@@ -163,19 +163,27 @@ impl LeaseKeeper {
     /// **惰性续期**：每 ttl/3 至多一次 PUT；失败仅告警（下次提交/保活重试，
     /// 过期后被 check 拒绝）。两个调用方：commit 路径的 fence_gate、
     /// flush_loop 的空闲保活（解决"30 秒无提交即永久 40001"的自毒化）。
+    /// **PUT 在锁外执行**（P2-6）：锁内 clone 后释放锁再发 PUT——否则续期
+    /// RTT 会阻塞 fence_gate（提交路径）、/readyz、/metrics 的 state 锁。
+    /// 并发双触发（gate+保活同窗）无害：覆盖写幂等，写回取 max 防倒退。
     pub fn renew_if_due(&self) {
         let now = crate::objstore::fence::now_ms();
-        let mut st = self.state.lock();
-        if now < st.next_renew_ms || st.lease.expires_at_ms <= now {
-            return; // 未到续期点 / 已过期（保活无权救活失约者，重开才能重获写权）
-        }
-        let ttl = self.ttl_ms;
-        let mut fresh = st.lease.clone();
-        fresh.expires_at_ms = now + ttl;
+        let fresh = {
+            let st = self.state.lock();
+            if now < st.next_renew_ms || st.lease.expires_at_ms <= now {
+                return; // 未到续期点 / 已过期（保活无权救活失约者，重开才能重获写权）
+            }
+            let mut f = st.lease.clone();
+            f.expires_at_ms = now + self.ttl_ms;
+            f
+        }; // 锁已释放
         match self.fence.renew(&self.branch, &fresh) {
             Ok(()) => {
-                st.lease = fresh;
-                st.next_renew_ms = now + ttl / 3;
+                let mut st = self.state.lock();
+                if st.lease.epoch == fresh.epoch {
+                    st.lease = fresh;
+                    st.next_renew_ms = st.next_renew_ms.max(now + self.ttl_ms / 3);
+                }
             }
             Err(e) => {
                 tracing::warn!(branch = %self.branch, error = %e, "fence renew failed; retry on next commit/keepalive");
@@ -678,6 +686,11 @@ impl Database {
         let b = self.branch(branch)?;
         let _g = b.commit_mu.lock();
         b.fence_gate()?;
+        // 注（in-doubt 家族，低配版）：此处顺序为 head.store → WAL ck 帧 →
+        // manifest。WAL 失败时 head 已推进而 manifest 未动——进程内后续 DDL
+        // 可见"报错了的"新树，重启后以 manifest + 回放为准（收敛），客户端
+        // 收到错误。与 commit_tx 的管线重排（P2'-1）不同，本路径的失败窗口
+        // 由下次成功 checkpoint 收敛，v1 如实记录；随 P2'-2 统一重排。
         let _head = b.head.load_full();
         let height = parents.iter().try_fold(0u64, |m, p| -> Result<u64> {
             Ok(m.max(self.load_commit(p)?.height))
@@ -725,14 +738,19 @@ impl Database {
         for _ in 0..64 {
             let (ver, m) = self.manifest_store.load_latest().map_err(SqlError::from)?;
             let mut m = m;
-            match f(&mut m)? {
-                false => return Ok(()), // 无需变更
-                true => {}
+            let changed = f(&mut m)?;
+            if !changed {
+                // 无需变更：仍把读到的版本采纳为缓存（下一次 load_latest 省一次 LIST）
+                self.manifest_store.adopt(ver);
+                self.state.store(Arc::new(DbSnapshot { manifest: m }));
+                return Ok(());
             }
-            match self.manifest_store.commit(ver, m) {
-                Ok(_) => {
-                    let (_, fresh) = self.manifest_store.load_latest().map_err(SqlError::from)?;
-                    self.state.store(Arc::new(DbSnapshot { manifest: fresh }));
+            match self.manifest_store.commit(ver, m.clone()) {
+                Ok(new_ver) => {
+                    // 自发布：commit 的就是我们刚构造的 m（版本号 new_ver），
+                    // 无需再 LIST 刷新一次（P1-F：每次发布省 1 个 LIST 请求）
+                    self.manifest_store.adopt(new_ver);
+                    self.state.store(Arc::new(DbSnapshot { manifest: m }));
                     return Ok(());
                 }
                 Err(crate::objstore::ObjError::Exists(_)) => continue, // 乐观冲突重试
@@ -1003,21 +1021,17 @@ impl Database {
             if !removed.is_empty() {
                 self.update_manifest(|m2| {
                     m2.tombstones.retain(|t| !removed.contains(&t.path));
+                    m2.gc_last_sweep_ver = latest; // 水位随压缩顺带发布（P2-B）
                     Ok(true)
                 })?;
             }
         }
-        // 旧 manifest 版本：保留最近 16（滞后读者兜底；JSON 极小、LIST 路径兼容空洞）
+        // 旧 manifest 版本：保留最近 16（滞后读者兜底；JSON 极小、LIST 权威路径兼容空洞）
         let vers = self.manifest_store.retained(latest, 16);
         deleted += self.manifest_store.delete_versions(&vers);
-        // 记录水位（既有字段 gc_last_sweep_ver 首次投入使用；审计/运维可读）
-        let _ = self.update_manifest(|m2| {
-            if m2.gc_last_sweep_ver < latest {
-                m2.gc_last_sweep_ver = latest;
-                return Ok(true);
-            }
-            Ok(false)
-        });
+        // gc_last_sweep_ver 已在上方墓碑压缩的发布里顺带更新（P2-B：不独立
+        // 发布——独立递增会使每 checkpoint 的 manifest 版本推进 ×2，keep-16
+        // 的停滞写者安全垫减半）
         Ok(deleted)
     }
 
@@ -1051,8 +1065,8 @@ impl Database {
                     }
                     if b.pending_bytes.load(Ordering::Relaxed) >= threshold {
                         if let Err(e) = db.checkpoint_branch(&n) {
-                    tracing::error!(branch = %n, error = %e, "auto checkpoint failed; pending retained");
-                }
+                            tracing::error!(branch = %n, error = %e, "auto checkpoint failed; pending retained");
+                        }
                     }
                 }
             })

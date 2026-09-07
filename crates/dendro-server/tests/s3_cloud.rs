@@ -46,7 +46,7 @@ fn wipe(db: &dyn dendro_core::objstore::ObjStore) {
 #[test]
 fn s3_lifecycle_and_crash_recovery() {
     if std::env::var("DENDRO_S3").is_err() {
-        eprintln!("skipped (set DENDRO_S3=1 and start rustfs container)");
+        eprintln!("SKIPPED (cloud test did NOT run): set DENDRO_S3=1 with a live S3 endpoint; exiting without executing");
         return;
     }
     let (cached, s3, _bucket) = s3_stack("lifecycle");
@@ -174,7 +174,7 @@ fn s3_lifecycle_and_crash_recovery() {
 #[test]
 fn s3_manifest_conditional_put_conflict() {
     if std::env::var("DENDRO_S3").is_err() {
-        eprintln!("skipped");
+        eprintln!("SKIPPED (cloud test did NOT run): set DENDRO_S3=1");
         return;
     }
     // 独立桶：与 lifecycle 测试隔离（共享桶会互相污染 manifest 链）

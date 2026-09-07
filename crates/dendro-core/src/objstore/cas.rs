@@ -73,15 +73,18 @@ impl CasStore {
                 jobs.push((c, h));
             }
         }
-        // 并行上传（并发 8；对象存储 PUT 天然并行）
+        // 并行上传：**逐组 join，并发上界 PAR=8**（P1-E：只 spawn 不 join 会
+        // 使全部 chunk 同时在途——160 chunk 实测峰值 160 并发 PUT，大
+        // checkpoint 可达数千线程 + S3 限流）
         const PAR: usize = 8;
         let obj = &self.obj;
         let err: std::sync::Mutex<Option<super::ObjError>> = std::sync::Mutex::new(None);
         std::thread::scope(|s| {
             for group in jobs.chunks(PAR) {
+                let mut handles = Vec::with_capacity(group.len());
                 for (c, h) in group {
                     let err = &err;
-                    s.spawn(move || {
+                    handles.push(s.spawn(move || {
                         let data = c.encode();
                         if let Err(e) = obj.put(&Self::chunk_path(h), Bytes::from(data)) {
                             let mut g = err.lock().unwrap();
@@ -89,15 +92,22 @@ impl CasStore {
                                 *g = Some(e);
                             }
                         }
-                    });
+                    }));
+                }
+                for h in handles {
+                    let _ = h.join();
+                }
+                // 逐组早停：首错后不再发新组（省流量；错误仍以下方权威检查为准）
+                if err.lock().unwrap().is_some() {
+                    break;
                 }
             }
-            // scope 出口 join 全部 worker；此后 err 才是最终状态
         });
-        // **权威错误检查必须在 join 之后**：此前的"每组后尽早失败"检查与
-        // worker 执行存在竞态——spawn 是异步的，检查时 worker 往往未跑，
-        // 错误被吞、调用方照常发布引用缺失 chunk 的 manifest（回归：
-        // wal_corruption::checkpoint_failure_preserves_committed_data）
+        // **权威错误检查必须在全部 join 之后**：仅凭"组内检查"曾把错误整个
+        // 吞掉——spawn 异步、检查时 worker 未跑，错误被吞、调用方照常发布
+        // 引用缺失 chunk 的 manifest（回归：
+        // wal_corruption::checkpoint_failure_preserves_committed_data）。
+        // 逐组 join 后此处必为最终状态。
         match err.lock().unwrap().take() {
             Some(e) => return Err(e),
             None => {}

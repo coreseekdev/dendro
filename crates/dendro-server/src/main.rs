@@ -175,7 +175,7 @@ fn main() {
             let my_handle = if mysql_port > 0 {
                 let db_my = db.clone();
                 let my_addr = format!("{host}:{mysql_port}");
-                let cfg = dendro_mywire::MyConfig { password, ..Default::default() };
+                let cfg = dendro_mywire::MyConfig { password: password.clone(), ..Default::default() };
                 Some(
                     std::thread::Builder::new()
                         .name("my-listener".into())
@@ -194,7 +194,10 @@ fn main() {
                 Some(
                     std::thread::Builder::new()
                         .name("pg-listener".into())
-                        .spawn(move || dendro_pgwire::serve(pg_sock, db_pg).expect("pg listener"))
+                        .spawn(move || {
+                            let cfg = dendro_pgwire::PgConfig { password: password.clone() };
+                            dendro_pgwire::serve_with_config(pg_sock, db_pg, cfg).expect("pg listener")
+                        })
                         .unwrap(),
                 )
             } else {

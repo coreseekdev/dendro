@@ -211,16 +211,23 @@ impl ObjStore for FlakyPutStore {
 }
 
 #[test]
-fn flush_put_failure_no_frame_loss_no_hang() {
-    let obj = Arc::new(FlakyPutStore { inner: MemoryObjStore::new(), fail_puts_left: AtomicU32::new(0), fail_prefix: String::new() });
+fn wal_failure_poisons_writer_until_reopen() {
+    // P0-D 错误语义定案（毒化）：
+    // - WAL PUT 失败 ⇒ 写者毒化：后续 append 一律 40003 拒绝（不得在结果
+    //   未知的状态上叠加写）；flush 停止 ⇒ 确定性失败的帧绝不持久化，
+    //   失败 = 未提交（进程内无痕 + 重启后无幽灵行，两个断言自此一致）；
+    // - 唯一恢复路径 = reopen（新 writer + 恢复回放裁决真实状态）。
+    let obj = Arc::new(FlakyPutStore {
+        inner: MemoryObjStore::new(),
+        fail_puts_left: AtomicU32::new(0),
+        fail_prefix: String::new(),
+    });
     let db = Database::open(opts_store(StoreConfig::Obj(obj.clone()))).unwrap();
     {
         let mut s = db.new_session();
         s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
         s.exec("INSERT INTO t VALUES (1, 'a')").unwrap(); // 段 1 正常落盘
     }
-    // 持续注入 put 失败：Durability::Group 下 await_durable 一次超时后错误上抛
-    // （有界延迟，不挂死——本测试完成本身即证明）；帧留在缓冲等待重试
     obj.fail_puts_left.store(5_000, Ordering::SeqCst);
     let err = {
         let mut s = db.new_session();
@@ -229,66 +236,85 @@ fn flush_put_failure_no_frame_loss_no_hang() {
             Err(e) => e,
         }
     };
-    assert!(err.message.contains("wal put"), "失败应来自 WAL put：{err}");
-    // 管线新语义（P2'：install 在 durable 之后）：失败的提交在 memtx **无痕**——
-    // 旧顺序下这里会读到 2（未提交数据可见的 in-doubt 窗口）
+    assert_eq!(err.state, "40003", "WAL 失败应为 completion_unknown（毒化）：{err}");
+    // 进程内：失败的提交无痕（P2' install-after-durable）
     {
         let mut s = db.new_session();
         let o = s.exec("SELECT count(*) FROM t").unwrap();
         if let dendro_core::Output::Rows(rs) = &o[0] {
-            assert_eq!(rs.text_rows()[0][0].as_deref(), Some("1"), "失败提交不得产生可见状态（in-doubt 已消除）");
+            assert_eq!(rs.text_rows()[0][0].as_deref(), Some("1"), "失败提交不得产生可见状态");
         }
     }
-    // 故障恢复：失败帧仍在缓冲；下一次成功 flush 把它和新帧一并带 durable
+    // 毒化后：故障恢复也拒绝新提交——不得叠加在未知状态上
     obj.fail_puts_left.store(0, Ordering::SeqCst);
     {
         let mut s = db.new_session();
-        s.exec("INSERT INTO t VALUES (3, 'c')").unwrap();
+        let e = match s.exec("INSERT INTO t VALUES (3, 'c')") {
+            Ok(_) => panic!("毒化后提交应被拒"),
+            Err(e) => e,
+        };
+        assert_eq!(e.state, "40003", "毒化写者拒绝一切提交：{e}");
     }
     drop(db);
-    // 重开：故障期"提交失败"的行 2 与恢复后的行 3 都必须 durable（不丢帧）
+    // reopen：新 writer 未毒化 → 可写；失败事务的帧从未持久化 → 无幽灵行
     let db2 = Database::open(opts_store(StoreConfig::Obj(obj.clone()))).unwrap();
-    let mut s = db2.new_session();
+    {
+        let mut s = db2.new_session();
+        let o = s.exec("SELECT count(*) FROM t").unwrap();
+        if let dendro_core::Output::Rows(rs) = &o[0] {
+            assert_eq!(rs.text_rows()[0][0].as_deref(), Some("1"), "失败事务重启后不得出现（无幽灵提交）");
+        }
+        s.exec("INSERT INTO t VALUES (3, 'c')").unwrap();
+    }
+    drop(db2);
+    let db3 = Database::open(opts_store(StoreConfig::Obj(obj.clone()))).unwrap();
+    let mut s = db3.new_session();
     let o = s.exec("SELECT count(*) FROM t").unwrap();
     if let dendro_core::Output::Rows(rs) = &o[0] {
-        assert_eq!(rs.text_rows()[0][0].as_deref(), Some("3"), "失败帧必须在恢复后 durable（不丢帧）");
+        assert_eq!(rs.text_rows()[0][0].as_deref(), Some("2"), "reopen 后恢复写入");
     }
 }
 
 #[test]
-fn transient_flush_failure_self_heals() {
-    // 单次瞬时故障：后台 flush 线程重试即可恢复，语句可透明成功（P0-1 设计语义）
-    let obj = Arc::new(FlakyPutStore { inner: MemoryObjStore::new(), fail_puts_left: AtomicU32::new(0), fail_prefix: String::new() });
+fn transient_flush_failure_self_heals_via_reopen() {
+    // P0-D 定案后无"透明自愈"：单次故障同样毒化（错误语义必须与故障持续
+    // 时间无关）。自愈发生在 reopen 层：新 writer 未毒化，可继续写入。
+    let obj = Arc::new(FlakyPutStore {
+        inner: MemoryObjStore::new(),
+        fail_puts_left: AtomicU32::new(0),
+        fail_prefix: String::new(),
+    });
     let db = Database::open(opts_store(StoreConfig::Obj(obj.clone()))).unwrap();
     {
         let mut s = db.new_session();
         s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
     }
     obj.fail_puts_left.store(1, Ordering::SeqCst);
-    let b = db.branch("main").unwrap();
-    let target;
-    {
+    let err = {
         let mut s = db.new_session();
-        // 不论语句本身报错与否（后台重试可能先行消化故障），最终必须可读
-        let _ = s.exec("INSERT INTO t VALUES (1, 'a')");
-        target = b.snapshot(); // 该提交的 ts
-    }
-    // 等 durable 水位追上该提交（后台 flush 线程消化注入的故障，≤2s）
-    let mut durable = false;
-    for _ in 0..200 {
-        if b.wal.durable_watermark() >= target {
-            durable = true;
-            break;
+        match s.exec("INSERT INTO t VALUES (1, 'a')") {
+            Ok(_) => panic!("故障期提交应失败（Group 必须等 durable）"),
+            Err(e) => e,
         }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    assert!(durable, "瞬时故障必须被后台 flush 重试消化（durable 水位应推进）");
+    };
+    assert_eq!(err.state, "40003", "{err}");
+    // 毒化即时生效：下一个提交立即被拒（而非等待超时）
+    let e = {
+        let mut s = db.new_session();
+        match s.exec("INSERT INTO t VALUES (2, 'b')") {
+            Ok(_) => panic!("毒化后提交应被拒"),
+            Err(e) => e,
+        }
+    };
+    assert_eq!(e.state, "40003");
     drop(db);
+    // reopen 即自愈
     let db2 = Database::open(opts_store(StoreConfig::Obj(obj.clone()))).unwrap();
     let mut s = db2.new_session();
+    s.exec("INSERT INTO t VALUES (1, 'a')").unwrap();
     let o = s.exec("SELECT count(*) FROM t").unwrap();
     if let dendro_core::Output::Rows(rs) = &o[0] {
-        assert_eq!(rs.text_rows()[0][0].as_deref(), Some("1"), "重启后仍在");
+        assert_eq!(rs.text_rows()[0][0].as_deref(), Some("1"), "reopen 后恢复正常");
     }
 }
 

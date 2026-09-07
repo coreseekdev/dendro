@@ -72,17 +72,23 @@ pub(crate) fn next_backend_secret() -> u32 {
 ///
 /// 单个连接的错误只影响该连接（记日志后丢弃）；accept 错误记日志继续。
 pub fn serve(addr: SocketAddr, db: Arc<Database>) -> io::Result<()> {
+    serve_with_config(addr, db, PgConfig::default())
+}
+
+/// 带认证配置的监听（trust / cleartext，SPEC 10 §8；第四轮评审 §3 认证接线）
+pub fn serve_with_config(addr: SocketAddr, db: Arc<Database>, cfg: PgConfig) -> io::Result<()> {
     let listener = TcpListener::bind(addr)?;
-    tracing::info!(%addr, "dendro-pgwire: listening");
+    tracing::info!(%addr, auth = %if cfg.password.is_some() { "cleartext" } else { "trust" }, "dendro-pgwire: listening");
     for conn in listener.incoming() {
         match conn {
             Ok(stream) => {
                 let db = Arc::clone(&db);
+                let cfg = cfg.clone();
                 thread::spawn(move || {
                     let _ = stream.set_nodelay(true);
                     // Session 单线程使用（SPEC 10 §7）；move 进连接线程
                     let sess: Box<dyn WireSession> = Box::new(db.new_session());
-                    if let Err(e) = handle_connection(stream, sess, PgConfig::default()) {
+                    if let Err(e) = handle_connection(stream, sess, cfg) {
                         tracing::debug!(error = %e, "dendro-pgwire: connection ended");
                     }
                 });

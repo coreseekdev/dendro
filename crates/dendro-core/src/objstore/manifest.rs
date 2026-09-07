@@ -1,7 +1,9 @@
 //! Manifest——元数据根（SPEC 01 §5）：单调版本 + Create 条件写的乐观提交。
 //!
-//! 内容：分支表(refs)、表目录(tables)、GC 水位。JSON 编码（v1），
-//! 读最新版不依赖 LIST（缓存版本 +1 探测，超限退回 list）。
+//! 内容：分支表(refs)、表目录(tables)、GC 水位。JSON 编码（v1）。
+//! 读最新版本：**LIST 为权威路径**（GC 删除使版本号空间存在任意空洞，
+//! 探测无法区分"已是最新"与"撞洞"——第四轮评审 P1-F 探针实证探测
+/// 循环是纯死重，已删除）。
 
 use super::{ObjError, ObjResult, ObjStore};
 use serde::{Deserialize, Serialize};
@@ -103,8 +105,6 @@ pub struct ManifestStore {
     cached: parking_lot::Mutex<u64>,
 }
 
-const MAX_PROBES: u64 = 32;
-
 impl ManifestStore {
     pub fn new(obj: Arc<dyn ObjStore>) -> Self {
         Self { obj, cached: parking_lot::Mutex::new(0) }
@@ -128,26 +128,20 @@ impl ManifestStore {
         Ok(())
     }
 
-    /// 读最新版本（探测加速；**遇任何空洞回落 LIST**）。
-    /// 空洞来源：GC 删除 `latest-16` 以下的版本对象。若在空洞处"就近停下"，
-    /// 停滞写者会把提交写进已删版本号的空洞（put_if_absent 在不存在路径上
-    /// 成功）→ 影子谱系，其 ack 的分支头注定被 GC 删除（P1-C）。
-    /// 故 NotFound 一律以 LIST 的结果为准——LIST 频率 = 空洞命中率 + 探测
-    /// 窗口用尽，GC 节奏下可忽略。
+    /// 读最新版本：**LIST 为权威路径**（P1-F 定案）。
+    /// 空洞来源：GC 删除 `latest-16` 以下的版本对象。探测无法区分
+    /// "cached 已是最新"（常态）与"cached+1 是 GC 洞"——两者都是 NotFound。
+    /// 在洞处就近停下会让停滞写者把提交写进已删版本号（影子谱系，P1-C）；
+    /// 而无脑探测对常态写者是每调用 1 次浪费 GET（探针实证）。故直接 LIST：
+    /// 成本 = 每次 load_latest 恰 1 个 LIST 请求，manifest 对象数 ≤17（GC
+    /// 保留窗口），换取消除整类正确性风险。
     pub fn load_latest(&self) -> ObjResult<(u64, Manifest)> {
-        let cached = *self.cached.lock();
-        if cached > 0 {
-            for v in (cached + 1)..=(cached + MAX_PROBES) {
-                match self.read_version(v) {
-                    Ok(_) => continue, // 连续存在，继续找更高
-                    Err(ObjError::NotFound(_)) => return self.load_latest_via_list(),
-                    Err(e) => return Err(e),
-                }
-            }
-            // 探测窗口内全部存在 → 可能还有更高版本，LIST 兜底
-            return self.load_latest_via_list();
-        }
         self.load_latest_via_list()
+    }
+
+    /// 本进程刚提交的版本直接采纳为缓存快照（无 LIST；update_manifest 自发布用）
+    pub fn adopt(&self, ver: u64) {
+        *self.cached.lock() = ver;
     }
 
     /// LIST manifest/ 前缀取最大版本（权威路径；天然兼容空洞）

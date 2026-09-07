@@ -56,13 +56,37 @@
 | P2-7 | GRAMMAR.md 修正（WITH ⬜、CHECKPOINT ✅、differential 目录删除） | ⬜ | 与代码对齐 |
 | P2-8 | AGENTS.md 架构清单补 kv/journal/consensus/fence | ⬜ | 文档同步 |
 
+## 四轮评审修复（2026-09-08）
+
+| # | 任务 | 状态 | 证据 |
+|---|------|:----:|------|
+| R4-P0D | WAL 错误语义定案：**写者毒化**（append 拒 40003 / flush 停 / reopen 恢复） | ✅ | `wal.rs`（poisoned 标志 + append/await_durable/flush_now 三处检查）；`wal_corruption::{wal_failure_poisons_writer_until_reopen, transient_flush_failure_self_heals_via_reopen}`（毒化即时生效、无幽灵行、reopen 自愈） |
+| R4-P1E | put_batch 无界并发（160 chunk 峰值 160 并发 PUT） | ✅ | 逐组 join，并发上界 PAR=8 + 首错早停；`cas.rs::put_batch` |
+| R4-P1F | load_latest 常态 LIST（探测死重）+ 三处文档反向 | ✅ | 删探测循环，LIST 权威（模块 doc/函数注释/SPEC 01 §5 同步）；update_manifest 自发布 + 无变更路径也采纳缓存 |
+| R4-P2B | gc_last_sweep_ver 独立发布使版本推进 ×2 | ✅ | 并入墓碑压缩发布（无压缩不发布）；`engine.rs::gc_sweep` |
+| R4-P2 | LeaseKeeper 续期 PUT 持锁（RTT 阻塞提交/readyz/metrics） | ✅ | 锁内 clone → 锁外 PUT → 写回取 max 防倒退；`engine.rs::LeaseKeeper::renew_if_due` |
+| R4-杂 | 缩进×2 / SPEC 01 §7 标题 / metrics read_only HELP / write_branch_commit in-doubt 注释 / s3_cloud 显式 SKIPPED / **PG cleartext 认证接线** | ✅ | pgwire `serve_with_config` + main.rs 传入 password（trust/cleartext，SPEC 10 §8） |
+
 ## P2' — 提交管线（2026-09-08 起动）
 
 | # | 任务 | 状态 | 证据 |
 |---|------|:----:|------|
-| ~~P2'-1~~ | ~~管线顺序：裁决→持久化→安装→水位（消除 in-doubt）~~ | ✅ | `engine.rs::commit_tx` + `memtx::{validate_only, install}`；回归断言：`wal_corruption::flush_put_failure_no_frame_loss_no_hang`（失败提交 memtx 无痕） |
+| ~~P2'-1~~ | ~~管线顺序：裁决→持久化→安装→水位~~ | ✅（口径修正） | 进程内 in-doubt 消除（`engine.rs::commit_tx` + `memtx::{validate_only, install}`）；恢复边界语义由 R4-P0D 毒化定案：WAL 失败 = 40003 + 毒化 + reopen——原表述超前，四轮 §2.5 更正 |
 | P2'-2 | Adjudicator/Journal trait 化（替换 Phase 2；含读路径时间戳 + 裁决器 HA/fencing 设计补全） | ⬜ | 设计文档已注状态；实现待 P3-1 |
 | P2'-3 | 抽象收敛（journal.rs/consensus/ 标 EXPERIMENTAL 已做；最终删除或并入唯一 trait 集） | 🔧 | 标记完成，收敛随 P2'-2 |
+
+## 遗漏任务登记（三轮 §7 清单，四轮复核后正式入册——此前回应声称登记实际未登记，本轮补上）
+
+| # | 任务 | 优先级 | 备注 |
+|---|------|:----:|------|
+| M-1 | 备份/快照手册（GC 上位后 PITR 窗口 = keep-16 ≈ 8 checkpoint） | P1 | 最低交付：`dendro backup`（冻结 GC + 一致点导出）或书面手册（`--gc-retention-ms -1` + 对象存储快照） |
+| M-2 | 格式版本兼容守卫（manifest format_version 无读取校验；WAL 无新读旧回归） | P2 | 产品化前必须 |
+| M-3 | G6 压缩量化衰退持续测量（zstd 级别 × 列类型 Q 曲线进 `dendro bench`） | P2 | SPEC 08 承诺 |
+| M-4 | G4 GPU/CBF 解码对拍（native SIMD 等价实现 + 逐位对拍） | P2 | GPU 保留不能停留在格式注释 |
+| M-5 | metrics 直方图（commit/flush/manifest-CAS 延迟）+ 慢查询日志 | P2 | 支撑弹性调度故事 |
+| M-6 | fence 对象 GC（每分支每 open 一个，持续累积；load_open_branches 放大） | P2 | 墓碑机制可复用 |
+| M-7 | PG 认证 trust/cleartext ✅（四轮已接线）；SCRAM-SHA-256 + TLS | P1→P2 | cleartext 本提交完成；SCRAM/TLS 列 P2 |
+| M-8 | s3_cloud 显式 SKIPPED ✅（四轮已改）；部署 yaml 入库 | P2 | yaml 随 k8s 部署文档落地 |
 
 ## P3 — 远期
 
