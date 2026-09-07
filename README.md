@@ -27,6 +27,11 @@
 - **SQL 必须可用**：sqlparser-rs 解析(PG/MySQL 方言) + 自研执行器，
   sqllogictest 基线在 `tests/slt/`。
 
+## 运维：本地 k8s 部署（已验证）
+
+[docs/ops/local-k8s.md](docs/ops/local-k8s.md) — 本地 k8s 选型对比（kind/k3d/minikube/microk8s/k3s）、
+microk8s 部署手册（镜像源受限网络解法）、dendro on k8s 已验证用例、踩坑索引。
+
 ## 调研：多节点 TP 事务
 
 [docs/research/多节点TP事务调研.md](docs/research/多节点TP事务调研.md) —

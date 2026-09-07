@@ -1,0 +1,5 @@
+FROM ubuntu:24.04
+COPY target/release/dendro /usr/local/bin/dendro
+EXPOSE 5432 3306
+ENTRYPOINT ["dendro"]
+CMD ["serve", "--data", "/data", "--pg-port", "5432"]

@@ -35,13 +35,13 @@ pub(crate) fn exec_create_table(db: &Database, sess: &mut Session, create: sqlpa
     // 目录变更：catalog 树
     let b = db.branch(&sess.branch)?;
     let _g = b.commit_mu.lock();
-    // 取表 id
+    // 取表 id：在 catalog 树自身的条目上分配（树随 checkpoint 提交，
+    // 不依赖 manifest 计数器；多分支并发建表由 merge 的键冲突消解）
     let tid = {
-        let snap = db.manifest();
-        let t = snap.manifest.next_table_id;
-        // 推进 next_table_id（不推进 version，仅占位：manifest 由后续 commit 落盘）
-        let _ = t;
-        t
+        let head = b.head.load_full();
+        let catalog = crate::versioned::Versioned::new(db.store.clone());
+        let entries = catalog.catalog_entries(head.as_ref().as_ref().map(|c| c.root).as_ref())?;
+        entries.iter().map(|(_, e)| e.id).max().unwrap_or(0) + 1
     };
     let mut session_chunks: HashSet<Hash> = HashSet::new();
     let catalog = crate::versioned::Versioned::new(db.store.clone());
