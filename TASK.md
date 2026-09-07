@@ -165,6 +165,27 @@
 | Q-16 | 事务内重复 INSERT 同一新键 → 23505（当前静默覆盖） | P3 | |
 | Q-17 | slt runner 显式设置 checkpoint_interval_s=0（避免环境泄漏） | P3 | |
 
+## 十轮评审修复（2026-09-08）
+
+| # | 任务 | 状态 | 证据 |
+|---|------|:----:|------|
+| R10-P0 | 活跃快照只在 Session::drop 注销（COMMIT/ROLLBACK 缺失）→ 截断永久跳过 / memtx 无界 | ✅ | COMMIT/ROLLBACK/failed-COMMIT 三路径注销（键引用计数递减）；回归 `kv_txn_frozen_reads_and_decoded_values`（断言 COMMIT 后注册表空）+ `q9/q11/r9_x` 全组仍绿 |
+| R10-P0 | 前置 bind 装错端口（FIFO 顺序与消费序错位 → PG/MySQL 端口互换） | ✅ | listeners 改 **HashMap 按名存取**；进程级验证：PG 端口回 AuthenticationOk('R')，MySQL 端口回 8.0.36 握手 |
+| R10-P1 | BTreeSet 去重：同 watermark 双事务共占一槽，先结束者连带摘除他人保护 | ✅ | `active_snaps` 改 `BTreeMap<u64, usize>` 引用计数（BEGIN +1 / 结束 -1 / 归零摘除） |
+| R10-P1 | KV 显式事务游离于 R7-3/R9-1 机制外（读不冻结、写照拒） | ✅ | Kv::begin 注册 + 冻结根；commit/rollback/Drop 注销；kv_entry 以冻结根解析。回归 `kv_txn_frozen_reads_and_registry_lifecycle` |
+| R10-P1 | clippy 门槛失守（main.rs 两处 unused） | ✅ | 已修；`cargo clippy --workspace --all-targets -- -D warnings` 零输出 |
+| R10-P2 | R9-2 守卫误伤只读 SHOW BRANCHES | ✅ | Show 放行；其余分支语句仍 25001 |
+| R10-P2 | 截断跳过时 covered_min 照进（保留窗口内提交被误拒 40001 且消息失实） | ✅ | covered_min 仅在**真截断**时推进；Q-9 的 40001 现在只出现在真盲区（语义更准：盲区外的跨 checkpoint 事务可正常提交，冲突由完整 memtx 历史检测） |
+
+### 第十轮登记
+
+| # | 任务 | 优先级 | 备注 |
+|---|------|:----:|------|
+| Q-14 | AP 列存路径读自己的写 + 冻结根（第九轮 R9-3） | P1 | 未完成，下一批首位 |
+| Q-18 | 装配层（main/main 装配/生命周期）测试为零——两次装配 P0 的结构性根因 | P1 | serve 装配函数化 + 进程级冒烟测试（端口↔协议对应断言入 CI） |
+| Q-19 | "线程不持强 Arc 睡觉/自环"红线入 AGENTS.md（Weak 化三连的通用化） | P2 | |
+| Q-20 | R9-6（kv use_branch 静默丢事务）/ R9-9（runner 多语句比对）/ R9-11（协议小项）补登记 | P3 | |
+
 ## P2' — 提交管线（2026-09-08 起动）
 
 | # | 任务 | 状态 | 证据 |

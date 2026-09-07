@@ -113,3 +113,38 @@ fn kv_txn_reads_own_writes_and_decoded_values() {
     assert_eq!(kv.get("k1").unwrap(), None);
     assert_eq!(kv.get("k2").unwrap().as_deref(), Some(&b"v2"[..]));
 }
+
+#[test]
+fn kv_txn_frozen_reads_and_registry_lifecycle() {
+    // 第十轮 R10-4：KV 显式事务接入 R7-3/R9-1 机制——
+    // ① 冻结根：事务内他人提交+物化后仍不可见（此前隔离翻转）；
+    // ② 注册表生命周期：COMMIT/放弃会话都注销（此前永久跳过截断）。
+    let obj: std::sync::Arc<dyn ObjStore> = std::sync::Arc::new(dendro_core::objstore::memory::MemoryObjStore::new());
+    let db = Database::open(DbOptions { store: dendro_core::StoreConfig::Obj(obj), ..DbOptions::default() }).unwrap();
+    {
+        let mut kv = dendro_core::kv::Kv::open(&db, "main").unwrap();
+        kv.put("k1", b"a").unwrap();
+    }
+    let mut kv = dendro_core::kv::Kv::open(&db, "main").unwrap();
+    kv.begin().unwrap();
+    assert_eq!(kv.get("k1").unwrap().as_deref(), Some(&b"a"[..]));
+    // 并发提交新键 + checkpoint（物化 + covered_min 推进尝试）
+    {
+        let mut kv2 = dendro_core::kv::Kv::open(&db, "main").unwrap();
+        kv2.begin().unwrap();
+        kv2.put("k2", b"b").unwrap();
+        kv2.commit().unwrap();
+        db.checkpoint_branch("main").unwrap();
+    }
+    // 冻结读：事务内仍只有 k1
+    assert_eq!(kv.get("k2").unwrap(), None, "冻结读被 checkpoint 击穿");
+    let rows = kv.scan(None, None).unwrap();
+    assert!(rows.iter().all(|(k, _)| k != b"k2"), "SCAN 冻结读被击穿");
+    // COMMIT：注销注册表 → 该分支截断恢复
+    kv.commit().unwrap();
+    let b = db.branch("main").unwrap();
+    assert!(b.active_snaps.lock().is_empty(), "COMMIT 后活跃快照必须注销（否则截断永久跳过）");
+    // 新会话可见
+    let kv3 = dendro_core::kv::Kv::open(&db, "main").unwrap();
+    assert_eq!(kv3.get("k2").unwrap().as_deref(), Some(&b"b"[..]));
+}

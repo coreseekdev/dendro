@@ -301,8 +301,15 @@ impl Kv {
         if self.txn.is_some() {
             return Err(SqlError::new("25001", "transaction already active"));
         }
-        let snap = self.snapshot()?;
+        let b = self.db.branch(&self.branch)?;
+        // 持 commit_mu 完成"取快照 + 注册"（与 SQL BEGIN 相同的竞态口径）
+        let _g = b.commit_mu.lock();
+        let snap = b.snapshot();
+        // 接入活跃快照注册表 + 冻结根（第十轮 R10-4：此前 KV 显式事务
+        // 游离于 R7-3/R9-1 两套机制之外——读不冻结、写照拒）
+        b.active_snaps.lock().entry(snap).and_modify(|c| *c += 1).or_insert(1);
         let mut t = Txn::new(snap);
+        t.head_root = b.head.load_full().as_ref().as_ref().map(|c| c.root);
         t.explicit = true;
         self.txn = Some(t);
         Ok(())
@@ -312,20 +319,50 @@ impl Kv {
             .txn
             .take()
             .ok_or_else(|| SqlError::new("25P01", "no transaction"))?;
+        self.unregister_snapshot(&t.snapshot); // 第十轮 R10-4
         if !t.writes.is_empty() {
             commit_tx(&self.db, &self.branch, &t)?;
         }
         Ok(())
     }
     pub fn rollback(&mut self) {
-        self.txn = None;
+        if let Some(t) = self.txn.take() {
+            self.unregister_snapshot(&t.snapshot);
+        }
+    }
+
+    /// 注销活跃快照（kv 会话放弃未结束事务时经 Drop 兜底）
+    fn unregister_snapshot(&self, snapshot: &u64) {
+        if let Ok(b) = self.db.branch(&self.branch) {
+            let mut g = b.active_snaps.lock();
+            if let Some(c) = g.get_mut(snapshot) {
+                *c -= 1;
+                if *c == 0 {
+                    g.remove(snapshot);
+                }
+            }
+        }
     }
 
     fn kv_entry(&self) -> Result<crate::versioned::TableEntry> {
         let db = self.db.clone();
-        let branch = self.branch.clone();
-        let (_, entry) = super::sql::scan::resolve_table(&db, &branch, KV_TABLE)?;
-        Ok(entry)
+        // 显式事务：以 BEGIN 冻结的 catalog 根解析（第十轮 R10-4——此前
+        // KV 事务读不冻结，他人提交经物化后在事务内"变得可见"）
+        let frozen = match &self.txn {
+            Some(t) if t.explicit => t.head_root,
+            _ => None,
+        };
+        let catalog = crate::versioned::Versioned::new(db.store.clone());
+        let short = KV_TABLE.rsplit(['.', '@']).next().unwrap_or(KV_TABLE);
+        match frozen {
+            Some(r) => catalog
+                .catalog_lookup(Some(&r), short)?
+                .ok_or_else(|| crate::error::SqlError::undefined_table(format!("relation \"{KV_TABLE}\" does not exist"))),
+            None => {
+                let (_, entry) = super::sql::scan::resolve_table(&db, &self.branch, KV_TABLE)?;
+                Ok(entry)
+            }
+        }
     }
 }
 
@@ -442,5 +479,14 @@ mod dbg_tests {
         eprintln!("[dbg] overlay keys={:?} vals={:?}", over.keys().map(|k| k.to_vec()).collect::<Vec<_>>(), over.values().map(|v| v.clone()).collect::<Vec<_>>());
         let got = kv.get("a").unwrap();
         eprintln!("[dbg] get(a)={got:?}");
+    }
+}
+
+/// 会话放弃未结束事务时兜底注销活跃快照（与 SQL Session::drop 同口径）
+impl Drop for Kv {
+    fn drop(&mut self) {
+        if let Some(t) = self.txn.take() {
+            self.unregister_snapshot(&t.snapshot);
+        }
     }
 }

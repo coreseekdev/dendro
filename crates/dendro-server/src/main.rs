@@ -168,23 +168,25 @@ fn main() {
             // **前置 bind**（第九轮 R9-4）：全部监听器先绑定成功才打印 ready
             // 并 spawn——此前 bind 在各自线程内发生，pg 端口冲突时照常打印
             // ready 且进程永不退出
-            let mut listeners: Vec<(&str, std::net::TcpListener)> = Vec::new();
+            // **按名存取**（第十轮 R10-2：此前 FIFO Vec 与消费顺序错位，
+            // 默认配置下 PG/MySQL 端口互换——进程级探针实锤）
+            let mut listeners = std::collections::HashMap::<&'static str, std::net::TcpListener>::new();
             for (name, port) in [("metrics", metrics_port), ("pg", pg_port), ("mysql", mysql_port), ("kv", kv_port)] {
                 if port == 0 {
                     continue;
                 }
                 match std::net::TcpListener::bind(format!("{host}:{port}")) {
-                    Ok(l) => listeners.push((name, l)),
+                    Ok(l) => listeners.insert(name, l),
                     Err(e) => {
                         eprintln!("dendro: {name} listen {host}:{port} failed: {e}");
                         std::process::exit(1);
                     }
-                }
+                };
             }
 
             let metrics_handle = if metrics_port > 0 {
                 let db_m = db.clone();
-                let (_, l) = listeners.remove(0);
+                let l = listeners.remove("metrics").unwrap();
                 Some(
                     std::thread::Builder::new()
                         .name("metrics-listener".into())
@@ -196,8 +198,7 @@ fn main() {
             };
             let kv_handle = if kv_port > 0 {
                 let db_kv = db.clone();
-                let kv_addr = format!("{host}:{kv_port}");
-                let (_, l) = listeners.remove(0);
+                let l = listeners.remove("kv").unwrap();
                 Some(
                     std::thread::Builder::new()
                         .name("kv-resp-listener".into())
@@ -210,7 +211,7 @@ fn main() {
             let my_handle = if mysql_port > 0 {
                 let db_my = db.clone();
                 let cfg = dendro_mywire::MyConfig { password: password.clone(), ..Default::default() };
-                let (_, l) = listeners.remove(0);
+                let l = listeners.remove("mysql").unwrap();
                 Some(
                     std::thread::Builder::new()
                         .name("my-listener".into())
@@ -230,9 +231,7 @@ fn main() {
             };
             let pg_handle = if pg_port > 0 {
                 let db_pg = db.clone();
-                let pg_sock: std::net::SocketAddr =
-                    format!("{host}:{pg_port}").parse().expect("pg addr");
-                let (_, l) = listeners.remove(0);
+                let l = listeners.remove("pg").unwrap();
                 Some(
                     std::thread::Builder::new()
                         .name("pg-listener".into())

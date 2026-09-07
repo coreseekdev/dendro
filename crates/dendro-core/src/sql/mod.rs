@@ -426,26 +426,38 @@ pub(crate) fn exec_statement(db: &Database, sess: &mut Session, stmt: Statement)
                 return Err(SqlError::new("25001", "transaction already active"));
             }
             let b = db.branch(&sess.branch)?;
-            let mut txn = crate::memtx::Txn::new(b.snapshot());
+            // 持 commit_mu 完成"取快照 + 注册"（第十轮 P10-3 竞态修复）：
+            // 否则 checkpoint 可能在两步之间判空并截断，冻结读被击穿
+            let _g = b.commit_mu.lock();
+            let snapshot = b.snapshot();
+            // 注册活跃快照（第九轮 R9-1）：checkpoint 的截断水位尊重本事务
+            b.active_snaps
+                .lock()
+                .entry(snapshot)
+                .and_modify(|c| *c += 1)
+                .or_insert(1);
+            let mut txn = crate::memtx::Txn::new(snapshot);
             // 冻结 catalog 根（第七轮 R7-3）：显式事务内的树读以 BEGIN 时的
             // 根为准——否则 overlay 按 BEGIN 快照、树按当前 head，同一 count(*)
             // 会随 checkpoint 推进在事务内翻转
             txn.head_root = b.head.load_full().as_ref().as_ref().map(|c| c.root);
             txn.explicit = true;
-            // 注册活跃快照（第九轮 R9-1）：checkpoint 的截断水位尊重本事务
-            b.active_snaps.lock().insert(txn.snapshot);
             sess.txn = Some(txn);
+            drop(_g);
             Ok(Some(Output::Command { tag: "BEGIN".into(), affected: 0 }))
         }
         Statement::Commit { .. } => {
             // PG 语义：aborted 事务上的 COMMIT = 丢弃并回报 ROLLBACK
             //（否则 25P02 门可被绕过：失败后 COMMIT 私运半截写集）
             if sess.failed_txn {
-                sess.txn = None;
+                if let Some(t) = sess.txn.take() {
+                    sess.unregister_snapshot(&t.snapshot);
+                }
                 sess.failed_txn = false;
                 return Ok(Some(Output::Command { tag: "ROLLBACK".into(), affected: 0 }));
             }
             let t = sess.txn.take().ok_or_else(|| SqlError::new("25P01", "no transaction"))?;
+            sess.unregister_snapshot(&t.snapshot); // COMMIT 必须注销（第十轮 R10-1：此前缺失 → 截断永久跳过/memtx 无界）
             if !t.writes.is_empty() {
                 commit_tx(db, &sess.branch, &t)?;
             }
@@ -453,7 +465,9 @@ pub(crate) fn exec_statement(db: &Database, sess: &mut Session, stmt: Statement)
             Ok(Some(Output::Command { tag: "COMMIT".into(), affected: 0 }))
         }
         Statement::Rollback { .. } => {
-            sess.txn = None;
+            if let Some(t) = sess.txn.take() {
+                sess.unregister_snapshot(&t.snapshot); // 第十轮 R10-1：此前缺失
+            }
             sess.failed_txn = false;
             Ok(Some(Output::Command { tag: "ROLLBACK".into(), affected: 0 }))
         }

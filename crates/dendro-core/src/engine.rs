@@ -131,9 +131,11 @@ pub struct Branch {
     /// 已截断 memtx 历史的最高 covered seq（Q-9：显式事务快照低于此值 =
     /// 冲突检测盲区 → 提交时显式 40001，杜绝静默丢失更新）
     pub covered_min: AtomicU64,
-    /// 活跃显式事务快照注册表（R9-1：truncate 水位 = min(最老活跃快照,
-    /// covered)——否则冻结读被 checkpoint 截断击穿，事务内行静默消失）
-    pub active_snaps: Mutex<std::collections::BTreeSet<u64>>,
+    /// 活跃显式事务快照注册表（R9-1：存在活跃快照即跳过 memtx 截断，
+    /// 否则冻结读被 checkpoint 截断击穿）。**引用计数**（第十轮 R10-3：
+    /// BTreeSet 去重使同 watermark 双事务共占一槽，先结束者连带摘除他人
+    /// 保护）——value = 持有该快照的事务数
+    pub active_snaps: Mutex<std::collections::BTreeMap<u64, usize>>,
     /// 写者租约 keep（与 flush_loop 的保活回调共享；P1 运行时拒写 + 空闲保活）
     pub lease: Arc<LeaseKeeper>,
     /// 已安装（可见）的提交水位
@@ -603,7 +605,7 @@ impl Database {
             lease_epoch: AtomicU64::new(lease_epoch),
             read_only: self.opts.read_only,
             covered_min: AtomicU64::new(0),
-            active_snaps: Mutex::new(std::collections::BTreeSet::new()),
+            active_snaps: Mutex::new(std::collections::BTreeMap::new()),
             lease: keeper,
             watermark: AtomicU64::new(0),
             pending: Mutex::new(HashMap::new()),
@@ -1065,16 +1067,16 @@ impl Database {
         // 显式事务冻结读依赖 memtx 保留其快照可见的版本——无脑截断到 covered
         // 会把"BEGIN 前已提交、BEGIN 后首次物化"的行从事务内静默抹掉。
         // （Q-9 的写侧 40001 不变：写冲突检测的盲区与读保留是两回事。）
+        // 活跃显式事务存在 ⇒ 本轮不截断：其冻结读依赖 memtx 保留快照可见
+        // 版本（v1 保守口径——内存随最老事务生命周期增长，已知权衡，精细化
+        // 按版本保留列 TASK Q-13）。无活跃事务时正常截断。
+        // covered_min **只在真截断时推进**（第十轮 P10-5）：截断被跳过时冲突
+        // 检测并未致盲，推进会使保留窗口内的提交被误拒 40001。
         let has_active = !b.active_snaps.lock().is_empty();
-        if has_active {
-            // 存在活跃显式事务 ⇒ 本轮不截断：其冻结读依赖 memtx 保留快照
-            // 可见版本（v1 保守口径——内存随最老事务生命周期增长，已知权衡，
-            // 精细化按版本保留列 TASK Q-13）。无活跃事务时正常截断。
-        } else {
+        if !has_active {
             b.mem.truncate_all(covered);
+            b.covered_min.store(covered, Ordering::Release);
         }
-        // 记录盲区水位（Q-9）：此后提交的显式事务若快照低于此值即拒
-        b.covered_min.store(covered, Ordering::Release);
         Ok(Some(commit.addr()))
     }
 
@@ -1200,10 +1202,17 @@ impl Drop for Session {
 }
 
 impl Session {
-    /// 注销活跃快照（事务结束或会话放弃；分支可能已被驱逐——查无则忽略）
+    /// 注销活跃快照（事务结束或会话放弃；分支可能已被驱逐——查无则忽略）。
+    /// **引用计数递减**（R10-3）：同 watermark 的并发事务各自持一槽
     pub(crate) fn unregister_snapshot(&self, snapshot: &u64) {
         if let Ok(b) = self.db.branch(&self.branch) {
-            b.active_snaps.lock().remove(snapshot);
+            let mut g = b.active_snaps.lock();
+            if let Some(c) = g.get_mut(snapshot) {
+                *c -= 1;
+                if *c == 0 {
+                    g.remove(snapshot);
+                }
+            }
         }
     }
     /// 执行一段 SQL（可含多语句，`;` 分隔）；空/纯注释 → 空 Vec
