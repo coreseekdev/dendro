@@ -5,10 +5,15 @@
 ## 1. 定位
 
 - 列存是**提交物化的投影**（derived），不是权威数据；权威=prolly 行树(SPEC 03)
-- 物化器(checkpoint 之后)把新增行转 Arrow RecordBatch → 编码成 CBF row group → 上传
-- AP 查询走 CBF；TP 点查走行树/memtx。物化滞后窗口 = checkpoint 间隔
-- 分支结构共享延伸到列存：子分支未改动表的 row group 直接引用父分支的 CBF 对象
-  （`tables[t].col_seg_range` 指向同一段）；merge 后物化器只补增量
+- **增量分段物化（✅ 已实现，OSS 友好）**：checkpoint 只把 memtx 增量
+  （纯内存读，零树扫描、零远端读）写成一个新的不可变 CBF 段对象并 PUT；
+  `TableEntry.col_segments[]` 按时间序累积，末尾=最新
+- 扫描端：段级 pk 剪枝（每段记录 order 域 min/max）→ 行组级 zone map 剪枝
+  → 列块解码；pk 去重（新段优先）+ `col_deletes` 删除抑制 + memtx overlay 合并
+- 段数 ≥ 8 或删除数 > 1 万时触发**全量重建**（一次写放大换长期读放大，
+  替代"每次 checkpoint 重传整表"——慢/贵网络下的关键设计）
+- AP 查询走 CBF；TP 点查走行树/memtx；物化滞后窗口 = checkpoint 间隔
+- 分支结构共享延伸到列存：子分支 fork 时引用父分支的段列表（零复制）
 
 ## 2. 文件布局
 

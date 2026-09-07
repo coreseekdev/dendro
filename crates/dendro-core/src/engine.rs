@@ -269,7 +269,22 @@ impl Database {
             StoreConfig::LocalDir(p) => Arc::new(LocalObjStore::open(p)?),
             StoreConfig::Memory => Arc::new(MemoryObjStore::new()),
             StoreConfig::S3(cfg) => {
-                let s3 = Arc::new(crate::objstore::s3::S3ObjStore::new(cfg.clone())?);
+                let mut s3: Arc<dyn ObjStore> =
+                    Arc::new(crate::objstore::s3::S3ObjStore::new(cfg.clone())?);
+                // 慢网络模拟旋钮（公网/跨机房 OSS）：注入每次请求的 RTT
+                if let Ok(ms) = std::env::var("DENDRO_S3_RTT_MS") {
+                    if let Ok(mean) = ms.parse::<f64>() {
+                        eprintln!("[s3] latency injection: {mean}ms RTT");
+                        s3 = Arc::new(crate::objstore::throttled::ThrottledObjStore::new(
+                            s3,
+                            crate::objstore::throttled::LatencySpec {
+                                mean_ms: mean / 2.0, // 单程
+                                jitter_pct: 0.2,
+                            },
+                            16,
+                        ));
+                    }
+                }
                 // 读路径缓存（真 OSS 延迟下的可用性前提，SPEC 01 §7）
                 let cache_dir = std::env::temp_dir().join(format!(
                     "dendro-cache-{}",

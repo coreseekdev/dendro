@@ -81,6 +81,29 @@ SELECT * FROM t;
 - 崩溃恢复 2 万事务 8ms（HEAD 探测，无 LIST）
 - CBF：DELTA 顺序列 R=8 解码 2.3GB/s；低基数文本 RLE_DICT 48×
 
+## 云原生（✅ 真实对象存储验证）
+
+存储主体（prolly 行树 chunk、WAL 段、CBF 列存段、manifest）**全部落在
+S3 兼容对象存储**，计算节点无状态。已用 Docker 里的
+[RustFS](https://github.com/rustfs/rustfs) 完成端到端验证：
+
+- 条件写（`If-None-Match: *`）支撑 manifest 乐观提交与分支 CAS
+- 杀进程 → 全新计算节点从 S3 完整恢复（数据+分支+合并结果）
+- **增量分段列存**：checkpoint 只 PUT memtx 增量（零树扫描零远端读），
+  段级+行组级双重剪枝，段数超阈值才全量压缩——慢/贵网络友好
+- 读路径磁盘 LRU 缓存：RustFS 实测 12k 行全生命周期仅 9 次远端 GET
+- 慢网络（注入 100ms RTT）下单行提交 p50 76ms，组提交+流水线吸收、尾延迟压平
+
+```bash
+# 云原生模式启动
+docker run -d --name rustfs -p 9000:9000 \
+  -e RUSTFS_ACCESS_KEY=key -e RUSTFS_SECRET_KEY=secret rustfs/rustfs:latest
+aws --endpoint-url http://127.0.0.1:9000 s3 mb s3://dendro
+./target/release/dendro serve --s3-endpoint http://127.0.0.1:9000 \
+  --s3-bucket dendro --s3-access-key key --s3-secret-key secret
+# DENDRO_S3_RTT_MS=100 可模拟慢网络
+```
+
 ## 测试
 
 ```bash
