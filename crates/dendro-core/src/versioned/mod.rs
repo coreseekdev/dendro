@@ -62,7 +62,7 @@ pub fn row_value(schema: &TableSchema, vals: &[SqlValue]) -> Result<Vec<u8>> {
 }
 
 /// catalog 条目（catalog map 的值）：表名 → TableEntry 字节
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TableEntry {
     pub id: u32,
     pub name: String,

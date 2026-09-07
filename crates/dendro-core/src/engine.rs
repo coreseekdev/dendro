@@ -345,7 +345,8 @@ impl Database {
         sess.dialect = d;
     }
 
-    pub(crate) fn manifest(&self) -> Arc<DbSnapshot> {
+    /// 当前 manifest 快照（分支列表/提交历史等系统视图用）
+    pub fn manifest(&self) -> Arc<DbSnapshot> {
         self.state.load_full()
     }
 
@@ -397,6 +398,40 @@ impl Database {
         Ok(b)
     }
 
+    /// 创建分支（O(1)：源分支 checkpoint 后写一条 ref；零数据复制）
+    pub fn create_branch(&self, name: &str, from: &str) -> Result<()> {
+        if self.branch_exists(name) {
+            return Err(SqlError::duplicate_table(format!("branch \"{name}\" already exists")));
+        }
+        self.checkpoint_branch(from)?;
+        let (src_commit, src_seg) = {
+            let snap = self.manifest();
+            let h = snap
+                .manifest
+                .refs
+                .get(from)
+                .ok_or_else(|| SqlError::undefined_branch(format!("branch \"{from}\" does not exist")))?;
+            (h.commit.clone(), h.wal_seg)
+        };
+        self.update_manifest(|m| {
+            m.refs.insert(
+                name.to_string(),
+                crate::objstore::manifest::BranchHead {
+                    commit: src_commit.clone(),
+                    wal_seg: 0,
+                    parent: Some(from.to_string()),
+                    fork_commit: src_commit.clone(),
+                    fork_wal_seg: src_seg,
+                    epoch: 0,
+                    covered_seq: 0,
+                },
+            );
+            Ok(true)
+        })?;
+        self.branch(name)?;
+        Ok(())
+    }
+
     pub(crate) fn remove_branch_runtime(&self, name: &str) {
         self.branches.write().remove(name);
     }
@@ -419,34 +454,42 @@ impl Database {
         };
         let sc = self.load_commit(&sc)?;
         let dc = self.load_commit(&dc)?;
-        // 公共祖先（按 height 双向收敛）
         let base = self.common_ancestor(&sc, &dc)?;
-        // catalog 级合并
-        let outcome = crate::versioned::merge::merge_map(&self.store, base.map(|c| c.root), Some(sc.root), Some(dc.root), &mut self.chunk_seen.lock())?;
-        let session: HashSet<Hash> = HashSet::new();
-        match outcome {
-            crate::versioned::merge::MergeOutcome::NoOp => Ok("NOOP".to_string()),
-            crate::versioned::merge::MergeOutcome::FastForward(new_root) => {
-                self.write_branch_commit(dst, new_root, vec![dc.addr()], "fast-forward merge")?;
-                Ok("FAST_FORWARD".to_string())
-            }
-            crate::versioned::merge::MergeOutcome::Merged { root, .. } => {
-                self.write_branch_commit(dst, root, vec![dc.addr(), sc.addr()], "merge")?;
-                Ok("MERGED".to_string())
-            }
-            crate::versioned::merge::MergeOutcome::Conflicts(cs) => {
-                Err(SqlError::serialization(format!(
-                    "merge conflict: {} conflicting keys, e.g. {:?}",
-                    cs.len(),
-                    cs.iter().take(5).map(|c| c.key.clone()).collect::<Vec<_>>()
-                )))
-            }
+
+        // 结构化目录三方合并：目录级冲突时逐表下推行级合并（SPEC 08 §6）
+        let cat = crate::versioned::Versioned::new(self.store.clone());
+        let be = cat.catalog_entries(base.as_ref().map(|c| c.root).as_ref())?;
+        let le = cat.catalog_entries(Some(&sc.root))?;
+        let re = cat.catalog_entries(Some(&dc.root))?;
+        let mut session: HashSet<Hash> = HashSet::new();
+        let cm = crate::versioned::merge::merge_catalog(&self.store, &be, &le, &re, &mut session)?;
+        if !cm.conflicts.is_empty() {
+            return Err(SqlError::serialization(format!(
+                "merge conflict: {} tables conflicted ({})",
+                cm.conflicts.len(),
+                cm.conflicts.join("; ")
+            )));
         }
-        .map(|s| {
-            let _ = session;
-            s
-        })
+        // 合并后的目录应用到 left 树（结构共享）→ 新目录根
+        let new_root = {
+            let mut ck = crate::prolly::Chunker::new(&self.store, &mut session);
+            let muts: Vec<(Vec<u8>, crate::prolly::Mutation)> = cm
+                .entries
+                .iter()
+                .map(|(n, e)| {
+                    (
+                        n.as_bytes().to_vec(),
+                        crate::prolly::Mutation::Put(crate::versioned::encode_table_entry(e)),
+                    )
+                })
+                .collect();
+            ck.apply(Some(&sc.root), &muts)?
+        };
+        let root = new_root.expect("structured merge yields catalog root");
+        self.write_branch_commit(dst, root, vec![dc.addr(), sc.addr()], "merge")?;
+        Ok("MERGED".to_string())
     }
+
 
     pub(crate) fn load_commit(&self, addr: &Hash) -> Result<Commit> {
         let (_ty, data) = self.cas.get(addr)?;

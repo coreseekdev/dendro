@@ -227,7 +227,7 @@ fn describe_static(db: &Database, sess: &mut Session, q: &Query) -> Option<Vec<C
         }
         _ => return None,
     };
-    let (schema, _) = resolve_table(db, sess, &full).ok()?;
+    let (schema, _) = resolve_table(db, &sess.branch, &full).ok()?;
     let col_ty = |c: &str| schema.col_index(c).map(|i| schema.columns[i].ty);
     let agg_ty = |name: &str, arg: Option<&Expr>| -> ColType {
         match name {
@@ -418,7 +418,7 @@ fn try_ap_scan(
     };
     let Some(ap) = db.columnar() else { return Ok(None) };
     let short_name = name.rsplit('.').next().unwrap_or(&name).to_string();
-    let Ok((schema, entry)) = resolve_table(db, sess, &short_name) else { return Ok(None) };
+    let Ok((schema, entry)) = resolve_table(db, &sess.branch, &short_name) else { return Ok(None) };
     if entry.col_segments.is_empty() || entry.col_rows < 10_000 {
         return Ok(None);
     }
@@ -671,7 +671,7 @@ fn try_pk_pushdown(
     }
     let Some(sel) = selection else { return Ok(None) };
     // 单列主键 + 顶层 Eq/IN 形态才走直查
-    let (schema, entry) = match resolve_table(db, sess, &name) {
+    let (schema, entry) = match resolve_table(db, &sess.branch, &name) {
         Ok(v) => v,
         Err(_) => return Ok(None),
     };
@@ -783,7 +783,7 @@ fn table_scan(db: &Database, sess: &mut Session, tf: &TableFactor, snapshot: u64
                 }
                 _ => {}
             }
-            let (schema, entry) = resolve_table(db, sess, &full)?;
+            let (schema, entry) = resolve_table(db, &sess.branch, &full)?;
             let b = db.branch(&sess.branch)?;
             let _head = b.head.load_full();
             let root = entry
@@ -858,11 +858,11 @@ fn table_scan(db: &Database, sess: &mut Session, tf: &TableFactor, snapshot: u64
 /// 解析表（catalog 查找；可能带 schema 前缀 public.t / t）
 pub(crate) fn resolve_table(
     db: &Database,
-    sess: &Session,
+    branch_name: &str,
     name: &str,
 ) -> Result<(crate::versioned::TableSchema, crate::versioned::TableEntry)> {
     let short_name = name.rsplit(['.', '@']).next().unwrap_or(name);
-    let branch = db.branch(&sess.branch)?;
+    let branch = db.branch(branch_name)?;
     let head = branch.head.load_full();
     let catalog = crate::versioned::Versioned::new(db.store.clone());
     let found = catalog
@@ -1324,7 +1324,7 @@ fn pseudo_columns(db: &Database, sess: &mut Session) -> Result<TableView> {
     let head = b.head.load_full();
     let catalog = crate::versioned::Versioned::new(db.store.clone());
     for (n, _) in catalog.catalog_entries(head.as_ref().as_ref().map(|c| c.root).as_ref())? {
-        let (schema, _) = resolve_table(db, sess, &n)?;
+        let (schema, _) = resolve_table(db, &sess.branch, &n)?;
         for c in schema.columns {
             rows.push(vec![
                 SqlValue::Utf8("public".into()),

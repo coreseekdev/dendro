@@ -238,18 +238,11 @@ fn exec_branch_statement(db: &Database, sess: &mut Session, sql: &str) -> Result
             Ok(vec![Output::Command { tag: "USE".into(), affected: 0 }])
         }
         BranchKind::Create => {
-            // CREATE BRANCH [IF NOT EXISTS] name [FROM src]
+            // CREATE BRANCH [IF NOT EXISTS] name [FROM src]（SPEC 03 §5）
             let text = skip_keyword(sql, "CREATE BRANCH");
-            let if_not_exists = text
-                .trim_start()
-                .to_ascii_uppercase()
-                .starts_with("IF NOT EXISTS");
-            let text = if if_not_exists {
-                let t = text.trim_start()[13..].to_string();
-                t
-            } else {
-                text
-            };
+            let upper = text.trim_start().to_ascii_uppercase();
+            let if_not_exists = upper.starts_with("IF NOT EXISTS");
+            let text = if if_not_exists { text.trim_start()[13..].to_string() } else { text };
             let (name, rest) = split_ident(&text);
             let src = match rest.trim_start().strip_prefix("FROM") {
                 Some(after) => split_ident(after).0,
@@ -261,34 +254,7 @@ fn exec_branch_statement(db: &Database, sess: &mut Session, sql: &str) -> Result
                 }
                 return Err(SqlError::duplicate_table(format!("branch \"{name}\" already exists")));
             }
-            // 源分支 checkpoint 后 fork
-            db.checkpoint_branch(&src)?;
-            let (src_commit, src_seg, _src_covered) = {
-                let snap = db.manifest();
-                let h = snap
-                    .manifest
-                    .refs
-                    .get(&src)
-                    .ok_or_else(|| SqlError::undefined_branch(format!("branch \"{src}\" does not exist")))?;
-                (h.commit.clone(), h.wal_seg, h.covered_seq)
-            };
-            db.update_manifest(|m| {
-                m.refs.insert(
-                    name.clone(),
-                    crate::objstore::manifest::BranchHead {
-                        commit: src_commit.clone(),
-                        wal_seg: 0,
-                        parent: Some(src.clone()),
-                        fork_commit: src_commit.clone(),
-                        fork_wal_seg: src_seg,
-                        epoch: 0,
-                        covered_seq: 0,
-                    },
-                );
-                Ok(true)
-            })?;
-            // 预建运行态
-            db.branch(&name)?;
+            db.create_branch(&name, &src)?;
             Ok(vec![Output::Command { tag: "CREATE BRANCH".into(), affected: 0 }])
         }
         BranchKind::Drop => {
@@ -652,7 +618,7 @@ fn infer_param_types(db: &Database, sess: &Session, stmt: &Statement, n: usize) 
                     .join("."),
                 _ => return None,
             };
-            let (schema, _) = scan::resolve_table(db, sess, &name).ok()?;
+            let (schema, _) = scan::resolve_table(db, &sess.branch, &name).ok()?;
             let col_idx: Vec<usize> = if ins.columns.is_empty() {
                 (0..schema.columns.len()).collect()
             } else {
@@ -691,7 +657,7 @@ fn infer_param_types(db: &Database, sess: &Session, stmt: &Statement, n: usize) 
                     .join("."),
                 _ => return None,
             };
-            let (schema, _) = scan::resolve_table(db, sess, &name).ok()?;
+            let (schema, _) = scan::resolve_table(db, &sess.branch, &name).ok()?;
             let col_of = |c: &str| schema.col_index(c).map(|i| schema.columns[i].ty);
             for a in &upd.assignments {
                 if let sqlparser::ast::AssignmentTarget::ColumnName(col) = &a.target {
@@ -716,7 +682,7 @@ fn infer_param_types(db: &Database, sess: &Session, stmt: &Statement, n: usize) 
                             .map(|i| i.value.clone())
                             .collect::<Vec<_>>()
                             .join(".");
-                        if let Ok((schema, _)) = scan::resolve_table(db, sess, &full) {
+                        if let Ok((schema, _)) = scan::resolve_table(db, &sess.branch, &full) {
                             let col_of = |c: &str| schema.col_index(c).map(|i| schema.columns[i].ty);
                             if let Some(w) = &sel.selection {
                                 from_binary(w, &[], &col_of, &mut set);

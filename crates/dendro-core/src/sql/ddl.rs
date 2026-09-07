@@ -25,7 +25,7 @@ pub(crate) fn exec_create_table(db: &Database, sess: &mut Session, create: sqlpa
         let (ver, _) = scan_catalog(db, sess)?;
         let _ = ver;
     }
-    if let Ok((_, entry)) = scan::resolve_table(db, sess, &short) {
+    if let Ok((_, entry)) = scan::resolve_table(db, &sess.branch, &short) {
         let _ = entry;
         if create.if_not_exists {
             return Ok(Some(Output::Command { tag: "CREATE TABLE".into(), affected: 0 }));
@@ -221,7 +221,7 @@ pub(crate) fn drop_table_impl(
     for n in names {
         let full = object_name(&n);
         let short = full.rsplit('.').next().unwrap_or(&full).to_string();
-        match scan::resolve_table(db, sess, &short) {
+        match scan::resolve_table(db, &sess.branch, &short) {
             Ok((_, entry)) => {
                 let b = db.branch(&sess.branch)?;
                 b.mem.remove_table(entry.id);
@@ -252,7 +252,7 @@ pub(crate) fn alter_table_impl(
     match op {
         sqlparser::ast::AlterTableOperation::AddColumn { column_def, .. } => {
             let (mut cols, pk) = translate_columns(&[column_def], &[])?;
-            let (_, entry) = scan::resolve_table(db, sess, &short)?;
+            let (_, entry) = scan::resolve_table(db, &sess.branch, &short)?;
             let catalog = crate::versioned::Versioned::new(db.store.clone());
             let mut schema = catalog.load_schema(&entry.schema_addr)?;
             schema.columns.append(&mut cols);
@@ -279,7 +279,7 @@ pub(crate) fn truncate_impl(
     for t in tables {
         let full = object_name(&t.name);
         let short = full.rsplit('.').next().unwrap_or(&full).to_string();
-        let (_, entry) = scan::resolve_table(db, sess, &short)?;
+        let (_, entry) = scan::resolve_table(db, &sess.branch, &short)?;
         // 全表删除：扫描可见行全部写 tombstone
         let tv = table_scan_pub(db, sess, &short, snapshot)?;
         for row in &tv.rows {
@@ -315,7 +315,7 @@ pub(crate) fn exec_insert(db: &Database, sess: &mut Session, insert: Insert) -> 
         other => return Err(SqlError::not_supported(format!("INSERT target: {other}"))),
     };
     let short = table.rsplit('.').next().unwrap_or(&table).to_string();
-    let (schema, entry) = scan::resolve_table(db, sess, &short)?;
+    let (schema, entry) = scan::resolve_table(db, &sess.branch, &short)?;
     if schema.pk.is_empty() {
         return Err(SqlError::not_supported(format!("table \"{short}\" has no primary key")));
     }
@@ -442,7 +442,7 @@ pub(crate) fn exec_delete(db: &Database, sess: &mut Session, delete: sqlparser::
         })
         .ok_or_else(|| SqlError::syntax("DELETE requires table"))?;
     let short = name.rsplit('.').next().unwrap_or(&name).to_string();
-    let (schema, entry) = scan::resolve_table(db, sess, &short)?;
+    let (schema, entry) = scan::resolve_table(db, &sess.branch, &short)?;
     let snapshot = sess.implicit_snapshot(db)?;
     // 找目标行：全扫 + WHERE（v1；pk 等值优化同 SELECT）
     let tv = table_scan_pub(db, sess, &short, snapshot)?;
@@ -487,7 +487,7 @@ pub(crate) fn update_impl(
     selection: Option<Expr>,
 ) -> Result<Option<Output>> {
     let short = table.rsplit('.').next().unwrap_or(table).to_string();
-    let (schema, entry) = scan::resolve_table(db, sess, &short)?;
+    let (schema, entry) = scan::resolve_table(db, &sess.branch, &short)?;
     let snapshot = sess.implicit_snapshot(db)?;
     let tv = scan::table_scan_by_name(db, sess, &short, snapshot)?;
     let cols: std::collections::HashMap<String, usize> = std::collections::HashMap::from_iter(

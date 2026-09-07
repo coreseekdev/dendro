@@ -276,3 +276,129 @@ mod tests {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// 结构化目录三方合并：目录级冲突时逐表下推到行树合并（SPEC 08 §6）
+// ---------------------------------------------------------------------------
+
+use crate::versioned::{TableEntry, TableSchema};
+
+pub struct CatalogMerge {
+    /// 合并后的目录全量条目（name → entry）
+    pub entries: Vec<(String, TableEntry)>,
+    /// 表级冲突描述（schema 演化 / 行级冲突 / 删改并见）
+    pub conflicts: Vec<String>,
+}
+
+fn entry_bytes(e: &TableEntry) -> Vec<u8> {
+    serde_json::to_vec(e).unwrap()
+}
+
+/// 结构化三方合并：目录级相同→取同；单边变→取变；双边变→逐表行级合并
+pub fn merge_catalog(
+    store: &Arc<NodeStore>,
+    base: &[(String, TableEntry)],
+    left: &[(String, TableEntry)],
+    right: &[(String, TableEntry)],
+    session: &mut HashSet<Hash>,
+) -> Result<CatalogMerge> {
+    let bm: std::collections::BTreeMap<String, TableEntry> = base.iter().cloned().collect();
+    let lm: std::collections::BTreeMap<String, TableEntry> = left.iter().cloned().collect();
+    let rm: std::collections::BTreeMap<String, TableEntry> = right.iter().cloned().collect();
+
+    let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    names.extend(bm.keys().cloned());
+    names.extend(lm.keys().cloned());
+    names.extend(rm.keys().cloned());
+
+    let mut entries = Vec::new();
+    let mut conflicts = Vec::new();
+
+    for name in &names {
+        let b = bm.get(name);
+        let l = lm.get(name);
+        let r = rm.get(name);
+        // 单边/相同/双边都未变 的快速路径
+        if l == r {
+            if let Some(e) = l {
+                entries.push((name.clone(), e.clone()));
+            }
+            continue;
+        }
+        if l == b {
+            if let Some(e) = r {
+                entries.push((name.clone(), e.clone()));
+            }
+            continue;
+        }
+        if r == b {
+            if let Some(e) = l {
+                entries.push((name.clone(), e.clone()));
+            }
+            continue;
+        }
+        // 双边都改了：
+        match (l, r) {
+            (Some(le), Some(re)) => {
+                if le.schema_addr == re.schema_addr {
+                    // 行级下推：三方合并表树
+                    let broot = b
+                        .and_then(|be| be.table_root.as_ref().and_then(|s| Hash::from_base32(s)));
+                    let lroot =
+                        le.table_root.as_ref().and_then(|s| Hash::from_base32(s));
+                    let rroot =
+                        re.table_root.as_ref().and_then(|s| Hash::from_base32(s));
+                    match merge_map(store, broot, lroot, rroot, session)? {
+                        MergeOutcome::NoOp | MergeOutcome::FastForward(_) => {
+                            // 无行级变更或快进：行根取非 base 一侧
+                            let root = match (&lroot, &rroot) {
+                                (_, Some(r)) if lroot == rroot => lroot.clone(),
+                                _ => {
+                                    if lroot == broot {
+                                        rroot
+                                    } else {
+                                        lroot
+                                    }
+                                }
+                            };
+                            let mut e = le.clone();
+                            e.table_root = root.map(|h| h.to_base32());
+                            e.row_count = root
+                                .as_ref()
+                                .and_then(|h| crate::prolly::cursor::tree_count(store, h).ok())
+                                .unwrap_or(0);
+                            entries.push((name.clone(), e));
+                        }
+                        MergeOutcome::Merged { root, .. } => {
+                            let mut e = le.clone();
+                            e.table_root = Some(root.to_base32());
+                            e.row_count = crate::prolly::cursor::tree_count(store, &root)
+                                .unwrap_or(0);
+                            entries.push((name.clone(), e));
+                        }
+                        MergeOutcome::Conflicts(cs) => {
+                            conflicts.push(format!(
+                                "table {name}: {} conflicting keys ({})",
+                                cs.len(),
+                                cs.iter().take(3).map(|c| c.key.clone()).collect::<Vec<_>>().join(",")
+                            ));
+                        }
+                    }
+                } else {
+                    conflicts.push(format!("table {name}: schema evolved on both branches"));
+                }
+            }
+            (None, Some(re)) => {
+                // 左删右改 → 冲突
+                conflicts.push(format!("table {name}: deleted on one branch, modified on other"));
+                let _ = re;
+            }
+            (Some(le), None) => {
+                conflicts.push(format!("table {name}: deleted on one branch, modified on other"));
+                let _ = le;
+            }
+            (None, None) => unreachable!(),
+        }
+    }
+    Ok(CatalogMerge { entries, conflicts })
+}

@@ -40,6 +40,13 @@ Aurora/Neon/Socrates、CockroachDB/TiKV、FoundationDB、Aurora DSQL、
 Calvin、ForkBase 的参考架构，给出 Dendro 的四阶段演进路线
 （读副本 → 分支租约 fencing → 日志服务 → 分布式 OCC）。
 
+## KV 接口层（分支化的版本键值存储）
+
+[docs/design/kv-接口层.md](docs/design/kv-接口层.md) — 把 memtx + prolly 树
+统一暴露为分支化的版本 KV：Rust API（get/scan/cas/显式事务）+ RESP wire
+（Redis 客户端直连，BRANCH = checkout -b）。"不标准"点 = 核心特性：
+值带版本、键空间可 fork/merge、追加式、快照读。
+
 ## 设计：多节点 memtx 事务一致性
 
 [docs/design/多节点memtx一致性.md](docs/design/多节点memtx一致性.md) —

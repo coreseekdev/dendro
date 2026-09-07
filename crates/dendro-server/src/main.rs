@@ -1,6 +1,7 @@
 //! dendro 服务器入口：装配引擎 + PG/MySQL 双协议监听 + 基准。
 
 mod bench;
+pub mod kv_resp;
 
 use clap::{Parser as ClapParser, Subcommand};
 use dendro_core::{Database, DbOptions, Durability, StoreConfig};
@@ -39,6 +40,9 @@ enum Cmd {
         /// 读路径缓存字节预算
         #[arg(long, default_value_t = 1 << 30)]
         cache_bytes: u64,
+        /// RESP(KV) 监听端口（0 = 关闭）
+        #[arg(long, default_value_t = 0)]
+        kv_port: u16,
         /// PG 监听端口（0 = 关闭）
         #[arg(long, default_value_t = 5432)]
         pg_port: u16,
@@ -80,6 +84,7 @@ fn main() {
     match cli.cmd {
         Cmd::Serve {
             data,
+            kv_port,
             s3_endpoint,
             s3_bucket,
             s3_access_key,
@@ -127,6 +132,18 @@ fn main() {
             }));
             
             eprintln!("dendro opened at {}", data.display());
+            let kv_handle = if kv_port > 0 {
+                let db_kv = db.clone();
+                let kv_addr = format!("{host}:{kv_port}");
+                Some(
+                    std::thread::Builder::new()
+                        .name("kv-resp-listener".into())
+                        .spawn(move || kv_resp::serve(&kv_addr, db_kv, "main").expect("kv listener"))
+                        .unwrap(),
+                )
+            } else {
+                None
+            };
             let my_handle = if mysql_port > 0 {
                 let db_my = db.clone();
                 let my_addr = format!("{host}:{mysql_port}");
@@ -166,9 +183,12 @@ fn main() {
             if let Some(h) = my_handle {
                 h.join().unwrap();
             }
+            if let Some(h) = kv_handle {
+                h.join().unwrap();
+            }
         }
         Cmd::Bench { out } => {
-            bench::run_all(&out);
+            dendro_server::bench::run_all(&out);
         }
         Cmd::Smoke { sql } => {
             let db = Database::open(DbOptions::memory()).unwrap();
