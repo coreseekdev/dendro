@@ -17,7 +17,80 @@ fn opts(dir: &std::path::Path, ttl_ms: i64) -> DbOptions {
         checkpoint_interval_s: 0,
         cache_budget_bytes: 256 << 20,
         lease_ttl_ms: ttl_ms,
+        read_only: false,
     }
+}
+
+fn opts_ro(dir: &std::path::Path) -> DbOptions {
+    DbOptions { read_only: true, ..opts(dir, 800) }
+}
+
+fn fence_files(dir: &std::path::Path) -> usize {
+    std::fs::read_dir(dir.join("fence").join("main"))
+        .map(|d| d.flatten().count())
+        .unwrap_or(0)
+}
+
+#[test]
+fn read_only_open_does_not_pollute_epoch_sequence() {
+    // 评审 A7：此前任何打开都领新 epoch + 起 WAL writer——读副本每次打开
+    // 都制造空 epoch 目录。现在：只读打开零 fence 对象、可读、拒写（25006）。
+    let dir = std::env::temp_dir().join(format!("dendro-ro-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // 写者建立数据（领取 epoch 1 → fence 文件 1 个）
+    {
+        let db = Database::open(opts(&dir, 800)).unwrap();
+        let mut s = db.new_session();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+        s.exec("INSERT INTO t VALUES (1, 'a')").unwrap();
+    }
+    let before = fence_files(&dir);
+    assert_eq!(before, 1, "写者打开应恰好一个租约对象");
+
+    // 只读打开 ×2：不新增 fence 对象（epoch 序列不被污染）
+    for i in 0..2 {
+        let ro = Database::open(opts_ro(&dir)).unwrap();
+        let b = ro.branch("main").unwrap();
+        assert!(b.read_only);
+        let o = {
+            let mut s = ro.new_session();
+            s.exec("SELECT count(*) FROM t").unwrap()
+        };
+        if let dendro_core::Output::Rows(rs) = &o[0] {
+            assert_eq!(rs.text_rows()[0][0].as_deref(), Some("1"), "RO 读可见（第 {} 次）", i + 1);
+        }
+        // 写被拒：SQLSTATE 25006 read_only_sql_transaction
+        let e = {
+            let mut s = ro.new_session();
+            s.exec("INSERT INTO t VALUES (2, 'x')").unwrap_err()
+        };
+        assert_eq!(e.state, "25006", "只读分支必须拒写");
+        // checkpoint 等写路径同样被拒
+        assert!(ro.checkpoint_branch("main").is_err(), "只读分支拒绝 checkpoint");
+        drop(ro);
+    }
+    assert_eq!(fence_files(&dir), 1, "只读打开不得产生租约对象");
+
+    // 后续写者接管 epoch 仍连续（= 2，未被 RO 打开顶掉）
+    let w2 = Database::open(opts(&dir, 800)).unwrap();
+    let e2 = w2.branch("main").unwrap().lease_epoch.load(std::sync::atomic::Ordering::Acquire);
+    assert_eq!(e2, 2, "epoch 序列不应被只读打开污染");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn read_only_open_missing_store_errors() {
+    // 只读打开绝不创建对象：空存储 → 明确报错
+    let dir = std::env::temp_dir().join(format!("dendro-ro2-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let e = match Database::open(opts_ro(&dir)) {
+        Ok(_) => panic!("只读打开空存储应报错"),
+        Err(e) => e,
+    };
+    assert!(e.message.contains("read-only"), "{e}");
+    assert!(!dir.join("manifest").exists(), "不得创建 manifest 对象");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

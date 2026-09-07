@@ -33,7 +33,7 @@
 |---|------|:----:|------|
 | ~~P1-2~~ | ~~fencing 运行时拒写~~ | ✅ | 本提交：`engine.rs::Branch::fence_gate`——三个写入口（commit_tx / write_branch_commit / checkpoint_branch）在 commit_mu 内检查；过期 → 40001。回归：`tests/multi_node.rs::{fence_expired_writer_rejected, fence_renew_keeps_healthy_writer_writing}` |
 | ~~P1-3~~ | ~~fencing 续期~~ | ✅ | 本提交：惰性续期（commit 路径，每 ttl/3 ≤1 次 PUT，失败仅告警下次重试；无后台线程——文档口径已同步） |
-| P1-1 | 只读打开模式（不领 epoch、不起 WAL writer） | ⬜ | `engine.rs::Database::open`；读副本前置 |
+| ~~P1-1~~ | ~~只读打开模式~~ | ✅ | 本提交：`DbOptions.read_only` + `serve --read-only`。不领 epoch（零 fence 对象）、不起 WAL writer、空存储拒绝打开；写路径经 fence_gate 拒绝（25006）。回归：`tests/multi_node.rs::{read_only_open_does_not_pollute_epoch_sequence, read_only_open_missing_store_errors}` |
 | P1-4 | GC：旧段删除时序定案（P0-3 并入）+ manifest 旧版本 + 旧 chunk + 旧 WAL 段回收 + 孤儿段墓碑 | ⬜ | `ManifestStore::retained` 接入 |
 | ~~P1-5~~ | ~~SQL 语义修复（S1–S6）~~ | ✅ | `53f2c74`/`92dcb35`/`f1bca77`；S4 偏离记录见上 |
 | ~~P1-6~~ | ~~JOIN/派生表测试（hash_join 零覆盖）~~ | ✅ | 本提交：`tests/slt/dendro/008_join.slt`（INNER/LEFT/NULL 键/一对多/三表链/复合键/JOIN+GROUP BY/派生表）。语料当场暴露真 bug：sqlparser 0.62 把裸 `JOIN`(Join) 与 `INNER JOIN`(Inner) 分为不同枚举——标准写法 `A JOIN B` 直接报 not_supported，hash_join 此前经由该路径**不可达**。已修（scan.rs eval_from 匹配 Join/Inner、Left/LeftOuter） |

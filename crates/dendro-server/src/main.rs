@@ -47,6 +47,9 @@ enum Cmd {
         /// 运维 HTTP 端口（/readyz /metrics；0 = 关闭）
         #[arg(long, default_value_t = 9469)]
         metrics_port: u16,
+        /// 只读模式（读副本）：不领写者租约，拒绝一切写
+        #[arg(long, default_value_t = false)]
+        read_only: bool,
         /// PG 监听端口（0 = 关闭）
         #[arg(long, default_value_t = 5432)]
         pg_port: u16,
@@ -90,6 +93,7 @@ fn main() {
             data,
             kv_port,
             metrics_port,
+            read_only,
             s3_endpoint,
             s3_bucket,
             s3_access_key,
@@ -131,6 +135,7 @@ fn main() {
                 checkpoint_threshold_bytes: checkpoint_bytes,
                 checkpoint_interval_s: 30,
                 lease_ttl_ms: 30_000,
+                read_only,
             };
             let db = Database::open(opts).unwrap_or_else(|e| panic!("open {}: {e}", data.display()));
             db.set_columnar(Arc::new(dendro_columnar::integrate::CbfColumnar {

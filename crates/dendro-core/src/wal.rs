@@ -277,6 +277,37 @@ impl WalWriter {
         w
     }
 
+    /// 只读构造（读副本）：不占段号、不起 flush 线程（stop=true 且无 handle）。
+    /// append 永不应到达此处——上游 fence_gate 已拒绝只读写；即使到达，
+    /// NoWait 只进缓冲且永不 flush（stop=true），不会向存储发出任何 PUT。
+    pub fn open_read_only(
+        obj: Arc<dyn ObjStore>,
+        branch: &str,
+        epoch: u64,
+        start_seg: u64,
+        cfg: WalConfig,
+    ) -> Arc<WalWriter> {
+        Arc::new(Self {
+            obj,
+            branch: branch.to_string(),
+            epoch,
+            cfg,
+            shared: Mutex::new(WalShared {
+                buf: Vec::new(),
+                frames: 0,
+                min_seq: 0,
+                max_seq: 0,
+                cur_seg: start_seg,
+                flushed_seg: start_seg.saturating_sub(1),
+                durable_seq: 0,
+                pending_frames: 0,
+            }),
+            cv: Condvar::new(),
+            stop: Mutex::new(true),
+            handle: Mutex::new(None),
+        })
+    }
+
     /// 段路径：wal/{branch}/e{epoch:020}/{seg:020}.wal
     /// epoch 进路径 ⇒ 陈旧写者的段落在低 epoch 目录，恢复按 epoch 升序重放、
     /// 高 epoch 覆盖（脑裂安全，P1 设计文档 §3.2）

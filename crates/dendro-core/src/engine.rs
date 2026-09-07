@@ -61,6 +61,9 @@ pub struct DbOptions {
     pub cache_budget_bytes: u64,
     /// 写者租约 TTL（毫秒；P1 fencing，SPEC 02 §6）
     pub lease_ttl_ms: i64,
+    /// 只读打开（读副本）：不领 epoch、不起 WAL writer、拒绝一切写。
+    /// 打开已存在的库；空存储打开即报错（绝不创建对象）。
+    pub read_only: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,6 +84,7 @@ impl Default for DbOptions {
             checkpoint_interval_s: 30,
             cache_budget_bytes: 1 << 30,
             lease_ttl_ms: 30_000,
+            read_only: false,
         }
     }
 }
@@ -112,8 +116,10 @@ pub struct Branch {
     /// 提交串行化锁（OCC 验证+安装+WAL 序列 的原子域）
     pub commit_mu: Mutex<()>,
     next_seq: AtomicU64,
-    /// 本进程持有的写者世代（P1 fencing；0=未领取）
+    /// 本进程持有的写者世代（P1 fencing；0=未领取；只读分支=ref epoch）
     pub lease_epoch: AtomicU64,
+    /// 只读分支（读副本）：不领租约、不起 WAL writer；fence_gate 拒绝一切写
+    pub read_only: bool,
     /// 写者租约状态（fence_gate 过期检查 + 惰性续期；P1 运行时拒写）
     pub lease_state: Mutex<LeaseState>,
     /// fence 对象存储访问（续期 PUT）
@@ -149,6 +155,9 @@ impl Branch {
     /// 健康路径惰性续期——每 ttl/3 至多一次 PUT，失败仅告警（下次提交重试，
     /// 若已过期则被上面的检查拒绝）。无后台续期线程。
     pub(crate) fn fence_gate(&self) -> Result<()> {
+        if self.read_only {
+            return Err(SqlError::new("25006", "read-only branch: cannot write (open without read_only to acquire a lease)"));
+        }
         let now = crate::objstore::fence::now_ms();
         let mut st = self.lease_state.lock();
         if st.lease.expires_at_ms <= now {
@@ -353,7 +362,12 @@ impl Database {
         let store = Arc::new(NodeStore::new(cas.clone(), 4096));
         let manifest_store = Arc::new(ManifestStore::new(obj.clone()));
         // 初始化 / 恢复
-        if manifest_store.init(now_ms()).is_err() {
+        if opts.read_only {
+            // 只读打开绝不创建任何对象：库不存在（无 manifest）→ 明确报错
+            if manifest_store.load_latest().is_err() {
+                return Err(SqlError::io("read-only open: no database found at store root"));
+            }
+        } else if manifest_store.init(now_ms()).is_err() {
             // 已存在 → 恢复
         }
         let (ver, manifest) = manifest_store.load_latest().map_err(SqlError::from)?;
@@ -426,20 +440,25 @@ impl Database {
             }
             None => None,
         };
-        // P1：进程打开分支即领取新 epoch（世代化；fence 条件写保证唯一）
+        // P1：进程打开分支即领取新 epoch（世代化；fence 条件写保证唯一）。
+        // 只读模式（读副本）：不领租约（不产生 fence 对象、不推进 epoch 序列）、
+        // 不起 WAL flush 线程——评审 A7：此前读打开也制造新写者世代。
         let fence = crate::objstore::fence::FenceStore::new(self.obj.clone());
-        let holder = format!("{}-{}", std::process::id(), self.session_seq.load(Ordering::Relaxed));
-        let lease = fence
-            .acquire(name, &holder, self.opts.lease_ttl_ms, head_info.epoch)?;
+        let (lease_epoch, lease_state, wal) = if self.opts.read_only {
+            let e = head_info.epoch.max(1);
+            (
+                e,
+                None,
+                WalWriter::open_read_only(self.obj.clone(), name, e, 1, crate::wal::WalConfig::from(&self.opts)),
+            )
+        } else {
+            let holder = format!("{}-{}", std::process::id(), self.session_seq.load(Ordering::Relaxed));
+            let lease = fence.acquire(name, &holder, self.opts.lease_ttl_ms, head_info.epoch)?;
+            let e = lease.epoch;
+            let wal = WalWriter::open(self.obj.clone(), name, e, 1, crate::wal::WalConfig::from(&self.opts));
+            (e, Some(LeaseState { lease, next_renew_ms: 0 }), wal)
+        };
         // 回放所有旧 epoch（1..=lease_epoch-1）；新 epoch 目录为空，随后写入
-        let lease_epoch = lease.epoch;
-        let wal = WalWriter::open(
-            self.obj.clone(),
-            name,
-            lease_epoch,
-            1,
-            crate::wal::WalConfig::from(&self.opts),
-        );
         let b = Arc::new(Branch {
             name: name.to_string(),
             head: ArcSwap::from_pointee(commit),
@@ -448,7 +467,15 @@ impl Database {
             commit_mu: Mutex::new(()),
             next_seq: AtomicU64::new(0),
             lease_epoch: AtomicU64::new(lease_epoch),
-            lease_state: Mutex::new(LeaseState { lease, next_renew_ms: 0 }),
+            read_only: self.opts.read_only,
+            lease_state: Mutex::new(lease_state.unwrap_or(LeaseState {
+                lease: crate::objstore::fence::Lease {
+                    epoch: lease_epoch,
+                    holder: "read-only".into(),
+                    expires_at_ms: 0,
+                },
+                next_renew_ms: 0,
+            })),
             fence,
             lease_ttl_ms: self.opts.lease_ttl_ms,
             watermark: AtomicU64::new(0),
