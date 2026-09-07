@@ -40,6 +40,13 @@ Aurora/Neon/Socrates、CockroachDB/TiKV、FoundationDB、Aurora DSQL、
 Calvin、ForkBase 的参考架构，给出 Dendro 的四阶段演进路线
 （读副本 → 分支租约 fencing → 日志服务 → 分布式 OCC）。
 
+## 设计：多节点 memtx 事务一致性
+
+[docs/design/多节点memtx一致性.md](docs/design/多节点memtx一致性.md) —
+现状一致性模型的精确刻画（不变量 I1-I5、持久性三线）、双写同一分支的具体
+损坏路径分析、P1 租约 fencing / P2 日志服务 / P3 分布式 OCC 的协议设计与
+memtx 一致性保证矩阵、与现有代码的差距清单。
+
 ## 设计：负载自感知与弹性调度
 
 [docs/research/负载自感知与弹性调度.md](docs/research/负载自感知与弹性调度.md) —
