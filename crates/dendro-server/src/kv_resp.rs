@@ -7,7 +7,6 @@
 
 use dendro_core::kv::Kv;
 use dendro_core::{Database, SqlValue};
-use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
@@ -132,7 +131,7 @@ fn serve_conn(
     default_branch: &str,
 ) -> std::io::Result<()> {
     let mut kv = Kv::open(&db, default_branch)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
     let mut st = ConnState::default();
     let mut r = BufReader::new(stream.try_clone()?);
     loop {
@@ -143,10 +142,7 @@ fn serve_conn(
         }) else {
             return Ok(());
         };
-        let msg = match msg {
-            Ok(m) => m,
-            Err(e) => return Err(e),
-        };
+        let msg = msg?;
         let args: Vec<Vec<u8>> = match msg {
             Resp::Array(a) => a.into_iter().filter_map(|x| match x {
                 Resp::Bulk(b) => Some(b),

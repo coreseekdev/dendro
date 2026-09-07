@@ -1,3 +1,4 @@
+#![allow(clippy::type_complexity)]
 //! Journal——多副本提交日志（SOTA 调研 §1.2 / DSQL Adjudicator+Journal 同形态）。
 //!
 //! 底座 = tikv/raft-rs（TiKV 级生产验证的 Rust Raft）。
@@ -16,8 +17,7 @@
 use raft::prelude::*;
 use raft::{Config, Storage};
 use crate::error::SqlError;
-use crate::error::Result;
-use slog::Drain;
+// slog::Drain removed
 
 /// 提交批次：一次事务的全部变更
 #[derive(Debug, Clone)]
@@ -123,7 +123,7 @@ impl RaftJournal {
     /// 驱动 raft Ready 循环
     pub fn process_ready(&mut self) {
         while self.node.has_ready() {
-            let mut ready = self.node.ready();
+            let ready = self.node.ready();
             self.node.advance(ready);
         }
     }

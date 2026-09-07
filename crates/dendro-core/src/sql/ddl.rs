@@ -354,9 +354,7 @@ pub(crate) fn exec_insert(db: &Database, sess: &mut Session, insert: Insert) -> 
                 let pk_vals: Vec<SqlValue> = schema.pk.iter().map(|&i| row[i as usize].clone()).collect();
                 let key = encode_key(&pk_vals);
                 if !seen_keys.insert(key.clone()) {
-                    return Err(SqlError::duplicate_key(format!(
-                        "duplicate key value violates primary key constraint (key in same INSERT)"
-                    )));
+                    return Err(SqlError::duplicate_key("duplicate key value violates primary key constraint (key in same INSERT)".to_string()));
                 }
                 insert_row(db, sess, &schema, entry.id, &mut txn, row)?;
                 count += 1;
@@ -419,7 +417,7 @@ fn insert_row(
         None => false,
     };
     if exists_mem || exists_tree {
-        return Err(SqlError::duplicate_key(format!("duplicate key value violates primary key constraint")));
+        return Err(SqlError::duplicate_key("duplicate key value violates primary key constraint".to_string()));
     }
     let val = encode_row(&row);
     txn.put(table_id, key, val);

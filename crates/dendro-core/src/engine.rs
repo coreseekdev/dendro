@@ -1,3 +1,4 @@
+#![allow(clippy::type_complexity)]
 //! 引擎门面 — wire 层（pgwire/mywire/slt/bench）唯一入口。
 //!
 //! 线程模型：同步引擎；Database: Send+Sync（Arc 共享）；Session 单线程使用。
@@ -381,8 +382,7 @@ impl Database {
         let fence = crate::objstore::fence::FenceStore::new(self.obj.clone());
         let holder = format!("{}-{}", std::process::id(), self.session_seq.load(Ordering::Relaxed));
         let lease_epoch = fence
-            .acquire(name, &holder, self.opts.lease_ttl_ms as i64, head_info.epoch)
-            .map_err(SqlError::from)?;
+            .acquire(name, &holder, self.opts.lease_ttl_ms, head_info.epoch)?;
         // 回放所有旧 epoch（1..=lease_epoch-1）；新 epoch 目录为空，随后写入
         let wal = WalWriter::open(
             self.obj.clone(),
@@ -658,7 +658,7 @@ impl Database {
                 let _ = old_paths;
             }
         } else if !delta_rows.is_empty() {
-            let seg = col.write_segment(&self.obj, &ne.name, &schema, &delta_rows)?;
+            let seg = col.write_segment(&self.obj, &ne.name, schema, &delta_rows)?;
             // 重新插入的 key：从 deletes 集合移除（删除不再抑制新值）
             let reinserted: std::collections::HashSet<String> = overlay
                 .iter()
@@ -720,7 +720,7 @@ impl Database {
             if let Some(col) = self.columnar() {
                 if let Ok(schema) = catalog.load_schema_with_entry(&ne) {
                     if let Err(e) = self.materialize_delta(
-                        &col, &b, &mut ne, &new_root, &schema,
+                        &col, b, &mut ne, &new_root, &schema,
                     ) {
                         tracing::warn!("materialize {}: {e}", ne.name);
                     }

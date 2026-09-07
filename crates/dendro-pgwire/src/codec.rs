@@ -412,7 +412,7 @@ impl<T: Read + Write> PgStream<T> {
         let mut lenb = [0u8; 4];
         self.read_exact(&mut lenb)?;
         let len = i32::from_be_bytes(lenb) as usize;
-        if len < 4 || len > MAX_MESSAGE_LENGTH {
+        if !(4..=MAX_MESSAGE_LENGTH).contains(&len) {
             return Err(protocol_error(format!("invalid message length {len}")));
         }
         let mut body = vec![0u8; len - 4];

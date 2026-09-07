@@ -1,4 +1,5 @@
 //! CBF 写入器（SPEC 05 §2 文件布局、§3 块格式、§4 编码器选择策略）。
+#![allow(clippy::type_complexity)]
 
 use crate::codec::{chunk_of, col_type_of, encode_chunk, layout_of, merge_chunks, CodecId, Layout};
 use crate::footer::{pad_align, write_block_header, write_footer, BlockHeader, ChunkMeta, RgMeta};

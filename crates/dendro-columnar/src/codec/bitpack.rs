@@ -19,7 +19,7 @@ pub(crate) fn width_of(values: &[u64]) -> u8 {
 pub(crate) fn pack(values: &[u64], width: u8, out: &mut Vec<u8>) {
     debug_assert!(width >= 1);
     let w = width as usize;
-    let mut buf = vec![0u8; (values.len() * w + 7) / 8];
+    let mut buf = vec![0u8; (values.len() * w).div_ceil(8)];
     let mut pos = 0usize;
     for &v in values {
         for b in 0..w {
@@ -49,7 +49,7 @@ pub(crate) fn decode(data: &[u8], n: usize) -> Result<Vec<u64>> {
     if !(1..=64).contains(&w) {
         return Err(Error::Corrupt(format!("bitpack width {w} invalid")));
     }
-    let need = (n * w + 7) / 8;
+    let need = (n * w).div_ceil(8);
     if data.len() < 1 + need {
         return Err(Error::Corrupt("bitpack stream truncated".into()));
     }

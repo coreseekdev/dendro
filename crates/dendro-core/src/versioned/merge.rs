@@ -142,7 +142,7 @@ pub fn write_merge_commit(
     store
         .cas()
         .put_batch(&[Chunk { ty: ChunkType::Commit, data: chunk.data.clone() }], session)
-        .map_err(|e| SqlError::from(e))?;
+        .map_err(SqlError::from)?;
     Ok(chunk.addr())
 }
 
@@ -281,7 +281,7 @@ mod tests {
 // 结构化目录三方合并：目录级冲突时逐表下推到行树合并（SPEC 08 §6）
 // ---------------------------------------------------------------------------
 
-use crate::versioned::{TableEntry, TableSchema};
+use crate::versioned::TableEntry;
 
 pub struct CatalogMerge {
     /// 合并后的目录全量条目（name → entry）
@@ -352,7 +352,7 @@ pub fn merge_catalog(
                         MergeOutcome::NoOp | MergeOutcome::FastForward(_) => {
                             // 无行级变更或快进：行根取非 base 一侧
                             let root = match (&lroot, &rroot) {
-                                (_, Some(r)) if lroot == rroot => lroot.clone(),
+                                (_, Some(r)) if lroot == rroot => lroot,
                                 _ => {
                                     if lroot == broot {
                                         rroot

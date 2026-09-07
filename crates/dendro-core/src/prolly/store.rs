@@ -1,4 +1,5 @@
 //! NodeStore：节点(chunk)读写 + 读缓存。不可变节点以 Arc 共享，无锁读。
+#![allow(clippy::type_complexity)]
 
 use super::node::{validate, Node};
 use crate::error::Result;

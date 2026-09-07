@@ -398,7 +398,7 @@ fn arith(op: BO, l: SqlValue, r: SqlValue) -> Result<SqlValue> {
         }
         _ => unreachable!(),
     };
-    let v = out.ok_or_else(|| SqlError::internal("integer overflow"))?;
+    let v = out.ok_or_else(|| SqlError::new("22003", "integer out of range"))?;
     Ok(SqlValue::Int64(v))
 }
 

@@ -96,10 +96,11 @@ impl FenceStore {
     pub fn renew(&self, branch: &str, lease: &Lease) -> Result<()> {
         self.obj
             .put(&Self::lease_path(branch, lease.epoch), serde_json::to_vec(lease).unwrap().into())
-            .map_err(|e| crate::error::SqlError::from(e))
+            .map_err(crate::error::SqlError::from)
     }
 
     /// 是否已过期
+    #[allow(dead_code)]
     pub fn expired(lease: &Lease) -> bool {
         lease.expires_at_ms <= now_ms()
     }

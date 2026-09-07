@@ -1,3 +1,4 @@
+#![allow(clippy::type_complexity)]
 //! tikv/raft-rs 适配器：实现 `ConsensusNode` 抽象（与具体库解耦）。
 //!
 //! 驱动模式（raft-rs 的 Ready 循环）：
@@ -14,7 +15,7 @@ use super::{CommittedBatch, ConsensusEntry, ConsensusNode, ConsensusLogStore};
 use crate::error::{Result, SqlError};
 use raft::prelude::*;
 use raft::{Config, RawNode, Storage};
-use slog::Drain;
+// slog::Drain removed (M1 uses Discard)
 use std::sync::Arc;
 
 /// raft-rs 适配器
@@ -38,7 +39,7 @@ impl TieredStorageAdapter {
                 hard_state: raft::eraftpb::HardState::default(),
                 conf_state: {
                     let mut cs = raft::eraftpb::ConfState::default();
-                    cs.voters = vec![node_id].into();
+                    cs.voters = vec![node_id];
                     cs
                 },
             },
@@ -60,7 +61,7 @@ impl Storage for TieredStorageAdapter {
         let entries = self
             .log_store
             .read(low, high)
-            .map_err(|e| raft::Error::Store(raft::StorageError::Other(Box::new(std::io::Error::new(std::io::ErrorKind::Other, e)))))?;
+            .map_err(|e| raft::Error::Store(raft::StorageError::Other(Box::new(std::io::Error::other(e)))))?;
         Ok(entries
             .into_iter()
             .map(|e| {

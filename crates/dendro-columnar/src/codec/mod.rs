@@ -281,7 +281,7 @@ pub(crate) fn validity_bytes(array: &dyn arrow::array::Array) -> Option<Vec<u8>>
     if array.null_count() == 0 {
         return None;
     }
-    let mut out = vec![0u8; (array.len() + 7) / 8];
+    let mut out = vec![0u8; array.len().div_ceil(8)];
     for i in nulls.inner().set_indices() {
         out[i >> 3] |= 1 << (i & 7);
     }
@@ -301,7 +301,7 @@ pub(crate) fn merge_chunks(mut parts: Vec<ChunkPart>) -> Result<ChunkPart> {
     let validity = if parts.iter().all(|p| p.validity.is_none()) {
         None
     } else {
-        let mut out = vec![0u8; (total_rows + 7) / 8];
+        let mut out = vec![0u8; total_rows.div_ceil(8)];
         let mut base = 0usize;
         for p in &parts {
             let n = p.rows();
@@ -373,7 +373,7 @@ pub(crate) fn build_array(mut part: ChunkPart, dt: &DataType) -> Result<ArrayRef
     let arr: ArrayRef = match dt {
         DataType::Boolean => {
             let values = fixed_of(&part, CodecId::Raw)?;
-            let mut bits = vec![0u8; (n + 7) / 8];
+            let mut bits = vec![0u8; n.div_ceil(8)];
             for (i, &v) in values.iter().enumerate() {
                 if v != 0 {
                     bits[i >> 3] |= 1 << (i & 7);
@@ -508,7 +508,7 @@ pub(crate) fn decode_chunk(
     }
 }
 
-fn fixed_of<'a>(part: &'a ChunkPart, codec: CodecId) -> Result<&'a [u64]> {
+fn fixed_of(part: &ChunkPart, codec: CodecId) -> Result<&[u64]> {
     match &part.vals {
         ColumnValues::Fixed { values, .. } => Ok(values),
         ColumnValues::Var { .. } => Err(Error::CodecNotApplicable(codec)),

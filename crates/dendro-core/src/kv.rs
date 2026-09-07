@@ -154,7 +154,7 @@ impl Kv {
             }
             while let Some((k, v)) = it.next_item()? {
                 if let Some(e) = end {
-                    if k.as_slice() >= e.as_ref() {
+                    if k.as_slice() >= e {
                         break;
                     }
                 }
@@ -182,7 +182,7 @@ impl Kv {
             }
             match v {
                 Some(bytes) => {
-                    if let Some(row) = decode_row(&bytes).ok() {
+                    if let Ok(row) = decode_row(&bytes) {
                         if let Some(val) = row.get(1).and_then(val_bytes) {
                             out.insert(key, val);
                         }

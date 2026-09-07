@@ -54,7 +54,7 @@ pub fn handshake<T: io::Read + io::Write>(
         match pkt {
             StartupPacket::SslRequest | StartupPacket::GssEncRequest => {
                 // SPEC 06 §2.1：v1 不支持 TLS/GSS 加密，回应拒绝并等待明文 startup
-                pg.write_raw(&[b'N']);
+                pg.write_raw(b"N");
                 pg.flush()?;
             }
             StartupPacket::CancelRequest { .. } => {

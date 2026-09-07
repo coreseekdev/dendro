@@ -149,7 +149,7 @@ fn dict_entry_var<'a>(doffs: &[u32], dbytes: &'a [u8], id: usize) -> Result<&'a 
         .ok_or_else(|| Error::Corrupt("dict entry range".into()))
 }
 
-fn take_u8<'a>(cur: &mut &'a [u8], what: &str) -> Result<u8> {
+fn take_u8(cur: &mut &[u8], what: &str) -> Result<u8> {
     if cur.is_empty() {
         return Err(Error::Corrupt(format!("rledict {what} truncated")));
     }

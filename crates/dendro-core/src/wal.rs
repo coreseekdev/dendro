@@ -174,15 +174,19 @@ impl<'a> FrameIter<'a> {
     pub fn new(seg: &'a [u8]) -> Self {
         Self { data: seg, off: 0 }
     }
-    /// 返回 (type, seq, payload)；段尾 32B trailer 不作为帧产出
+    /// 返回 (type, seq, payload)；段尾 32B trailer 不作为帧产出。
+    /// 对不可信输入（截断/坏 len）返回 Err 而非 panic（P0-2 修复）。
     pub fn next_frame(&mut self) -> Option<Result<(FrameType, u64, &'a [u8])>> {
-        if self.data.len() - self.off <= TRAILER_LEN {
+        if self.off >= self.data.len() || self.data.len() - self.off <= TRAILER_LEN {
             return None;
         }
         if self.off + HEADER_LEN > self.data.len() {
             return None;
         }
         let d = &self.data[self.off..];
+        if d.len() < HEADER_LEN {
+            return None;
+        }
         let magic = u32::from_le_bytes(d[..4].try_into().unwrap());
         if magic != FRAME_MAGIC {
             return Some(Err(SqlError::internal("wal frame magic")));
@@ -198,6 +202,10 @@ impl<'a> FrameIter<'a> {
         let seq = u64::from_le_bytes(d[8..16].try_into().unwrap());
         let len = u32::from_le_bytes(d[16..20].try_into().unwrap()) as usize;
         let crc = u32::from_le_bytes(d[20..24].try_into().unwrap());
+        // P0-2 修复：len 不可信——切片前校验
+        if HEADER_LEN + len > d.len() {
+            return Some(Err(SqlError::internal("wal frame payload exceeds segment")));
+        }
         let payload = &d[HEADER_LEN..HEADER_LEN + len];
         if crc32c::crc32c(payload) != crc {
             return Some(Err(SqlError::internal("wal frame crc")));

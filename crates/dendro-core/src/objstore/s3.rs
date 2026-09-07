@@ -74,6 +74,7 @@ impl S3ObjStore {
         OsPath::from(path)
     }
 
+    #[allow(dead_code)]
     fn new_putid() -> String {
         use std::time::{SystemTime, UNIX_EPOCH};
         let nanos = SystemTime::now()

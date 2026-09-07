@@ -1,4 +1,5 @@
 //! 聚合：GROUP BY 分组 + count/sum/avg/min/max（行式）。
+#![allow(clippy::type_complexity)]
 
 use super::expr;
 use super::scan::TableView;

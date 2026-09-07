@@ -11,7 +11,7 @@ pub const NATIVE: &str = "mysql_native_password";
 /// 计算客户端应回的 token：`SHA1(p) XOR SHA1(scramble ‖ SHA1(SHA1(p)))`
 pub fn scramble_token(password: &str, scramble: &[u8]) -> [u8; 20] {
     let p1 = Sha1::digest(password.as_bytes()); // SHA1(p)
-    let p2 = Sha1::digest(&p1); // SHA1(SHA1(p))
+    let p2 = Sha1::digest(p1); // SHA1(SHA1(p))
     let mut h = Sha1::new();
     h.update(scramble);
     h.update(p2);

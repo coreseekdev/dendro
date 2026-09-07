@@ -6,7 +6,6 @@ use crate::error::{Result, SqlError};
 use crate::format::hash::Hash;
 use crate::objstore::manifest::{BranchHead, Manifest};
 use crate::objstore::ObjStore;
-use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
@@ -54,7 +53,7 @@ pub(crate) fn replay_branch(
             let data = crate::wal::read_segment(&db.obj, &b.name, epoch, seg)?;
             let mut it = crate::wal::FrameIter::new(&data);
             while let Some(f) = it.next_frame() {
-                let (ty, seq, payload) = f.map_err(SqlError::from)?;
+                let (ty, seq, payload) = f?;
                 let ts = composite_ts(epoch, seq);
                 match ty {
                     crate::wal::FrameType::Txn => {
@@ -70,7 +69,7 @@ pub(crate) fn replay_branch(
                                     None => crate::prolly::Mutation::Delete,
                                 };
                                 // 陈旧写抑制：同 key 已有更高 ts（新 epoch 写过）→ 跳过
-                                if tm.latest_ts(&key).map_or(false, |t| t >= ts) {
+                                if tm.latest_ts(&key).is_some_and(|t| t >= ts) {
                                     continue;
                                 }
                                 pend.entry(r.table_id).or_default().insert(key.clone(), m);

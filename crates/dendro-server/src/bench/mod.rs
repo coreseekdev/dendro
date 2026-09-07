@@ -197,7 +197,7 @@ pub fn bench_branch() -> BenchResult {
 pub fn bench_ap(rows_n: usize) -> BenchResult {
     let mut rows = Vec::new();
     let dir = std::env::temp_dir().join(format!("dendro-bench-ap-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir.clone());
+    let _ = std::fs::remove_dir_all(dir.clone());
     let db = Database::open(DbOptions {
         store: StoreConfig::LocalDir(dir.clone()),
         durability: Durability::NoWait,
@@ -247,7 +247,7 @@ pub fn bench_recovery() -> BenchResult {
     let mut rows = Vec::new();
     for txn_count in [1000usize, 5000, 20000] {
         let dir = std::env::temp_dir().join(format!("dendro-bench-rec-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir.clone());
+        let _ = std::fs::remove_dir_all(dir.clone());
         {
             let db = Database::open(DbOptions {
                 store: StoreConfig::LocalDir(dir.clone()),

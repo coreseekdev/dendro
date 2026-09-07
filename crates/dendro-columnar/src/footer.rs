@@ -100,7 +100,7 @@ impl CbfFooter {
 }
 
 pub(crate) fn pad_align(buf: &mut Vec<u8>) {
-    while buf.len() % ALIGN != 0 {
+    while !buf.len().is_multiple_of(ALIGN) {
         buf.push(0);
     }
 }

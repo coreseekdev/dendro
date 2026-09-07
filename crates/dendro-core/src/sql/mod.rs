@@ -1,5 +1,6 @@
 //! SQL 层：sqlparser 解析（PG/MySQL 双方言）→ 分发执行（SPEC 07）。
 //! v1 执行器为行式（SqlValue），列式 AP 扫描在 dendro-columnar。
+#![allow(clippy::type_complexity)]
 
 pub mod agg;
 pub mod ddl;
@@ -65,6 +66,14 @@ fn branch_statement(_sql: &str) -> Option<Statement> {
 
 /// 多语句批量执行
 pub(crate) fn exec_batch(db: &Database, sess: &mut Session, sql: &str) -> Result<Vec<Output>> {
+    // PG 语义：失败事务内只允许 ROLLBACK（25P02）
+    if sess.failed_txn {
+        let up = sql.trim_start().to_ascii_uppercase();
+        if !up.starts_with("ROLLBACK") && !up.starts_with("COMMIT") {
+            return Err(SqlError::new("25P02",
+                "current transaction is aborted, commands ignored until end of transaction block"));
+        }
+    }
     let mut outs = Vec::new();
     for raw in split_statements(sql) {
         if branch_sql_kind(&raw).is_some() {
@@ -317,13 +326,12 @@ fn exec_branch_statement(db: &Database, sess: &mut Session, sql: &str) -> Result
         }
         BranchKind::CommitLog => unreachable!(),
     }
-    .map(|outs| {
+    .inspect(|_outs| {
         let _ = &ddl;
-        outs
     })
 }
 
-fn skip_keyword<'a>(sql: &'a str, kw: &str) -> String {
+fn skip_keyword(sql: &str, kw: &str) -> String {
     let idx = sql.to_ascii_uppercase().find(kw).map(|i| i + kw.len()).unwrap_or(0);
     sql[idx..].to_string()
 }
@@ -383,6 +391,9 @@ pub(crate) fn exec_statement(db: &Database, sess: &mut Session, stmt: Statement)
             Ok(Some(Output::Command { tag: "ROLLBACK".into(), affected: 0 }))
         }
         Statement::Query(q) => {
+            if q.with.is_some() {
+                return Err(SqlError::not_supported("WITH (CTE)"));
+            }
             let snap_tx = sess.implicit_snapshot(db)?;
             let out = scan::exec_query(db, sess, *q, snap_tx)?;
             Ok(Some(out))

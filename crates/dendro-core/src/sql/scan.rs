@@ -1,3 +1,4 @@
+#![allow(clippy::type_complexity)]
 //! 查询执行：FROM 解析、快照扫描（prolly 树 ∪ memtx overlay）、过滤/投影/聚合/排序。
 
 use super::agg::{self, AggCall};
@@ -25,7 +26,7 @@ pub(crate) fn exec_query(db: &Database, sess: &mut Session, q: Query, snapshot: 
     let colmeta: Vec<ColumnMeta> = view
         .names
         .iter()
-        .zip(view.rows.first().map(|r| r.as_slice()).unwrap_or(&[]).iter().map(|v| infer_type(v)).collect::<Vec<_>>().into_iter().chain(std::iter::repeat(ColType::Utf8)))
+        .zip(view.rows.first().map(|r| r.as_slice()).unwrap_or(&[]).iter().map(infer_type).collect::<Vec<_>>().into_iter().chain(std::iter::repeat(ColType::Utf8)))
         .take(view.names.len())
         .map(|(n, t)| ColumnMeta { name: n.clone(), ty: t })
         .collect();
@@ -396,7 +397,7 @@ fn table_scan_opt(db: &Database, sess: &mut Session, tf: &TableFactor, snapshot:
     // 快路径 1：单表 + pk 等值/IN 且无其他复杂谓词 → 直查
     if let Some((schema, entry)) = try_pk_pushdown(db, sess, tf, selection, snapshot)? {
         let sel = selection.expect("pushdown implies selection");
-        return Ok(build_point_view(db, sess, &schema, &entry, sel, snapshot)?);
+        return build_point_view(db, sess, &schema, &entry, sel, snapshot);
     }
     // 快路径 2：列存投影可用（AP 路径，>= 1 万行）→ CBF 扫描 + zone map 剪枝
     if let Some(tv) = try_ap_scan(db, sess, tf, selection, snapshot)? {
@@ -441,7 +442,7 @@ fn try_ap_scan(
     let mut rows = Vec::with_capacity(entry.col_rows as usize);
     let mut seen: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
     let pkc = schema.pk[0] as usize;
-    let deletes: std::collections::HashSet<Vec<u8>> = entry
+    let _deletes: std::collections::HashSet<Vec<u8>> = entry
         .col_deletes
         .iter()
         .filter_map(|k| crate::format::hash::Hash::from_base32(k))
@@ -580,12 +581,12 @@ fn extract_pk_range(sel: &Expr, pk: &str) -> Option<(Option<u64>, Option<u64>)> 
                     if let Some((kind, dv)) = eff {
                         match kind {
                             "gt" => {
-                                if lo.map_or(true, |l| dv > l) {
+                                if lo.is_none_or(|l| dv > l) {
                                     *lo = Some(dv);
                                 }
                             }
                             "gte" => {
-                                if lo.map_or(true, |l| dv.saturating_sub(1) > l) {
+                                if lo.is_none_or(|l| dv.saturating_sub(1) > l) {
                                     *lo = Some(dv.saturating_sub(1));
                                 }
                             }
@@ -594,15 +595,14 @@ fn extract_pk_range(sel: &Expr, pk: &str) -> Option<(Option<u64>, Option<u64>)> 
                                 *hi = Some(dv + 1);
                             }
                             "lte" => {
-                                if hi.map_or(true, |h| dv < h) {
+                                if hi.is_none_or(|h| dv < h) {
                                     *hi = Some(dv);
                                 }
                             }
-                            "lt" => {
-                                if hi.map_or(true, |h| dv.saturating_sub(1) < h) {
+                            "lt"
+                                if hi.is_none_or(|h| dv.saturating_sub(1) < h) => {
                                     *hi = Some(dv.saturating_sub(1));
                                 }
-                            }
                             _ => {}
                         }
                     }
@@ -745,7 +745,7 @@ fn build_point_view(
         .and_then(|s| crate::format::hash::Hash::from_base32(s));
     let mut rows = Vec::with_capacity(keys.len());
     for pkv in keys {
-        let key = crate::format::row::encode_key(&[pkv.clone()]);
+        let key = crate::format::row::encode_key(std::slice::from_ref(&pkv));
         // memtx 优先
         let found: Option<Arc<Vec<u8>>> = match tm.get(&key, snapshot) {
             Some(v) => Some(v),

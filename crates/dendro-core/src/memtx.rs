@@ -202,7 +202,7 @@ pub fn validate_and_install(
     commit_seq: u64,
 ) -> Result<()> {
     // 1. 写写冲突：任一 key 的最新版本 ts > 快照 ⇒ 别的提交已抢跑
-    for ((table_id, key), _) in &txn.writes {
+    for (table_id, key) in txn.writes.keys() {
         let tm = tables_in_txn
             .iter()
             .find(|(id, _)| id == table_id)

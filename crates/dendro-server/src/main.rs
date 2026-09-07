@@ -90,7 +90,7 @@ fn main() {
             s3_access_key,
             s3_secret_key,
             s3_region,
-            cache_dir,
+            cache_dir: _,
             cache_bytes,
             pg_port,
             mysql_port,

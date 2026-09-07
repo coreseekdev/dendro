@@ -98,7 +98,7 @@ impl ColType {
             ColType::Utf8 => DataType::Utf8,
             ColType::Bytes => DataType::Binary,
             ColType::Date32 => DataType::Date32,
-            ColType::TimestampMs => DataType::Timestamp(arrow::datatypes::TimeUnit::Millisecond, None.into()),
+            ColType::TimestampMs => DataType::Timestamp(arrow::datatypes::TimeUnit::Millisecond, None),
         }
     }
     pub fn from_parse(s: &str) -> Option<ColType> {
