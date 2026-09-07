@@ -52,6 +52,10 @@ pub struct TableMeta {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Manifest {
     pub version: u64,
+    /// 乐观提交的不确定写消解凭证（SPEC 01 §3）：commit 时生成、写入 payload；
+    /// PUT 结果不确定时 GET 反查该字段判定"是否其实已成功"
+    #[serde(default)]
+    pub writer_putid: Option<String>,
     pub format_version: u32,
     pub refs: BTreeMap<String, BranchHead>,
     pub tables: BTreeMap<String, TableMeta>,
@@ -69,6 +73,7 @@ impl Manifest {
         Self {
             version,
             format_version: 1,
+            writer_putid: None,
             refs,
             tables: BTreeMap::new(),
             next_table_id: 1,
@@ -146,13 +151,34 @@ impl ManifestStore {
         Ok((top, m))
     }
 
-    /// 乐观提交：cur=读取到的版本；成功返回新版本号；冲突返回 Err(Exists)
+    /// 乐观提交：cur=读取到的版本；成功返回新版本号；冲突返回 Err(Exists)。
+    /// 不确定结果（网络超时）用 payload 内嵌 putid 反查消解。
     pub fn commit(&self, cur: u64, mut new: Manifest) -> ObjResult<u64> {
         new.version = cur + 1;
-        self.obj
-            .put_if_absent(&Self::path(cur + 1), serde_json::to_vec(&new).unwrap().into())?;
-        *self.cached.lock() = cur + 1;
-        Ok(cur + 1)
+        let putid = format!("{}-{:x}", cur + 1, rand_u64());
+        new.writer_putid = Some(putid.clone());
+        let path = Self::path(cur + 1);
+        match self
+            .obj
+            .put_if_absent(&path, serde_json::to_vec(&new).unwrap().into())
+        {
+            Ok(()) => {
+                *self.cached.lock() = cur + 1;
+                Ok(cur + 1)
+            }
+            Err(ObjError::Uncertain(_)) => {
+                // 可能已成功：GET 反查 putid
+                match self.read_version(cur + 1) {
+                    Ok(m) if m.writer_putid.as_deref() == Some(putid.as_str()) => {
+                        *self.cached.lock() = cur + 1;
+                        Ok(cur + 1)
+                    }
+                    Ok(_) => Err(ObjError::Exists(path)), // 别人写赢了
+                    Err(e) => Err(e),
+                }
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// GC：可清理的 manifest 版本（保留最近 K + 被引用的）
@@ -160,6 +186,14 @@ impl ManifestStore {
         let lo = latest.saturating_sub(keep_recent);
         (1..=lo).collect()
     }
+}
+
+fn rand_u64() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64;
+    let mut x = n.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    x ^= x >> 30;
+    x.wrapping_mul(0xBF58_476D_1CE4_E5B9)
 }
 
 #[cfg(test)]

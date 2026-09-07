@@ -1,8 +1,10 @@
 //! 对象存储层（SPEC 01）：不可变对象 + 条件写 + 无 LIST 恢复。
 
+pub mod cached;
 pub mod cas;
 pub mod local;
 pub mod manifest;
+pub mod s3;
 pub mod memory;
 pub mod throttled;
 
@@ -20,6 +22,10 @@ pub enum ObjError {
     Io(String),
     #[error("transient: {0}")]
     Transient(String),
+    /// 结果不确定：请求可能已成功（超时/连接中断）。调用方按路径语义消解：
+    /// manifest → GET 反查 payload 内嵌 putid；内容寻址对象 → 同字节重试幂等。
+    #[error("uncertain: {0}")]
+    Uncertain(String),
     #[error("corrupt: {0}")]
     Corrupt(String),
 }

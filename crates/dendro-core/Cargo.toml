@@ -18,6 +18,9 @@ serde_json.workspace = true
 arrow.workspace = true
 sqlparser.workspace = true
 tracing.workspace = true
+object_store.workspace = true
+futures.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread"] }
 rand.workspace = true
 
 [dev-dependencies]

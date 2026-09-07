@@ -18,9 +18,27 @@ struct Cli {
 enum Cmd {
     /// 启动数据库服务器（PG + MySQL 协议）
     Serve {
-        /// 数据目录（对象存储根）
+        /// 数据目录（本地对象存储根；与 --s3-endpoint 二选一）
         #[arg(long, default_value = "/tmp/dendro-data")]
         data: PathBuf,
+        /// S3 兼容端点（设置后存储主体落在对象存储，--data 忽略）
+        #[arg(long)]
+        s3_endpoint: Option<String>,
+        /// S3 桶名（需已存在）
+        #[arg(long, default_value = "dendro")]
+        s3_bucket: String,
+        #[arg(long, default_value = "minioadmin")]
+        s3_access_key: String,
+        #[arg(long, default_value = "minioadmin")]
+        s3_secret_key: String,
+        #[arg(long, default_value = "us-east-1")]
+        s3_region: String,
+        /// 读路径缓存目录
+        #[arg(long, default_value = "/tmp/dendro-cache")]
+        cache_dir: PathBuf,
+        /// 读路径缓存字节预算
+        #[arg(long, default_value_t = 1 << 30)]
+        cache_bytes: u64,
         /// PG 监听端口（0 = 关闭）
         #[arg(long, default_value_t = 5432)]
         pg_port: u16,
@@ -62,6 +80,13 @@ fn main() {
     match cli.cmd {
         Cmd::Serve {
             data,
+            s3_endpoint,
+            s3_bucket,
+            s3_access_key,
+            s3_secret_key,
+            s3_region,
+            cache_dir,
+            cache_bytes,
             pg_port,
             mysql_port,
             host,
@@ -75,8 +100,21 @@ fn main() {
                 "always" => Durability::Always,
                 _ => Durability::Group,
             };
+            let store = if let Some(ep) = &s3_endpoint {
+                StoreConfig::S3(dendro_core::objstore::s3::S3Config {
+                    endpoint: ep.clone(),
+                    bucket: s3_bucket.clone(),
+                    access_key: s3_access_key.clone(),
+                    secret_key: s3_secret_key.clone(),
+                    region: s3_region.clone(),
+                    ..Default::default()
+                })
+            } else {
+                StoreConfig::LocalDir(data.clone())
+            };
             let opts = DbOptions {
-                store: StoreConfig::LocalDir(data.clone()),
+                store,
+                cache_budget_bytes: cache_bytes,
                 wal_flush_interval_ms: wal_interval_ms,
                 wal_segment_bytes: 32 << 20,
                 durability: dur,
@@ -84,10 +122,10 @@ fn main() {
                 checkpoint_interval_s: 30,
             };
             let db = Database::open(opts).unwrap_or_else(|e| panic!("open {}: {e}", data.display()));
-            db.set_materializer(Arc::new(dendro_columnar::integrate::CbfMaterializer {
+            db.set_columnar(Arc::new(dendro_columnar::integrate::CbfColumnar {
                 row_group_rows: 1_048_576,
             }));
-            db.set_ap_scan(Arc::new(dendro_columnar::integrate::CbfApScan));
+            
             eprintln!("dendro opened at {}", data.display());
             let my_handle = if mysql_port > 0 {
                 let db_my = db.clone();
@@ -118,7 +156,8 @@ fn main() {
                 None
             };
             println!(
-                "dendro ready: pg={host}:{pg_port} mysql={host}:{mysql_port} data={}",
+                "dendro ready: pg={host}:{pg_port} mysql={host}:{mysql_port} backend={} data={}",
+                if s3_endpoint.is_some() { "s3" } else { "local" },
                 data.display()
             );
             if let Some(h) = pg_handle {

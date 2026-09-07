@@ -416,11 +416,10 @@ fn try_ap_scan(
             .join("."),
         _ => return Ok(None),
     };
-    let Some(ap) = db.ap_scanner() else { return Ok(None) };
+    let Some(ap) = db.columnar() else { return Ok(None) };
     let short_name = name.rsplit('.').next().unwrap_or(&name).to_string();
     let Ok((schema, entry)) = resolve_table(db, sess, &short_name) else { return Ok(None) };
-    let Some(path) = entry.col_path.clone() else { return Ok(None) };
-    if entry.col_rows < 10_000 {
+    if entry.col_segments.is_empty() || entry.col_rows < 10_000 {
         return Ok(None);
     }
     // pk 范围提取（order 域，开区间语义收集）
@@ -431,21 +430,60 @@ fn try_ap_scan(
             pk_range = extract_pk_range(sel, &pk_name);
         }
     }
-    let batches = ap.scan(db.obj_store(), &path, &schema, &pk_range)?;
-    let mut rows = Vec::with_capacity(batches.iter().map(|b| b.num_rows()).sum());
-    for b in &batches {
-        rows.extend(rows_from_batches(b, &schema)?);
+    // 多段扫描：新段优先（段列表末尾=最新），pk 去重 + delete 抑制
+    let mut rows = Vec::with_capacity(entry.col_rows as usize);
+    let mut seen: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
+    let pkc = schema.pk[0] as usize;
+    let deletes: std::collections::HashSet<Vec<u8>> = entry
+        .col_deletes
+        .iter()
+        .filter_map(|k| crate::format::hash::Hash::from_base32(k))
+        .map(|h| h.as_bytes().to_vec())
+        .collect();
+    // col_deletes 存"行键的 hex"（与 encode_key 输出同一编码）
+    let deletes: std::collections::HashSet<Vec<u8>> = entry
+        .col_deletes
+        .iter()
+        .filter_map(|h| {
+            (0..h.len() / 2)
+                .map(|i| u8::from_str_radix(&h[i * 2..i * 2 + 2], 16))
+                .collect::<std::result::Result<Vec<u8>, _>>()
+                .ok()
+        })
+        .collect();
+    for seg in entry.col_segments.iter().rev() {
+        // 段级 pk 剪枝
+        if let Some((lo, hi)) = pk_range {
+            if hi <= Some(seg.pk_min) || lo >= Some(seg.pk_max) {
+                continue;
+            }
+        }
+        let batches = ap.scan(db.obj_store(), &schema, std::slice::from_ref(seg), &pk_range)?;
+        for b in &batches {
+            for mut r in rows_from_batches(b, &schema)? {
+                if pkc >= r.len() {
+                    continue;
+                }
+                let key = crate::format::row::encode_key(&[r[pkc].clone()]);
+                if seen.contains(&key) || deletes.contains(&key) {
+                    continue;
+                }
+                seen.insert(key);
+                r.resize(schema.columns.len(), SqlValue::Null);
+                rows.push(r);
+            }
+        }
     }
     // memtx overlay 合并：checkpoint 后的写仍在 memtx（WAL 尾部）
     let b = db.branch(&sess.branch)?;
     let overlay = b.mem.table(entry.id).snapshot_rows(snapshot);
     if !overlay.is_empty() {
-        let pkc = schema.pk[0] as usize;
         // BTreeMap：CBF 行按 pk 入表 → overlay 覆盖/删除
-        let mut keyed: std::collections::BTreeMap<Vec<u8>, Vec<SqlValue>> = std::collections::BTreeMap::new();
-        for r in &rows {
+        let mut keyed: std::collections::BTreeMap<Vec<u8>, Vec<SqlValue>> =
+            std::collections::BTreeMap::new();
+        for r in rows {
             let k = crate::format::row::encode_key(&[r[pkc].clone()]);
-            keyed.insert(k, r.clone());
+            keyed.insert(k, r);
         }
         for (k, ov) in overlay {
             match ov {

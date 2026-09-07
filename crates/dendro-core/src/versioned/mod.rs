@@ -69,12 +69,27 @@ pub struct TableEntry {
     pub schema_addr: String,   // schema chunk base32
     pub table_root: Option<String>, // 表 prolly map 根（None=空表）
     pub row_count: u64,
-    /// 列存投影对象路径（col/{table}/{gen}.cbf），物化器写入
+    /// 列存投影段列表（增量物化；末尾=最新；SPEC 05 §6 v2）
     #[serde(default)]
-    pub col_path: Option<String>,
-    /// 列存投影覆盖行数
+    pub col_segments: Vec<ColSegment>,
+    /// 已删除行的 pk（base32 编码键），扫描时抑制；超阈值触发全量重建
+    #[serde(default)]
+    pub col_deletes: Vec<String>,
+    /// 列存投影行数估计（段行数和，advisory）
     #[serde(default)]
     pub col_rows: u64,
+}
+
+/// 一个列存投影段（不可变 CBF 对象）
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct ColSegment {
+    /// 对象路径 col/{table}/{hash12}.cbf
+    pub path: String,
+    /// 段内行数
+    pub rows: u64,
+    /// pk order 域定点 min/max（段级剪枝；与 CBF footer 同口径）
+    pub pk_min: u64,
+    pub pk_max: u64,
 }
 
 pub fn encode_table_entry(e: &TableEntry) -> Vec<u8> {

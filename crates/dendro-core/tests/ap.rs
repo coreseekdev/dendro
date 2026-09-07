@@ -13,8 +13,8 @@ fn ap_materialize_and_scan() {
         ..Default::default()
     })
     .unwrap();
-    db.set_materializer(Arc::new(dendro_columnar::integrate::CbfMaterializer { row_group_rows: 4096 }));
-    db.set_ap_scan(Arc::new(dendro_columnar::integrate::CbfApScan));
+    db.set_columnar(Arc::new(dendro_columnar::integrate::CbfColumnar { row_group_rows: 4096 }));
+    
     let mut s = db.new_session();
 
     s.exec("CREATE TABLE sales (id BIGINT PRIMARY KEY, region TEXT, amount DOUBLE)").unwrap();

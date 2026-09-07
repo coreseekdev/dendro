@@ -6,6 +6,7 @@
 
 use crate::error::{Result, SqlError};
 use crate::format::hash::Hash;
+use crate::format::row::decode_row;
 use crate::memtx::{BranchMem, Txn};
 use crate::objstore::cas::CasStore;
 use crate::objstore::manifest::{Manifest, ManifestStore};
@@ -25,13 +26,27 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// 对象存储配置（SPEC 01）
-#[derive(Debug, Clone)]
 pub enum StoreConfig {
     LocalDir(PathBuf),
     Memory,
+    /// S3 兼容对象存储（AWS S3 / MinIO / RustFS / OSS）
+    S3(crate::objstore::s3::S3Config),
+    /// 注入预构建的存储栈（测试/自定义包装，如带统计的缓存栈）
+    Obj(Arc<dyn ObjStore>),
 }
 
-#[derive(Debug, Clone)]
+impl std::fmt::Debug for StoreConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StoreConfig::LocalDir(p) => write!(f, "LocalDir({p:?})"),
+            StoreConfig::Memory => write!(f, "Memory"),
+            StoreConfig::S3(c) => write!(f, "S3({}/{})", c.endpoint, c.bucket),
+            StoreConfig::Obj(_) => write!(f, "Obj(...)"),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct DbOptions {
     pub store: StoreConfig,
     pub wal_flush_interval_ms: u64,
@@ -41,6 +56,8 @@ pub struct DbOptions {
     pub checkpoint_threshold_bytes: u64,
     /// checkpoint 周期（秒）；0 = 只显式触发
     pub checkpoint_interval_s: u64,
+    /// 读路径缓存字节预算（S3 后端；0 = 1GiB）
+    pub cache_budget_bytes: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +76,7 @@ impl Default for DbOptions {
             durability: Durability::Group,
             checkpoint_threshold_bytes: 16 << 20,
             checkpoint_interval_s: 30,
+            cache_budget_bytes: 1 << 30,
         }
     }
 }
@@ -164,11 +182,39 @@ impl WireSession for Session {
     }
 }
 
-/// 物化器接口（列存投影由外部 crate 实现以避免依赖环；
-/// dendro-server 启动时注入 dendro-columnar 的 CBF 实现，SPEC 05 §1）
-pub trait Materializer: Send + Sync {
-    /// 把表树（root）物化为列存对象，返回 (对象路径, 行数)。
-    fn materialize(&self, obj: &Arc<dyn ObjStore>, store: &Arc<NodeStore>, root: &Hash, schema: &TableSchema) -> Result<(String, u64)>;
+/// 列存存储接口（由外部 crate 实现以避免依赖环；SPEC 05 §1 §6）
+///
+/// OSS 友好设计：**增量分段**——checkpoint 只把 memtx 增量写成新的不可变 CBF 段
+/// （纯内存读，零树扫描、零远端读），扫描端按 pk 去重（新段优先）；
+/// 段数超阈值时才全量重建（低频、一次写放大换长期读放大）。
+pub trait ColumnarStore: Send + Sync {
+    /// 写一个增量段。rows 为该 checkpoint 的可见增量行（纯内存输入）。
+    fn write_segment(
+        &self,
+        obj: &Arc<dyn ObjStore>,
+        table: &str,
+        schema: &TableSchema,
+        rows: &[Vec<crate::types::SqlValue>],
+    ) -> Result<crate::versioned::ColSegment>;
+
+    /// 全量重建：读整棵行树 + 与现有段合并去重，写单个段；返回 (新段, 待删旧段路径)。
+    fn write_full(
+        &self,
+        obj: &Arc<dyn ObjStore>,
+        store: &Arc<NodeStore>,
+        root: &Hash,
+        schema: &TableSchema,
+        existing: &[crate::versioned::ColSegment],
+    ) -> Result<(crate::versioned::ColSegment, Vec<String>)>;
+
+    /// 扫描段集合（含段级 pk 剪枝）。调用方（core）负责 pk 去重与 delete 抑制。
+    fn scan(
+        &self,
+        obj: &Arc<dyn ObjStore>,
+        schema: &TableSchema,
+        segments: &[crate::versioned::ColSegment],
+        pk_range: &Option<(Option<u64>, Option<u64>)>,
+    ) -> Result<Vec<arrow::record_batch::RecordBatch>>;
 }
 
 /// 列式扫描接口（AP 路径；实现在 dendro-columnar，SPEC 05 §7）
@@ -197,24 +243,16 @@ pub struct Database {
     /// 已写入 chunk 的进程内缓存（去重判定）
     pub(crate) chunk_seen: Mutex<HashSet<Hash>>,
     stop_cp: Arc<std::sync::atomic::AtomicBool>,
-    materializer: arc_swap::ArcSwap<Option<std::sync::Arc<dyn Materializer>>>,
-    ap_scan: arc_swap::ArcSwap<Option<std::sync::Arc<dyn ApScan>>>,
+    columnar: arc_swap::ArcSwap<Option<std::sync::Arc<dyn ColumnarStore>>>,
 }
 
 impl Database {
-    /// 注入 AP 列式扫描器
-    pub fn set_ap_scan(self: &Arc<Self>, a: std::sync::Arc<dyn ApScan>) {
-        self.ap_scan.store(std::sync::Arc::new(Some(a)));
+    /// 注入列存引擎（必须在打开后、写负载前）
+    pub fn set_columnar(self: &Arc<Self>, c: std::sync::Arc<dyn ColumnarStore>) {
+        self.columnar.store(std::sync::Arc::new(Some(c)));
     }
-    pub(crate) fn ap_scanner(&self) -> Option<std::sync::Arc<dyn ApScan>> {
-        self.ap_scan.load().as_ref().clone()
-    }
-}
-
-impl Database {
-    /// 注入物化器（必须在打开后、写负载前）
-    pub fn set_materializer(self: &Arc<Self>, m: std::sync::Arc<dyn Materializer>) {
-        self.materializer.store(std::sync::Arc::new(Some(m)));
+    pub(crate) fn columnar(&self) -> Option<std::sync::Arc<dyn ColumnarStore>> {
+        self.columnar.load().as_ref().clone()
     }
     pub fn obj_store(&self) -> &Arc<dyn ObjStore> {
         &self.obj
@@ -230,6 +268,24 @@ impl Database {
         let obj: Arc<dyn ObjStore> = match &opts.store {
             StoreConfig::LocalDir(p) => Arc::new(LocalObjStore::open(p)?),
             StoreConfig::Memory => Arc::new(MemoryObjStore::new()),
+            StoreConfig::S3(cfg) => {
+                let s3 = Arc::new(crate::objstore::s3::S3ObjStore::new(cfg.clone())?);
+                // 读路径缓存（真 OSS 延迟下的可用性前提，SPEC 01 §7）
+                let cache_dir = std::env::temp_dir().join(format!(
+                    "dendro-cache-{}",
+                    crate::objstore::cached::cache_key_public(&format!(
+                        "{}{}",
+                        cfg.endpoint, cfg.bucket
+                    ))
+                ));
+                let cached = crate::objstore::cached::CachedObjStore::new(
+                    s3,
+                    cache_dir,
+                    opts.cache_budget_bytes,
+                )?;
+                Arc::new(cached)
+            }
+            StoreConfig::Obj(a) => a.clone(),
         };
         let cas = Arc::new(CasStore::new(obj.clone()));
         let store = Arc::new(NodeStore::new(cas.clone(), 4096));
@@ -251,8 +307,7 @@ impl Database {
             session_seq: AtomicU64::new(1),
             chunk_seen: Mutex::new(HashSet::new()),
             stop_cp: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            materializer: arc_swap::ArcSwap::from_pointee(None),
-            ap_scan: arc_swap::ArcSwap::from_pointee(None),
+            columnar: arc_swap::ArcSwap::from_pointee(None),
         });
         db.load_open_branches(ver)?;
         db.start_checkpoint_thread();
@@ -492,6 +547,69 @@ impl Database {
         self.checkpoint_locked(&b)
     }
 
+    /// 增量列存物化（需已持 commit_mu）：SPEC 05 §6
+    fn materialize_delta(
+        &self,
+        col: &Arc<dyn ColumnarStore>,
+        b: &Branch,
+        ne: &mut crate::versioned::TableEntry,
+        new_root: &Option<Hash>,
+        schema: &TableSchema,
+    ) -> Result<()> {
+        const COMPACT_SEGMENTS: usize = 8;
+        const DELETE_CAP: usize = 10_000;
+        let snapshot = b.watermark.load(Ordering::Acquire);
+        let overlay = b.mem.table(ne.id).snapshot_rows(snapshot);
+        let delta_deletes: Vec<String> = overlay
+            .iter()
+            .filter(|(_, v)| v.is_none())
+            .map(|(k, _)| k.iter().map(|b| format!("{b:02x}")).collect::<String>())
+            .collect();
+        let delta_rows: Vec<Vec<SqlValue>> = overlay
+            .values()
+            .filter_map(|v| v.as_ref())
+            .filter_map(|bytes| decode_row(bytes).ok())
+            .collect();
+
+        // 全量重建条件：无段（首次物化且表非空）/ 段过多 / 删除过多
+        let need_full = (!ne.col_segments.is_empty() && ne.col_segments.len() >= COMPACT_SEGMENTS)
+            || (ne.col_deletes.len() + delta_deletes.len() > DELETE_CAP);
+
+        if need_full {
+            if let Some(root) = new_root {
+                let (seg, old_paths) =
+                    col.write_full(&self.obj, &self.store, root, schema, &ne.col_segments)?;
+                ne.col_segments = vec![seg];
+                ne.col_deletes.clear();
+                // 旧段延迟删除（manifest 落盘后由 GC/下次清理；此处立即删亦可，
+                // 因为引用它的 manifest 还未发布——保守起见延后）
+                for p in old_paths {
+                    let _ = self.obj.delete(&p);
+                }
+            }
+        } else if !delta_rows.is_empty() {
+            let seg = col.write_segment(&self.obj, &ne.name, &schema, &delta_rows)?;
+            // 重新插入的 key：从 deletes 集合移除（删除不再抑制新值）
+            let reinserted: std::collections::HashSet<String> = overlay
+                .iter()
+                .filter(|(_, v)| v.is_some())
+                .map(|(k, _)| k.iter().map(|b| format!("{b:02x}")).collect::<String>())
+                .collect();
+            ne.col_deletes.retain(|k| !reinserted.contains(k));
+            ne.col_segments.push(seg);
+        }
+        // 纯删除（无新行）：只累积 deletes
+        if !delta_deletes.is_empty() && delta_rows.is_empty() {
+            for d in delta_deletes {
+                if !ne.col_deletes.contains(&d) {
+                    ne.col_deletes.push(d);
+                }
+            }
+        }
+        ne.col_rows = ne.col_segments.iter().map(|s| s.rows).sum();
+        Ok(())
+    }
+
     /// 需已持 commit_mu
     pub(crate) fn checkpoint_locked(&self, b: &Branch) -> Result<Option<Hash>> {
         let pending: HashMap<u32, BTreeMap<Vec<u8>, Mutation>> =
@@ -526,17 +644,15 @@ impl Database {
             let mut ne = entry.clone();
             ne.table_root = new_root.map(|h| h.to_base32());
             ne.row_count = count_rows(self.store.as_ref(), new_root.as_ref());
-            // 列存物化（有物化器且表非空时重建投影；增量投影 v2）
-            if let Some(root) = &new_root {
+            // 列存增量物化（OSS 友好：纯内存输入，零树扫描、零远端读）
+            // delta = 本 checkpoint 的 memtx overlay（上次 covered_seq 之后的全部可见行）
+            ne.col_rows = ne.col_segments.iter().map(|s| s.rows).sum();
+            if let Some(col) = self.columnar() {
                 if let Ok(schema) = catalog.load_schema_with_entry(&ne) {
-                    if let Some(m) = self.materializer.load().as_ref() {
-                        match m.materialize(&self.obj, &self.store, root, &schema) {
-                            Ok((path, nrows)) => {
-                                ne.col_path = Some(path);
-                                ne.col_rows = nrows;
-                            }
-                            Err(e) => tracing::warn!("materialize {}: {e}", ne.name),
-                        }
+                    if let Err(e) = self.materialize_delta(
+                        &col, &b, &mut ne, &new_root, &schema,
+                    ) {
+                        tracing::warn!("materialize {}: {e}", ne.name);
                     }
                 }
             }

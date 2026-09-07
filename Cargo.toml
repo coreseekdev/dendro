@@ -36,6 +36,10 @@ rand = "0.9"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros", "signal"] }
 tracing = "0.1"
 sqllogictest = "0.28"
+object_store = { version = "0.14", features = ["aws"] }
+sha1 = "0.10"
+base64 = "0.22"
+futures = "0.3"
 
 [profile.release]
 lto = "thin"

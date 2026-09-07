@@ -205,10 +205,11 @@ pub fn bench_ap(rows_n: usize) -> BenchResult {
         wal_segment_bytes: 32 << 20,
         checkpoint_threshold_bytes: u64::MAX,
         checkpoint_interval_s: 0,
+        ..Default::default()
     })
     .unwrap();
-    db.set_materializer(Arc::new(dendro_columnar::integrate::CbfMaterializer { row_group_rows: 1_048_576 }));
-    db.set_ap_scan(Arc::new(dendro_columnar::integrate::CbfApScan));
+    db.set_columnar(Arc::new(dendro_columnar::integrate::CbfColumnar { row_group_rows: 1_048_576 }));
+    
     let mut s = db.new_session();
     s.exec("CREATE TABLE lineitem (id BIGINT PRIMARY KEY, region TEXT, qty BIGINT, price DOUBLE)").unwrap();
     let t0 = Instant::now();
@@ -255,6 +256,7 @@ pub fn bench_recovery() -> BenchResult {
                 wal_segment_bytes: 32 << 20,
                 checkpoint_threshold_bytes: u64::MAX, // 关闭自动 checkpoint
                 checkpoint_interval_s: 0,
+                ..Default::default()
             })
             .unwrap();
             let mut s = db.new_session();
@@ -272,6 +274,7 @@ pub fn bench_recovery() -> BenchResult {
             wal_segment_bytes: 32 << 20,
             checkpoint_threshold_bytes: u64::MAX,
             checkpoint_interval_s: 0,
+            ..Default::default()
         })
         .unwrap();
         let recover_s = t0.elapsed().as_secs_f64();
