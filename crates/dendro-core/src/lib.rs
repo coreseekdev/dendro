@@ -14,6 +14,7 @@ pub mod wal;
 
 pub mod memtx;
 pub mod recovery;
+pub mod journal;
 pub mod kv;
 pub mod sql;
 

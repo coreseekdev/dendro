@@ -19,6 +19,9 @@ arrow.workspace = true
 sqlparser.workspace = true
 tracing.workspace = true
 object_store.workspace = true
+raft.workspace = true
+raft-proto.workspace = true
+slog.workspace = true
 futures.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread"] }
 rand.workspace = true
