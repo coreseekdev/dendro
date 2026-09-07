@@ -1,3 +1,4 @@
+#![allow(clippy::all)]
 //! AP 列存路径集成：CHECKPOINT 物化 → 列式扫描（zone map 剪枝）→ 聚合。
 use dendro_core::{Database, DbOptions, StoreConfig};
 use std::time::Instant;

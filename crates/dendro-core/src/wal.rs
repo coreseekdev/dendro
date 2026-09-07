@@ -4,10 +4,8 @@
 use crate::error::{Result, SqlError};
 use crate::format::hash::Hash;
 use crate::objstore::ObjStore;
-use arc_swap::ArcSwap;
 use bytes::Bytes;
 use parking_lot::{Condvar, Mutex};
-use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -244,7 +242,6 @@ pub struct WalWriter {
     shared: Mutex<WalShared>,
     cv: Condvar,
     /// 首个未上传段号（恢复起点提示；进程内缓存）
-    base_seg: AtomicU64,
     stop: Mutex<bool>,
     handle: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
@@ -267,7 +264,6 @@ impl WalWriter {
                 pending_frames: 0,
             }),
             cv: Condvar::new(),
-            base_seg: AtomicU64::new(start_seg),
             stop: Mutex::new(false),
             handle: Mutex::new(None),
         });
@@ -335,31 +331,50 @@ impl WalWriter {
 
     /// 立即把当前缓冲上传为段对象。
     /// PUT 失败时数据放回缓冲头部，等下次重试（P0-1 修复：不丢帧）。
+    /// 段号仅在 PUT **成功后**推进：失败重试复用同一段号。若失败也推进，
+    /// 会留下段号空洞，probe_tail 的连续性假设会把空洞后的段全部判为
+    /// 不存在 → 恢复丢数据（回归测试 wal_corruption 捕获）。
+    /// Uncertain 语义：同路径重试 PUT 覆盖写，内容为超集，最后写者胜。
+    /// 计数器在锁内、缓冲被取走时清零——此刻计数只含本段，之后的 append 属于下一段；
+    /// 失败路径把本段计数归还（恢复的帧仍占缓冲），上传期间的新 append 不受影响。
+    /// 段体以 Bytes 持有：失败回拷从 Bytes 切片拷回，成功路径零额外 memcpy。
     pub fn flush_now(&self) -> Result<u64> {
-        let (seg, segment_data, max_seq) = {
+        let (seg, bytes, max_seq, seg_frames, seg_min) = {
             let mut g = self.shared.lock();
             if g.buf.is_empty() {
                 return Ok(g.flushed_seg);
             }
             let seg = g.cur_seg;
             let max_seq = g.max_seq;
+            let seg_frames = g.frames;
+            let seg_min = g.min_seq;
             let mut data = std::mem::take(&mut g.buf);
-            let trailer = encode_trailer(g.frames, g.min_seq, g.max_seq);
-            data.extend_from_slice(&trailer);
-            g.cur_seg += 1;
-            (seg, data, max_seq)
+            data.extend_from_slice(&encode_trailer(g.frames, g.min_seq, g.max_seq));
+            g.frames = 0;
+            g.min_seq = 0;
+            g.max_seq = 0;
+            g.pending_frames = 0;
+            (seg, Bytes::from(data), max_seq, seg_frames, seg_min)
         };
         let path = Self::seg_path(&self.branch, self.epoch, seg);
-        if let Err(e) = self.obj.put(&path, Bytes::from(segment_data.clone())) {
-            // PUT 失败：放回缓冲以便重试
-            let body = &segment_data[..segment_data.len() - 32];
+        if let Err(e) = self.obj.put(&path, bytes.clone()) {
+            // PUT 失败：段体放回缓冲头部（旧帧在前，上传期间的新 append 在后）；
+            // cur_seg 不动，重试仍写同一段号（不留空洞）
+            let body_len = bytes.len() - TRAILER_LEN;
             let mut g = self.shared.lock();
-            let mut restored = body.to_vec();
+            let mut restored = bytes[..body_len].to_vec();
             restored.extend_from_slice(&g.buf);
             g.buf = restored;
+            g.frames += seg_frames;
+            g.pending_frames += seg_frames;
+            g.min_seq = if g.min_seq == 0 { seg_min } else { seg_min.min(g.min_seq) };
+            g.max_seq = g.max_seq.max(max_seq);
             return Err(SqlError::io(format!("wal put: {e}")));
         }
         self.advance_durable(seg, max_seq);
+        let mut g = self.shared.lock();
+        g.cur_seg = g.cur_seg.max(seg + 1);
+        drop(g);
         Ok(seg)
     }
 

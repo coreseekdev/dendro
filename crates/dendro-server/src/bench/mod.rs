@@ -1,3 +1,5 @@
+#![allow(unused_variables, dead_code, unused_mut)]
+
 //! 基准套件（SPEC 09）：TP 微基准、分支操作曲线、恢复时间、OSS 延迟注入。
 //! 结果 JSON 写入 benches/results/。
 

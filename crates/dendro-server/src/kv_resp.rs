@@ -7,7 +7,7 @@
 
 use dendro_core::kv::Kv;
 use dendro_core::{Database, SqlValue};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 
@@ -20,8 +20,13 @@ enum Resp {
     Array(Vec<Resp>),
     Bulk(Vec<u8>),
     Simple(String),
+    // 以下变体仅为完整解析 RESP 而构造：客户端命令不会是错误/整数/nil 回复，
+    // 服务端消费时在 Array 过滤处被丢弃，故不读字段。
+    #[allow(dead_code)]
     Err(String),
+    #[allow(dead_code)]
     Int(i64),
+    #[allow(dead_code)]
     Nil,
 }
 

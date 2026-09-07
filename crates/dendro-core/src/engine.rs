@@ -114,11 +114,22 @@ pub struct Branch {
     next_seq: AtomicU64,
     /// 本进程持有的写者世代（P1 fencing；0=未领取）
     pub lease_epoch: AtomicU64,
+    /// 写者租约状态（fence_gate 过期检查 + 惰性续期；P1 运行时拒写）
+    pub lease_state: Mutex<LeaseState>,
+    /// fence 对象存储访问（续期 PUT）
+    pub fence: crate::objstore::fence::FenceStore,
+    pub lease_ttl_ms: i64,
     /// 已安装（可见）的提交水位
     pub watermark: AtomicU64,
     /// 自上次 checkpoint 的累积 pending 变更：table → (key → mut)
     pub pending: Mutex<HashMap<u32, BTreeMap<Vec<u8>, Mutation>>>,
     pub pending_bytes: AtomicU64,
+}
+
+/// 租约 + 下次续期时间（都在同一把锁内；next_renew_ms=0 表示立即可续）
+pub struct LeaseState {
+    pub lease: crate::objstore::fence::Lease,
+    pub next_renew_ms: i64,
 }
 
 impl Branch {
@@ -132,6 +143,35 @@ impl Branch {
     pub fn restore_seq(&self, seq: u64) {
         self.next_seq.store(seq, Ordering::Release);
         self.watermark.store(seq, Ordering::Release);
+    }
+    /// P1 fencing 运行时拒写（需已持 commit_mu）：
+    /// 租约过期 → 40001 拒绝提交（自知失约者停止写入）；
+    /// 健康路径惰性续期——每 ttl/3 至多一次 PUT，失败仅告警（下次提交重试，
+    /// 若已过期则被上面的检查拒绝）。无后台续期线程。
+    pub(crate) fn fence_gate(&self) -> Result<()> {
+        let now = crate::objstore::fence::now_ms();
+        let mut st = self.lease_state.lock();
+        if st.lease.expires_at_ms <= now {
+            return Err(SqlError::serialization(format!(
+                "fencing: branch \"{}\" lease epoch {} expired — writer must re-open to acquire a new epoch",
+                self.name, st.lease.epoch
+            )));
+        }
+        if now >= st.next_renew_ms {
+            let ttl = self.lease_ttl_ms;
+            let mut fresh = st.lease.clone();
+            fresh.expires_at_ms = now + ttl;
+            match self.fence.renew(&self.name, &fresh) {
+                Ok(()) => {
+                    st.lease = fresh;
+                    st.next_renew_ms = now + ttl / 3;
+                }
+                Err(e) => {
+                    tracing::warn!(branch = %self.name, error = %e, "fence renew failed; retry on next commit");
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -247,6 +287,7 @@ pub struct Database {
     pub(crate) branches: RwLock<HashMap<String, Arc<Branch>>>,
     pub(crate) session_seq: AtomicU64,
     /// 已写入 chunk 的进程内缓存（去重判定）
+    #[allow(dead_code)]
     pub(crate) chunk_seen: Mutex<HashSet<Hash>>,
     stop_cp: Arc<std::sync::atomic::AtomicBool>,
     columnar: arc_swap::ArcSwap<Option<std::sync::Arc<dyn ColumnarStore>>>,
@@ -381,9 +422,10 @@ impl Database {
         // P1：进程打开分支即领取新 epoch（世代化；fence 条件写保证唯一）
         let fence = crate::objstore::fence::FenceStore::new(self.obj.clone());
         let holder = format!("{}-{}", std::process::id(), self.session_seq.load(Ordering::Relaxed));
-        let lease_epoch = fence
+        let lease = fence
             .acquire(name, &holder, self.opts.lease_ttl_ms, head_info.epoch)?;
         // 回放所有旧 epoch（1..=lease_epoch-1）；新 epoch 目录为空，随后写入
+        let lease_epoch = lease.epoch;
         let wal = WalWriter::open(
             self.obj.clone(),
             name,
@@ -399,6 +441,9 @@ impl Database {
             commit_mu: Mutex::new(()),
             next_seq: AtomicU64::new(0),
             lease_epoch: AtomicU64::new(lease_epoch),
+            lease_state: Mutex::new(LeaseState { lease, next_renew_ms: 0 }),
+            fence,
+            lease_ttl_ms: self.opts.lease_ttl_ms,
             watermark: AtomicU64::new(0),
             pending: Mutex::new(HashMap::new()),
             pending_bytes: AtomicU64::new(0),
@@ -549,6 +594,7 @@ impl Database {
     ) -> Result<Hash> {
         let b = self.branch(branch)?;
         let _g = b.commit_mu.lock();
+        b.fence_gate()?;
         let _head = b.head.load_full();
         let height = parents.iter().try_fold(0u64, |m, p| -> Result<u64> {
             Ok(m.max(self.load_commit(p)?.height))
@@ -617,6 +663,7 @@ impl Database {
     pub fn checkpoint_branch(&self, branch_name: &str) -> Result<Option<Hash>> {
         let b = self.branch(branch_name)?;
         let _g = b.commit_mu.lock();
+        b.fence_gate()?;
         self.checkpoint_locked(&b)
     }
 
@@ -865,6 +912,7 @@ impl Session {
 pub(crate) fn commit_tx(db: &Database, sess_branch: &str, txn: &Txn) -> Result<u64> {
     let b = db.branch(sess_branch)?;
     let _g = b.commit_mu.lock();
+    b.fence_gate()?;
     let epoch = b.lease_epoch.load(Ordering::Acquire);
     let seq = b.alloc_seq();
     let ts = crate::recovery::composite_ts(epoch, seq);
@@ -900,26 +948,4 @@ fn payload_len(recs: &[crate::wal::TxnRecord]) -> usize {
 }
 
 // —— wire 层 API（真身）——
-impl Database {
-    pub(crate) fn open_impl(opts: DbOptions) -> Result<Arc<Database>> {
-        Database::open(opts)
-    }
-    pub(crate) fn exec_impl(&self, sess: &mut Session, sql: &str) -> Result<Vec<Output>> {
-        crate::sql::exec_batch(self, sess, sql)
-    }
-    pub(crate) fn prepare_impl(
-        &self,
-        sess: &mut Session,
-        name: &str,
-        sql: &str,
-        hint: &[crate::types::ColType],
-    ) -> Result<crate::engine::PrepareMeta> {
-        crate::sql::prepare(self, sess, name, sql, hint)
-    }
-    pub(crate) fn exec_prepared_impl(&self, sess: &mut Session, name: &str, params: &[SqlValue]) -> Result<Output> {
-        crate::sql::exec_prepared(self, sess, name, params)
-    }
-    pub(crate) fn close_prepared_impl(&self, sess: &mut Session, name: &str) {
-        sess.prepared.remove(name);
-    }
-}
+

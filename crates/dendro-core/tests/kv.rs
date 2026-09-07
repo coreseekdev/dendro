@@ -1,3 +1,4 @@
+#![allow(clippy::all)]
 //! KV 接口层测试（SPEC 11）：基本读写、范围、CAS、事务、分支隔离与合并可见性、持久化。
 use dendro_core::kv::Kv;
 use dendro_core::{Database, DbOptions, StoreConfig};
@@ -97,7 +98,7 @@ fn kv_persistence() {
         ..Default::default()
     })
     .unwrap();
-    let mut kv = Kv::open(&db, "main").unwrap();
+    let kv = Kv::open(&db, "main").unwrap();
     eprintln!("[r] lease_epoch={}", db.branch("main").unwrap().lease_epoch.load(std::sync::atomic::Ordering::Acquire));
     eprintln!("[r] watermark={}", db.branch("main").unwrap().watermark.load(std::sync::atomic::Ordering::Acquire));
     let snap = db.manifest();

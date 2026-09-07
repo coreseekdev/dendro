@@ -1,3 +1,4 @@
+#![allow(clippy::all)]
 //! 端到端冒烟测试：建表 → 插入 → 查询 → 分支 → 合并 → 恢复。
 
 use dendro_core::{Database, DbOptions, SqlValue, StoreConfig};
@@ -19,7 +20,7 @@ fn rows(outs: &[dendro_core::Output]) -> Vec<Vec<String>> {
     out
 }
 
-fn exec(db: &std::sync::Arc<Database>, s: &mut dendro_core::Session, sql: &str) -> Vec<Vec<String>> {
+fn exec(_db: &std::sync::Arc<Database>, s: &mut dendro_core::Session, sql: &str) -> Vec<Vec<String>> {
     let outs = s.exec(sql).unwrap();
     rows(&outs)
 }

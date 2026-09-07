@@ -1,7 +1,8 @@
+#![allow(clippy::all)]
 //! 多实例租约接管 e2e（P1）：
-//! 验证 epoch 单调递进、接管后写入、跨 epoch 恢复的完整性。
-//! 注意：当前 fencing 为"epoch 路径隔离 + 恢复期抑制"（被动），
-//! 运行时拒写（commit 前的 epoch 校验）尚未实现。
+//! - epoch 单调递进、接管后写入、跨 epoch 恢复的完整性
+//! - fencing 运行时拒写：租约过期的写者提交被拒（40001），
+//!   健康写者经 commit 路径惰性续期持续可写（engine::Branch::fence_gate）
 
 use dendro_core::{Database, DbOptions, StoreConfig};
 use std::time::{Duration, Instant};
@@ -27,11 +28,6 @@ fn multi_instance_takeover() {
     // ── 实例 A：建表 + 写 2 行（领取 epoch E1）──
     let a = Database::open(opts(&dir, 800)).unwrap();
     let e_a = a.branch("main").unwrap().lease_epoch.load(std::sync::atomic::Ordering::Acquire);
-    println!("[dbg] fence files after A open:");
-    for e in std::fs::read_dir(dir.join("fence").join("main")).into_iter().flatten().flatten() {
-        println!("  {:?}", e.path().file_name().unwrap());
-    }
-    println!("[dbg] e_a={e_a}");
     {
         let mut s = a.new_session();
         s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
@@ -40,7 +36,7 @@ fn multi_instance_takeover() {
     }
     drop(a); // 模拟崩溃（无优雅关闭）
 
-    // ── 实例 B：A 掉线后立即打开 → 领取 E1+1 ──
+    // ── 实例 B：A 掉线后打开 → 领取 E1+1 ──
     let t_open = Instant::now();
     let b = Database::open(opts(&dir, 800)).unwrap();
     let e_b = b.branch("main").unwrap().lease_epoch.load(std::sync::atomic::Ordering::Acquire);
@@ -76,21 +72,77 @@ fn multi_instance_takeover() {
 }
 
 #[test]
-fn lease_expiry_blocks_stale_writer_then_allows_takeover() {
-    // TTL=600ms：A 打开后 B 需等租约过期才能接管
+fn lease_takeover_epoch_monotonic() {
+    // 接管不等待旧租约过期（诚实边界）：B 打开即领取更高 epoch；
+    // 旧写者的运行时约束由 fence_gate（过期拒写）承担，不在此测试。
     let dir = std::env::temp_dir().join(format!("dendro-mn2-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let a = Database::open(opts(&dir, 600)).unwrap();
     let e_a = a.branch("main").unwrap().lease_epoch.load(std::sync::atomic::Ordering::Acquire);
 
-    let t0 = Instant::now();
     let b = Database::open(opts(&dir, 600)).unwrap();
-    // B 打开即接管（等 A 的 600ms 租约过期）
     let e_b = b.branch("main").unwrap().lease_epoch.load(std::sync::atomic::Ordering::Acquire);
-    let waited = t0.elapsed();
-    println!("[lease] A epoch={e_a} → B epoch={e_b}, waited={waited:?}");
     assert!(e_b > e_a, "接管者 epoch 应更大");
     drop(b);
     drop(a);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fence_expired_writer_rejected() {
+    // 运行时拒写（fence_gate）：TTL=80ms；写者暂停超过 TTL（无提交 → 无续期）
+    // 后，下一次提交被拒（SQLSTATE 40001）。健康写者（持续提交）不受影响——
+    // 见 fence_renew_keeps_healthy_writer_writing。
+    let dir = std::env::temp_dir().join(format!("dendro-mn3-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let db = Database::open(opts(&dir, 80)).unwrap();
+    {
+        let mut s = db.new_session();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+        s.exec("INSERT INTO t VALUES (1, 'ok')").unwrap(); // 提交时惰性续期
+    }
+    // 暂停超过 TTL：租约过期，无 commit 路径触发续期
+    std::thread::sleep(Duration::from_millis(150));
+    let err = {
+        let mut s = db.new_session();
+        s.exec("INSERT INTO t VALUES (2, 'rejected')").unwrap_err()
+    };
+    assert_eq!(err.state, "40001", "过期租约的提交应被拒（serialization/fencing）");
+    assert!(err.message.contains("fencing"), "错误信息应说明 fencing 原因：{err}");
+
+    // 旧会话的读路径不受影响（拒写不拒读）
+    {
+        let mut s = db.new_session();
+        let o = s.exec("SELECT count(*) FROM t").unwrap();
+        if let dendro_core::Output::Rows(rs) = &o[0] {
+            assert_eq!(rs.text_rows()[0][0].as_deref(), Some("1"), "过期写者的行未提交");
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fence_renew_keeps_healthy_writer_writing() {
+    // 健康写者：TTL=80ms，但每 30ms 提交一次（惰性续期跟随 commit），
+    // 整个窗口 > 3×TTL 也不应出现 40001。
+    let dir = std::env::temp_dir().join(format!("dendro-mn4-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let db = Database::open(opts(&dir, 80)).unwrap();
+    {
+        let mut s = db.new_session();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+    }
+    for i in 0..10 {
+        std::thread::sleep(Duration::from_millis(30));
+        let mut s = db.new_session();
+        s.exec(&format!("INSERT INTO t VALUES ({i}, 'alive')")).unwrap();
+    }
+    {
+        let mut s = db.new_session();
+        let o = s.exec("SELECT count(*) FROM t").unwrap();
+        if let dendro_core::Output::Rows(rs) = &o[0] {
+            assert_eq!(rs.text_rows()[0][0].as_deref(), Some("10"), "惰性续期下健康写者不被误拒");
+        }
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }

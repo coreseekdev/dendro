@@ -1,5 +1,6 @@
+#![allow(clippy::all)]
 //! KV RESP wire 对拍：原生 TCP 客户端走 RESP 协议访问 dendro KV 层。
-use dendro_core::{Database, DbOptions, StoreConfig};
+use dendro_core::{Database, DbOptions};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 

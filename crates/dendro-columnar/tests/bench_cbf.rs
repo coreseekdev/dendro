@@ -38,7 +38,7 @@ fn bench_column(name: &str, col: &ArrayRef, raw_bytes: u64, codecs: &[CodecId]) 
         let mut file_len = 0u64;
         for _ in 0..RUNS {
             let t0 = Instant::now();
-            let bytes = write_cbf(&[batch.clone()], RG_ROWS, Some(&|_, _, _| *codec)).unwrap();
+            let bytes = write_cbf(std::slice::from_ref(&batch), RG_ROWS, Some(&|_, _, _| *codec)).unwrap();
             let t1 = Instant::now();
             let (_s, out) = read_cbf(&bytes).unwrap();
             let t2 = Instant::now();

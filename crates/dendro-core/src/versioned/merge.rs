@@ -290,6 +290,7 @@ pub struct CatalogMerge {
     pub conflicts: Vec<String>,
 }
 
+#[allow(dead_code)]
 fn entry_bytes(e: &TableEntry) -> Vec<u8> {
     serde_json::to_vec(e).unwrap()
 }

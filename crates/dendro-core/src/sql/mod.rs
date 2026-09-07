@@ -203,7 +203,6 @@ pub(crate) enum BranchKind {
     Show,
     Merge,
     Checkpoint,
-    CommitLog,
 }
 
 fn branch_sql_kind(sql: &str) -> Option<BranchKind> {
@@ -324,7 +323,6 @@ fn exec_branch_statement(db: &Database, sess: &mut Session, sql: &str) -> Result
             db.checkpoint_branch(&name)?;
             Ok(vec![Output::Command { tag: "CHECKPOINT".into(), affected: 0 }])
         }
-        BranchKind::CommitLog => unreachable!(),
     }
     .inspect(|_outs| {
         let _ = &ddl;
@@ -380,14 +378,23 @@ pub(crate) fn exec_statement(db: &Database, sess: &mut Session, stmt: Statement)
             Ok(Some(Output::Command { tag: "BEGIN".into(), affected: 0 }))
         }
         Statement::Commit { .. } => {
+            // PG 语义：aborted 事务上的 COMMIT = 丢弃并回报 ROLLBACK
+            //（否则 25P02 门可被绕过：失败后 COMMIT 私运半截写集）
+            if sess.failed_txn {
+                sess.txn = None;
+                sess.failed_txn = false;
+                return Ok(Some(Output::Command { tag: "ROLLBACK".into(), affected: 0 }));
+            }
             let t = sess.txn.take().ok_or_else(|| SqlError::new("25P01", "no transaction"))?;
             if !t.writes.is_empty() {
                 commit_tx(db, &sess.branch, &t)?;
             }
+            sess.failed_txn = false;
             Ok(Some(Output::Command { tag: "COMMIT".into(), affected: 0 }))
         }
         Statement::Rollback { .. } => {
             sess.txn = None;
+            sess.failed_txn = false;
             Ok(Some(Output::Command { tag: "ROLLBACK".into(), affected: 0 }))
         }
         Statement::Query(q) => {

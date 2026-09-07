@@ -1,3 +1,4 @@
+#![allow(clippy::all)]
 //! 端到端 wire 对拍：真实客户端（tokio-postgres / mysql crate）连 dendro 服务器。
 
 use dendro_core::{Database, DbOptions, StoreConfig};

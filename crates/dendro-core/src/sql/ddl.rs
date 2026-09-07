@@ -482,10 +482,6 @@ pub(crate) fn exec_delete(db: &Database, sess: &mut Session, delete: sqlparser::
 /// 暴露给 ddl 的表扫描（复用 scan 内部实现）
 pub(crate) use scan::table_scan_by_name as table_scan_pub;
 
-pub(crate) fn exec_update(_db: &Database, _sess: &mut Session) -> Result<Option<Output>> {
-    Err(SqlError::internal("update handled in exec_statement"))
-}
-
 /// UPDATE 的实际实现（exec_statement 里拆解 AST 后调用）
 pub(crate) fn update_impl(
     db: &Database,
@@ -534,6 +530,7 @@ pub(crate) fn update_impl(
 }
 
 /// 列元数据辅助（prepare describe 用）
+#[allow(dead_code)]
 pub(crate) fn colmeta(names: &[String], ty: ColType) -> Vec<ColumnMeta> {
     names.iter().map(|n| ColumnMeta { name: n.clone(), ty }).collect()
 }

@@ -10,6 +10,11 @@ DDL 类型映射：SMALLINT/INT→Int32；BIGINT/SERIAL/BIGSERIAL→Int64(默认
 TEXT/VARCHAR/CHAR/STRING→Utf8；BYTEA/BLOB→Bytes；BOOLEAN/BOOL→Bool；DATE→Date32；
 TIMESTAMP→TimestampMs；DECIMAL v1 落 Float64 并告警（v2 定点）。
 
+**已知偏离（vs PostgreSQL 类型规则）**：整数算术一律升宽为 Int64
+（`SELECT 1+2` 返回 INT8 而非 PG 的 `int4+int4=int4`）。取舍：消除
+Int32 回绕（曾因 `as i32` 截断产生静默错值）；溢出时报 SQLSTATE 22003
+（`sql/expr.rs`，checked 算术）。v2 若需对齐 PG 的类型提升表再收窄。
+
 ## 2. 语句覆盖矩阵 v1
 
 | 语句 | 支持 | 备注 |

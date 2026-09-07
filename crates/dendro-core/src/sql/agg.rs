@@ -193,7 +193,6 @@ pub fn eval_having(
             Err(SqlError::syntax("HAVING column must appear in GROUP BY"))
         }
         Expr::Value(vws) => Ok(expr::value_from_parser(vws.value.clone())),
-        Expr::Nested(inner) => eval_having(inner, calls, agg_vals, group_exprs, key_vals, cols),
         other => Err(SqlError::not_supported(format!("HAVING: {}", other))),
     }
 }

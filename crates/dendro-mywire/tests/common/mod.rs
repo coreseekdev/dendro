@@ -327,7 +327,7 @@ fn parse_column_def(p: &[u8]) -> Column {
     let column_length = u32::from_le_bytes(p[r..r + 4].try_into().unwrap());
     r += 4;
     let type_code = p[r];
-    Column { name: String::from_utf8_lossy(&name).into_owned(), charset, column_length, type_code }
+    Column { name: String::from_utf8_lossy(name).into_owned(), charset, column_length, type_code }
 }
 
 // ——————————————————————————— MockSession ———————————————————————————

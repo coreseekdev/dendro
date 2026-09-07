@@ -15,7 +15,7 @@
 | 单节点内 memtx 一致性？ | ✅ 已实现：OCC（first-committer-wins）+ `commit_mu` 全序化，分支内可串行化 |
 | 跨节点读？ | ✅ 安全：对象不可变，任意节点挂同一存储根读（新鲜度=追段延迟）|
 | **跨节点写同一分支？** | **❌ 当前不支持，且不安全**——两个进程写同一分支会损坏状态（§3 给出具体损坏路径）|
-| 兜底纪律 | **一个分支同一时刻只允许一个写节点**（当前靠部署纪律保证；`fence`/epoch 机制已设计未实现）|
+| 兜底纪律 | **一个分支同一时刻只允许一个写节点**（机制已落地：fence epoch 租约 + 运行时拒写；接管者不等待 TTL 是已知诚实边界）|
 | 多节点的一致性路线 | P1 租约 fencing（单写者的分布化）→ P2 日志服务（memtx 变为可重放派生态）→ P3 分布式 OCC（读写集上送裁决）|
 
 **关键认知**：memtx 从设计上就是**不可共享的易失状态**——它不是被"复制"到多节点，
@@ -135,11 +135,17 @@ P3  分布式 OCC        →  多节点同时乐观执行，提交时集中裁�
 
 ## 3. P1 —— 租约 fencing：把"单写者"从纪律变成机制
 
-> **状态：🟡 部分实现（2026-09-07）。** 已实现：fence 对象 epoch CAS（`objstore/fence.rs`）、
+> **状态：✅ 核心已实现（2026-09-07 晚）。** 已实现：fence 对象 epoch CAS（`objstore/fence.rs`）、
 > WAL 段路径 epoch 化、复合时间戳、多 epoch 恢复回放（陈旧写抑制）、
-> 双实例接管 e2e。**未实现：运行时拒写**——`commit_tx` 目前不做租约过期
-> 或 epoch 校验（旧节点在感知前仍可写入）；续期线程（`renew`）零调用；
-> 接管不等待 TTL 过期。在补全这些前，单写者仍需**部署纪律保证**。
+> 双实例接管 e2e、**运行时拒写**——`commit_tx` / `write_branch_commit` /
+> `checkpoint_branch` 三个写入口在 commit_mu 内调用 `Branch::fence_gate`：
+> 租约过期 → 提交被拒（SQLSTATE 40001）；健康写者在 commit 路径上惰性续期
+> （每 ttl/3 至多一次 PUT，无后台线程；续期失败仅告警、下次提交重试）。
+> 回归测试：`tests/multi_node.rs::{fence_expired_writer_rejected,
+> fence_renew_keeps_healthy_writer_writing}`。
+> 仍未实现：接管者**不等待** TTL 过期（设计如此，诚实边界——运行时互斥靠
+> 失约者自查拒写，不靠接管方阻塞）；③ 的 manifest epoch CAS 校验（当前
+> manifest 乐观提交以版本号为 CAS 键）。
 
 ### 3.1 协议
 
@@ -275,8 +281,10 @@ Resolver:
 | 多 epoch 恢复回放（陈旧写抑制）| ✅ | `recovery.rs::replay_branch` |
 | 分支打开即领租约（epoch 自动 +1）| ✅ | `engine.rs::branch` |
 | 双实例接管 + 跨 epoch 恢复 e2e | ✅ | `tests/multi_node.rs` |
+| 运行时拒写（过期租约提交 → 40001）| ✅ | `engine.rs::Branch::fence_gate` |
+| 惰性续期（commit 路径，每 ttl/3 ≤1 次 PUT）| ✅ | `engine.rs::Branch::fence_gate` |
 | 提交转发 RPC（非写者→写者）| ⬜ P2 | — |
-| 心跳续期后台线程（当前依赖打开时新鲜度）| ⬜ P2 | — |
+| 心跳续期后台线程（独立于 commit 负载的保活）| ⬜ P2 | 惰性续期已覆盖低负载缺陷：长时间不提交的写者会失约拒写（保守安全）|
 
 ## 参考
 

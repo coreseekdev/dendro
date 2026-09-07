@@ -90,7 +90,7 @@ pub(crate) fn eval_query(db: &Database, sess: &mut Session, q: &Query, snapshot:
         GroupByExpr::All(_) => return Err(SqlError::not_supported("GROUP BY ALL")),
         GroupByExpr::Expressions(e, _) => e.clone(),
     };
-    let mut out_names: Vec<String> = Vec::new();
+    let out_names: Vec<String>;
     let mut out_rows: Vec<Vec<SqlValue>>;
     if !group_exprs.is_empty() || has_agg {
         let calls = collect_agg_calls(&select.projection, select.having.as_ref(), &group_exprs)?;

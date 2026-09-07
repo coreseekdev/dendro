@@ -1,19 +1,25 @@
 //! 分支写者租约（fencing，SPEC 02 §6 / 设计文档 P1）。
 //!
-//! 每个"分支写者世代"一个不可变对象：`fence/{branch}/{epoch:020}.json`，
+//! 每个"分支写者世代"一个对象：`fence/{branch}/{epoch:020}.json`，
 //! 内容 = {epoch, holder, expires_at_ms}。
 //!
-//! 规则：
+//! 已实现的运行时语义（engine::commit_tx / write_branch_commit / checkpoint
+//! 三个写入口在 commit_mu 内调用 `Branch::fence_gate`）：
 //! - 进程打开分支即**领取新 epoch = 当前最大 epoch + 1**（条件写，唯一性由
 //!   对象存储保证；同 epoch 竞争者只有一个能成功）
-//! - 持有者周期性重写自己的租约文件（续期）；停止续期 = 租约过期
+//! - **commit 前本地过期检查**：租约过期的写者提交直接被拒（SQLSTATE 40001），
+//!   即"自知失约者停止写入"
+//! - **惰性续期**：健康写者在 commit 路径上续期，至多每 ttl/3 一次 PUT
+//!   （无后台线程；续期失败仅告警，下次提交重试，过期后被上行检查拒绝）
 //! - WAL 段与事务时间戳携带 epoch（ts = epoch<<32 | seq）：恢复时按 epoch
 //!   升序重放，高 epoch 天然覆盖低 epoch 的陈旧写入（脑裂安全）
-//! - 过期租约的持有者**必须停止写入**（commit 前的本地过期检查 +
-//!   后台续期线程）；滞后写出的段落在低 epoch 路径上，重放时被跳过/覆盖
 //!
-//! 诚实边界：无控制面时，"过期后仍在写的旧节点"其**非冲突键**的已提交
-//! 数据会保留（它是真实提交）；与新 epoch 冲突的键由 ts 比较消解（新赢）。
+//! 诚实边界：
+//! - 接管者**不等待**旧租约过期即可领取更高 epoch——运行时互斥靠"旧写者
+//!   自查过期后拒写"，不靠接管方阻塞
+//! - 失约旧写者（如进程暂停超过 TTL 后未再提交）已在低 epoch 路径上的
+//!   滞后段，恢复期由 ts 比较消解（新赢）；其**非冲突键**的已提交数据
+//!   会保留（它是真实提交）
 
 use crate::error::Result;
 use crate::objstore::ObjStore;
@@ -32,7 +38,7 @@ pub struct FenceStore {
     obj: Arc<dyn ObjStore>,
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64
 }
 
@@ -74,7 +80,8 @@ impl FenceStore {
 
     /// 领取新 epoch = max+1（条件写保证唯一；冲突 = 重试更高 epoch）。
     /// `min_epoch` 下界：接管者至少要超过已知的旧 epoch。
-    pub fn acquire(&self, branch: &str, holder: &str, ttl_ms: i64, min_epoch: u64) -> Result<u64> {
+    /// 返回完整租约（engine 存入 Branch，供 fence_gate 过期检查/续期）。
+    pub fn acquire(&self, branch: &str, holder: &str, ttl_ms: i64, min_epoch: u64) -> Result<Lease> {
         let mut epoch = self.max_epoch(branch)?.max(min_epoch) + 1;
         loop {
             let lease = Lease {
@@ -86,14 +93,14 @@ impl FenceStore {
                 .obj
                 .put_if_absent(&Self::lease_path(branch, epoch), serde_json::to_vec(&lease).unwrap().into())
             {
-                Ok(()) => return Ok(epoch),
+                Ok(()) => return Ok(lease),
                 Err(crate::objstore::ObjError::Exists(_)) => epoch += 1, // 同 epoch 竞争：加一重试
                 Err(e) => return Err(crate::error::SqlError::from(e)),
             }
         }
     }
 
-    /// 续期（仅 epoch 持有者调用；覆盖写同内容语义，幂等）
+    /// 续期（仅 epoch 持有者调用；覆盖写同路径，幂等）
     pub fn renew(&self, branch: &str, lease: &Lease) -> Result<()> {
         self.obj
             .put(&Self::lease_path(branch, lease.epoch), serde_json::to_vec(lease).unwrap().into())
@@ -101,7 +108,6 @@ impl FenceStore {
     }
 
     /// 是否已过期
-    #[allow(dead_code)]
     pub fn expired(lease: &Lease) -> bool {
         lease.expires_at_ms <= now_ms()
     }
@@ -118,25 +124,20 @@ mod tests {
         let obj: A<dyn ObjStore> = A::new(MemoryObjStore::new());
         let f = FenceStore::new(obj.clone());
         assert_eq!(f.max_epoch("b").unwrap(), 0);
-        let e1 = f.acquire("b", "n1", 60_000, 0).unwrap();
-        assert_eq!(e1, 1);
-        let e2 = f.acquire("b", "n2", 60_000, 0).unwrap();
-        assert_eq!(e2, 2, "同持有多租约 → epoch 单调+1（跨进程打开即新世代）");
+        let l1 = f.acquire("b", "n1", 60_000, 0).unwrap();
+        assert_eq!(l1.epoch, 1);
+        let l2 = f.acquire("b", "n2", 60_000, 0).unwrap();
+        assert_eq!(l2.epoch, 2, "同持有多租约 → epoch 单调+1（跨进程打开即新世代）");
         // 过期判定
-        let l = f.read_lease("b", e1).unwrap().unwrap();
-        assert!(!FenceStore::expired(&l));
-        // 两个并发竞争者抢同一 epoch：CAS 保证只有一个成功
-        let (tx, rx) = std::sync::mpsc::channel();
+        assert!(!FenceStore::expired(&l1));
+        // 两个并发竞争者抢同一 epoch：CAS 保证只有一个成功，且 epoch 连续
         let f1 = FenceStore::new(obj.clone());
         let f2 = FenceStore::new(obj);
-        std::thread::scope(|s| {
-            let t1 = s.spawn(|| f1.acquire("c", "x", 60_000, 2).unwrap());
-            let t2 = s.spawn(|| f2.acquire("c", "y", 60_000, 2).unwrap());
-            let a = t1.join().unwrap();
-            let b = t2.join().unwrap();
-            tx.send((a.min(b), a.max(b))).unwrap();
+        let (a, b) = std::thread::scope(|s| {
+            let t1 = s.spawn(|| f1.acquire("c", "x", 60_000, 2).unwrap().epoch);
+            let t2 = s.spawn(|| f2.acquire("c", "y", 60_000, 2).unwrap().epoch);
+            (t1.join().unwrap(), t2.join().unwrap())
         });
-        let (lo, hi) = rx.recv().unwrap();
-        assert_eq!(hi, lo + 1, "并发竞争 → epoch 连续分配，无一物两主");
+        assert_eq!(a.max(b), a.min(b) + 1, "并发竞争 → epoch 连续分配，无一物两主");
     }
 }

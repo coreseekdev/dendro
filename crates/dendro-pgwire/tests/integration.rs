@@ -11,9 +11,9 @@ use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
 const PROTO_3_0: i32 = 196_608;
-const SSL_REQUEST: i32 = 808_771_03;
-const GSSENC_REQUEST: i32 = 808_771_04;
-const CANCEL_REQUEST: i32 = 808_771_02;
+const SSL_REQUEST: i32 = 80877103;
+const GSSENC_REQUEST: i32 = 80877104;
+const CANCEL_REQUEST: i32 = 80877102;
 
 fn is_eof(s: &mut UnixStream) -> bool {
     let mut b = [0u8; 1];
@@ -58,7 +58,7 @@ fn startup_trust_full_sequence() {
 
     // 最后是 ReadyForQuery('I')
     assert_eq!(msgs.last().unwrap().0, b'Z');
-    assert_eq!(msgs.last().unwrap().1, &[b'I']);
+    assert_eq!(msgs.last().unwrap().1, b"I");
 }
 
 #[test]
@@ -220,7 +220,7 @@ fn simple_query_select_flow() {
 
     // ReadyForQuery('I')
     assert_eq!(msgs[3].0, b'Z');
-    assert_eq!(msgs[3].1, &[b'I']);
+    assert_eq!(msgs[3].1, b"I");
 }
 
 #[test]
@@ -292,7 +292,7 @@ fn simple_query_error_keeps_connection_alive() {
     assert_eq!(e.code, "42P01");
     assert!(e.message.contains("missing"));
     assert_eq!(msgs[1].0, b'Z');
-    assert_eq!(msgs[1].1, &[b'I']);
+    assert_eq!(msgs[1].1, b"I");
 
     // 连接存活：后续查询正常
     s.write_all(&msg_bytes(b'Q', &cstr("SELECT 1"))).unwrap();
@@ -320,7 +320,7 @@ fn ready_for_query_reflects_txn_status() {
     handshake(&mut s, &[]).unwrap();
     s.write_all(&msg_bytes(b'Q', &cstr("BEGIN"))).unwrap();
     let msgs = read_until(&mut s, b'Z').unwrap();
-    assert_eq!(msgs.last().unwrap().1, &[b'T']);
+    assert_eq!(msgs.last().unwrap().1, b"T");
 }
 
 // ---------------------------------------------------------------------------
@@ -341,7 +341,7 @@ fn extended_full_flow_text_param() {
     put_i32(&mut body, 20);
     raw.extend(msg_bytes(b'P', &body));
     // Describe 'S' "stmt"
-    raw.extend(msg_bytes(b'D', &[b'S'].iter().chain(cstr("stmt").iter()).copied().collect::<Vec<u8>>()));
+    raw.extend(msg_bytes(b'D', &b"S".iter().chain(cstr("stmt").iter()).copied().collect::<Vec<u8>>()));
     // Bind(portal="p", stmt, formats=[0], params=["7"], result=[])
     let mut body = cstr("p");
     body.extend(cstr("stmt"));
@@ -353,7 +353,7 @@ fn extended_full_flow_text_param() {
     put_i16(&mut body, 0);
     raw.extend(msg_bytes(b'B', &body));
     // Describe 'P' "p"
-    raw.extend(msg_bytes(b'D', &[b'P'].iter().chain(cstr("p").iter()).copied().collect::<Vec<u8>>()));
+    raw.extend(msg_bytes(b'D', &b"P".iter().chain(cstr("p").iter()).copied().collect::<Vec<u8>>()));
     // Execute("p", 0)
     let mut body = cstr("p");
     put_i32(&mut body, 0);
@@ -433,7 +433,7 @@ fn extended_binary_param_and_result() {
     put_i16(&mut body, 1);
     raw.extend(msg_bytes(b'B', &body));
     // Describe 'P'（应反映 binary format=1）
-    raw.extend(msg_bytes(b'D', &[b'P'].iter().chain(cstr("").iter()).copied().collect::<Vec<u8>>()));
+    raw.extend(msg_bytes(b'D', &b"P".iter().chain(cstr("").iter()).copied().collect::<Vec<u8>>()));
     // Execute
     let mut body = cstr("");
     put_i32(&mut body, 0);
@@ -559,7 +559,7 @@ fn extended_describe_unknown_statement_26000() {
     let sess = Box::new(MockSession::new());
     let (mut s, _h) = spawn_conn(sess, PgConfig::default());
     handshake(&mut s, &[]).unwrap();
-    s.write_all(&msg_bytes(b'D', &[b'S'].iter().chain(cstr("nope").iter()).copied().collect::<Vec<u8>>()))
+    s.write_all(&msg_bytes(b'D', &b"S".iter().chain(cstr("nope").iter()).copied().collect::<Vec<u8>>()))
         .unwrap();
     s.write_all(&msg_bytes(b'S', &[])).unwrap();
     let msgs = read_until(&mut s, b'Z').unwrap();
@@ -572,7 +572,7 @@ fn extended_describe_unknown_portal_26000() {
     let sess = Box::new(MockSession::new());
     let (mut s, _h) = spawn_conn(sess, PgConfig::default());
     handshake(&mut s, &[]).unwrap();
-    s.write_all(&msg_bytes(b'D', &[b'P'].iter().chain(cstr("nope").iter()).copied().collect::<Vec<u8>>()))
+    s.write_all(&msg_bytes(b'D', &b"P".iter().chain(cstr("nope").iter()).copied().collect::<Vec<u8>>()))
         .unwrap();
     s.write_all(&msg_bytes(b'S', &[])).unwrap();
     let msgs = read_until(&mut s, b'Z').unwrap();
@@ -619,7 +619,7 @@ fn extended_named_statement_close_removes_it() {
     body.extend(cstr("SELECT 1"));
     put_i16(&mut body, 0);
     raw.extend(msg_bytes(b'P', &body));
-    raw.extend(msg_bytes(b'C', &[b'S'].iter().chain(cstr("st1").iter()).copied().collect::<Vec<u8>>()));
+    raw.extend(msg_bytes(b'C', &b"S".iter().chain(cstr("st1").iter()).copied().collect::<Vec<u8>>()));
     raw.extend(msg_bytes(b'S', &[]));
     s.write_all(&raw).unwrap();
     let msgs = read_until(&mut s, b'Z').unwrap();
@@ -627,7 +627,7 @@ fn extended_named_statement_close_removes_it() {
     assert_eq!(msgs[1].0, b'3'); // CloseComplete
 
     // Close 后 Describe → 26000
-    s.write_all(&msg_bytes(b'D', &[b'S'].iter().chain(cstr("st1").iter()).copied().collect::<Vec<u8>>()))
+    s.write_all(&msg_bytes(b'D', &b"S".iter().chain(cstr("st1").iter()).copied().collect::<Vec<u8>>()))
         .unwrap();
     s.write_all(&msg_bytes(b'S', &[])).unwrap();
     let msgs = read_until(&mut s, b'Z').unwrap();

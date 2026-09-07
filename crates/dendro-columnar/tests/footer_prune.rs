@@ -69,7 +69,7 @@ fn footer_metadata_and_pruning() {
         assert_eq!(rg.rows, 1000);
         assert_eq!(rg.first_row, (ri * 1000) as u64);
         let b = &rg.cols[0].blocks[0];
-        let lo = (ri as i64 * 1000) as i64;
+        let lo = ri as i64 * 1000;
         let hi = lo + 999;
         assert_eq!(b.min, ((lo as u64) ^ (1 << 63)), "rg{ri} pk min");
         assert_eq!(b.max, ((hi as u64) ^ (1 << 63)), "rg{ri} pk max");

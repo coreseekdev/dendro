@@ -197,7 +197,7 @@ impl WireSession for MockSession {
             .find(|(n, _, _)| n == name)
             .map(|(_, s, _)| s.clone());
         let error_applies = match &self.ep_error_if_contains {
-            Some(pat) => sql.as_deref().map_or(false, |s| s.contains(pat.as_str())),
+            Some(pat) => sql.as_deref().is_some_and(|s| s.contains(pat.as_str())),
             None => true,
         };
         if error_applies {
