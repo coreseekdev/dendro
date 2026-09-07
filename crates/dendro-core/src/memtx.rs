@@ -195,13 +195,14 @@ impl Txn {
 }
 
 /// 提交验证 + 安装（SPEC 04 §3）。串行化由调用方的 commit 锁保证。
-pub fn validate_and_install(
+/// OCC 裁决：只验证不安装（P2' 管线 Phase 1）。**必须在 commit_mu 内调用**
+/// ——验证结果到 install 之间无并发写者，裁决不会被作废。
+/// 写写冲突：任一 key 的最新版本 ts > 快照 ⇒ 别的提交已抢跑（first-committer-wins）。
+pub fn validate_only(
     mem: &BranchMem,
     tables_in_txn: &[(u32, Arc<TableMem>)],
     txn: &Txn,
-    commit_seq: u64,
 ) -> Result<()> {
-    // 1. 写写冲突：任一 key 的最新版本 ts > 快照 ⇒ 别的提交已抢跑
     for (table_id, key) in txn.writes.keys() {
         let tm = tables_in_txn
             .iter()
@@ -218,7 +219,17 @@ pub fn validate_and_install(
             }
         }
     }
-    // 2. 安装
+    Ok(())
+}
+
+/// 安装写集到 memtx（P2' 管线 Phase 3，**必须在 durable 之后调用**——
+/// 此前 install 先于 WAL，WAL 失败时未提交数据可见 + 重启后幽灵行）。
+pub fn install(
+    mem: &BranchMem,
+    tables_in_txn: &[(u32, Arc<TableMem>)],
+    txn: &Txn,
+    commit_seq: u64,
+) {
     for ((table_id, key), m) in &txn.writes {
         let tm = tables_in_txn
             .iter()
@@ -230,7 +241,6 @@ pub fn validate_and_install(
             crate::prolly::Mutation::Delete => tm.install(key.clone(), commit_seq, None),
         }
     }
-    Ok(())
 }
 
 #[cfg(test)]

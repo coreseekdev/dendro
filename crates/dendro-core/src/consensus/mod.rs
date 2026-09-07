@@ -1,3 +1,4 @@
+//! **[EXPERIMENTAL]** 同上：与 journal.rs 一并待 P2' 收敛（零持久化、未接线）。
 //! 共识抽象层：与具体 Raft 库解耦 + cloud-native 分层日志存储（SOTA 调研 §1.1/§1.3）。
 //!
 //! 两层抽象：

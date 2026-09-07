@@ -56,11 +56,19 @@
 | P2-7 | GRAMMAR.md 修正（WITH ⬜、CHECKPOINT ✅、differential 目录删除） | ⬜ | 与代码对齐 |
 | P2-8 | AGENTS.md 架构清单补 kv/journal/consensus/fence | ⬜ | 文档同步 |
 
+## P2' — 提交管线（2026-09-08 起动）
+
+| # | 任务 | 状态 | 证据 |
+|---|------|:----:|------|
+| ~~P2'-1~~ | ~~管线顺序：裁决→持久化→安装→水位（消除 in-doubt）~~ | ✅ | `engine.rs::commit_tx` + `memtx::{validate_only, install}`；回归断言：`wal_corruption::flush_put_failure_no_frame_loss_no_hang`（失败提交 memtx 无痕） |
+| P2'-2 | Adjudicator/Journal trait 化（替换 Phase 2；含读路径时间戳 + 裁决器 HA/fencing 设计补全） | ⬜ | 设计文档已注状态；实现待 P3-1 |
+| P2'-3 | 抽象收敛（journal.rs/consensus/ 标 EXPERIMENTAL 已做；最终删除或并入唯一 trait 集） | 🔧 | 标记完成，收敛随 P2'-2 |
+
 ## P3 — 远期
 
 | # | 任务 | 状态 | 备注 |
 |---|------|:----:|------|
-| P3-1 | Adjudicator + Journal 分布式实施（openraft 3 副本） | ⬜ | SOTA 调研 §3；seam 已留（`629d155`/`e3b0557`） |
+| P3-1 | Adjudicator + Journal 分布式实施（openraft 3 副本） | ⬜ | SOTA 调研 §3；~~seam 已留~~（概念 seam，非编译期 seam——三轮评审 §5.2 更正）；journal.rs/consensus/ 已标 EXPERIMENTAL，P2' 动工时收敛为唯一 trait 集 |
 | P3-2 | multi-region 强一致（Journal 多 Region 2+1） | ⬜ | 依赖基础设施 |
 | P3-3 | 向量化列式执行器（Arrow 列式 filter/agg） | ⬜ | AP 性能 |
 | P3-4 | criss-cross merge 修复（common_ancestor 遍历多父） | ⬜ | 低频场景 |

@@ -1116,7 +1116,14 @@ impl Session {
     }
 }
 
-/// 提交一个事务的写集（engine 内部路径，sql 模块调用）
+/// 提交一个事务的写集（engine 内部路径，sql 模块调用）。
+/// **管线顺序 = 裁决 → 持久化 → 安装 → 水位**（P2' 提交管线重构，
+/// docs/design/提交管线重构.md；第三轮评审 §5.5 验收项："install 必须在
+/// durable 之后"）。旧顺序先安装 memtx 再写 WAL，WAL 失败时 memtx 已带
+/// 数据而客户端收到错误（in-doubt：未提交数据可见 + 重启后幽灵行）；
+/// 新顺序下 WAL 失败 ⇒ 无任何可见状态，错误如实。
+/// 安全性：各阶段都在 commit_mu 内，validate 与 install 之间无并发写者
+/// （裁决结果不会被并发提交作废）。
 pub(crate) fn commit_tx(db: &Database, sess_branch: &str, txn: &Txn) -> Result<u64> {
     let b = db.branch(sess_branch)?;
     let _g = b.commit_mu.lock();
@@ -1124,24 +1131,33 @@ pub(crate) fn commit_tx(db: &Database, sess_branch: &str, txn: &Txn) -> Result<u
     let epoch = b.lease_epoch.load(Ordering::Acquire);
     let seq = b.alloc_seq();
     let ts = crate::recovery::composite_ts(epoch, seq);
-    // Phase 1: OCC 裁决（写写冲突检测，SPEC 04 §3 first-committer-wins）
-    crate::memtx::validate_and_install(&b.mem, &[], txn, ts)?;
-    // Phase 2: pending 登记 + WAL 帧
+    // Phase 1: OCC 裁决（只验证不安装；SPEC 04 §3 first-committer-wins）
+    crate::memtx::validate_only(&b.mem, &[], txn)?;
+    // Phase 2: 持久化（组提交；失败 → 无可见状态，错误上抛）
     let mut recs: Vec<crate::wal::TxnRecord> = Vec::new();
+    for (tid, key, m) in iter_writes(txn) {
+        let val = match m {
+            Mutation::Put(v) => Some(v.clone()),
+            Mutation::Delete => None,
+        };
+        recs.push(crate::wal::TxnRecord { table_id: tid, ops: vec![(key.clone(), val)] });
+    }
+    b.wal.append(crate::wal::FrameType::Txn, ts, &crate::wal::encode_txn(&recs), db.opts.durability)?;
+    // Phase 3: 安装（durable 之后才产生可见状态）+ pending 登记（checkpoint 积压）
+    crate::memtx::install(&b.mem, &[], txn, ts);
+    let mut plen = 0usize;
     {
         let mut pend = b.pending.lock();
         for (tid, key, m) in iter_writes(txn) {
-            let val = match m {
-                Mutation::Put(v) => Some(v.clone()),
-                Mutation::Delete => None,
-            };
+            plen += key.len()
+                + match m {
+                    Mutation::Put(v) => v.len(),
+                    Mutation::Delete => 0,
+                };
             pend.entry(tid).or_default().insert(key.clone(), m.clone());
-            recs.push(crate::wal::TxnRecord { table_id: tid, ops: vec![(key.clone(), val)] });
         }
     }
-    b.pending_bytes.fetch_add(payload_len(&recs) as u64, Ordering::Release);
-    // Phase 3: 持久化（组提交）
-    b.wal.append(crate::wal::FrameType::Txn, ts, &crate::wal::encode_txn(&recs), db.opts.durability)?;
+    b.pending_bytes.fetch_add(plen as u64, Ordering::Release);
     // Phase 4: 可见性推进
     b.watermark.store(ts, Ordering::Release);
     Ok(ts)
@@ -1149,10 +1165,6 @@ pub(crate) fn commit_tx(db: &Database, sess_branch: &str, txn: &Txn) -> Result<u
 
 fn iter_writes(txn: &Txn) -> impl Iterator<Item = (u32, &Vec<u8>, &Mutation)> {
     txn.writes.iter().map(|((t, k), m)| (*t, k, m))
-}
-
-fn payload_len(recs: &[crate::wal::TxnRecord]) -> usize {
-    recs.iter().map(|r| r.ops.iter().map(|(k, v)| k.len() + v.as_ref().map(|v| v.len()).unwrap_or(0)).sum::<usize>()).sum()
 }
 
 // —— wire 层 API（真身）——

@@ -1,4 +1,9 @@
 #![allow(clippy::type_complexity)]
+//! **[EXPERIMENTAL]** 骨架——entries 未持久化、未接线到提交路径，勿在生产
+//! 路径引用。P2' 落地时的**权威提交接口是 `engine.rs::commit_tx` 的四阶段
+//! 管线**（裁决→持久化→安装→水位）；Journal/Adjudicator 将以 trait 形式
+//! 替换其 Phase 2，落地前本文件与 `consensus/` 仅供设计评审。
+//!
 //! Journal——多副本提交日志（SOTA 调研 §1.2 / DSQL Adjudicator+Journal 同形态）。
 //!
 //! 底座 = tikv/raft-rs（TiKV 级生产验证的 Rust Raft）。

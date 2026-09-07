@@ -230,6 +230,15 @@ fn flush_put_failure_no_frame_loss_no_hang() {
         }
     };
     assert!(err.message.contains("wal put"), "失败应来自 WAL put：{err}");
+    // 管线新语义（P2'：install 在 durable 之后）：失败的提交在 memtx **无痕**——
+    // 旧顺序下这里会读到 2（未提交数据可见的 in-doubt 窗口）
+    {
+        let mut s = db.new_session();
+        let o = s.exec("SELECT count(*) FROM t").unwrap();
+        if let dendro_core::Output::Rows(rs) = &o[0] {
+            assert_eq!(rs.text_rows()[0][0].as_deref(), Some("1"), "失败提交不得产生可见状态（in-doubt 已消除）");
+        }
+    }
     // 故障恢复：失败帧仍在缓冲；下一次成功 flush 把它和新帧一并带 durable
     obj.fail_puts_left.store(0, Ordering::SeqCst);
     {
