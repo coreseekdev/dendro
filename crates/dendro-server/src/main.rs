@@ -81,6 +81,15 @@ enum Cmd {
         #[arg(long, default_value = "benches/results")]
         out: PathBuf,
     },
+    /// 一致性点物理备份（append-only：数据先拷、manifest 最后拷）
+    Backup {
+        /// 源数据目录（本地对象存储根）
+        #[arg(long)]
+        data: PathBuf,
+        /// 备份输出目录
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// 引擎自检（内存库跑一组 SQL 并打印）
     Smoke {
         /// SQL（分号分隔）
@@ -219,6 +228,14 @@ fn main() {
             }
             if let Some(h) = kv_handle {
                 h.join().unwrap();
+            }
+        }
+        Cmd::Backup { data, out } => {
+            match dendro_server::backup::backup_dir(&data, &out) {
+                Ok((objects, bytes)) => {
+                    println!("backup complete: {objects} objects, {bytes} bytes -> {}", out.display());
+                }
+                Err(e) => eprintln!("backup failed: {e}"),
             }
         }
         Cmd::Bench { out } => {

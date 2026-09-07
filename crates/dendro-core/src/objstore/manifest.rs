@@ -116,7 +116,17 @@ impl ManifestStore {
 
     fn read_version(&self, ver: u64) -> ObjResult<Manifest> {
         let b = self.obj.get(&Self::path(ver))?;
-        serde_json::from_slice(&b).map_err(|e| ObjError::Corrupt(format!("manifest {ver}: {e}")))
+        let m: Manifest = serde_json::from_slice(&b)
+            .map_err(|e| ObjError::Corrupt(format!("manifest {ver}: {e}")))?;
+        // 格式版本守卫（M-2）：新版引擎写的 manifest 旧引擎必须显式拒绝，
+        // 而不是带着未知字段静默解读（serde default 会吞掉一切）
+        if m.format_version > 1 {
+            return Err(ObjError::Corrupt(format!(
+                "manifest {ver}: format_version {} unsupported by this binary (max 1); upgrade dendro",
+                m.format_version
+            )));
+        }
+        Ok(m)
     }
 
     /// 初始化：库不存在时写入 version 1（已存在则报 Exists）
@@ -245,6 +255,21 @@ mod tests {
         assert!(matches!(s.commit(v0, m.clone()), Err(ObjError::Exists(_))));
         let (_, m2) = s.load_latest().unwrap();
         assert!(m2.refs.contains_key("agent42"));
+    }
+
+    #[test]
+    fn format_version_guard_rejects_newer_manifests() {
+        // M-2：新版 format_version 必须显式拒绝（而非 serde default 吞掉未知字段）
+        let (s, obj) = store();
+        let mut m = s.load_latest().unwrap().1;
+        m.format_version = 2;
+        obj.put(&ManifestStore::path(2), serde_json::to_vec(&m).unwrap().into()).unwrap();
+        let err = s.load_latest().err().expect("format_version=2 应被拒绝");
+        assert!(err.to_string().contains("format_version 2"), "{err}");
+        // 当前版本（1）仍可读：放回合法 manifest/2
+        m.format_version = 1;
+        obj.put(&ManifestStore::path(2), serde_json::to_vec(&m).unwrap().into()).unwrap();
+        assert_eq!(s.load_latest().unwrap().0, 2);
     }
 
     #[test]
