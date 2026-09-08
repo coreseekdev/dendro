@@ -249,6 +249,12 @@
 | R15-1 | **G5 终判 ✅**（Q-14 证据门槛经评审独立变异复跑成立；Q-16/Q-5 不阻门） | ✅ | 第十五轮轻量复评报告 |
 | R15-2 | R15-1（P3）：src 侧 7 个 crate 级 blanket allow——clippy 门槛只罩测试不罩生产代码 | ✅ | 一次性移除 + 清偿 37 条警告（机械项 auto-fix；merge.rs 8 参数定点豁免并注明 v2 收敛方向）；`cargo clippy --workspace --all-targets -- -D warnings` 零输出 |
 
+### Q-12 优雅关闭（2026-09-08，第二阶段交付）
+
+| # | 任务 | 状态 | 证据 |
+|---|------|:----:|------|
+| Q-12 | 优雅关闭：SIGTERM/SIGINT → `Database::shutdown`（停 checkpoint 线程 + 全驻留分支 WAL `close_graceful`）→ exit(0) | ✅ | `wal.rs::close_graceful`（毒化时跳过上传——错误语义保留）+ `engine.rs::shutdown` + main 信号线程（signal-hook）。回归 `wal_corruption::close_graceful_flushes_no_wait_tail`（NoWait 缓冲尾经优雅关闭持久）|
+
 ## P2' — 提交管线（2026-09-08 起动）
 
 | # | 任务 | 状态 | 证据 |

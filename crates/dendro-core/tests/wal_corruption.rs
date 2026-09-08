@@ -457,3 +457,28 @@ fn checkpoint_failure_preserves_committed_data() {
         assert_eq!(rs.text_rows()[0][0].as_deref(), Some("1"), "重启后仍完整");
     }
 }
+
+#[test]
+fn close_graceful_flushes_no_wait_tail() {
+    // Q-12：close_graceful 先上传剩余缓冲再停线程——NoWait 的缓冲尾
+    // 在优雅关闭下得以持久（进程死亡的丢失语义只属于 NoWait+崩溃）。
+    let obj = Arc::new(FlakyPutStore {
+        inner: MemoryObjStore::new(),
+        fail_puts_left: AtomicU32::new(0),
+        fail_prefix: String::new(),
+    });
+    let db = Database::open(opts_store(StoreConfig::Obj(obj.clone()))).unwrap();
+    {
+        let mut s = db.new_session();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+        s.exec("INSERT INTO t VALUES (1, 'tail')").unwrap(); // NoWait 语义下假设缓冲未及上传
+    }
+    db.branch("main").unwrap().wal.close_graceful();
+    drop(db);
+    let db2 = Database::open(opts_store(StoreConfig::Obj(obj.clone()))).unwrap();
+    let mut s = db2.new_session();
+    let o = s.exec("SELECT count(*) FROM t").unwrap();
+    if let dendro_core::Output::Rows(rs) = &o[0] {
+        assert_eq!(rs.text_rows()[0][0].as_deref(), Some("1"), "优雅关闭必须持久化 NoWait 缓冲尾");
+    }
+}

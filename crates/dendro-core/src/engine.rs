@@ -1080,6 +1080,22 @@ impl Database {
         Ok(Some(commit.addr()))
     }
 
+    /// **优雅关闭**（Q-12）：停自动 checkpoint 线程 → 对全部驻留分支
+    /// close_graceful（上传 WAL 剩余缓冲后停线程）。调用后本进程不再
+    /// 接受新会话；调用方（serve 收到 SIGTERM/SIGINT）随后退出。
+    pub fn shutdown(self: &Arc<Self>) {
+        self.stop_cp.store(true, Ordering::Relaxed);
+        let branches: Vec<Arc<Branch>> = self
+            .branches
+            .write()
+            .drain()
+            .map(|(_, b)| b)
+            .collect();
+        for b in branches {
+            b.wal.close_graceful();
+        }
+    }
+
     /// GC 回收 pass（GC 定案，docs/design/GC定案.md）：
     /// ① 删除保留窗口已过的墓碑对象（单批 ≤256 个，有界）；② 压缩墓碑清单；
     /// ③ 回收旧 manifest 版本（保留最近 16 个）。

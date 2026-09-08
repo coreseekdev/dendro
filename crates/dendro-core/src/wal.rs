@@ -545,6 +545,16 @@ impl WalWriter {
             let _ = h.join();
         }
     }
+
+    /// **优雅关闭**（Q-12）：先上传剩余缓冲（毒化时跳过——错误语义保留：
+    /// 毒化帧永不上传），再停线程。Group/Always 已 ack 的数据不受影响；
+    /// NoWait 缓冲尾因此得以持久（比进程死亡多保住一段）。
+    pub fn close_graceful(&self) {
+        if !self.shared.lock().poisoned {
+            let _ = self.flush_now();
+        }
+        self.close();
+    }
 }
 
 /// 外部最后一个 Arc 释放 ⇒ 后台线程不再 upgrade 成功 ⇒ 自行退出；

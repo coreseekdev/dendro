@@ -249,6 +249,29 @@ fn main() {
                 if s3_endpoint.is_some() { "s3" } else { "local" },
                 data.display()
             );
+            // 信号线程：SIGTERM/SIGINT → 优雅关闭（Q-12）：停 checkpoint
+            // 线程 + 全部分支 WAL close_graceful（上传剩余缓冲）后退出 0
+            {
+                let db_sig = db.clone();
+                std::thread::Builder::new()
+                    .name("signal-handler".into())
+                    .spawn(move || {
+                        use signal_hook::consts::{SIGINT, SIGTERM};
+                        // Signals::forever 只在首信号后返回一次即 exit(0)，
+                        // 用 if-let 而非 loop/for（避免"永不循环"误报）
+                        if let Ok(mut sigs) =
+                            signal_hook::iterator::Signals::new([SIGTERM, SIGINT])
+                        {
+                            if sigs.forever().next().is_some() {
+                                eprintln!("dendro: signal received — graceful shutdown");
+                                db_sig.shutdown();
+                                std::process::exit(0);
+                            }
+                        }
+                        // 无信号设施的环境：随 join 阻塞至进程退出
+                    })
+                    .unwrap();
+            }
             // 任一监听器失败（bind 冲突等）都会使 join 返回 Err → 进程非零
             // 退出（第八轮 R8-6：此前 pg bind 失败时照常打印 ready 且永不退出）
             let mut handles: Vec<(&str, std::thread::JoinHandle<()>)> = Vec::new();
