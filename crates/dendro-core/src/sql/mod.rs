@@ -495,14 +495,20 @@ pub(crate) fn exec_statement(db: &Database, sess: &mut Session, stmt: Statement)
                 .assignments
                 .iter()
                 .map(|a| match a {
-                    sqlparser::ast::Assignment { target, value, .. } => match target {
-                        sqlparser::ast::AssignmentTarget::ColumnName(col) => {
-                            let id = col.0.last().and_then(|p| p.as_ident()).cloned()
-                                .unwrap_or_else(|| sqlparser::ast::Ident::new(String::new()));
-                            Ok((id, value.clone()))
-                        }
-                        _ => Err(SqlError::not_supported("tuple assignment")),
-                    },
+                    sqlparser::ast::Assignment {
+                        target: sqlparser::ast::AssignmentTarget::ColumnName(col),
+                        value,
+                        ..
+                    } => {
+                        let id = col
+                            .0
+                            .last()
+                            .and_then(|p| p.as_ident())
+                            .cloned()
+                            .unwrap_or_else(|| sqlparser::ast::Ident::new(String::new()));
+                        Ok((id, value.clone()))
+                    }
+                    _ => Err(SqlError::not_supported("tuple assignment")),
                 })
                 .collect::<Result<Vec<_>>>()?;
             ddl::update_impl(db, sess, &name, assignments, upd.selection.clone())
@@ -668,11 +674,11 @@ fn infer_param_types(db: &Database, sess: &Session, stmt: &Statement, n: usize) 
         }
     };
     // 表达式侧：col <op> $n 或 $n <op> col
-    fn from_binary(e: &Expr, types: &[ColType], col_of: &dyn Fn(&str) -> Option<ColType>, set: &mut dyn FnMut(usize, ColType)) {
+    fn from_binary(e: &Expr, col_of: &dyn Fn(&str) -> Option<ColType>, set: &mut dyn FnMut(usize, ColType)) {
         match e {
             Expr::BinaryOp { left, op: sqlparser::ast::BinaryOperator::Or, right } => {
-                from_binary(left, types, col_of, set);
-                from_binary(right, types, col_of, set);
+                from_binary(left, col_of, set);
+                from_binary(right, col_of, set);
             }
             Expr::BinaryOp { left, right, .. } => {
                 let ph = |x: &Expr| -> Option<usize> {
@@ -758,12 +764,12 @@ fn infer_param_types(db: &Database, sess: &Session, stmt: &Statement, n: usize) 
             for a in &upd.assignments {
                 if let sqlparser::ast::AssignmentTarget::ColumnName(col) = &a.target {
                     let cname = col.0.last().and_then(|p| p.as_ident()).map(|i| i.value.clone()).unwrap_or_default();
-                    from_binary(&a.value, &[], &col_of, &mut set);
+                    from_binary(&a.value, &col_of, &mut set);
                     let _ = cname;
                 }
             }
             if let Some(sel) = &upd.selection {
-                from_binary(sel, &[], &col_of, &mut set);
+                from_binary(sel, &col_of, &mut set);
             }
         }
         Statement::Query(q) => {
@@ -781,7 +787,7 @@ fn infer_param_types(db: &Database, sess: &Session, stmt: &Statement, n: usize) 
                         if let Ok((schema, _)) = scan::resolve_table(db, &sess.branch, &full) {
                             let col_of = |c: &str| schema.col_index(c).map(|i| schema.columns[i].ty);
                             if let Some(w) = &sel.selection {
-                                from_binary(w, &[], &col_of, &mut set);
+                                from_binary(w, &col_of, &mut set);
                             }
                         }
                     }

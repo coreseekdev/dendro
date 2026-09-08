@@ -242,6 +242,13 @@
 | R14-1（P1） | q14 的断言全被 pk 下推截走（走行路径 R8-1），AP 归并层③禁用后测试仍绿 | ✅ | 补两条**非 pk 断言**（`WHERE v='upd'`→1、`WHERE v='v6'`→0，评审配方）+ **变异自检通过**（禁用 AP 层③ → 测试红在目标断言；还原 → 绿） |
 | R14-2（P3） | ap_txn.rs 新建时复制 blanket allow（复制模板反模式第三次）；全仓 13 个测试文件带豁免 | ✅ | **一次性清扫**全部测试文件 blanket allow + clippy 修正（useless format/strip_prefix/let-and-return 等）——测试代码自此纳入 clippy -D warnings 门槛 |
 
+## 十五轮轻量复评修复（2026-09-08，触发：验证 R14 + G5 终审）
+
+| # | 任务 | 状态 | 证据 |
+|---|------|:----:|------|
+| R15-1 | **G5 终判 ✅**（Q-14 证据门槛经评审独立变异复跑成立；Q-16/Q-5 不阻门） | ✅ | 第十五轮轻量复评报告 |
+| R15-2 | R15-1（P3）：src 侧 7 个 crate 级 blanket allow——clippy 门槛只罩测试不罩生产代码 | ✅ | 一次性移除 + 清偿 37 条警告（机械项 auto-fix；merge.rs 8 参数定点豁免并注明 v2 收敛方向）；`cargo clippy --workspace --all-targets -- -D warnings` 零输出 |
+
 ## P2' — 提交管线（2026-09-08 起动）
 
 | # | 任务 | 状态 | 证据 |

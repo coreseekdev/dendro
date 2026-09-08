@@ -256,7 +256,7 @@ mod tests {
         t.install(b"k".to_vec(), 5, Some(Arc::new(b"a".to_vec())));
         t.install(b"k".to_vec(), 8, Some(Arc::new(b"b".to_vec())));
         t.install(b"k".to_vec(), 12, None);
-        assert_eq!(t.get(b"k", 4).is_none(), true);
+        assert!(t.get(b"k", 4).is_none());
         assert_eq!(&*t.get(b"k", 5).unwrap(), b"a");
         assert_eq!(&*t.get(b"k", 8).unwrap(), b"b");
         assert_eq!(t.get(b"k", 12), None); // tombstone

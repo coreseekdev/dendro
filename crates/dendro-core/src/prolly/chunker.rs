@@ -311,7 +311,7 @@ mod tests {
         assert_eq!(rng[0].0, b"k00000100".to_vec());
         // 树高合理（5000 条目应为 2~3 层）
         let h = s.get_node(&root).unwrap().level();
-        assert!(h >= 1 && h <= 3, "height {h}");
+        assert!((1..=3).contains(&h), "height {h}");
     }
 
     #[test]

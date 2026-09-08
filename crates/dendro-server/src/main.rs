@@ -1,4 +1,3 @@
-#![allow(clippy::all)]
 //! dendro 服务器入口：装配引擎 + PG/MySQL 双协议监听 + 基准。
 
 mod bench;
@@ -17,6 +16,7 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)] // CLI 入口 enum 生命周期极短（parse 后即消费），Box 化反而增噪
 enum Cmd {
     /// 启动数据库服务器（PG + MySQL 协议）
     Serve {

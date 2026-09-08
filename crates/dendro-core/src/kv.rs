@@ -462,6 +462,15 @@ fn create_kv_table(db: &Arc<Database>, branch: &str) -> Result<u32> {
     Ok(tid)
 }
 
+/// 会话放弃未结束事务时兜底注销活跃快照（与 SQL Session::drop 同口径）
+impl Drop for Kv {
+    fn drop(&mut self) {
+        if let Some(t) = self.txn.take() {
+            self.unregister_snapshot(&t.snapshot);
+        }
+    }
+}
+
 
 #[cfg(test)]
 mod dbg_tests {
@@ -480,17 +489,8 @@ mod dbg_tests {
         eprintln!("[dbg] entry.id={} root={:?}", entry.id, entry.table_root);
         let b = db.branch("main").unwrap();
         let over = b.mem.table(entry.id).snapshot_rows(10);
-        eprintln!("[dbg] overlay keys={:?} vals={:?}", over.keys().map(|k| k.to_vec()).collect::<Vec<_>>(), over.values().map(|v| v.clone()).collect::<Vec<_>>());
+        eprintln!("[dbg] overlay keys={:?} vals={:?}", over.keys().map(|k| k.to_vec()).collect::<Vec<_>>(), over.values().cloned().collect::<Vec<_>>());
         let got = kv.get("a").unwrap();
         eprintln!("[dbg] get(a)={got:?}");
-    }
-}
-
-/// 会话放弃未结束事务时兜底注销活跃快照（与 SQL Session::drop 同口径）
-impl Drop for Kv {
-    fn drop(&mut self) {
-        if let Some(t) = self.txn.take() {
-            self.unregister_snapshot(&t.snapshot);
-        }
     }
 }

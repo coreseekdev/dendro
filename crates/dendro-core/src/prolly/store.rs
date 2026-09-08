@@ -31,7 +31,7 @@ impl NodeStore {
     pub fn put_node(&self, node: Node, session_cache: &mut std::collections::HashSet<Hash>) -> Result<Hash> {
         let h = node.addr();
         if !session_cache.contains(&h) {
-            let ty = if node.level() == 0 { ChunkType::Node } else { ChunkType::Node };
+            let ty = ChunkType::Node;
             let chunk = Chunk { ty, data: node.data().to_vec() };
             debug_assert_eq!(chunk.addr(), h);
             self.cas.put_batch(&[chunk], session_cache)?;

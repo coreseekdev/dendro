@@ -182,8 +182,8 @@ fn decide_codecs(
         let mut off = 0usize;
         while off < b.num_rows() {
             let take = (SAMPLE_ROWS - sampled).min(b.num_rows() - off);
-            for c in 0..ncols {
-                sample_cols[c].push(b.column(c).slice(off, take).clone());
+            for (c, col) in b.columns().iter().enumerate() {
+                sample_cols[c].push(col.slice(off, take).clone());
             }
             sampled += take;
             off += take;

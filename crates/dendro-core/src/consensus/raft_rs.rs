@@ -37,10 +37,9 @@ impl TieredStorageAdapter {
             log_store,
             state: raft::RaftState {
                 hard_state: raft::eraftpb::HardState::default(),
-                conf_state: {
-                    let mut cs = raft::eraftpb::ConfState::default();
-                    cs.voters = vec![node_id];
-                    cs
+                conf_state: raft::eraftpb::ConfState {
+                    voters: vec![node_id],
+                    ..raft::eraftpb::ConfState::default()
                 },
             },
         }
@@ -64,12 +63,11 @@ impl Storage for TieredStorageAdapter {
             .map_err(|e| raft::Error::Store(raft::StorageError::Other(Box::new(std::io::Error::other(e)))))?;
         Ok(entries
             .into_iter()
-            .map(|e| {
-                let mut entry = Entry::default();
-                entry.index = e.index;
-                entry.term = e.term;
-                entry.data = e.data.into();
-                entry
+            .map(|e| raft::eraftpb::Entry {
+                index: e.index,
+                term: e.term,
+                data: e.data.into(),
+                ..raft::eraftpb::Entry::default()
             })
             .collect())
     }

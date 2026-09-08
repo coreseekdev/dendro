@@ -3,7 +3,7 @@
 //! 内容：分支表(refs)、表目录(tables)、GC 水位。JSON 编码（v1）。
 //! 读最新版本：**LIST 为权威路径**（GC 删除使版本号空间存在任意空洞，
 //! 探测无法区分"已是最新"与"撞洞"——第四轮评审 P1-F 探针实证探测
-/// 循环是纯死重，已删除）。
+//! 循环是纯死重，已删除）。
 
 use super::{ObjError, ObjResult, ObjStore};
 use serde::{Deserialize, Serialize};
@@ -250,7 +250,7 @@ mod tests {
         let mut m = s.load_latest().unwrap().1;
         m.format_version = 2;
         obj.put(&ManifestStore::path(2), serde_json::to_vec(&m).unwrap().into()).unwrap();
-        let err = s.load_latest().err().expect("format_version=2 应被拒绝");
+        let err = s.load_latest().expect_err("format_version=2 应被拒绝");
         assert!(err.to_string().contains("format_version 2"), "{err}");
         // 当前版本（1）仍可读：放回合法 manifest/2
         m.format_version = 1;

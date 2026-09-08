@@ -617,7 +617,7 @@ mod tests {
             table_id: 7,
             ops: vec![(b"k1".to_vec(), Some(b"v1".to_vec())), (b"k2".to_vec(), None)],
         };
-        let payload = encode_txn(&[rec.clone()]);
+        let payload = encode_txn(std::slice::from_ref(&rec));
         let frame = encode_frame(FrameType::Txn, 42, &payload);
         let mut it = FrameIter::new(&frame);
         let (ty, seq, p) = it.next_frame().unwrap().unwrap();

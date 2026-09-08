@@ -4,7 +4,6 @@
 //! → catalog → sql → engine。
 //! 性能红线：热路径无 Rc/RefCell；共享仅限不可变 Arc；见 spec/00-overview.md §6。
 
-#![allow(clippy::all)]
 pub mod error;
 pub mod types;
 pub mod format;

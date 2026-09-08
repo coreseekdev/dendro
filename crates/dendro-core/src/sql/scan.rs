@@ -135,7 +135,7 @@ pub(crate) fn eval_query(db: &Database, sess: &mut Session, q: &Query, snapshot:
             rows_out.push(row);
         }
         out_rows = rows_out;
-        out_names = projection_names(&select.projection, &tv.names, &calls, &group_exprs)?;
+        out_names = projection_names(&select.projection, &tv.names, &calls)?;
     } else {
         // 投影
         let (names, proj_rows) = project(&select.projection, &tv)?;
@@ -722,7 +722,7 @@ fn try_pk_pushdown(
         _ => None,
     };
     let (schema, entry) = match frozen {
-        Some(r) => resolve_table_at(db, Some(&r), &name.rsplit(['.', '@']).next().unwrap_or(&name))?,
+        Some(r) => resolve_table_at(db, Some(&r), name.rsplit(['.', '@']).next().unwrap_or(&name))?,
         None => match resolve_table(db, &sess.branch, &name) {
             Ok(v) => v,
             Err(_) => return Ok(None),
@@ -861,7 +861,7 @@ fn table_scan(db: &Database, sess: &mut Session, tf: &TableFactor, snapshot: u64
                 _ => None,
             };
             let (schema, entry) = match frozen {
-                Some(r) => resolve_table_at(db, Some(&r), &full.rsplit(['.', '@']).next().unwrap_or(&full))?,
+                Some(r) => resolve_table_at(db, Some(&r), full.rsplit(['.', '@']).next().unwrap_or(&full))?,
                 None => resolve_table(db, &sess.branch, &full)?,
             };
             let b = db.branch(&sess.branch)?;
@@ -919,7 +919,7 @@ fn table_scan(db: &Database, sess: &mut Session, tf: &TableFactor, snapshot: u64
                 }
             }
             let mut rows = Vec::with_capacity(visible.len().max(64));
-            for (_k, v) in &visible {
+            for v in visible.values() {
                 rows.push(row_from_bytes(&schema, v)?);
             }
             let names = schema.columns.iter().map(|c| c.name.clone()).collect();
@@ -1163,7 +1163,7 @@ fn project(p: &[SelectItem], tv: &TableView) -> Result<(Vec<String>, Vec<Vec<Sql
     Ok((names, rows))
 }
 
-fn projection_names(p: &[SelectItem], tv: &[String], calls: &[AggCall], groups: &[Expr]) -> Result<Vec<String>> {
+fn projection_names(p: &[SelectItem], tv: &[String], calls: &[AggCall]) -> Result<Vec<String>> {
     let mut names = Vec::new();
     for item in p {
         match item {
@@ -1174,12 +1174,11 @@ fn projection_names(p: &[SelectItem], tv: &[String], calls: &[AggCall], groups: 
             }
             SelectItem::ExprWithAlias { alias, .. } => names.push(alias.value.clone()),
             SelectItem::UnnamedExpr(e) => {
-                if let Some(c) = calls.iter().find(|c| c.display == e.to_string()) {
-                    names.push(c.display.clone());
-                } else if groups.iter().any(|g| g.to_string() == e.to_string()) {
-                    names.push(short_str(e));
-                } else {
-                    names.push(short_str(e));
+                match calls.iter().find(|c| c.display == e.to_string()) {
+                    // 命中聚合列：用聚合显示名
+                    Some(c) => names.push(c.display.clone()),
+                    // 其余（分组表达式或普通表达式）：按文本短形
+                    None => names.push(short_str(e)),
                 }
             }
         }
@@ -1470,11 +1469,11 @@ pub fn rows_to_batches(names: &[String], rows: &[Vec<SqlValue>]) -> Result<Vec<a
 pub fn rows_to_batches_typed(columns: &[ColumnMeta], rows: &[Vec<SqlValue>]) -> Vec<arrow::record_batch::RecordBatch> {
     // 列型：描述口径优先；否则按该列首个非空值推断（首行可能是 NULL，导致整列值丢失）
     let mut col_types: Vec<ColType> = Vec::with_capacity(columns.len());
-    for ci in 0..columns.len() {
+    for (ci, col) in columns.iter().enumerate() {
         let first_non_null = rows.iter().find_map(|r| r.get(ci).filter(|v| !v.is_null()).cloned());
         col_types.push(match first_non_null {
             Some(v) => infer_type(&v),
-            None => columns[ci].ty,
+            None => col.ty,
         });
     }
     use arrow::array::{ArrayRef, BooleanArray, Date32Array, Float64Array, Int32Array, Int64Array, StringArray, BinaryArray, TimestampMillisecondArray};

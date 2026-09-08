@@ -1,4 +1,3 @@
-#![allow(clippy::type_complexity)]
 //! dendro-columnar — CBF(Dendro Block Format) GPU 友好列存（SPEC 05）。
 //!
 //! 文件布局（SPEC 05 §2）：
@@ -42,10 +41,8 @@
 //! - ZSTD 只经 `codec_choice` 回调进入（冷块，SPEC 08 §1/§5）。
 
 #![forbid(unsafe_code)]
-
 #![allow(clippy::type_complexity)]
 
-#![allow(clippy::all)]
 pub mod codec;
 pub mod footer;
 pub mod reader;

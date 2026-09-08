@@ -2,11 +2,11 @@
 //!
 //! 整个查询串交给 `sess.exec()`（SPEC 10 §6：多语句切分由引擎负责，
 //! wire 层不自行按 `;` 切）。每个 Output 发一组响应：
-//! - `Output::Rows`     → RowDescription + DataRow×N + CommandComplete("SELECT N")
+//! - `Output::Rows` → RowDescription + DataRow×N + CommandComplete("SELECT N")
 //!   （引擎不带 tag，协议层按 PG 口径生成 "SELECT {total_rows}"）
-//! - `Output::Command`  → CommandComplete(tag)
-//! 空 Vec → EmptyQueryResponse；错误 → ErrorResponse 后照常 ReadyForQuery
-//! （连接保持，SPEC 10 §5）。
+//! - `Output::Command` → CommandComplete(tag)
+//! - 空 Vec → EmptyQueryResponse
+//! - 错误 → ErrorResponse 后照常 ReadyForQuery（连接保持，SPEC 10 §5）。
 
 use std::io;
 

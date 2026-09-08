@@ -108,10 +108,7 @@ impl CasStore {
         // 引用缺失 chunk 的 manifest（回归：
         // wal_corruption::checkpoint_failure_preserves_committed_data）。
         // 逐组 join 后此处必为最终状态。
-        match err.lock().unwrap().take() {
-            Some(e) => return Err(e),
-            None => {}
-        }
+        if let Some(e) = err.lock().unwrap().take() { return Err(e) }
         for (_, h) in &jobs {
             session_cache.insert(*h);
         }

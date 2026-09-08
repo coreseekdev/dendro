@@ -16,7 +16,6 @@
 
 #![deny(unsafe_code)]
 
-#![allow(clippy::all)]
 pub mod codec;
 pub mod error;
 pub mod extended;
@@ -85,7 +84,7 @@ pub fn serve_with_config(addr: SocketAddr, db: Arc<Database>, cfg: PgConfig) -> 
 pub fn serve_listener(listener: TcpListener, db: Arc<Database>, cfg: PgConfig) -> io::Result<()> {
     let addr = listener.local_addr()?;
     tracing::info!(%addr, auth = %if cfg.password.is_some() { "cleartext" } else { "trust" }, "dendro-pgwire: listening");
-    for conn in listener.incoming() {
+    while let Some(conn) = listener.incoming().next() {
         match conn {
             Ok(stream) => {
                 let db = Arc::clone(&db);
@@ -123,6 +122,9 @@ pub fn handle_connection<T: Read + Write>(
     };
 
     let mut ext = extended::ExtendedState::default();
+    // 定点豁免 while-let 建议：此循环内含 `?` 错误传播与多出口 break，
+    // 不可写为 while-let（clippy 误报场景）
+    #[allow(clippy::while_let_loop)]
     loop {
         let Some(msg) = pg.read_message()? else {
             break; // 客户端干净断开

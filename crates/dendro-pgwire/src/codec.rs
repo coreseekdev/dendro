@@ -17,11 +17,11 @@ use std::io::{self, Read, BufReader, Write};
 /// protocol 3.0（196608 = 3 << 16 | 0）
 pub const PROTOCOL_3_0: i32 = 196_608;
 /// SSLRequest：1234 << 16 | 5679
-pub const SSL_REQUEST_CODE: i32 = 808_771_03;
+pub const SSL_REQUEST_CODE: i32 = 80877103;
 /// GSSENCRequest：1234 << 16 | 5680
-pub const GSSENC_REQUEST_CODE: i32 = 808_771_04;
+pub const GSSENC_REQUEST_CODE: i32 = 80877104;
 /// CancelRequest：1234 << 16 | 5678
-pub const CANCEL_REQUEST_CODE: i32 = 808_771_02;
+pub const CANCEL_REQUEST_CODE: i32 = 80877102;
 /// 保留主版本号（1234.x 都是特殊请求，不是 StartupMessage）
 const RESERVED_MAJOR: i32 = 1234;
 /// startup 包上限（与 PG 一致：pqcomm.h MAX_STARTUP_PACKET_LENGTH）
