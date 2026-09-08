@@ -1,4 +1,3 @@
-#![allow(clippy::all)]
 //! KV RESP wire 对拍：原生 TCP 客户端走 RESP 协议访问 dendro KV 层。
 use dendro_core::objstore::ObjStore;
 use dendro_core::{Database, DbOptions};
@@ -30,8 +29,8 @@ fn read_replies(r: &mut TcpStream, n: usize) -> Vec<String> {
         // 读一行状态/整数/批量头
         let mut line = String::new();
         rd.read_line(&mut line).unwrap();
-        if line.starts_with('$') {
-            let len: i64 = line[1..].trim().parse().unwrap_or(0);
+        if let Some(rest) = line.strip_prefix('$') {
+            let len: i64 = rest.trim().parse().unwrap_or(0);
             if len < 0 {
                 out.push("NIL".into());
                 continue;

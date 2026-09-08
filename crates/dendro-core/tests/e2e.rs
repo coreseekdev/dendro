@@ -1,4 +1,3 @@
-#![allow(clippy::all)]
 //! 端到端冒烟测试：建表 → 插入 → 查询 → 分支 → 合并 → 恢复。
 
 use dendro_core::{Database, DbOptions, SqlValue, StoreConfig};

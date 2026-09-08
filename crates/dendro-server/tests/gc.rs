@@ -1,4 +1,3 @@
-#![allow(clippy::all)]
 //! GC 回归（P1-4 定案，docs/design/GC定案.md）：
 //! - 墓碑登记与"停止引用"同一 manifest 原子发布；保留窗口内对象**绝不删除**
 //!   （P0-3 崩溃窗口保证：旧 manifest 引用的段必须还在）

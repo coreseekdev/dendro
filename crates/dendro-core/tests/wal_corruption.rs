@@ -1,9 +1,10 @@
-#![allow(clippy::all)]
 //! WAL 损坏与 flush 失败回归（评审 P0-1/P0-2 配套测试）：
 //! - FrameIter 对坏 len / 截断 payload / 截断帧头：报错或有序终止，绝不 panic
 //! - 打开路径对损坏段：返回 Err（fail-fast），不 panic
 //! - flush PUT 失败注入：不丢帧、不挂死；恢复后帧随下一次 flush 全部 durable
+//!
 //! 段格式见 SPEC 01 / wal.rs：24B 帧头（magic/ver/ty/seq/len/crc）+ payload + 32B 段尾。
+
 
 use dendro_core::objstore::memory::MemoryObjStore;
 use dendro_core::objstore::{ObjResult, ObjStore};

@@ -1,4 +1,3 @@
-#![allow(clippy::all)]
 //! SQL 语义回归（评审 §1.3 S 项）：
 //! - S2：失败事务内后续语句被拒（25P02），ROLLBACK 放行（PG aborted-tx 语义）
 //! - S6：WITH (CTE) 显式报错 0A000，不再静默丢弃

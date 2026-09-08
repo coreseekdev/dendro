@@ -1,4 +1,3 @@
-#![allow(clippy::all)]
 //! 端到端 wire 对拍：真实客户端（tokio-postgres / mysql crate）连 dendro 服务器。
 
 use dendro_core::{Database, DbOptions, StoreConfig};
@@ -8,13 +7,13 @@ use std::sync::Arc;
 fn open_temp(tag: &str) -> Arc<Database> {
     let dir = std::env::temp_dir().join(format!("dendro-wire-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let db = Database::open(DbOptions {
+    
+    Database::open(DbOptions {
         store: StoreConfig::LocalDir(dir),
         wal_flush_interval_ms: 5,
         ..Default::default()
     })
-    .unwrap();
-    db
+    .unwrap()
 }
 
 fn free_addr() -> std::net::SocketAddr {
@@ -40,7 +39,7 @@ fn pg_client_end_to_end() {
         )
         .await
         .unwrap();
-        let conn = tokio::spawn(async move { conn.await });
+        let conn = tokio::spawn(conn);
 
         // DDL
         client

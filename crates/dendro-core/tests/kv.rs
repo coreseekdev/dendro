@@ -1,4 +1,3 @@
-#![allow(clippy::all)]
 //! KV 接口层测试（SPEC 11）：基本读写、范围、CAS、事务、分支隔离与合并可见性、持久化。
 use dendro_core::kv::Kv;
 use dendro_core::{Database, DbOptions, StoreConfig};

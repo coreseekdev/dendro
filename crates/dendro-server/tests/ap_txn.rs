@@ -1,4 +1,3 @@
-#![allow(clippy::all)]
 //! Q-14：AP 列存路径（≥1 万行）的显式事务语义——读自己的写 + 冻结根。
 //!
 //! ⚠ 必须在 dendro-server 侧测试：需要 set_columnar（列存依赖）。
@@ -54,6 +53,20 @@ fn q14_ap_path_reads_own_writes_and_frozen() {
         _ => panic!(),
     };
     assert_eq!(n6, "0", "事务内删除的行经 AP 归并不可见");
+    // **非 pk 断言**（第十四轮 R14-1 配方）：pk 等值断言被 pk 下推截走、走
+    // 行路径的 R8-1 读己写，到不了 AP——非 pk 列扫描强制走 CBF 归并：
+    // ① 事务内 UPDATE 的新值经 v 列（非 pk）可见；② 被删行的**旧值**经
+    // v 列不可见。缺失层③时两条分别退化为 0 行 / 1 行，测试必红。
+    let n_upd = match &s.exec("SELECT count(*) FROM big WHERE v = 'upd'").unwrap()[0] {
+        dendro_core::Output::Rows(rs) => rs.text_rows()[0][0].clone().unwrap(),
+        _ => panic!(),
+    };
+    assert_eq!(n_upd, "1", "事务内 UPDATE 的新值必须经 AP 归并可见");
+    let n_old = match &s.exec("SELECT count(*) FROM big WHERE v = 'v6'").unwrap()[0] {
+        dendro_core::Output::Rows(rs) => rs.text_rows()[0][0].clone().unwrap(),
+        _ => panic!(),
+    };
+    assert_eq!(n_old, "0", "被删行的旧值必须经 AP 归并消失");
     // 冻结：并发提交 + checkpoint 不翻转事务内可见性
     {
         let mut s2 = db.new_session();

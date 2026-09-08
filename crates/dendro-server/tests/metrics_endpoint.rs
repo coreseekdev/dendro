@@ -1,4 +1,3 @@
-#![allow(clippy::all)]
 //! 运维端点回归（P1-11 负载自感知）：
 //! - /readyz → 200 "ok"（k8s 就绪探针）
 //! - /metrics → Prometheus 文本：pending_bytes / watermark / durable / lease TTL

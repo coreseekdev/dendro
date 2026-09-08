@@ -1,4 +1,3 @@
-#![allow(clippy::all)]
 //! 真实 S3（RustFS/MinIO）端到端：存储主体在对象存储 + 杀进程恢复 + 网络字节审计。
 //!
 //! 运行（需先起容器并建桶）：
@@ -138,13 +137,13 @@ fn s3_lifecycle_and_crash_recovery() {
             println!("[diag] {br}: {:?}", rs.text_rows());
         }
     }
-    let m = s2.exec(&format!("MERGE BRANCH feat INTO main"));
+    let m = s2.exec("MERGE BRANCH feat INTO main");
     match &m {
         Ok(o) => println!("[merge] ok: {:?}", o.iter().map(|x| match x { dendro_core::Output::Command{tag,..} => tag.clone(), _ => "rows".into() }).collect::<Vec<_>>()),
         Err(e) => println!("[merge] ERR: {} {}", e.state, e.message),
     }
     let _ = m.unwrap();
-    let o = s2.exec(&format!("SELECT commit, height FROM cambium.commit_log('main')")).unwrap();
+    let o = s2.exec("SELECT commit, height FROM cambium.commit_log('main')").unwrap();
     if let dendro_core::Output::Rows(rs) = &o[0] { println!("[post-merge] main: {:?}", rs.text_rows()); }
     let o = s2.exec(&format!("SELECT count(*) FROM t_{tag} WHERE id = 88888")).unwrap();
     if let dendro_core::Output::Rows(rs) = &o[0] { println!("[post-merge] row88888: {:?}", rs.text_rows()); }
