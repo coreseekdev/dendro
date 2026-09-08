@@ -255,6 +255,15 @@
 |---|------|:----:|------|
 | Q-12 | 优雅关闭：SIGTERM/SIGINT → `Database::shutdown`（停 checkpoint 线程 + 全驻留分支 WAL `close_graceful`）→ exit(0) | ✅ | `wal.rs::close_graceful`（毒化时跳过上传——错误语义保留）+ `engine.rs::shutdown` + main 信号线程（signal-hook）。回归 `wal_corruption::close_graceful_flushes_no_wait_tail`（NoWait 缓冲尾经优雅关闭持久）|
 
+## 十六轮里程碑复评修复（2026-09-08，触发：R13–R15 + Q-12 里程碑）
+
+| # | 任务 | 状态 | 证据 |
+|---|------|:----:|------|
+| R16-1（P1） | Q-12 回归空转（用 Group 持久级——exec 返回前缓冲必空，"NoWait 缓冲尾"从未执行；评审变异 3/3 仍绿） | ✅ | 测试改 NoWait 持久级（缓冲真实存在）+ **变异自检**（禁用 close_graceful 的 flush → 红；还原 → 绿）。`wal_corruption::close_graceful_flushes_no_wait_tail` |
+| R16-2（P3） | Q-12 注册范围静默收窄（"停监听"/readyz 分离未交付未追踪） | ✅ 登记 | Q-12e 余项：停监听 + live/readiness 分离 → Q-12b |
+| R16-3（P3） | shutdown 对 checkpoint 线程只置标志不 join（与 drain/close 构成未测并发对） | ✅ 登记 | Q-12c：shutdown join checkpoint 线程（Weak 化后 join 可行） |
+| ~~P1-8~~ | ~~真崩溃（SIGKILL 子进程）~~ | ✅ | `dendro-server/tests/crash.rs`：spawn 真实 serve 进程 → PG 线协议写入（半 checkpoint 半 WAL）→ **SIGKILL** → 重启 → ack 数据全可见 + 可继续写。G3 的真崩溃缺口关闭 |
+
 ## P2' — 提交管线（2026-09-08 起动）
 
 | # | 任务 | 状态 | 证据 |

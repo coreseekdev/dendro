@@ -460,14 +460,19 @@ fn checkpoint_failure_preserves_committed_data() {
 
 #[test]
 fn close_graceful_flushes_no_wait_tail() {
-    // Q-12：close_graceful 先上传剩余缓冲再停线程——NoWait 的缓冲尾
-    // 在优雅关闭下得以持久（进程死亡的丢失语义只属于 NoWait+崩溃）。
+    // Q-12：close_graceful 先上传剩余缓冲再停线程。
+    // **NoWait 持久级**（第十六轮 R16-1：Group 语义下 exec 返回前已
+    // await_durable，close 时缓冲必空——用 Group 测是空转回归）。
+    // NoWait 的缓冲尾在优雅关闭下得以持久（进程死亡的丢失语义只属于
+    // NoWait+崩溃；Group/Always 不受影响）。
     let obj = Arc::new(FlakyPutStore {
         inner: MemoryObjStore::new(),
         fail_puts_left: AtomicU32::new(0),
         fail_prefix: String::new(),
     });
-    let db = Database::open(opts_store(StoreConfig::Obj(obj.clone()))).unwrap();
+    let mut o = opts_store(StoreConfig::Obj(obj.clone()));
+    o.durability = dendro_core::Durability::NoWait;
+    let db = Database::open(o).unwrap();
     {
         let mut s = db.new_session();
         s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
