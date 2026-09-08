@@ -170,5 +170,5 @@ aws --endpoint-url http://127.0.0.1:9000 s3 mb s3://dendro
 
 ```bash
 cargo test --workspace          # 全部单元/集成/e2e 测试
-cargo build -p slt && ./target/debug/slt run tests/slt/dendro   # SQL 基线（7 文件）
+cargo build -p slt && ./target/debug/slt run tests/slt/dendro   # SQL 基线（9 文件）
 ```

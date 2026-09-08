@@ -1,4 +1,3 @@
-#![allow(clippy::all)]
 //! 真并发 OCC 回归（P1-7，第七/九/十轮反复点名的并发防线）：
 //! - 同键并发提交：first-committer-wins——恰好一个成功，其余 40001
 //! - 异键并发提交：全部成功（commit_mu 串行化不误伤）
@@ -46,14 +45,8 @@ fn concurrent_same_key_exactly_one_winner() {
                 let mut s = db.new_session();
                 s.exec("BEGIN").unwrap();
                 s.exec(&format!("UPDATE t SET v = 'w{i}' WHERE id = 1")).unwrap();
-                barrier.wait(); // 同快照全体就绪 → 并发提交
-                (s, i)
-            }));
-        }
-        let results: Vec<Result<String, String>> = handles
-            .into_iter()
-            .map(|h| {
-                let (mut s, i) = h.join().unwrap();
+                barrier.wait(); // 同快照全体就绪 → **线程内并发提交**（P13-5：
+                // 此前 COMMIT 由主线程 join 后串行发出，"并发提交"表述过强）
                 match s.exec("COMMIT") {
                     Ok(_) => Ok(format!("w{i}")),
                     Err(e) => {
@@ -61,7 +54,11 @@ fn concurrent_same_key_exactly_one_winner() {
                         Err(e.state.to_string())
                     }
                 }
-            })
+            }));
+        }
+        let results: Vec<Result<String, String>> = handles
+            .into_iter()
+            .map(|h| h.join().unwrap())
             .collect();
         let winners: Vec<&String> = results.iter().filter_map(|r| r.as_ref().ok()).collect();
         assert_eq!(winners.len(), 1, "恰好一个赢家（实际 {winners:?}）");

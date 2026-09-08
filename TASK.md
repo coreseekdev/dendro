@@ -181,7 +181,7 @@
 
 | # | 任务 | 优先级 | 备注 |
 |---|------|:----:|------|
-| ~~Q-14~~ | ~~AP 列存路径读自己的写 + 冻结根~~ | ✅ | table_scan 同一归并抽象补齐 AP 路径（冻结 catalog 根解析 + 第三层会话事务写覆盖）；回归 `sql_semantics::q14_ap_path_reads_own_writes_and_frozen`（1.2 万行 checkpoint 后显式事务：INSERT/UPDATE/DELETE 归并 + 冻结 + COMMIT 后新快照）|
+| ~~Q-14~~ | ~~AP 列存路径读自己的写 + 冻结根~~ | ✅（证据勘误 R13-1） | 归并抽象补齐 AP 路径（冻结 catalog 根 + 第三层会话事务写覆盖）。**R13-1 教训**：q14 初版在 core 侧且未 set_columnar——AP 短路全程走行路径的空转测试（评审探针：还原修复仍绿）。真实化：`dendro-server/tests/ap_txn.rs`（set_columnar + col_rows≥1 万断言 + 事务矩阵）|
 | ~~Q-18~~ | ~~装配层测试~~ | ✅ | `tests/assembly.rs`：spawn 真实 dendro 进程，断言**端口↔协议对应**（PG Startup→'R'、MySQL 握手、RESP PING→+PONG、readyz 200），随 CI 跑 |
 | Q-19 | "线程不持强 Arc 睡觉/自环"红线入 AGENTS.md（Weak 化三连的通用化） | P2 | |
 | Q-20 | ~~kv use_branch 静默丢事务~~ ✅（第十一轮收口，25001）∥ R9-9 runner 多语句比对 ∥ R9-11 协议小项 | P3 | 剩余两项保留 |
@@ -224,6 +224,16 @@
 | # | 任务 | 状态 | 证据 |
 |---|------|:----:|------|
 | ~~P1-7~~ | ~~真并发 OCC~~ | ✅ | `tests/concurrent.rs`：①同键 8 线程真 Barrier 同快照并发提交 → **恰一赢家 + 7×40001**（first-committer-wins）；②异键并发全成；③autocommit 同键 40001-or-win 不变式。1.2 万行 AP 路径事务矩阵见 q14 |
+
+## 十三轮轻量复评修复（2026-09-08，里程碑：Q-14 + P1-7）
+
+| # | 任务 | 状态 | 证据 |
+|---|------|:----:|------|
+| R13-1（P1） | q14 回归空转（未 set_columnar → AP 短路 → 全程行路径，"还原修复仍绿"） | ✅ | 移至 `dendro-server/tests/ap_txn.rs`（列存接线 + col_rows≥1 万门断言 + 事务矩阵全链） |
+| R13-2（P3） | commit message 基线计数失准（215 实为 218） | ✅ 勘误 | 已成文的 DoD 第 5 条（脚本计数）为本类问题的永久防线；历史提交不改 |
+| R13-3（P3） | concurrent.rs 重新引入 blanket allow（P12-3 反模式回归） | ✅ | 已删；clippy -D warnings 零输出 |
+| R13-4（P3） | README "SQL 基线（7 文件）" 勘误漏项 | ✅ | 9 文件 |
+| R13-5（P3） | P1-7 用例①的 COMMIT 由主线程串行发出（"并发提交"表述过强） | ✅ | COMMIT 移入线程（barrier 后真并发）；不变式不变 |
 
 ## P2' — 提交管线（2026-09-08 起动）
 
