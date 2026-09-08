@@ -67,8 +67,27 @@ pub(crate) fn eval_query(db: &Database, sess: &mut Session, q: &Query, snapshot:
         SetExpr::Select(s) => s.as_ref(),
         other => return Err(SqlError::not_supported(format!("set op: {}", short_str(other)))),
     };
-    // FROM（v1：单表，或一个 INNER 等值连接）
-    let mut tv = eval_from(db, sess, select, snapshot)?;
+    // FROM（v1：单表，或一个 INNER 等值连接）；Q-1 LIMIT 下推进扫描——
+    // 无 ORDER BY 的纯 LIMIT 在扫描期早停（有 ORDER BY 需全量排序，不下推）
+    let pushdown_limit: Option<usize> = match (&q.order_by, &q.limit_clause) {
+        (None, Some(sqlparser::ast::LimitClause::LimitOffset { limit, offset, .. })) => {
+            let off = match offset {
+                Some(off) => Some(eval_const(&off.value)? as usize),
+                None => None,
+            };
+            let lim = match limit {
+                Some(l) => Some(eval_const(l)? as usize),
+                None => None,
+            };
+            match (lim, off) {
+                (Some(l), Some(o)) => Some(l + o),
+                (Some(l), None) => Some(l),
+                _ => None,
+            }
+        }
+        _ => None,
+    };
+    let mut tv = eval_from(db, sess, select, snapshot, pushdown_limit)?;
     // WHERE
     if let Some(w) = &select.selection {
         let cols = col_lookup(&tv.names);
@@ -142,7 +161,6 @@ pub(crate) fn eval_query(db: &Database, sess: &mut Session, q: &Query, snapshot:
         out_names = names;
         out_rows = proj_rows;
     }
-    // ORDER BY（优先输出列名；否则按原行求值——v1 简化：按输出列名/下标）
     let order_exprs: &[OrderByExpr] = match q.order_by.as_ref().map(|o| &o.kind) {
         Some(sqlparser::ast::OrderByKind::Expressions(exprs)) => exprs,
         Some(sqlparser::ast::OrderByKind::All(_)) | None => &[],
@@ -339,18 +357,31 @@ fn cols_lookup(names: &[String]) -> HashMap<String, usize> {
 
 // ---------- FROM ----------
 
-fn eval_from(db: &Database, sess: &mut Session, select: &Select, snapshot: u64) -> Result<TableView> {
+fn eval_from(
+    db: &Database,
+    sess: &mut Session,
+    select: &Select,
+    snapshot: u64,
+    pushdown_limit: Option<usize>,
+) -> Result<TableView> {
     let twj = select
         .from
         .first()
         .ok_or_else(|| SqlError::syntax("missing FROM"))?;
-    let mut tv = table_scan_opt(db, sess, &twj.relation, snapshot, select.selection.as_ref())?;
+    let mut tv = table_scan_opt(
+        db,
+        sess,
+        &twj.relation,
+        snapshot,
+        select.selection.as_ref(),
+        pushdown_limit,
+    )?;
     for j in &twj.joins {
         match &j.join_operator {
             // sqlparser 0.62 区分裸 `JOIN`(Join) 与 `INNER JOIN`(Inner)、
             // 裸 `LEFT JOIN`(Left) 与 `LEFT OUTER JOIN`(LeftOuter)——语义相同
             JoinOperator::Join(constraint) | JoinOperator::Inner(constraint) => {
-                let right = table_scan_opt(db, sess, &j.relation, snapshot, None)?;
+                let right = table_scan_opt(db, sess, &j.relation, snapshot, None, None)?;
                 let (l, _r) = match constraint {
                     sqlparser::ast::JoinConstraint::On(e) => (e, None::<&Expr>),
                     sqlparser::ast::JoinConstraint::Natural => {
@@ -364,7 +395,7 @@ fn eval_from(db: &Database, sess: &mut Session, select: &Select, snapshot: u64) 
                 tv = hash_join(tv, right, l)?;
             }
             JoinOperator::Left(constraint) | JoinOperator::LeftOuter(constraint) => {
-                let right = table_scan_opt(db, sess, &j.relation, snapshot, None)?;
+                let right = table_scan_opt(db, sess, &j.relation, snapshot, None, None)?;
                 let e = match constraint {
                     sqlparser::ast::JoinConstraint::On(e) => e,
                     _ => return Err(SqlError::not_supported("LEFT JOIN constraint")),
@@ -391,21 +422,28 @@ pub(crate) fn table_scan_by_name(db: &Database, sess: &mut Session, name: &str, 
         sample: None,
         with_ordinality: false,
     };
-    table_scan(db, sess, &tf, snapshot)
+    table_scan(db, sess, &tf, snapshot, None)
 }
 
 /// 带谓词的单表扫描：pk 等值/IN 下推走直查（TP 点查路径）
-fn table_scan_opt(db: &Database, sess: &mut Session, tf: &TableFactor, snapshot: u64, selection: Option<&Expr>) -> Result<TableView> {
+fn table_scan_opt(
+    db: &Database,
+    sess: &mut Session,
+    tf: &TableFactor,
+    snapshot: u64,
+    selection: Option<&Expr>,
+    pushdown_limit: Option<usize>,
+) -> Result<TableView> {
     // 快路径 1：单表 + pk 等值/IN 且无其他复杂谓词 → 直查
     if let Some((schema, entry)) = try_pk_pushdown(db, sess, tf, selection, snapshot)? {
         let sel = selection.expect("pushdown implies selection");
         return build_point_view(db, sess, &schema, &entry, sel, snapshot);
     }
     // 快路径 2：列存投影可用（AP 路径，>= 1 万行）→ CBF 扫描 + zone map 剪枝
-    if let Some(tv) = try_ap_scan(db, sess, tf, selection, snapshot)? {
+    if let Some(tv) = try_ap_scan(db, sess, tf, selection, snapshot, pushdown_limit)? {
         return Ok(tv);
     }
-    table_scan(db, sess, tf, snapshot)
+    table_scan(db, sess, tf, snapshot, pushdown_limit)
 }
 
 /// AP 路径：表有列存投影且行数达标时走 CBF 扫描
@@ -415,6 +453,7 @@ fn try_ap_scan(
     tf: &TableFactor,
     selection: Option<&Expr>,
     snapshot: u64,
+    pushdown_limit: Option<usize>,
 ) -> Result<Option<TableView>> {
     let name = match tf {
         TableFactor::Table { name, .. } => name
@@ -543,7 +582,12 @@ fn try_ap_scan(
                 }
             }
         }
-        rows = keyed.into_values().collect();
+        // Q-1：AP 路径同口径早停——BTreeMap 键序前 cap 行
+        if let Some(cap) = pushdown_limit {
+            rows = keyed.values().take(cap).cloned().collect();
+        } else {
+            rows = keyed.into_values().collect();
+        }
     }
     let names = schema.columns.iter().map(|c| c.name.clone()).collect();
     Ok(Some(TableView { names, rows }))
@@ -828,7 +872,13 @@ fn build_point_view(
 }
 
 /// 单表扫描（含系统视图）；pk 等值条件下推走直查
-fn table_scan(db: &Database, sess: &mut Session, tf: &TableFactor, snapshot: u64) -> Result<TableView> {
+fn table_scan(
+    db: &Database,
+    sess: &mut Session,
+    tf: &TableFactor,
+    snapshot: u64,
+    pushdown_limit: Option<usize>,
+) -> Result<TableView> {
     match tf {
         TableFactor::Table { name, .. } => {
             let full = name
@@ -918,8 +968,15 @@ fn table_scan(db: &Database, sess: &mut Session, tf: &TableFactor, snapshot: u64
                     }
                 }
             }
-            let mut rows = Vec::with_capacity(visible.len().max(64));
-            for v in visible.values() {
+            // Q-1 LIMIT 下推：无 ORDER BY 时解码在 cap 行后停止
+            // （BTreeMap 键序确定，前 cap 行即 LIMIT/OFFSET 语义的正确前缀）
+            let mut rows = Vec::with_capacity(pushdown_limit.unwrap_or(visible.len()).min(visible.len()).max(64));
+            for (i, v) in visible.values().enumerate() {
+                if let Some(cap) = pushdown_limit {
+                    if i >= cap {
+                        break;
+                    }
+                }
                 rows.push(row_from_bytes(&schema, v)?);
             }
             let names = schema.columns.iter().map(|c| c.name.clone()).collect();

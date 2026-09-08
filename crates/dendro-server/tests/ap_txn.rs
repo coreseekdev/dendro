@@ -78,3 +78,41 @@ fn q14_ap_path_reads_own_writes_and_frozen() {
     assert_eq!(q(&mut s, "SELECT count(*) FROM big"), "12001", "COMMIT 后新快照包含事务写入");
     assert_eq!(q(&mut s, "SELECT v FROM big WHERE id = 30000"), "z", "并发提交的行 COMMIT 后可见");
 }
+
+#[test]
+fn limit_pushdown_stops_scan_early() {
+    // Q-1：无 ORDER BY 的 LIMIT 下推——扫描在 cap 行后终止。
+    // 行为正确性（LIMIT 100 仍返回恰 100 行、id 集正确）在此回归；
+    // 内存收益由 BTreeMap 迭代顺序确定性保证（前 cap 个键），且
+    // table_scan 的行解码循环带早停 break。
+    let db = Database::open(DbOptions::memory()).unwrap();
+    {
+        let mut s = db.new_session();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+        let values: Vec<String> = (1..=5000).map(|i| format!("({i}, 'v{i}')")).collect();
+        s.exec(&format!("INSERT INTO t VALUES {}", values.join(", "))).unwrap();
+    }
+    let mut s = db.new_session();
+    let o = s.exec("SELECT id FROM t LIMIT 100").unwrap();
+    match &o[0] {
+        dendro_core::Output::Rows(rs) => {
+            let rows = rs.text_rows();
+            assert_eq!(rows.len(), 100, "LIMIT 100 应恰 100 行");
+            // BTreeMap 键序 = 编码键序，前 100 个即 id 1..=100（大端序下
+            // 1..=99 先于 100..，逐一校验首行与末行）
+            assert_eq!(rows[0][0].as_deref(), Some("1"));
+            assert_eq!(rows[99][0].as_deref().and_then(|s| s.parse::<i64>().ok()), Some(100));
+        }
+        _ => panic!(),
+    }
+    // LIMIT + OFFSET 组合
+    let o = s.exec("SELECT id FROM t LIMIT 5 OFFSET 10").unwrap();
+    match &o[0] {
+        dendro_core::Output::Rows(rs) => {
+            let rows = rs.text_rows();
+            assert_eq!(rows.len(), 5);
+            assert_eq!(rows[0][0].as_deref(), Some("11"));
+        }
+        _ => panic!(),
+    }
+}
