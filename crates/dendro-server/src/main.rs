@@ -81,6 +81,15 @@ enum Cmd {
         #[arg(long, default_value = "benches/results")]
         out: PathBuf,
     },
+    /// M-3：压缩量化曲线（每 codec 的大小比 + 编/解码吞吐，JSON 落盘）
+    BenchCompress {
+        /// 行数（默认 5 万）
+        #[arg(long, default_value_t = 50_000)]
+        rows: usize,
+        /// JSON 输出路径
+        #[arg(long, default_value = "benches/results/compression.json")]
+        out: PathBuf,
+    },
     /// 一致性点物理备份（append-only：数据先拷、manifest 最后拷）
     Backup {
         /// 源数据目录（本地对象存储根）
@@ -264,6 +273,7 @@ fn main() {
                         {
                             if sigs.forever().next().is_some() {
                                 eprintln!("dendro: signal received — graceful shutdown");
+                                db_sig.begin_stopping();
                                 db_sig.shutdown();
                                 std::process::exit(0);
                             }
@@ -294,6 +304,15 @@ fn main() {
                 }
                 Err(e) => {
                     eprintln!("backup failed: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Cmd::BenchCompress { rows, out } => {
+            match dendro_server::bench::compression_curve(rows, &out) {
+                Ok(()) => println!("compression curve written: {}", out.display()),
+                Err(e) => {
+                    eprintln!("compression curve failed: {e}");
                     std::process::exit(1);
                 }
             }

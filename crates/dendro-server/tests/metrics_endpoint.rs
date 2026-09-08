@@ -5,6 +5,7 @@
 //!   也不因此领 epoch / 起 WAL writer）
 
 use dendro_core::{Database, DbOptions};
+use std::sync::Arc;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 
@@ -67,4 +68,19 @@ fn metrics_endpoints_report_active_branch_load() {
     // 只读性：404 路径
     let (code, _) = get(port, "/nope");
     assert_eq!(code, 404);
+}
+
+#[test]
+fn readyz_reports_503_when_stopping() {
+    // Q-12b：shutdown 后 /readyz → 503（排流窗口），stopping 标志位可见
+    let db = Database::open(DbOptions::memory()).unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let db2 = Arc::clone(&db);
+    std::thread::spawn(move || dendro_server::metrics::serve_listener(listener, db2).unwrap());
+
+    db.begin_stopping();
+    let (code, body) = get(port, "/readyz");
+    assert_eq!(code, 503, "shutdown 后 readyz 应 503");
+    assert!(body.contains("shutting down"), "{body}");
 }

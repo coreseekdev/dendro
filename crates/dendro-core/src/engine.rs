@@ -131,6 +131,8 @@ pub struct Branch {
     /// 已截断 memtx 历史的最高 covered seq（Q-9：显式事务快照低于此值 =
     /// 冲突检测盲区 → 提交时显式 40001，杜绝静默丢失更新）
     pub covered_min: AtomicU64,
+    /// 优雅关闭进行中标志（Q-12b：/readyz 据此返回 503 排流）
+    pub stopping: std::sync::atomic::AtomicBool,
     /// 活跃显式事务快照注册表（R9-1：存在活跃快照即跳过 memtx 截断，
     /// 否则冻结读被 checkpoint 截断击穿）。**引用计数**（第十轮 R10-3：
     /// BTreeSet 去重使同 watermark 双事务共占一槽，先结束者连带摘除他人
@@ -351,6 +353,8 @@ pub struct Database {
     #[allow(dead_code)]
     pub(crate) chunk_seen: Mutex<HashSet<Hash>>,
     stop_cp: Arc<std::sync::atomic::AtomicBool>,
+    /// 优雅关闭进行中标志（Q-12b：/readyz 据此返回 503 排流）
+    pub(crate) stopping: Arc<std::sync::atomic::AtomicBool>,
     columnar: arc_swap::ArcSwap<Option<std::sync::Arc<dyn ColumnarStore>>>,
 }
 
@@ -436,6 +440,7 @@ impl Database {
             session_seq: AtomicU64::new(1),
             chunk_seen: Mutex::new(HashSet::new()),
             stop_cp: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            stopping: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             columnar: arc_swap::ArcSwap::from_pointee(None),
         });
         // 惰性打开（S-1）：不再启动即打开全部分支——每分支一线程 + 一租约
@@ -605,6 +610,7 @@ impl Database {
             next_seq: AtomicU64::new(0),
             lease_epoch: AtomicU64::new(lease_epoch),
             read_only: self.opts.read_only,
+            stopping: std::sync::atomic::AtomicBool::new(false),
             covered_min: AtomicU64::new(0),
             active_snaps: Mutex::new(std::collections::BTreeMap::new()),
             lease: keeper,
@@ -1084,7 +1090,18 @@ impl Database {
     /// **优雅关闭**（Q-12）：停自动 checkpoint 线程 → 对全部驻留分支
     /// close_graceful（上传 WAL 剩余缓冲后停线程）。调用后本进程不再
     /// 接受新会话；调用方（serve 收到 SIGTERM/SIGINT）随后退出。
+    /// 优雅关闭进行中？（Q-12b：探针/运维查询用）
+    pub fn is_stopping(&self) -> bool {
+        self.stopping.load(Ordering::Relaxed)
+    }
+
+    /// 置优雅关闭标志（信号线程先于 shutdown 调用，使 /readyz 立即排流）
+    pub fn begin_stopping(&self) {
+        self.stopping.store(true, Ordering::SeqCst);
+    }
+
     pub fn shutdown(self: &Arc<Self>) {
+        self.stopping.store(true, Ordering::SeqCst);
         self.stop_cp.store(true, Ordering::Relaxed);
         let branches: Vec<Arc<Branch>> = self
             .branches

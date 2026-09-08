@@ -60,11 +60,17 @@ fn serve_conn(stream: TcpStream, db: &Arc<Database>) -> std::io::Result<()> {
         // readiness（非 liveness）：任一驻留**写者**租约过期 → 503。
         // 过期写者只能返回 40001，继续接流量只会放大错误（评审 §3.4）。
         "/readyz" => {
-            let now = now_ms();
-            let ready = db.active_branches().iter().all(|b| {
-                b.read_only || b.lease.state.lock().lease.expires_at_ms > now
-            });
-            if ready {
+            let stopping = db.is_stopping();
+            let ready = {
+                let branches = db.active_branches();
+                let now = now_ms();
+                branches.iter().all(|b| {
+                    b.read_only || b.lease.state.lock().lease.expires_at_ms > now
+                })
+            };
+            if stopping {
+                http(stream, 503, "shutting down\n")
+            } else if ready {
                 http(stream, 200, "ok\n")
             } else {
                 http(stream, 503, "writer lease expired\n")

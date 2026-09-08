@@ -345,3 +345,81 @@ pub fn run_all(out_dir: &PathBuf) {
         println!("  {:<48} {:>12.3} {}", r.name, r.value, r.unit);
     }
 }
+
+/// M-3：最小压缩量化曲线——每 codec 对同一批数据记录
+/// (压缩大小/原始大小, 压缩 MB/s, 解压 MB/s)，JSON 落盘供 Q 曲线绘制。
+/// 数据形态：TEXT（可压缩字符串）、BIGINT（连续整数，BITPACK/Delta 友好）。
+pub fn compression_curve(rows_n: usize, out_path: &PathBuf) -> Result<(), String> {
+    use arrow::array::{ArrayRef, Int64Array, StringArray};
+    use arrow::record_batch::RecordBatch;
+    use dendro_columnar::{read_cbf, write_cbf, CodecId};
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    let ids: Vec<i64> = (0..rows_n as i64).collect();
+    let texts: Vec<String> = (0..rows_n)
+        .map(|i| format!("region-{}-order-{}", i % 64, i * 7919))
+        .collect();
+    let id_arr: ArrayRef = Arc::new(Int64Array::from(ids));
+    let text_arr: ArrayRef = Arc::new(StringArray::from(
+        texts.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+    ));
+    let batch = RecordBatch::try_from_iter(vec![
+        ("id", id_arr),
+        ("text", text_arr),
+    ])
+    .map_err(|e| format!("batch: {e}"))?;
+
+    #[derive(serde::Serialize)]
+    struct Point {
+        codec: String,
+        raw_bytes: usize,
+        compressed_bytes: usize,
+        ratio: f64,
+        enc_mb_s: f64,
+        dec_mb_s: f64,
+    }
+    let mut points: Vec<Point> = Vec::new();
+    let raw_bytes = batch.get_array_memory_size() * 2; // 两列近似
+
+    for codec in [CodecId::Raw, CodecId::RleDict, CodecId::Zstd] {
+        let name = format!("{codec:?}");
+        let choice = |_col: &str, _ty: dendro_core::types::ColType, _st: &dendro_columnar::ColStats| -> CodecId { codec };
+        let mut enc = 0.0f64;
+        let mut size = 0usize;
+        let mut last_bytes: Option<Vec<u8>> = None;
+        for _ in 0..3 {
+            let t0 = Instant::now();
+            let bytes = write_cbf(std::slice::from_ref(&batch), 4096, Some(&choice))
+                .map_err(|e| format!("write_cbf {name}: {e}"))?;
+            enc = enc.max(rows_n as f64 / t0.elapsed().as_secs_f64() / 1e6);
+            size = bytes.len();
+            last_bytes = Some(bytes);
+        }
+        let bytes = last_bytes.expect("至少一次编码");
+        let mut dec = 0.0f64;
+        for _ in 0..3 {
+            let t0 = Instant::now();
+            let (_schema, batches) =
+                read_cbf(&bytes).map_err(|e| format!("read_cbf {name}: {e}"))?;
+            let got: usize = batches.iter().map(|b| b.num_rows()).sum();
+            assert_eq!(got, rows_n, "{name}: 回读行数不符");
+            dec = dec.max(rows_n as f64 / t0.elapsed().as_secs_f64() / 1e6);
+        }
+        points.push(Point {
+            codec: name,
+            raw_bytes,
+            compressed_bytes: size,
+            ratio: raw_bytes as f64 / size as f64,
+            enc_mb_s: enc,
+            dec_mb_s: dec,
+        });
+    }
+
+    if let Some(dir) = out_path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("mkdir: {e}"))?;
+    }
+    let json = serde_json::to_vec_pretty(&points).map_err(|e| format!("json: {e}"))?;
+    std::fs::write(out_path, json).map_err(|e| format!("write: {e}"))?;
+    Ok(())
+}

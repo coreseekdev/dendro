@@ -253,7 +253,7 @@
 
 | # | 任务 | 优先级 | 备注 |
 |---|------|:----:|------|
-| Q-12b | 停监听（SIGTERM 后先关 listener 再 flush）+ /readyz live/readiness 分离 | P2 | 现状：直接 exit(0)，监听由进程退出回收（可接受但非最优） |
+| ~~Q-12b~~ | ~~/readyz live/readiness 分离~~ | ✅ | stopping 标志 + shutdown 置位 + /readyz 503 "shutting down"（排流窗口）；回归 `metrics_endpoint::readyz_reports_503_when_stopping`。停监听 = 进程退出回收（v1 口径） |
 | Q-12c | shutdown join checkpoint 线程（Weak 化后 upgrade 窗口外 join 可行） | P3 | 观察项：manifest 原子性使风险低 |
 
 ### Q-12 优雅关闭（2026-09-08，第二阶段交付）

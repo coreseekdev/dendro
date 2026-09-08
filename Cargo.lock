@@ -842,6 +842,7 @@ dependencies = [
 name = "dendro-server"
 version = "0.1.0"
 dependencies = [
+ "arrow",
  "clap",
  "dendro-columnar",
  "dendro-core",
