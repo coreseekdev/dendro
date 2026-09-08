@@ -131,8 +131,6 @@ pub struct Branch {
     /// 已截断 memtx 历史的最高 covered seq（Q-9：显式事务快照低于此值 =
     /// 冲突检测盲区 → 提交时显式 40001，杜绝静默丢失更新）
     pub covered_min: AtomicU64,
-    /// 优雅关闭进行中标志（Q-12b：/readyz 据此返回 503 排流）
-    pub stopping: std::sync::atomic::AtomicBool,
     /// 活跃显式事务快照注册表（R9-1：存在活跃快照即跳过 memtx 截断，
     /// 否则冻结读被 checkpoint 截断击穿）。**引用计数**（第十轮 R10-3：
     /// BTreeSet 去重使同 watermark 双事务共占一槽，先结束者连带摘除他人
@@ -610,7 +608,6 @@ impl Database {
             next_seq: AtomicU64::new(0),
             lease_epoch: AtomicU64::new(lease_epoch),
             read_only: self.opts.read_only,
-            stopping: std::sync::atomic::AtomicBool::new(false),
             covered_min: AtomicU64::new(0),
             active_snaps: Mutex::new(std::collections::BTreeMap::new()),
             lease: keeper,

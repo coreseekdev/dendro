@@ -101,7 +101,7 @@
 | S-4 | SQL 面缺口：UNION / 视图 / 权限（GRANT/REVOKE） | P2 | GRAMMAR 已列 ⬜ |
 | M-5 | metrics 直方图（commit/flush/manifest 延迟） | P2 | 未动（前轮登记） |
 | M-4 | GPU/CBF 解码对拍 | P2 | 未动（前轮登记） |
-| M-3 | G6 压缩量化衰退 | P2 | 未动（前轮登记） |
+| M-3 | G6 压缩量化衰退 | 🟡 首批 | `dendro bench-compress`（Raw 1.06x / RleDict 0.97x / Zstd 3.91x JSON）；列型×行数矩阵待扩展 |
 
 ## 七轮评审修复（2026-09-08）
 
@@ -117,7 +117,9 @@
 
 | # | 任务 | 优先级 | 备注 |
 |---|------|:----:|------|
-| Q-1 | 读路径内存上界 + LIMIT 下推 + 游标（DECLARE CURSOR/FETCH；执行器全程物化、LIMIT 全扫后截断） | P1 | 与 S-3 同族但独立列；"用户 90% 交互是读" |
+| ~~Q-1a~~ | ~~LIMIT 下推（无 ORDER BY 时扫描期早停；WHERE 非空禁用）~~ | ✅ | `scan.rs::exec_query` pushdown_limit + `table_scan` 早停；回归 `ap_txn::limit_pushdown_stops_scan_early`（LIMIT 100 恰 100 行、OFFSET 10→11 起、WHERE+LIMIT 恰 5 行）|
+| Q-1b | 游标 DECLARE/FETCH/CLOSE | ✅ | `sql/mod.rs::exec_cursor_statement`（INSENSITIVE 物化）；回归 `sql_semantics::q1b_cursor_declare_fetch_close` + `q1b_cursor_is_insensitive_snapshot` |
+| Q-1c | 执行器向量化 / JOIN/ORDER BY 物化多份上界 / 游标 DECLARE 变量形态 | P2 | 未做 |
 | Q-2 | 跨进程 DROP 不驱逐外部写者（僵尸写者 ack + 对象泄漏 + 高 epoch 复活） | P2 | 方向：DROP 领新 epoch + fence_gate 校验租约存在性/manifest ref |
 | Q-3 | 启动 O(分支数) HEAD 校验 → 抽样/懒校验；NoWait × DROP ack 丢失文档化 | P2 | |
 | Q-4 | 二级索引缺失作为产品决策入册（非 pk 谓词恒全表扫） | P2 | SPEC 07 明示 v1 无二级索引或立任务 |
@@ -285,7 +287,7 @@
 |---|------|:----:|------|
 | ~~M-1~~ | ~~备份/快照手册~~ | ✅ | `dendro backup`（b9161e6：一致性点物理备份 + 幂等 + 原子拷贝 + 运行手册入模块文档）；`--gc-retention-ms -1` 支持 |
 | ~~M-2~~ | ~~格式版本兼容守卫~~ | ✅ | b9161e6：manifest format_version 前向守卫（拒绝未来版本，防 serde default 吞未知字段）；WAL FRAME_VERSION 已有校验 |
-| M-3 | G6 压缩量化衰退持续测量（zstd 级别 × 列类型 Q 曲线进 `dendro bench`） | P2 | SPEC 08 承诺 |
+| M-3 | G6 压缩量化衰退 | 🟡 首批 | 同上；列型×行数矩阵待扩展 |
 | M-4 | G4 GPU/CBF 解码对拍（native SIMD 等价实现 + 逐位对拍） | P2 | GPU 保留不能停留在格式注释 |
 | M-5 | metrics 直方图（commit/flush/manifest-CAS 延迟）+ 慢查询日志 | P2 | 支撑弹性调度故事 |
 | M-6 | fence 对象 GC（每分支每 open 一个，持续累积；load_open_branches 放大） | P2 | 墓碑机制可复用 |
