@@ -256,10 +256,14 @@ fn exec_branch_statement(db: &Database, sess: &mut Session, sql: &str) -> Result
     // catalog 写且不可回滚（Q-10 事务化前的保守口径）
     if sess.txn.is_some() {
         if let Some(kind) = branch_sql_kind(sql) {
-            return Err(SqlError::new(
-                "25001",
-                format!("cannot execute {} inside a transaction", kind_name(kind)),
-            ));
+            // SHOW BRANCHES 只读，事务内放行（第十一轮收口：第十轮声称已做
+            // 实际未落地——回归 sql_semantics::r10_show_branches_allowed_in_txn）
+            if !matches!(kind, BranchKind::Show) {
+                return Err(SqlError::new(
+                    "25001",
+                    format!("cannot execute {} inside a transaction", kind_name(kind)),
+                ));
+            }
         }
     }
     let kind = branch_sql_kind(sql).unwrap();

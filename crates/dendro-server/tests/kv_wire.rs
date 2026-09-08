@@ -148,3 +148,22 @@ fn kv_txn_frozen_reads_and_registry_lifecycle() {
     let kv3 = dendro_core::kv::Kv::open(&db, "main").unwrap();
     assert_eq!(kv3.get("k2").unwrap().as_deref(), Some(&b"b"[..]));
 }
+
+#[test]
+fn kv_use_branch_inside_txn_rejected() {
+    // 第十一轮收口②（R9-6）：KV 层事务内切分支此前静默丢弃事务且不注销
+    let obj: std::sync::Arc<dyn ObjStore> = std::sync::Arc::new(dendro_core::objstore::memory::MemoryObjStore::new());
+    let db = Database::open(DbOptions { store: dendro_core::StoreConfig::Obj(obj), ..DbOptions::default() }).unwrap();
+    {
+        let mut kv = dendro_core::kv::Kv::open(&db, "main").unwrap();
+        kv.put("k", b"v").unwrap();
+    }
+    let mut kv = dendro_core::kv::Kv::open(&db, "main").unwrap();
+    kv.begin().unwrap();
+    let e = match kv.use_branch("b2") {
+        Ok(_) => panic!("事务内 use_branch 应被拒"),
+        Err(e) => e,
+    };
+    assert_eq!(e.state, "25001", "{e}");
+    kv.rollback();
+}

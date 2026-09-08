@@ -133,7 +133,7 @@ SELECT * FROM t;
 | M4 mywire+分支 SQL+merge | ✅ | mysql 真客户端对拍；分支/合并/冲突 e2e |
 | M5 CBF 列存+AP 执行+物化 | ✅ | columnar 12 测；AP 集成测试（CBF+WAL overlay 合并）|
 | M6 基准 | ✅ | benches/results/*.json（TP/组提交/分支/恢复/AP）|
-| M7 slt 基线 | ✅ | tests/slt 7/7 语料全绿 + BASELINE.md |
+| M7 slt 基线 | ✅ | tests/slt 9/9 语料全绿（含 008 JOIN、009 checkpoint 可见性）+ BASELINE.md |
 
 **核心数字**（进程内引擎天花板，详见 benches/results/README.md）：
 

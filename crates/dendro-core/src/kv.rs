@@ -1,4 +1,4 @@
-//! KV 接口层（SPEC 11）：把 memtx + prolly 树统一暴露为**分支化的版本 KV**。
+//! KV 接口层（SPEC 缺号：kv 面未单独成 spec，见 TASK Q-15；接口即 `dendro_core::kv::Kv`）：把 memtx + prolly 树统一暴露为**分支化的版本 KV**。
 //!
 //! 定位（对"KV 层"讨论的落点）：KV 是接口契约，不是实现位置。
 //! 实现复用全部既有机器——memtx（增量）、prolly 树（权威）、OCC（提交）、
@@ -64,9 +64,13 @@ impl Kv {
 
     /// 切换分支（键空间隔离；未提交事务会被丢弃）
     pub fn use_branch(&mut self, name: &str) -> Result<()> {
+        if self.txn.is_some() {
+            // 第十一轮收口（R9-6）：事务内切分支此前静默丢弃事务且不注销
+            // 活跃快照（截断永久跳过 + memtx 无界）——与 SQL 侧 Q-11 同口径
+            return Err(SqlError::new("25001", "cannot switch branch inside a transaction"));
+        }
         self.db.branch(name)?;
         self.branch = name.to_string();
-        self.txn = None;
         self.ensure_table()?;
         Ok(())
     }

@@ -182,9 +182,18 @@
 | # | 任务 | 优先级 | 备注 |
 |---|------|:----:|------|
 | Q-14 | AP 列存路径读自己的写 + 冻结根（第九轮 R9-3） | P1 | 未完成，下一批首位 |
-| Q-18 | 装配层（main/main 装配/生命周期）测试为零——两次装配 P0 的结构性根因 | P1 | serve 装配函数化 + 进程级冒烟测试（端口↔协议对应断言入 CI） |
+| ~~Q-18~~ | ~~装配层测试~~ | ✅ | `tests/assembly.rs`：spawn 真实 dendro 进程，断言**端口↔协议对应**（PG Startup→'R'、MySQL 握手、RESP PING→+PONG、readyz 200），随 CI 跑 |
 | Q-19 | "线程不持强 Arc 睡觉/自环"红线入 AGENTS.md（Weak 化三连的通用化） | P2 | |
-| Q-20 | R9-6（kv use_branch 静默丢事务）/ R9-9（runner 多语句比对）/ R9-11（协议小项）补登记 | P3 | |
+| Q-20 | ~~kv use_branch 静默丢事务~~ ✅（第十一轮收口，25001）∥ R9-9 runner 多语句比对 ∥ R9-11 协议小项 | P3 | 剩余两项保留 |
+
+## 十一轮收口（2026-09-08）
+
+| # | 任务 | 状态 | 证据 |
+|---|------|:----:|------|
+| R11-1 | SHOW BRANCHES 事务内放行（第十轮声称已做实际未落地——replace 静默失败，评审探针实锤） | ✅ | 守卫排除 Show + 回归 `sql_semantics::r10_show_branches_allowed_and_snapshot_lifecycle`（含 R10-1/R10-3 的 SQL 侧常驻回归：COMMIT 注销 + 引用计数） |
+| R11-2 | Kv::use_branch 事务内静默丢事务且不注销（R10-4 后升级为注册表泄漏） | ✅ | 25001 拒绝（与 SQL 侧 Q-11 同口径）；回归 `kv_wire::kv_use_branch_inside_txn_rejected` |
+| R11-3 | Q-18 装配层测试固化 | ✅ | `tests/assembly.rs`（进程级端口↔协议对应，见 Q-18 行） |
+| R11-4 | 记账勘误（README 7/7→9/9、基线计数、kv.rs SPEC 11 缺号标注、M-1/M-2 交付入账） | ✅ | 本提交 |
 
 ## P2' — 提交管线（2026-09-08 起动）
 
@@ -198,8 +207,8 @@
 
 | # | 任务 | 优先级 | 备注 |
 |---|------|:----:|------|
-| M-1 | 备份/快照手册（GC 上位后 PITR 窗口 = keep-16 ≈ 8 checkpoint） | P1 | 最低交付：`dendro backup`（冻结 GC + 一致点导出）或书面手册（`--gc-retention-ms -1` + 对象存储快照） |
-| M-2 | 格式版本兼容守卫（manifest format_version 无读取校验；WAL 无新读旧回归） | P2 | 产品化前必须 |
+| ~~M-1~~ | ~~备份/快照手册~~ | ✅ | `dendro backup`（b9161e6：一致性点物理备份 + 幂等 + 原子拷贝 + 运行手册入模块文档）；`--gc-retention-ms -1` 支持 |
+| ~~M-2~~ | ~~格式版本兼容守卫~~ | ✅ | b9161e6：manifest format_version 前向守卫（拒绝未来版本，防 serde default 吞未知字段）；WAL FRAME_VERSION 已有校验 |
 | M-3 | G6 压缩量化衰退持续测量（zstd 级别 × 列类型 Q 曲线进 `dendro bench`） | P2 | SPEC 08 承诺 |
 | M-4 | G4 GPU/CBF 解码对拍（native SIMD 等价实现 + 逐位对拍） | P2 | GPU 保留不能停留在格式注释 |
 | M-5 | metrics 直方图（commit/flush/manifest-CAS 延迟）+ 慢查询日志 | P2 | 支撑弹性调度故事 |

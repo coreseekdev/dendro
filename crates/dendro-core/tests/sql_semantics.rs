@@ -317,3 +317,48 @@ fn r9_2_checkpoint_and_branch_ddl_rejected_inside_txn() {
         s.exec("ROLLBACK").unwrap();
     }
 }
+
+#[test]
+fn r10_show_branches_allowed_and_snapshot_lifecycle() {
+    // 第十一轮收口①：SHOW BRANCHES 只读放行（第十轮声称已做实际未落地）
+    // + R10-1/R10-3 的 **SQL 侧常驻回归**（此前证据列引用的是 KV 侧测试）：
+    // COMMIT/ROLLBACK 注销 + 同 watermark 引用计数。
+    use std::collections::BTreeMap;
+    let db = Database::open(DbOptions::memory()).unwrap();
+    {
+        let mut s = db.new_session();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY)").unwrap();
+        s.exec("CREATE BRANCH b2 FROM main").unwrap();
+        s.exec("INSERT INTO t VALUES (1)").unwrap();
+    }
+    let mut s = db.new_session();
+    s.exec("BEGIN").unwrap();
+    // SHOW 放行
+    match &s.exec("SHOW BRANCHES").unwrap()[0] {
+        dendro_core::Output::Rows(_) => {}
+        _ => panic!("expected rows"),
+    }
+    // COMMIT 注销
+    s.exec("COMMIT").unwrap();
+    let b = db.branch("main").unwrap();
+    assert!(b.active_snaps.lock().is_empty(), "COMMIT 后必须注销（此前永久跳过截断）");
+
+    // 引用计数：同一 watermark 两个事务，先结束者不摘除后者的保护
+    let mut s1 = db.new_session();
+    s1.exec("BEGIN").unwrap();
+    let mut s2 = db.new_session();
+    s2.exec("BEGIN").unwrap();
+    {
+        let snaps: &BTreeMap<u64, usize> = &b.active_snaps.lock();
+        let slot = snaps.values().sum::<usize>();
+        assert!(slot >= 2, "同 watermark 双事务应各自计槽（实际 {slot}）");
+    }
+    s1.exec("ROLLBACK").unwrap(); // 只减自己的槽
+    {
+        let snaps: &BTreeMap<u64, usize> = &b.active_snaps.lock();
+        let slot = snaps.values().sum::<usize>();
+        assert!(slot >= 1, "先结束者不得连带摘除他人保护（实际 {slot}）");
+    }
+    s2.exec("ROLLBACK").unwrap();
+    assert!(b.active_snaps.lock().is_empty(), "全部结束后注册表清空");
+}
