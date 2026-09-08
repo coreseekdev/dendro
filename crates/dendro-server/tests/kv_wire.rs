@@ -167,3 +167,25 @@ fn kv_use_branch_inside_txn_rejected() {
     assert_eq!(e.state, "25001", "{e}");
     kv.rollback();
 }
+
+#[test]
+fn kv_use_branch_success_path_isolation() {
+    // 第十二轮 P12-6 转正：use_branch 成功路径此前零覆盖（探针转正）
+    let obj: std::sync::Arc<dyn ObjStore> = std::sync::Arc::new(dendro_core::objstore::memory::MemoryObjStore::new());
+    let db = Database::open(DbOptions { store: dendro_core::StoreConfig::Obj(obj), ..DbOptions::default() }).unwrap();
+    db.create_branch("b2", "main").unwrap(); // use_branch 不自动建分支（自动建语义在 kv_resp 的 BRANCH 命令）
+    {
+        let mut kv = dendro_core::kv::Kv::open(&db, "main").unwrap();
+        kv.put("k", b"main-v").unwrap(); // 自动提交（无显式事务）
+    }
+    {
+        let mut kv = dendro_core::kv::Kv::open(&db, "b2").unwrap();
+        kv.put("k", b"b2-v").unwrap(); // b2 上的自动提交
+    }
+    let mut kv = dendro_core::kv::Kv::open(&db, "main").unwrap();
+    assert_eq!(kv.get("k").unwrap().as_deref(), Some(&b"main-v"[..]), "分支隔离：main 不受 b2 写影响");
+    kv.use_branch("b2").unwrap();
+    assert_eq!(kv.get("k").unwrap().as_deref(), Some(&b"b2-v"[..]), "b2 可见自己的写");
+    kv.use_branch("main").unwrap();
+    assert_eq!(kv.get("k").unwrap().as_deref(), Some(&b"main-v"[..]), "切回 main 原值仍在");
+}

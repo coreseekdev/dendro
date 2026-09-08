@@ -257,7 +257,7 @@ fn exec_branch_statement(db: &Database, sess: &mut Session, sql: &str) -> Result
     if sess.txn.is_some() {
         if let Some(kind) = branch_sql_kind(sql) {
             // SHOW BRANCHES 只读，事务内放行（第十一轮收口：第十轮声称已做
-            // 实际未落地——回归 sql_semantics::r10_show_branches_allowed_in_txn）
+            // 实际未落地——回归 sql_semantics::r10_show_branches_allowed_and_snapshot_lifecycle）
             if !matches!(kind, BranchKind::Show) {
                 return Err(SqlError::new(
                     "25001",

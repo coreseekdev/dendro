@@ -169,7 +169,7 @@
 
 | # | 任务 | 状态 | 证据 |
 |---|------|:----:|------|
-| R10-P0 | 活跃快照只在 Session::drop 注销（COMMIT/ROLLBACK 缺失）→ 截断永久跳过 / memtx 无界 | ✅ | COMMIT/ROLLBACK/failed-COMMIT 三路径注销（键引用计数递减）；回归 `kv_txn_frozen_reads_and_decoded_values`（断言 COMMIT 后注册表空）+ `q9/q11/r9_x` 全组仍绿 |
+| R10-P0 | 活跃快照只在 Session::drop 注销（COMMIT/ROLLBACK 缺失）→ 截断永久跳过 / memtx 无界 | ✅ | COMMIT/ROLLBACK/failed-COMMIT 三路径注销（键引用计数递减）；回归 `kv_wire.rs::kv_txn_reads_own_writes_and_decoded_values`（值解码/SCAN 写集；注册表断言在 `kv_txn_frozen_reads_and_registry_lifecycle`）（断言 COMMIT 后注册表空）+ `q9/q11/r9_x` 全组仍绿 |
 | R10-P0 | 前置 bind 装错端口（FIFO 顺序与消费序错位 → PG/MySQL 端口互换） | ✅ | listeners 改 **HashMap 按名存取**；进程级验证：PG 端口回 AuthenticationOk('R')，MySQL 端口回 8.0.36 握手 |
 | R10-P1 | BTreeSet 去重：同 watermark 双事务共占一槽，先结束者连带摘除他人保护 | ✅ | `active_snaps` 改 `BTreeMap<u64, usize>` 引用计数（BEGIN +1 / 结束 -1 / 归零摘除） |
 | R10-P1 | KV 显式事务游离于 R7-3/R9-1 机制外（读不冻结、写照拒） | ✅ | Kv::begin 注册 + 冻结根；commit/rollback/Drop 注销；kv_entry 以冻结根解析。回归 `kv_txn_frozen_reads_and_registry_lifecycle` |
@@ -194,6 +194,30 @@
 | R11-2 | Kv::use_branch 事务内静默丢事务且不注销（R10-4 后升级为注册表泄漏） | ✅ | 25001 拒绝（与 SQL 侧 Q-11 同口径）；回归 `kv_wire::kv_use_branch_inside_txn_rejected` |
 | R11-3 | Q-18 装配层测试固化 | ✅ | `tests/assembly.rs`（进程级端口↔协议对应，见 Q-18 行） |
 | R11-4 | 记账勘误（README 7/7→9/9、基线计数、kv.rs SPEC 11 缺号标注、M-1/M-2 交付入账） | ✅ | 本提交 |
+
+## 十二轮收尾复评（2026-09-08）——**主干正确性防线收敛：终局确认**
+
+| # | 任务 | 状态 | 证据 |
+|---|------|:----:|------|
+| R12-1 | TASK.md 幽灵测试名（勘误批自身漏项）+ 聚合计数脚本承诺落地 | ✅ | 测试名更正；`scripts/count-tests.sh`（回应基线从此脚本化） |
+| R12-2 | 守卫注释引用错误测试名（sql/mod.rs:260） | ✅ | 更正为 `r10_show_branches_allowed_and_snapshot_lifecycle` |
+| R12-3 | assembly.rs blanket allow（防守性豁免即门槛漏洞） | ✅ | 删除；clippy -D warnings 仍零输出 |
+| R12-4 | assembly readiness 判定弱于注释 + 空响应越界 | ✅ | 轮询真判 HTTP/1.1 200；空响应先断言 |
+| R12-5 | 默认组合（kv=0 三端口）未自动化 | ✅ | `assembly_default_combo_three_ports`（README 快速开始路径） |
+| R12-6 | 两条探针转正（REOPEN-in-txn / use_branch 成功路径隔离） | ✅ | r9_2 用例清单 + kv_wire 隔离测试（顺带勘误：use_branch 不自动建分支） |
+
+**G1–G7 终评（第十二轮）**：G1 ✅（Q-18 入 CI 条件满足）、G2 ✅、G3–G7 🟡
+（残余全部第二阶段）。
+
+## 评审机制（第十二轮收尾建议，已采纳）
+
+- **停止固定轮次**，转"里程碑聚焦复评 + 例外专项"双触发：
+  - 里程碑复评：Q-14 + P1-7 完成后的轻量复评（第 13 轮预约）；
+  - 例外专项：任何 P0/P1 级发现随时发起。
+- **DoD 增补三条**（第十二轮 §4.4）：
+  - 第 4 条：证据引用一律以 grep 命中为准（杜绝虚构测试名）；
+  - 第 5 条：基线计数以 `scripts/count-tests.sh` 为准；
+  - 第 6 条：代码级批量编辑必须带 assert（replace 静默失败三次的教训）。
 
 ## P2' — 提交管线（2026-09-08 起动）
 
