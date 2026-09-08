@@ -268,7 +268,8 @@ fn main() {
                                 std::process::exit(0);
                             }
                         }
-                        // 无信号设施的环境：随 join 阻塞至进程退出
+                        // Signals::new 失败（极罕见）时线程立即结束：
+                        // 进程随监听器 join 正常退出，无优雅刷新
                     })
                     .unwrap();
             }

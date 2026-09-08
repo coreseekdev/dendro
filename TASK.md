@@ -162,7 +162,7 @@
 | Q-13 | memtx 版本保留精细化（活跃快照存在即全量保留 → 内存随最老事务增长） | P2 | 按版本/per-key 保留；与 Q-9 的 40001 口径联动 |
 | Q-14 | AP 列存路径（≥1 万行）读自己的写 + 冻结根（R9-3，本轮未完成） | P1 | 显式事务内大表 AP 查询的可见性与行路径不一致 |
 | Q-15 | SPEC 03/04 + tutorial 同步 Q-9/Q-11/毒化语义（DoD #3） | P2 | |
-| Q-16 | 事务内重复 INSERT 同一新键 → 23505（当前静默覆盖） | P3 | |
+| Q-16 | 事务内重复 INSERT 同一新键 → 23505（当前静默覆盖） | P3 | 十五轮确认不阻 G5 |
 | Q-17 | slt runner 显式设置 checkpoint_interval_s=0（避免环境泄漏） | P3 | |
 
 ## 十轮评审修复（2026-09-08）
@@ -249,6 +249,13 @@
 | R15-1 | **G5 终判 ✅**（Q-14 证据门槛经评审独立变异复跑成立；Q-16/Q-5 不阻门） | ✅ | 第十五轮轻量复评报告 |
 | R15-2 | R15-1（P3）：src 侧 7 个 crate 级 blanket allow——clippy 门槛只罩测试不罩生产代码 | ✅ | 一次性移除 + 清偿 37 条警告（机械项 auto-fix；merge.rs 8 参数定点豁免并注明 v2 收敛方向）；`cargo clippy --workspace --all-targets -- -D warnings` 零输出 |
 
+### Q-12 系列余项（第十/十六轮登记转正为独立行）
+
+| # | 任务 | 优先级 | 备注 |
+|---|------|:----:|------|
+| Q-12b | 停监听（SIGTERM 后先关 listener 再 flush）+ /readyz live/readiness 分离 | P2 | 现状：直接 exit(0)，监听由进程退出回收（可接受但非最优） |
+| Q-12c | shutdown join checkpoint 线程（Weak 化后 upgrade 窗口外 join 可行） | P3 | 观察项：manifest 原子性使风险低 |
+
 ### Q-12 优雅关闭（2026-09-08，第二阶段交付）
 
 | # | 任务 | 状态 | 证据 |
@@ -260,8 +267,8 @@
 | # | 任务 | 状态 | 证据 |
 |---|------|:----:|------|
 | R16-1（P1） | Q-12 回归空转（用 Group 持久级——exec 返回前缓冲必空，"NoWait 缓冲尾"从未执行；评审变异 3/3 仍绿） | ✅ | 测试改 NoWait 持久级（缓冲真实存在）+ **变异自检**（禁用 close_graceful 的 flush → 红；还原 → 绿）。`wal_corruption::close_graceful_flushes_no_wait_tail` |
-| R16-2（P3） | Q-12 注册范围静默收窄（"停监听"/readyz 分离未交付未追踪） | ✅ 登记 | Q-12e 余项：停监听 + live/readiness 分离 → Q-12b |
-| R16-3（P3） | shutdown 对 checkpoint 线程只置标志不 join（与 drain/close 构成未测并发对） | ✅ 登记 | Q-12c：shutdown join checkpoint 线程（Weak 化后 join 可行） |
+| R16-2（P3） | Q-12 注册范围静默收窄 | ✅ 登记 | Q-12b：停监听 + live/readiness 分离（见下 Q-12b 行）；"Q-12e"为笔误 |
+| R16-3（P3） | shutdown 对 checkpoint 线程只置标志不 join | ✅ 登记 | Q-12c（见下） |
 | ~~P1-8~~ | ~~真崩溃（SIGKILL 子进程）~~ | ✅ | `dendro-server/tests/crash.rs`：spawn 真实 serve 进程 → PG 线协议写入（半 checkpoint 半 WAL）→ **SIGKILL** → 重启 → ack 数据全可见 + 可继续写。G3 的真崩溃缺口关闭 |
 
 ## P2' — 提交管线（2026-09-08 起动）

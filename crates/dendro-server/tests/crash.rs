@@ -1,4 +1,3 @@
-#![allow(clippy::all)]
 //! P1-8：真 SIGKILL 崩溃恢复（进程级）——替代 drop(db) 模拟的最后一块。
 //! 流程：spawn 真实 dendro serve → 经 PG 协议写入（一部分 checkpoint、
 //! 一部分仅 WAL）→ SIGKILL 子进程 → 重启 → 全部数据可见。
@@ -16,8 +15,20 @@ fn free_port() -> u16 {
         .port()
 }
 
-fn start_server(data: &std::path::Path, pg: u16) -> Child {
-    Command::new(env!("CARGO_BIN_EXE_dendro"))
+/// 持有子进程；Drop 时 kill+wait（失败路径不泄漏进程）
+struct CrashServer {
+    child: Child,
+}
+
+impl Drop for CrashServer {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn start_server(data: &std::path::Path, pg: u16) -> CrashServer {
+    let child = Command::new(env!("CARGO_BIN_EXE_dendro"))
         .args([
             "serve",
             "--data",
@@ -36,7 +47,8 @@ fn start_server(data: &std::path::Path, pg: u16) -> Child {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .expect("spawn dendro serve")
+        .expect("spawn dendro serve");
+    CrashServer { child }
 }
 
 fn wait_ready(pg: u16) -> bool {
@@ -166,12 +178,12 @@ fn sigkill_crash_recovery_via_pg() {
     }
 
     // **SIGKILL**：无任何清理（Group 持久级下已 ack 者必已 durable）
-    child.kill().unwrap();
-    let _ = child.wait();
+    child.child.kill().unwrap();
+    let _ = child.child.wait();
 
     // 重启（新端口）：崩溃前 ack 的全部数据必须可见
     let pg2 = free_port();
-    let mut child2 = start_server(&data, pg2);
+    let child2 = start_server(&data, pg2);
     assert!(wait_ready(pg2), "重启 serve 未就绪");
     let mut c = PgSync::connect(pg2);
     assert_eq!(c.count_t(), 5, "SIGKILL 后 ack 数据丢失");
@@ -180,7 +192,6 @@ fn sigkill_crash_recovery_via_pg() {
     c.exec("INSERT INTO t VALUES (6, 'f')");
     assert_eq!(c.count_t(), 6);
 
-    let _ = child2.kill();
-    let _ = child2.wait();
+    drop(child2); // Drop：kill+wait
     let _ = std::fs::remove_dir_all(&data);
 }
