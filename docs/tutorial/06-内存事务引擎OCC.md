@@ -125,3 +125,11 @@ checkpoint 之后读路径自动改走树：`读 = memtx(未物化增量) ∪ pr
 
 三者衔接点就是 `covered_seq`：恢复回放跳过 `seq ≤ covered` 的帧，
 既不丢也不重。
+
+## 附录：v1.1 语义增补（与 SPEC 04 同步）
+
+- **冻结读**：显式事务以 BEGIN 时的 catalog 根读树（不随 checkpoint 翻转）。
+- **截断保护**：活跃显式事务会阻止 checkpoint 截断 memtx 版本（`Branch.active_snaps` 引用计数）。
+- **跨 checkpoint 的写事务**：提交时显式 40001（冲突检测盲区，重试即可）。
+- **读自己的写**：事务内 SELECT 能看到本事务的 INSERT/UPDATE/DELETE（table_scan / 点查 / AP 三路径同一归并抽象）。
+- **事务内分支语句**：USE/CHECKPOINT/CREATE|DROP|MERGE|REOPEN BRANCH → 25001。

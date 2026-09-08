@@ -69,6 +69,24 @@ ROLLBACK: 丢弃写集
   默认 SERIALIZABLE，名字诚实，因为验证确实是 SSI 的简化 OCC 版)
 - 死锁：不存在（无等待锁）
 
+**v1.1 语义增补（第十一/十二轮评审落地，实现为准）**：
+
+- **冻结读**：显式事务内树的可见性以 BEGIN 冻结的 catalog 根为准
+  （`Txn.head_root`），memtx overlay 按快照读；写路径仍按当前 head。
+- **活跃快照与截断**：显式事务快照注册入 `Branch.active_snaps`
+  （引用计数）；存在活跃快照时 checkpoint **跳过 memtx 截断**（冻结读
+  依赖其保留的版本），否则截断到 covered。
+- **Q-9：事务跨越 checkpoint ⇒ 提交显式 40001**。截断发生后该事务的
+  写写冲突检测存在盲区（memtx 版本链被截、树只有最新态），静默
+  last-writer-wins 会丢更新——covered_min 只在真截断时推进，显式事务
+  快照低于它即拒绝（客户端重试即获得完整视图）。v2 增强：validate
+  回退树版本链后可放开此限制。
+- **读自己的写**：会话显式事务写集作为读归并的最后覆盖层（table_scan
+  / 点查 / AP 列存三路径同一抽象：树 → memtx overlay → 会话事务写）。
+- **事务内分支语句**：USE BRANCH / CHECKPOINT / CREATE|DROP|MERGE|REOPEN
+  BRANCH → 25001（USE 切换破坏冻结读；CHECKPOINT 推进截断水位自伤；
+  catalog 写不可回滚——Q-10 事务化前保守口径）。SHOW BRANCHES 只读放行。
+
 ## 4. 与版本层/WAL 的关系
 
 - memtx 是**未 checkpoint 数据的权威**（内存态）；checkpoint 后数据权威转移到
