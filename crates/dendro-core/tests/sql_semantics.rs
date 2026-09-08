@@ -362,3 +362,74 @@ fn r10_show_branches_allowed_and_snapshot_lifecycle() {
     assert!(b.active_snaps.lock().is_empty(), "全部结束后注册表清空");
 }
 
+
+#[test]
+fn q1b_cursor_declare_fetch_close() {
+    // Q-1b：游标 v1（INSENSITIVE/READ ONLY/会话级）
+    let db = Database::open(DbOptions::memory()).unwrap();
+    let mut s = db.new_session();
+    s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+    for i in 1..=5 {
+        s.exec(&format!("INSERT INTO t VALUES ({i}, 'v{i}')")).unwrap();
+    }
+    s.exec("DECLARE c CURSOR FOR SELECT id, v FROM t ORDER BY id").unwrap();
+    // 分批 FETCH：3 + 2
+    let o = s.exec("FETCH 3 FROM c").unwrap();
+    match &o[0] {
+        dendro_core::Output::Rows(rs) => {
+            let rows = rs.text_rows();
+            assert_eq!(rows.len(), 3);
+            assert_eq!(rows[0][0].as_deref(), Some("1"));
+            assert_eq!(rows[2][1].as_deref(), Some("v3"));
+        }
+        _ => panic!(),
+    }
+    let o = s.exec("FETCH 3 FROM c").unwrap();
+    match &o[0] {
+        dendro_core::Output::Rows(rs) => {
+            let rows = rs.text_rows();
+            assert_eq!(rows.len(), 2, "第二次 FETCH 只剩 2 行");
+            assert_eq!(rows[0][0].as_deref(), Some("4"));
+        }
+        _ => panic!(),
+    }
+    // FETCH ALL：耗尽后为空
+    let o = s.exec("FETCH ALL FROM c").unwrap();
+    match &o[0] {
+        dendro_core::Output::Rows(rs) => assert_eq!(rs.total_rows(), 0),
+        _ => panic!(),
+    }
+    s.exec("CLOSE c").unwrap();
+    // CLOSE 后 FETCH → 34000
+    let e = match s.exec("FETCH 1 FROM c") {
+        Ok(_) => panic!("已关闭游标应不可 FETCH"),
+        Err(e) => e,
+    };
+    assert_eq!(e.state, "34000", "{e}");
+    // 未声明游标 FETCH → 34000
+    let e = match s.exec("FETCH 1 FROM nosuch") {
+        Ok(_) => panic!("未声明游标应不可 FETCH"),
+        Err(e) => e,
+    };
+    assert_eq!(e.state, "34000");
+}
+
+#[test]
+fn q1b_cursor_is_insensitive_snapshot() {
+    // INSENSITIVE：DECLARE 后他人提交的新行不可见（物化语义，文档口径）
+    let db = Database::open(DbOptions::memory()).unwrap();
+    let mut s = db.new_session();
+    s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY)").unwrap();
+    s.exec("INSERT INTO t VALUES (1)").unwrap();
+    s.exec("DECLARE c CURSOR FOR SELECT count(*) FROM t").unwrap();
+    {
+        let mut s2 = db.new_session();
+        s2.exec("INSERT INTO t VALUES (2)").unwrap();
+        s2.exec("INSERT INTO t VALUES (3)").unwrap();
+    }
+    // FETCH 时计数仍为 DECLARE 时点（物化）
+    match &s.exec("FETCH 1 FROM c").unwrap()[0] {
+        dendro_core::Output::Rows(rs) => assert_eq!(rs.text_rows()[0][0].as_deref(), Some("1"), "INSENSITIVE 游标不得看见 DECLARE 后的新行"),
+        _ => panic!(),
+    }
+}

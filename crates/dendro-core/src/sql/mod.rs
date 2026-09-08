@@ -81,6 +81,10 @@ pub(crate) fn exec_batch(db: &Database, sess: &mut Session, sql: &str) -> Result
             outs.extend(out);
             continue;
         }
+        if let Some(out) = exec_cursor_statement(db, sess, &raw)? {
+            outs.extend(out);
+            continue;
+        }
         let stmts = parse_batch(&raw, sess.dialect)?;
         if stmts.is_empty() {
             continue;
@@ -851,4 +855,131 @@ fn substitute_params(mut stmt: Statement, params: &[SqlValue]) -> Result<Stateme
         ControlFlow::<()>::Continue(())
     });
     Ok(stmt)
+}
+
+
+// ---------------------------------------------------------------------------
+// 游标（Q-1b v1：INSENSITIVE / READ ONLY / 会话级——DECLARE 时物化结果集）
+// ---------------------------------------------------------------------------
+
+/// 识别游标语句；返回 None = 非游标语句
+fn cursor_sql_kind(sql: &str) -> Option<CursorStmt> {
+    let toks: Vec<String> = sql
+        .split_whitespace()
+        .map(|t| t.trim_matches(';').to_string())
+        .collect();
+    if toks.is_empty() {
+        return None;
+    }
+    if toks[0].eq_ignore_ascii_case("DECLARE") && toks.len() >= 4 && toks[2].eq_ignore_ascii_case("CURSOR") {
+        let name = toks[1].clone();
+        // DECLARE name CURSOR FOR <query>（"FOR" 可选，PG 兼容）
+        let rest_start = if toks[3].eq_ignore_ascii_case("FOR") { 4 } else { 3 };
+        let query = sql
+            .splitn(rest_start + 1, char::is_whitespace)
+            .last()
+            .unwrap_or("")
+            .trim()
+            .trim_end_matches(';')
+            .to_string();
+        return Some(CursorStmt::Declare(name, query));
+    }
+    if toks[0].eq_ignore_ascii_case("FETCH") && toks.len() >= 2 {
+        // FETCH ALL FROM name | FETCH n [FROM] name | FETCH NEXT [FROM] name
+        let mut i = 1;
+        let mut n: Option<usize> = None;
+        if let Ok(v) = toks[i].parse::<usize>() {
+            n = Some(v);
+            i += 1;
+        } else if toks[i].eq_ignore_ascii_case("NEXT") {
+            n = Some(1);
+            i += 1;
+        } else if toks[i].eq_ignore_ascii_case("ALL") {
+            n = None;
+            i += 1;
+        }
+        if toks.get(i).map(|t| t.eq_ignore_ascii_case("FROM")).unwrap_or(false) {
+            i += 1;
+        }
+        let name = toks.get(i)?.clone();
+        return Some(CursorStmt::Fetch(name, n));
+    }
+    if toks[0].eq_ignore_ascii_case("CLOSE") && toks.len() >= 2 {
+        return Some(CursorStmt::Close(toks[1].clone()));
+    }
+    None
+}
+
+pub(crate) enum CursorStmt {
+    /// DECLARE name CURSOR [FOR] query
+    Declare(String, String),
+    /// FETCH [n|ALL|NEXT] [FROM] name
+    Fetch(String, Option<usize>),
+    /// CLOSE name
+    Close(String),
+}
+
+/// 执行游标语句；None = 非游标语句
+pub(crate) fn exec_cursor_statement(
+    db: &Database,
+    sess: &mut Session,
+    sql: &str,
+) -> Result<Option<Vec<Output>>> {
+    let Some(kind) = cursor_sql_kind(sql) else {
+        return Ok(None);
+    };
+    match kind {
+        CursorStmt::Declare(name, query) => {
+            let outs = exec_batch(db, sess, &query)?;
+            let mut record_set = None;
+            for o in outs {
+                if let Output::Rows(rs) = o {
+                    record_set = Some(rs);
+                }
+            }
+            match record_set {
+                Some(rs) => {
+                    sess.cursors.insert(name.to_ascii_lowercase(), (rs, 0));
+                    Ok(Some(vec![Output::Command { tag: "DECLARE CURSOR".into(), affected: 0 }]))
+                }
+                None => Err(SqlError::not_supported("DECLARE CURSOR requires a query returning rows")),
+            }
+        }
+        CursorStmt::Fetch(name, count) => {
+            let key = name.to_ascii_lowercase();
+            let Some((rs, pos)) = sess.cursors.get_mut(&key) else {
+                return Err(SqlError::new("34000", format!("cursor \"{name}\" does not exist")));
+            };
+            let total = rs.total_rows();
+            let take = count.unwrap_or(total);
+            let take = take.min(total - (*pos).min(total));
+            let start = (*pos).min(total);
+            // 抽取 [start, start+take) 行（text 行再转 SqlValue）
+            let text_rows = rs.text_rows();
+            let rows: Vec<Vec<SqlValue>> = text_rows[start..start + take]
+                .iter()
+                .map(|r| {
+                    r.iter()
+                        .map(|c| match c {
+                            Some(s) => SqlValue::Utf8(s.clone()),
+                            None => SqlValue::Null,
+                        })
+                        .collect()
+                })
+                .collect();
+            let out = crate::sql::scan::rows_to_record_set(&rs.columns, rows);
+            *pos += take;
+            if *pos >= total {
+                // 读完：PG 语义 cursor 仍存在直到 CLOSE，但为免悬挂状态这里保留
+            }
+            Ok(Some(vec![Output::Rows(out)]))
+        }
+        CursorStmt::Close(name) => {
+            let key = name.to_ascii_lowercase();
+            if sess.cursors.remove(&key).is_none() {
+                return Err(SqlError::new("34000", format!("cursor \"{name}\" does not exist")));
+            }
+            Ok(Some(vec![Output::Command { tag: "CLOSE CURSOR".into(), affected: 0 }]))
+        }
+    }
 }

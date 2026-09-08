@@ -19,13 +19,13 @@
 | DELETE | 499 | ✅ 部分/全量 |
 | ROLLBACK | 420 | ✅ 部分/全量 |
 | WITH | 382 | ⬜ v2（v1 显式报错 0A000，不再静默丢弃） |
-| DECLARE | 343 | ⬜ v2+ |
+| DECLARE | 343 | ✅ v1.1（CURSOR 形态：INSENSITIVE/READ ONLY/会话级；变量形态 v2）|
 | COPY | 338 | ⬜ v2+ |
 | EXECUTE | 337 | ⬜ v2+ |
 | GRANT | 333 | ⬜ v2+ |
 | MERGE | 301 | ⬜ v2+ |
 | ANALYZE | 283 | ⬜ v2+ |
-| FETCH | 260 | ⬜ v2+ |
+| FETCH | 260 | ✅ v1.1（n/ALL/NEXT + FROM）|
 | COMMIT | 256 | ✅ 部分/全量 |
 | VACUUM | 180 | ⬜ v2+ |
 | VALUES | 145 | ⬜ v2+ |
@@ -39,7 +39,7 @@
 | PREPARE | 98 | ⬜ v2+ |
 | LOCK | 60 | ⬜ v2+ |
 | CALL | 43 | ⬜ v2+ |
-| CLOSE | 43 | ⬜ v2+ |
+| CLOSE | 43 | ✅ v1.1（游标形态）|
 | REFRESH | 38 | ⬜ v2+ |
 | DEALLOCATE | 32 | ⬜ v2+ |
 | CLUSTER | 30 | ⬜ v2+ |

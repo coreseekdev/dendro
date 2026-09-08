@@ -458,6 +458,7 @@ impl Database {
             prepared: HashMap::new(),
             failed_txn: false,
             dialect: crate::sql::SqlDialect::Pg,
+            cursors: HashMap::new(),
         }
     }
 
@@ -1207,6 +1208,8 @@ pub struct Session {
     pub(crate) prepared: HashMap<String, Prepared>,
     pub(crate) failed_txn: bool,
     pub(crate) dialect: crate::sql::SqlDialect,
+    /// 已声明游标（Q-1b v1：INSENSITIVE/READ ONLY——DECLARE 时物化结果集）
+    pub(crate) cursors: HashMap<String, (crate::types::RecordSet, usize)>,
 }
 
 impl Drop for Session {
