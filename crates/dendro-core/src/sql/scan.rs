@@ -67,9 +67,11 @@ pub(crate) fn eval_query(db: &Database, sess: &mut Session, q: &Query, snapshot:
         SetExpr::Select(s) => s.as_ref(),
         other => return Err(SqlError::not_supported(format!("set op: {}", short_str(other)))),
     };
-    // FROM（v1：单表，或一个 INNER 等值连接）；Q-1 LIMIT 下推进扫描——
-    // 无 ORDER BY 的纯 LIMIT 在扫描期早停（有 ORDER BY 需全量排序，不下推）
+    // Q-1 LIMIT 下推：无 ORDER BY **且无 WHERE** 时扫描期早停——
+    // WHERE 过滤后行数未知，先截断会静默漏行（第十八轮 R18-1 探针实证：
+    // WHERE id>=900 LIMIT 5 曾返回 0 行）；有 ORDER BY 需全量排序，不下推
     let pushdown_limit: Option<usize> = match (&q.order_by, &q.limit_clause) {
+        _ if select.selection.is_some() => None,
         (None, Some(sqlparser::ast::LimitClause::LimitOffset { limit, offset, .. })) => {
             let off = match offset {
                 Some(off) => Some(eval_const(&off.value)? as usize),

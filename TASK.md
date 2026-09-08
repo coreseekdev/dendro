@@ -38,7 +38,7 @@
 | ~~P1-5~~ | ~~SQL 语义修复（S1–S6）~~ | ✅ | `53f2c74`/`92dcb35`/`f1bca77`；S4 偏离记录见上 |
 | ~~P1-6~~ | ~~JOIN/派生表测试（hash_join 零覆盖）~~ | ✅ | 本提交：`tests/slt/dendro/008_join.slt`（INNER/LEFT/NULL 键/一对多/三表链/复合键/JOIN+GROUP BY/派生表）。语料当场暴露真 bug：sqlparser 0.62 把裸 `JOIN`(Join) 与 `INNER JOIN`(Inner) 分为不同枚举——标准写法 `A JOIN B` 直接报 not_supported，hash_join 此前经由该路径**不可达**。已修（scan.rs eval_from 匹配 Join/Inner、Left/LeftOuter） |
 | P1-7 | 多线程 OCC 并发测试 | ⬜ | `tests/concurrent.rs` |
-| P1-8 | 真 kill 崩溃恢复测试（子进程 SIGKILL） | ⬜ | 替代 `drop(db)` 模拟 |
+| ~~P1-8~~ | ~~真 kill 崩溃恢复测试（子进程 SIGKILL）~~ | ✅ | `dendro-server/tests/crash.rs`：spawn 真实 serve + PG 线协议写 5 行（3 checkpoint/2 WAL）→ SIGKILL → 重启全可见（见十六轮回应） |
 | ~~P1-9~~ | ~~fencing 安全性质测试~~ | ✅ | 本提交：`fence_expired_writer_rejected` 即评审要的"旧实例写被拒"断言 |
 | P1-10 | time travel SQL 入口（`AS OF` / `FOR SYSTEM_TIME`） | ⬜ | 数据层已支持，缺 SQL 面 |
 | ~~P1-11~~ | ~~`/metrics` `/readyz` 端点~~ | ✅ | 本提交：`dendro-server/src/metrics.rs`（serve `--metrics-port`，默认 9469）。/metrics 暴露每驻留分支 pending_bytes（扩容信号）/watermark/durable 水位/lease 剩余 TTL；`Database::active_branches()` 只读快照，绝不懒加载分支。回归：`tests/metrics_endpoint.rs` |
@@ -169,7 +169,7 @@
 
 | # | 任务 | 状态 | 证据 |
 |---|------|:----:|------|
-| R10-P0 | 活跃快照只在 Session::drop 注销（COMMIT/ROLLBACK 缺失）→ 截断永久跳过 / memtx 无界 | ✅ | COMMIT/ROLLBACK/failed-COMMIT 三路径注销（键引用计数递减）；回归 `kv_wire.rs::kv_txn_reads_own_writes_and_decoded_values`（值解码/SCAN 写集；注册表断言在 `kv_txn_frozen_reads_and_registry_lifecycle`）（断言 COMMIT 后注册表空）+ `q9/q11/r9_x` 全组仍绿 |
+| R10-P0 | 活跃快照只在 Session::drop 注销（COMMIT/ROLLBACK 缺失）→ 截断永久跳过 / memtx 无界 | ✅ | COMMIT/ROLLBACK/failed-COMMIT 三路径注销（键引用计数递减）；回归 `kv_wire.rs::kv_txn_reads_own_writes_and_decoded_values`（值解码/SCAN 写集）；注册表断言在同文件 `kv_txn_frozen_reads_and_registry_lifecycle`（断言 COMMIT 后注册表空）+ `q9/q11/r9_x` 全组仍绿 |
 | R10-P0 | 前置 bind 装错端口（FIFO 顺序与消费序错位 → PG/MySQL 端口互换） | ✅ | listeners 改 **HashMap 按名存取**；进程级验证：PG 端口回 AuthenticationOk('R')，MySQL 端口回 8.0.36 握手 |
 | R10-P1 | BTreeSet 去重：同 watermark 双事务共占一槽，先结束者连带摘除他人保护 | ✅ | `active_snaps` 改 `BTreeMap<u64, usize>` 引用计数（BEGIN +1 / 结束 -1 / 归零摘除） |
 | R10-P1 | KV 显式事务游离于 R7-3/R9-1 机制外（读不冻结、写照拒） | ✅ | Kv::begin 注册 + 冻结根；commit/rollback/Drop 注销；kv_entry 以冻结根解析。回归 `kv_txn_frozen_reads_and_registry_lifecycle` |

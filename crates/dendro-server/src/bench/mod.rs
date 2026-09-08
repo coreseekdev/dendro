@@ -376,11 +376,11 @@ pub fn compression_curve(rows_n: usize, out_path: &PathBuf) -> Result<(), String
         raw_bytes: usize,
         compressed_bytes: usize,
         ratio: f64,
-        enc_mb_s: f64,
-        dec_mb_s: f64,
+        enc_mrows_s: f64,
+        dec_mrows_s: f64,
     }
     let mut points: Vec<Point> = Vec::new();
-    let raw_bytes = batch.get_array_memory_size() * 2; // 两列近似
+    let raw_bytes = batch.get_array_memory_size(); // arrow 59.3 已对各列求和
 
     for codec in [CodecId::Raw, CodecId::RleDict, CodecId::Zstd] {
         let name = format!("{codec:?}");
@@ -392,7 +392,7 @@ pub fn compression_curve(rows_n: usize, out_path: &PathBuf) -> Result<(), String
             let t0 = Instant::now();
             let bytes = write_cbf(std::slice::from_ref(&batch), 4096, Some(&choice))
                 .map_err(|e| format!("write_cbf {name}: {e}"))?;
-            enc = enc.max(rows_n as f64 / t0.elapsed().as_secs_f64() / 1e6);
+            enc = enc.max(rows_n as f64 / t0.elapsed().as_secs_f64() / 1e6); // Mrows/s
             size = bytes.len();
             last_bytes = Some(bytes);
         }
@@ -411,8 +411,8 @@ pub fn compression_curve(rows_n: usize, out_path: &PathBuf) -> Result<(), String
             raw_bytes,
             compressed_bytes: size,
             ratio: raw_bytes as f64 / size as f64,
-            enc_mb_s: enc,
-            dec_mb_s: dec,
+            enc_mrows_s: enc,
+            dec_mrows_s: dec,
         });
     }
 

@@ -862,6 +862,22 @@ fn substitute_params(mut stmt: Statement, params: &[SqlValue]) -> Result<Stateme
 // 游标（Q-1b v1：INSENSITIVE / READ ONLY / 会话级——DECLARE 时物化结果集）
 // ---------------------------------------------------------------------------
 
+/// 在原文中定位第 `n` 个 token（0-based，按空白切分与 toks 一致）的
+/// 字节起始处；越界返回空串
+fn locate_token_slice<'a>(sql: &'a str, toks: &[String], n: usize) -> &'a str {
+    // 与 toks 相同的切分方式前进，记第 n 个 token 的字节起点
+    let mut offset = 0usize;
+    for (idx, tok) in sql.split_whitespace().enumerate() {
+        let start = offset + sql[offset..].find(tok).unwrap_or(0);
+        if idx == n {
+            return &sql[start..];
+        }
+        offset = start + tok.len();
+    }
+    let _ = toks;
+    ""
+}
+
 /// 识别游标语句；返回 None = 非游标语句
 fn cursor_sql_kind(sql: &str) -> Option<CursorStmt> {
     let toks: Vec<String> = sql
@@ -873,12 +889,11 @@ fn cursor_sql_kind(sql: &str) -> Option<CursorStmt> {
     }
     if toks[0].eq_ignore_ascii_case("DECLARE") && toks.len() >= 4 && toks[2].eq_ignore_ascii_case("CURSOR") {
         let name = toks[1].clone();
-        // DECLARE name CURSOR FOR <query>（"FOR" 可选，PG 兼容）
+        // DECLARE name CURSOR FOR <query>（"FOR" 可选，PG 兼容）。
+        // query 提取按 token 起始字节定位（第十/十八轮：splitn 逐字符切分
+        // 在连续空白/多空格下错位）
         let rest_start = if toks[3].eq_ignore_ascii_case("FOR") { 4 } else { 3 };
-        let query = sql
-            .splitn(rest_start + 1, char::is_whitespace)
-            .last()
-            .unwrap_or("")
+        let query = locate_token_slice(sql, &toks, rest_start)
             .trim()
             .trim_end_matches(';')
             .to_string();
@@ -930,6 +945,12 @@ pub(crate) fn exec_cursor_statement(
     };
     match kind {
         CursorStmt::Declare(name, query) => {
+            // 只接受查询（第十八轮 R18-4：先执行后报错会有 DML 副作用）
+            if !query.trim_start().to_ascii_uppercase().starts_with("SELECT") {
+                return Err(SqlError::not_supported(
+                    "DECLARE CURSOR requires a SELECT query",
+                ));
+            }
             let outs = exec_batch(db, sess, &query)?;
             let mut record_set = None;
             for o in outs {

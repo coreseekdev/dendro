@@ -116,3 +116,24 @@ fn limit_pushdown_stops_scan_early() {
         _ => panic!(),
     }
 }
+
+#[test]
+fn limit_with_where_does_not_pushdown() {
+    // 第十八轮 R18-1：WHERE 非空时 LIMIT 不得下推（先截断后过滤会漏行）
+    let db = Database::open(DbOptions::memory()).unwrap();
+    {
+        let mut s = db.new_session();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY)").unwrap();
+        let values: Vec<String> = (1..=1000).map(|i| format!("({i})")).collect();
+        s.exec(&format!("INSERT INTO t VALUES {}", values.join(", "))).unwrap();
+    }
+    let mut s = db.new_session();
+    let o = s.exec("SELECT id FROM t WHERE id >= 900 LIMIT 5").unwrap();
+    match &o[0] {
+        dendro_core::Output::Rows(rs) => {
+            let rows = rs.text_rows();
+            assert_eq!(rows.len(), 5, "过滤后剩余 100 行，LIMIT 5 应返回 5 行（此前返回 0）");
+        }
+        _ => panic!(),
+    }
+}

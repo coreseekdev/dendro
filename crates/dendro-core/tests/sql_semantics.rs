@@ -433,3 +433,18 @@ fn q1b_cursor_is_insensitive_snapshot() {
         _ => panic!(),
     }
 }
+
+#[test]
+fn r18_3_declare_with_multiple_spaces() {
+    // 第十八轮 R18-3：连续空白下 DECLARE 的 query 提取不错位
+    let db = Database::open(DbOptions::memory()).unwrap();
+    let mut s = db.new_session();
+    s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY)").unwrap();
+    s.exec("INSERT INTO t VALUES (1)").unwrap();
+    s.exec("DECLARE   c   CURSOR FOR   SELECT count(*) FROM t").unwrap();
+    let o = s.exec("FETCH 1 FROM c").unwrap();
+    match &o[0] {
+        dendro_core::Output::Rows(rs) => assert_eq!(rs.text_rows()[0][0].as_deref(), Some("1")),
+        _ => panic!(),
+    }
+}
