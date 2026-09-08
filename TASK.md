@@ -124,7 +124,7 @@
 | Q-5 | SET 参数静默 OK 无效果（isolation/timezone 假象） | P2 | 至少返回 not_supported 或真实生效 |
 | Q-6 | pseudo_tables 恒读 main 分支（非 main 会话 information_schema 显示错表） | P2 | |
 | Q-7 | stop_cp 死字段（无写者） | P3 | Database::close 收口时处理 |
-| Q-8 | P1-7 并发测试的第一个具体用例 = 显式事务跨并发提交+checkpoint（R7-3 场景固化） | P1 | 已有 r7_3 单线程版；多线程版随 P1-7 |
+| ~~Q-8~~ | ~~P1-7 并发测试首个用例~~ | ✅ | r7_3 单线程版已有；**P1-7 真并发已交付**（`tests/concurrent.rs`：Barrier 同快照 8 线程同键恰一赢家 40001、异键全成、autocommit 40001-or-win） |
 
 ## 八轮评审修复（2026-09-08）
 
@@ -181,7 +181,7 @@
 
 | # | 任务 | 优先级 | 备注 |
 |---|------|:----:|------|
-| Q-14 | AP 列存路径读自己的写 + 冻结根（第九轮 R9-3） | P1 | 未完成，下一批首位 |
+| ~~Q-14~~ | ~~AP 列存路径读自己的写 + 冻结根~~ | ✅ | table_scan 同一归并抽象补齐 AP 路径（冻结 catalog 根解析 + 第三层会话事务写覆盖）；回归 `sql_semantics::q14_ap_path_reads_own_writes_and_frozen`（1.2 万行 checkpoint 后显式事务：INSERT/UPDATE/DELETE 归并 + 冻结 + COMMIT 后新快照）|
 | ~~Q-18~~ | ~~装配层测试~~ | ✅ | `tests/assembly.rs`：spawn 真实 dendro 进程，断言**端口↔协议对应**（PG Startup→'R'、MySQL 握手、RESP PING→+PONG、readyz 200），随 CI 跑 |
 | Q-19 | "线程不持强 Arc 睡觉/自环"红线入 AGENTS.md（Weak 化三连的通用化） | P2 | |
 | Q-20 | ~~kv use_branch 静默丢事务~~ ✅（第十一轮收口，25001）∥ R9-9 runner 多语句比对 ∥ R9-11 协议小项 | P3 | 剩余两项保留 |
@@ -218,6 +218,12 @@
   - 第 4 条：证据引用一律以 grep 命中为准（杜绝虚构测试名）；
   - 第 5 条：基线计数以 `scripts/count-tests.sh` 为准；
   - 第 6 条：代码级批量编辑必须带 assert（replace 静默失败三次的教训）。
+
+## P1-7 真并发（第二阶段，2026-09-08）
+
+| # | 任务 | 状态 | 证据 |
+|---|------|:----:|------|
+| ~~P1-7~~ | ~~真并发 OCC~~ | ✅ | `tests/concurrent.rs`：①同键 8 线程真 Barrier 同快照并发提交 → **恰一赢家 + 7×40001**（first-committer-wins）；②异键并发全成；③autocommit 同键 40001-or-win 不变式。1.2 万行 AP 路径事务矩阵见 q14 |
 
 ## P2' — 提交管线（2026-09-08 起动）
 

@@ -428,7 +428,17 @@ fn try_ap_scan(
     };
     let Some(ap) = db.columnar() else { return Ok(None) };
     let short_name = name.rsplit('.').next().unwrap_or(&name).to_string();
-    let Ok((schema, entry)) = resolve_table(db, &sess.branch, &short_name) else { return Ok(None) };
+    // 显式事务：以 BEGIN 冻结的 catalog 根解析（Q-14——此前 AP 路径用当前
+    // head，事务内树的可见性与行路径不一致）
+    let frozen = match &sess.txn {
+        Some(t) if t.explicit => t.head_root,
+        _ => None,
+    };
+    let resolved = match frozen {
+        Some(r) => resolve_table_at(db, Some(&r), &short_name),
+        None => resolve_table(db, &sess.branch, &short_name),
+    };
+    let Ok((schema, entry)) = resolved else { return Ok(None) };
     if entry.col_segments.is_empty() || entry.col_rows < 10_000 {
         return Ok(None);
     }
@@ -484,11 +494,17 @@ fn try_ap_scan(
             }
         }
     }
-    // memtx overlay 合并：checkpoint 后的写仍在 memtx（WAL 尾部）
+    // 可见性归并（与 table_scan 同一抽象）：CBF 行 → memtx overlay →
+    // 会话显式事务自身写（Q-14：此前 AP 路径不读事务的写——≥1 万行的
+    // 显式事务内查询与行路径不一致）
     let b = db.branch(&sess.branch)?;
     let overlay = b.mem.table(entry.id).snapshot_rows(snapshot);
-    if !overlay.is_empty() {
-        // BTreeMap：CBF 行按 pk 入表 → overlay 覆盖/删除
+    let txn_has_writes = sess
+        .txn
+        .as_ref()
+        .map(|t| t.explicit && t.writes.keys().any(|(tid, _)| *tid == entry.id))
+        .unwrap_or(false);
+    if !overlay.is_empty() || txn_has_writes {
         let mut keyed: std::collections::BTreeMap<Vec<u8>, Vec<SqlValue>> =
             std::collections::BTreeMap::new();
         for r in rows {
@@ -504,6 +520,26 @@ fn try_ap_scan(
                 }
                 None => {
                     keyed.remove(&k);
+                }
+            }
+        }
+        // ③ 会话显式事务自身写（最后覆盖）
+        if let Some(t) = &sess.txn {
+            if t.explicit {
+                for ((tid, k), m) in &t.writes {
+                    if *tid != entry.id {
+                        continue;
+                    }
+                    match m {
+                        crate::prolly::Mutation::Put(v) => {
+                            if let Ok(r) = row_from_bytes(&schema, v) {
+                                keyed.insert(k.clone(), r);
+                            }
+                        }
+                        crate::prolly::Mutation::Delete => {
+                            keyed.remove(k);
+                        }
+                    }
                 }
             }
         }
