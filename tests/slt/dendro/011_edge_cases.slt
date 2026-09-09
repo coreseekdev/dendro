@@ -1,0 +1,73 @@
+# 边缘场景：NULL 传播、空串、特殊字符、类型边界
+statement ok
+CREATE TABLE edge (id BIGINT PRIMARY KEY, s TEXT, n BIGINT, f DOUBLE)
+
+statement ok
+INSERT INTO edge VALUES (1, NULL, NULL, NULL)
+
+statement ok
+INSERT INTO edge VALUES (2, '', 0, 0.0)
+
+statement ok
+INSERT INTO edge VALUES (3, 'sp ace', -1, -1.5)
+
+statement ok
+INSERT INTO edge VALUES (4, 'tab	sep', 9223372036854775807, 1.7976931348623157e308)
+
+# NULL 传播
+query I
+SELECT id FROM edge WHERE s IS NULL
+----
+1
+
+query I
+SELECT id FROM edge WHERE n IS NULL
+----
+1
+
+# 空串 ≠ NULL
+query I
+SELECT id FROM edge WHERE s = ''
+----
+2
+
+# 负数
+query I
+SELECT id FROM edge WHERE n < 0
+----
+3
+
+query R
+SELECT f FROM edge WHERE f < 0
+----
+-1.5
+
+# i64 上界
+query I
+SELECT n FROM edge WHERE n = 9223372036854775807
+----
+9223372036854775807
+
+# NULL 与空串 count 不同
+query I
+SELECT count(*) FROM edge WHERE s IS NOT NULL
+----
+3
+
+# 非 NULL 字符串种类（去重由引擎保证）
+query I
+SELECT count(*) FROM edge WHERE s != ''
+----
+2
+
+# NULL 筛选
+query I
+SELECT id FROM edge WHERE n IS NULL ORDER BY id
+----
+1
+
+# 负数筛选
+query I
+SELECT id FROM edge WHERE n < 0 ORDER BY id
+----
+3
