@@ -10,6 +10,7 @@ pub mod format;
 pub mod objstore;
 pub mod prolly;
 pub mod versioned;
+pub mod pipeline;
 pub mod wal;
 
 pub mod memtx;
