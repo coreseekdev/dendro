@@ -1,4 +1,4 @@
-#![allow(clippy::all)]
+
 //! M-4：**第二实现解码对拍**——GPU 内核等价性的前置证明。
 //!
 //! 块数据区的解码按 SPEC 05 §3 的 codec 语义（Raw 8B LE / Delta 首值
