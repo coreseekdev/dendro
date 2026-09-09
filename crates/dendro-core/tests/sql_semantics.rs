@@ -542,3 +542,54 @@ fn q16_in_txn_duplicate_insert_rejected() {
         _ => panic!(),
     }
 }
+
+#[test]
+fn optimizer_constant_where_short_circuit() {
+    // Q-1 优化器：常量 WHERE 短路
+    let db = Database::open(DbOptions::memory()).unwrap();
+    let mut s = db.new_session();
+    s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+    s.exec("INSERT INTO t VALUES (1, 'a')").unwrap();
+
+    // WHERE false → 空（不扫表）
+    let o = s.exec("SELECT * FROM t WHERE 1 = 0").unwrap();
+    match &o[0] {
+        dendro_core::Output::Rows(rs) => assert_eq!(rs.total_rows(), 0, "WHERE false 应返回 0 行"),
+        _ => panic!(),
+    }
+
+    // WHERE true → 全表
+    let o = s.exec("SELECT * FROM t WHERE 1 = 1").unwrap();
+    match &o[0] {
+        dendro_core::Output::Rows(rs) => assert_eq!(rs.total_rows(), 1, "WHERE true 应返回全部行"),
+        _ => panic!(),
+    }
+
+    // WHERE NULL → 空
+    let o = s.exec("SELECT * FROM t WHERE NULL").unwrap();
+    match &o[0] {
+        dendro_core::Output::Rows(rs) => assert_eq!(rs.total_rows(), 0, "WHERE NULL 应返回 0 行"),
+        _ => panic!(),
+    }
+
+    // 组合常量：WHERE 1 = 1 AND 2 = 2 → 恒真
+    let o = s.exec("SELECT * FROM t WHERE 1 = 1 AND 2 = 2").unwrap();
+    match &o[0] {
+        dendro_core::Output::Rows(rs) => assert_eq!(rs.total_rows(), 1, "恒真组合应返回全部行"),
+        _ => panic!(),
+    }
+
+    // WHERE x = x（有列引用 → 不走短路，走正常过滤）
+    let o = s.exec("SELECT * FROM t WHERE id = id").unwrap();
+    match &o[0] {
+        dendro_core::Output::Rows(rs) => assert_eq!(rs.total_rows(), 1, "列引用表达式走正常过滤"),
+        _ => panic!(),
+    }
+
+    // LIMIT 0 → 空
+    let o = s.exec("SELECT * FROM t LIMIT 0").unwrap();
+    match &o[0] {
+        dendro_core::Output::Rows(rs) => assert_eq!(rs.total_rows(), 0, "LIMIT 0 应返回 0 行"),
+        _ => panic!(),
+    }
+}

@@ -92,6 +92,18 @@ pub(crate) fn eval_query(db: &Database, sess: &mut Session, q: &Query, snapshot:
     let mut tv = eval_from(db, sess, select, snapshot, pushdown_limit)?;
     // WHERE
     if let Some(w) = &select.selection {
+        // 常量短路（Q-1 优化器）：WHERE 表达式不含列引用时单次求值——
+        // false/NULL → 跳过扫描直接返回空集（免全表遍历+行解码）；
+        // true → 跳过过滤（恒真条件不需逐行判定）
+        if !has_column_ref(w) {
+            match expr::eval(w, &[], &|_| None) {
+                Ok(SqlValue::Bool(false)) | Ok(SqlValue::Null) => {
+                    return Ok(TableView { names: tv.names.clone(), rows: vec![] });
+                }
+                Ok(SqlValue::Bool(true)) => return Ok(tv), // 恒真：免过滤
+                _ => {} // 非布尔：走正常过滤（行级报错）
+            }
+        }
         let cols = col_lookup(&tv.names);
         // WHERE 过滤（求值错误 → 语句失败，不静默吞）
         let mut filtered = Vec::with_capacity(tv.rows.len());
@@ -1257,6 +1269,29 @@ fn projection_aggregates(p: &[SelectItem]) -> Option<()> {
         }
     }
     None
+}
+
+/// 递归检查表达式是否引用了任何列（Identifier/CompoundIdentifier）。
+/// 用于 WHERE 常量短路：无列引用的表达式可在扫描前单次求值（Q-1 优化器）。
+pub fn has_column_ref(e: &sqlparser::ast::Expr) -> bool {
+    use sqlparser::ast::Expr;
+    match e {
+        Expr::Identifier(_) | Expr::CompoundIdentifier(_) => true,
+        Expr::BinaryOp { left, right, .. } => has_column_ref(left) || has_column_ref(right),
+        Expr::UnaryOp { expr, .. } => has_column_ref(expr),
+        Expr::Nested(inner) => has_column_ref(inner),
+        Expr::Function(f) => fn_args(f).iter().any(|a| match a {
+            FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) => has_column_ref(e),
+            FunctionArg::Named { arg: FunctionArgExpr::Expr(e), .. } => has_column_ref(e),
+            _ => false,
+        }),
+        Expr::Cast { expr, .. } => has_column_ref(expr),
+        Expr::IsTrue(e) | Expr::IsFalse(e) | Expr::IsNotTrue(e) | Expr::IsNotFalse(e)
+        | Expr::IsNull(e) | Expr::IsNotNull(e) => has_column_ref(e),
+        Expr::InList { expr, list, .. } => has_column_ref(expr) || list.iter().any(has_column_ref),
+        Expr::Between { expr, low, high, .. } => has_column_ref(expr) || has_column_ref(low) || has_column_ref(high),
+        _ => false,
+    }
 }
 
 pub(crate) fn fn_args(f: &sqlparser::ast::Function) -> &[FunctionArg] {
