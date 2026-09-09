@@ -426,8 +426,28 @@ pub(crate) fn make_record_set(names: &[&str], tys: &[ColType], rows: Vec<Vec<Sql
     scan::rows_to_record_set(&columns, rows)
 }
 
+/// DDL 判定（Q-10：显式事务内拒绝的 catalog 写集合）
+fn is_ddl(stmt: &Statement) -> bool {
+    matches!(
+        stmt,
+        Statement::CreateTable { .. }
+            | Statement::CreateIndex { .. }
+            | Statement::AlterTable { .. }
+            | Statement::Drop { .. }
+    )
+}
+
 /// 单语句执行；None = 无输出（如空事务语句内部处理）
 pub(crate) fn exec_statement(db: &Database, sess: &mut Session, stmt: Statement) -> Result<Option<Output>> {
+    // Q-10（保守口径）：显式事务内拒绝 DDL——catalog 写不经事务写集，
+    // 立即生效且 ROLLBACK 不可撤销（第十八轮 R18-2 实证可见性漂移）。
+    // v2 事务化 catalog 后放开。
+    if sess.txn.is_some() && is_ddl(&stmt) {
+        return Err(SqlError::new(
+            "25001",
+            "transactional DDL not supported: run DDL outside explicit transactions",
+        ));
+    }
     match stmt {
         Statement::StartTransaction { .. } => {
             if sess.txn.is_some() {

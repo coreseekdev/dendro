@@ -448,3 +448,40 @@ fn r18_3_declare_with_multiple_spaces() {
         _ => panic!(),
     }
 }
+
+#[test]
+fn q10_ddl_inside_explicit_txn_rejected() {
+    // Q-10（保守口径）：catalog 写不经事务写集——立即生效且 ROLLBACK 不可
+    // 撤销（第十八轮 R18-2 实证可见性漂移）。显式事务内拒绝（25001）。
+    let db = Database::open(DbOptions::memory()).unwrap();
+    // PG aborted 语义：事务内首个错误后 25P02 接管——逐事务验证每条 DDL
+    let mut n = 0;
+    for sql in ["CREATE TABLE x (id BIGINT PRIMARY KEY)", "DROP TABLE t", "ALTER TABLE t ADD COLUMN w TEXT"] {
+        n += 1;
+        let mut s = db.new_session();
+        s.exec(&format!("CREATE TABLE keep{n} (id BIGINT PRIMARY KEY)")).unwrap();
+        s.exec("BEGIN").unwrap();
+        let e = match s.exec(sql) {
+            Ok(_) => panic!("事务内不应允许：{sql}"),
+            Err(e) => e,
+        };
+        assert_eq!(e.state, "25001", "{sql}: {e}");
+        s.exec("ROLLBACK").unwrap();
+    }
+    // 事务内 DML 仍允许
+    let mut s = db.new_session();
+    s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY)").unwrap();
+    s.exec("BEGIN").unwrap();
+    s.exec("INSERT INTO t VALUES (1)").unwrap();
+    s.exec("COMMIT").unwrap();
+    assert_eq!(
+        {
+            let o = s.exec("SELECT count(*) FROM t").unwrap();
+            match &o[0] {
+                dendro_core::Output::Rows(rs) => rs.text_rows()[0][0].clone().unwrap(),
+                _ => panic!(),
+            }
+        },
+        "1"
+    );
+}

@@ -9,6 +9,7 @@
 | 2026-09-07 | dendro 0.1.0（M0-M7 全量首版） | 7 | 7 | 0 |
 | 2026-09-07 | + JOIN 基线（008，评审 P1-6） | 8 | 8 | 0 |
 | 2026-09-08 | + checkpoint 可见性基线（009，评审 R7-P0） | 9 | 9 | 0 |
+| 2026-09-08 | + 游标/事务组合基线（010，Q-1b/Q-10） | 10 | 10 | 0 |
 
 ## 语料矩阵
 
@@ -23,6 +24,7 @@
 | 007_system.slt | cambium.branches / cambium.commit_log 系统视图 |
 | 008_join.slt | INNER/LEFT JOIN、NULL 键不匹配、一对多放大、三表链、复合键（AND）、JOIN+GROUP BY、派生表 |
 | 009_checkpoint_visibility.slt | **checkpoint→变更→查询**（UPDATE/DELETE 后归并、点查墓碑、重插已删键、空表 count、检查点后唯一性）|
+| 010_cursors_txn.slt | 游标声明/分批 FETCH/ALL 耗尽/CLOSE；事务内 DML 与读一致性 |
 
 ## 语义注记（与 PG 对齐的行为）
 

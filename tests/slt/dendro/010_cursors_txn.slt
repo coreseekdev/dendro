@@ -1,0 +1,53 @@
+# 游标与事务组合（Q-1b/Q-10 第二阶段语料）
+# 错误路径（34000/25001/25P02）由 sql_semantics.rs 回归覆盖；
+# 本文件验证成功形态在 slt 基线中的可持续性。
+
+statement ok
+CREATE TABLE cur (id BIGINT PRIMARY KEY, v TEXT)
+
+statement ok
+INSERT INTO cur VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd'), (5, 'e')
+
+# 游标声明/分批读取/关闭
+statement ok
+DECLARE c CURSOR FOR SELECT id, v FROM cur ORDER BY id
+
+query IT
+FETCH 2 FROM c
+----
+1 a
+2 b
+
+query IT
+FETCH 2 FROM c
+----
+3 c
+4 d
+
+query IT
+FETCH ALL FROM c
+----
+5 e
+
+statement ok
+CLOSE c
+
+# 事务内 DML + 游标只读快照
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO cur VALUES (6, 'f')
+
+query I
+SELECT count(*) FROM cur
+----
+6
+
+statement ok
+COMMIT
+
+query I
+SELECT count(*) FROM cur
+----
+6
