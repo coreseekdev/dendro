@@ -485,3 +485,19 @@ fn q10_ddl_inside_explicit_txn_rejected() {
         "1"
     );
 }
+
+#[test]
+fn q10_truncate_inside_explicit_txn_rejected() {
+    // 第二十轮 R20-1：truncate_impl 同样走 catalog_commit——事务内必须拒绝
+    let db = Database::open(DbOptions::memory()).unwrap();
+    let mut s = db.new_session();
+    s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY)").unwrap();
+    s.exec("INSERT INTO t VALUES (1)").unwrap();
+    s.exec("BEGIN").unwrap();
+    let e = match s.exec("TRUNCATE TABLE t") {
+        Ok(_) => panic!("事务内 TRUNCATE 应被拒"),
+        Err(e) => e,
+    };
+    assert_eq!(e.state, "25001", "{e}");
+    s.exec("ROLLBACK").unwrap();
+}

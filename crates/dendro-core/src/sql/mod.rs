@@ -434,6 +434,7 @@ fn is_ddl(stmt: &Statement) -> bool {
             | Statement::CreateIndex { .. }
             | Statement::AlterTable { .. }
             | Statement::Drop { .. }
+            | Statement::Truncate { .. } // 第二十轮 R20-1：truncate_impl 同样 catalog_commit
     )
 }
 
