@@ -74,9 +74,9 @@ fn make_batch(n: i64) -> RecordBatch {
 fn check_codec(codec: CodecId, n: i64) {
     use dendro_core::types::ColType;
     use dendro_columnar::ColStats;
-    let batch = make_batch(n as i64);
+    let batch = make_batch(n);
     let choice = |_: &str, _: ColType, _: &ColStats| -> CodecId { codec };
-    let bytes = write_cbf(&[batch.clone()], 4096, Some(&choice)).unwrap();
+    let bytes = write_cbf(std::slice::from_ref(&batch), 4096, Some(&choice)).unwrap();
 
     let footer = read_footer(&bytes).unwrap();
     assert!(footer.rg_count >= 1);
