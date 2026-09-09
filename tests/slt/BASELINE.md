@@ -28,6 +28,7 @@
 | 010_cursors_txn.slt | 游标声明/分批 FETCH/ALL 耗尽/CLOSE；事务内 DML 与读一致性 |
 | 011_edge_cases.slt | NULL 传播、空串 ≠ NULL、负数、i64 上界、ORDER BY NULL 筛选 |
 | 013_visibility.slt | NULL 三值逻辑、常量短路（WHERE 1=0 / WHERE NULL）、LIMIT 下推、聚合 NULL 计数 |
+| 014_string_ops.slt | upper/lower/length/substr、LIKE-free WHERE 比较、空串 ≠ NULL |
 
 ## 语义注记（与 PG 对齐的行为）
 
