@@ -1,0 +1,44 @@
+# 视图基础（Q-1 扩展）
+statement ok
+CREATE TABLE base (id BIGINT PRIMARY KEY, name TEXT, score BIGINT)
+
+statement ok
+INSERT INTO base VALUES (1, 'alice', 90), (2, 'bob', 80), (3, 'carol', 70)
+
+statement ok
+CREATE VIEW v_active AS SELECT id, name FROM base WHERE score > 75
+
+query IT
+SELECT * FROM v_active ORDER BY id
+----
+1 alice
+2 bob
+
+query I
+SELECT count(*) FROM v_active
+----
+2
+
+# 通过视图筛选
+query IT
+SELECT id, name FROM v_active WHERE name = 'alice'
+----
+1 alice
+
+# DROP VIEW 后不可查询
+statement ok
+DROP VIEW v_active
+
+statement error
+SELECT * FROM v_active
+
+# OR REPLACE
+statement ok
+CREATE OR REPLACE VIEW v_new AS SELECT id FROM base
+
+query I
+SELECT * FROM v_new ORDER BY id
+----
+1
+2
+3

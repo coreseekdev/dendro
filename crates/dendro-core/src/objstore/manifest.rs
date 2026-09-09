@@ -72,6 +72,9 @@ pub struct Manifest {
     /// GC 墓碑：已无新 manifest 引用、等待保留窗口过期的对象（GC 定案，docs/design/GC定案.md）
     #[serde(default)]
     pub tombstones: Vec<Tombstone>,
+    /// 视图定义：view name → SQL query text（Q-1 扩展：基础视图）
+    #[serde(default)]
+    pub views: BTreeMap<String, String>,
 }
 
 /// 一条待回收对象。登记与"新 manifest 停止引用"在同一版本原子发布——
@@ -96,6 +99,7 @@ impl Manifest {
             gc_last_sweep_ver: 0,
             created_ms,
             tombstones: Vec::new(),
+            views: BTreeMap::new(),
         }
     }
 }

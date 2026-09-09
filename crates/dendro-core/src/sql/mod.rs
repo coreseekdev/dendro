@@ -539,6 +539,38 @@ pub(crate) fn exec_statement(db: &Database, sess: &mut Session, stmt: Statement)
             ddl::update_impl(db, sess, &name, assignments, upd.selection.clone())
         }
         Statement::Delete(delete) => ddl::exec_delete(db, sess, delete),
+        Statement::CreateView(cv) => {
+            let name = cv.name.0.iter().map(|p| p.as_ident().map(|i| i.value.clone()).unwrap_or_default()).collect::<Vec<_>>().join(".");
+            if name.is_empty() {
+                return Err(SqlError::syntax("empty view name"));
+            }
+            let query_text = cv.query.to_string();
+            db.update_manifest(|m| {
+                if m.views.contains_key(&name) && !cv.or_replace {
+                    return Err(SqlError::duplicate_table(format!("view \"{name}\" already exists")));
+                }
+                m.views.insert(name.clone(), query_text.clone());
+                Ok(true)
+            })?;
+            Ok(Some(Output::Command { tag: "CREATE VIEW".into(), affected: 0 }))
+        }
+        Statement::Drop { object_type: sqlparser::ast::ObjectType::View, names, if_exists, .. } => {
+            for name_obj in &names {
+                let name = name_obj.0.iter().map(|p| p.as_ident().map(|i| i.value.clone()).unwrap_or_default()).collect::<Vec<_>>().join(".");
+                let exists = db.manifest().manifest.views.contains_key(&name);
+                if !exists {
+                    if if_exists {
+                        continue;
+                    }
+                    return Err(SqlError::undefined_table(format!("view \"{name}\" does not exist")));
+                }
+                db.update_manifest(|m| {
+                    m.views.remove(&name);
+                    Ok(true)
+                })?;
+            }
+            Ok(Some(Output::Command { tag: "DROP VIEW".into(), affected: 0 }))
+        }
         Statement::CreateTable(create) => ddl::exec_create_table(db, sess, create),
         Statement::Drop { object_type: sqlparser::ast::ObjectType::Table, names, if_exists, .. } => {
             ddl::drop_table_impl(db, sess, names, if_exists)

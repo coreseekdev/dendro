@@ -456,6 +456,19 @@ fn table_scan_opt(
     selection: Option<&Expr>,
     pushdown_limit: Option<usize>,
 ) -> Result<TableView> {
+    // 视图展开（Q-1 扩展）：FROM 引用视图名 → 执行存储的 SQL 并返回结果
+    if let TableFactor::Table { name, .. } = tf {
+        let vname = name.0.iter().filter_map(|p| p.as_ident()).map(|i| i.value.to_ascii_lowercase()).collect::<Vec<_>>().join(".");
+        if let Some(query_text) = db.manifest().manifest.views.get(&vname) {
+            let query_text = query_text.clone();
+            let stmts = crate::sql::parse_batch(&query_text, sess.dialect)?;
+            if stmts.len() == 1 {
+                if let sqlparser::ast::Statement::Query(sub_query) = stmts.into_iter().next().unwrap() {
+                    return eval_query(db, sess, sub_query.as_ref(), snapshot);
+                }
+            }
+        }
+    }
     // 快路径 1：单表 + pk 等值/IN 且无其他复杂谓词 → 直查
     if let Some((schema, entry)) = try_pk_pushdown(db, sess, tf, selection, snapshot)? {
         let sel = selection.expect("pushdown implies selection");

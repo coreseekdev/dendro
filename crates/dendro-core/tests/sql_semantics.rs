@@ -611,3 +611,66 @@ fn q16_delete_then_insert_allowed() {
         _ => panic!(),
     }
 }
+
+#[test]
+fn views_create_select_drop() {
+    let db = Database::open(DbOptions::memory()).unwrap();
+    let mut s = db.new_session();
+    s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+    s.exec("INSERT INTO t VALUES (1, 'a'), (2, 'b')").unwrap();
+
+    s.exec("CREATE VIEW v_active AS SELECT id, v FROM t WHERE id > 0").unwrap();
+    let o = s.exec("SELECT * FROM v_active").unwrap();
+    match &o[0] {
+        dendro_core::Output::Rows(rs) => assert_eq!(rs.total_rows(), 2, "视图应返回全部行"),
+        _ => panic!(),
+    }
+
+    // DROP VIEW
+    s.exec("DROP VIEW v_active").unwrap();
+    let e = match s.exec("SELECT * FROM v_active") {
+        Ok(_) => panic!("DROP 后视图应不可查询"),
+        Err(e) => e,
+    };
+    assert_eq!(e.state, "42P01", "{e}");
+
+    // 重复创建 → 报错
+    s.exec("CREATE VIEW v_dup AS SELECT 1").unwrap();
+    let e = match s.exec("CREATE VIEW v_dup AS SELECT 2") {
+        Ok(_) => panic!("重复 CREATE VIEW 应报错"),
+        Err(e) => e,
+    };
+    assert_eq!(e.state, "42P07", "{e}");
+}
+
+#[test]
+fn views_persist_across_restart() {
+    let dir = std::env::temp_dir().join(format!("dendro-view-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    {
+        let db = Database::open(DbOptions {
+            store: dendro_core::StoreConfig::LocalDir(dir.clone()),
+            ..DbOptions::default()
+        })
+        .unwrap();
+        let mut s = db.new_session();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+        s.exec("INSERT INTO t VALUES (1, 'a')").unwrap();
+        s.exec("CREATE VIEW my_view AS SELECT * FROM t").unwrap();
+    }
+    // 重启后视图仍在
+    {
+        let db = Database::open(DbOptions {
+            store: dendro_core::StoreConfig::LocalDir(dir.clone()),
+            ..DbOptions::default()
+        })
+        .unwrap();
+        let mut s = db.new_session();
+        let o = s.exec("SELECT * FROM my_view").unwrap();
+        match &o[0] {
+            dendro_core::Output::Rows(rs) => assert_eq!(rs.total_rows(), 1, "视图跨重启应可用"),
+            _ => panic!(),
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
