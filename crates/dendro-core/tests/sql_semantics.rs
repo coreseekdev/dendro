@@ -501,3 +501,23 @@ fn q10_truncate_inside_explicit_txn_rejected() {
     assert_eq!(e.state, "25001", "{e}");
     s.exec("ROLLBACK").unwrap();
 }
+
+#[test]
+fn q1_cursor_count_limit_255() {
+    // Q-1 上界护栏：每会话最多 255 个游标，超限 53310；CLOSE 后可复用槽位
+    let db = Database::open(DbOptions::memory()).unwrap();
+    let mut s = db.new_session();
+    s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY)").unwrap();
+    s.exec("INSERT INTO t VALUES (1)").unwrap();
+    for i in 0..255 {
+        s.exec(&format!("DECLARE c{i} CURSOR FOR SELECT id FROM t")).unwrap();
+    }
+    let e = match s.exec("DECLARE c255 CURSOR FOR SELECT id FROM t") {
+        Ok(_) => panic!("第 256 个游标应被拒"),
+        Err(e) => e,
+    };
+    assert_eq!(e.state, "53310", "{e}");
+    // 关闭一个后槽位释放
+    s.exec("CLOSE c0").unwrap();
+    s.exec("DECLARE c255 CURSOR FOR SELECT id FROM t").unwrap();
+}

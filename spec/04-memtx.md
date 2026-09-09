@@ -86,6 +86,14 @@ ROLLBACK: 丢弃写集
 - **事务内分支语句**：USE BRANCH / CHECKPOINT / CREATE|DROP|MERGE|REOPEN
   BRANCH → 25001（USE 切换破坏冻结读；CHECKPOINT 推进截断水位自伤；
   catalog 写不可回滚——Q-10 事务化前保守口径）。SHOW BRANCHES 只读放行。
+- **事务内 DDL**（Q-10）：CREATE TABLE / CREATE INDEX / ALTER TABLE /
+  DROP / TRUNCATE → 25001（catalog 写不经事务写集，立即生效且 ROLLBACK
+  不可撤销——R18-2 实证可见性漂移）。DML 不受影响。
+- **游标与事务解耦**（Q-1b/R18-5 口径）：游标为 INSENSITIVE 物化——
+  DECLARE 时结果集快照，与事务生命周期解耦是有意行为（游标只读，
+  写侧隔离不受影响）。会话级游标 map 有上界护栏（Q-1）。
+- **读自己的写**：会话显式事务写集作为读归并最后覆盖层（table_scan /
+  点查 / AP 三路径同一抽象）。
 
 ## 4. 与版本层/WAL 的关系
 

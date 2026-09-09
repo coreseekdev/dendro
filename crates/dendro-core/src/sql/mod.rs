@@ -981,6 +981,14 @@ pub(crate) fn exec_cursor_statement(
             }
             match record_set {
                 Some(rs) => {
+                    // Q-1 上界护栏：游标数上限 255（PG 风格），防会话级
+                    // 物化结果集无界累积
+                    if sess.cursors.len() >= 255 && !sess.cursors.contains_key(&name.to_ascii_lowercase()) {
+                        return Err(SqlError::new(
+                            "53310",
+                            "too many cursors (max 255 per session); close one first",
+                        ));
+                    }
                     sess.cursors.insert(name.to_ascii_lowercase(), (rs, 0));
                     Ok(Some(vec![Output::Command { tag: "DECLARE CURSOR".into(), affected: 0 }]))
                 }
