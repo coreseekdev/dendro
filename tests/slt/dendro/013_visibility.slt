@@ -1,0 +1,56 @@
+# 可见性矩阵：冻结读 + 读自己写 + 常量短路 + NULL 三值逻辑
+statement ok
+CREATE TABLE vis (id BIGINT PRIMARY KEY, v TEXT)
+
+statement ok
+INSERT INTO vis VALUES (1, 'a'), (2, NULL), (3, '')
+
+# --- NULL 三值逻辑 ---
+query I
+SELECT id FROM vis WHERE v IS NULL
+----
+2
+
+query I
+SELECT id FROM vis WHERE v IS NOT NULL
+----
+1
+3
+
+query I
+SELECT id FROM vis WHERE v = ''
+----
+3
+
+query I
+SELECT id FROM vis WHERE v != ''
+----
+1
+
+# --- 常量短路 ---
+query I
+SELECT id FROM vis WHERE 1 = 0
+----
+
+query I
+SELECT count(*) FROM vis
+----
+3
+
+# --- LIMIT 下推 ---
+query I
+SELECT id FROM vis LIMIT 2
+----
+1
+2
+
+# --- 聚合 + NULL ---
+query I
+SELECT count(*) FROM vis WHERE v IS NOT NULL
+----
+2
+
+query I
+SELECT count(*) FROM vis
+----
+3

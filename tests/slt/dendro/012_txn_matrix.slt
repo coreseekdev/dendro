@@ -1,0 +1,85 @@
+# 事务矩阵：覆盖 BEGIN/COMMIT/ROLLBACK × DML/DQL/DDL 边界
+statement ok
+CREATE TABLE txn_t (id BIGINT PRIMARY KEY, v TEXT)
+
+statement ok
+INSERT INTO txn_t VALUES (1, 'base')
+
+# --- 显式事务内 DML 提交 ---
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO txn_t VALUES (2, 'tx-ins')
+
+statement ok
+UPDATE txn_t SET v = 'tx-upd' WHERE id = 1
+
+query IT
+SELECT id, v FROM txn_t ORDER BY id
+----
+1 tx-upd
+2 tx-ins
+
+statement ok
+COMMIT
+
+query IT
+SELECT id, v FROM txn_t ORDER BY id
+----
+1 tx-upd
+2 tx-ins
+
+# --- 显式事务内 DELETE + ROLLBACK ---
+statement ok
+BEGIN
+
+statement ok
+DELETE FROM txn_t WHERE id = 2
+
+query I
+SELECT count(*) FROM txn_t
+----
+1
+
+statement ok
+ROLLBACK
+
+query IT
+SELECT id, v FROM txn_t ORDER BY id
+----
+1 tx-upd
+2 tx-ins
+
+# --- 自动提交（隐式事务）---
+statement ok
+INSERT INTO txn_t VALUES (3, 'auto')
+
+query I
+SELECT count(*) FROM txn_t
+----
+3
+
+# --- 空事务（BEGIN + COMMIT 无 DML）---
+statement ok
+BEGIN
+
+statement ok
+COMMIT
+
+query I
+SELECT count(*) FROM txn_t
+----
+3
+
+# --- 空事务（BEGIN + ROLLBACK）---
+statement ok
+BEGIN
+
+statement ok
+ROLLBACK
+
+query I
+SELECT count(*) FROM txn_t
+----
+3
