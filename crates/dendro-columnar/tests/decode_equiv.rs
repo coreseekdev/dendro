@@ -1,9 +1,9 @@
 
 //! M-4：**第二实现解码对拍**——GPU 内核等价性的前置证明。
 //!
-//! 块数据区的解码按 SPEC 05 §3 的 codec 语义（Raw 8B LE / Delta 首值
-//! + zigzag varint 差分 / BitPack 定宽位流）由本文件的 `ref_decode_block`
-//! **独立实现**，不经 `dendro_columnar::codec` 的 Rust 编解码栈；
+//! 块数据区的解码按 SPEC 05 §3 的 codec 语义（Raw 8B LE / Delta 首值 +
+//! zigzag varint 差分 / BitPack 定宽位流）由本文件的 `ref_decode_block`
+//! 独立实现，不经 `dendro_columnar::codec` 的 Rust 编解码栈；
 //! 块文件偏移来自官方 `read_footer`（容器解析不在对拍范围）。
 //! 断言：独立解码输出与写入源值位级一致。
 
