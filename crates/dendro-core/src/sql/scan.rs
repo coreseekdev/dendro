@@ -67,6 +67,10 @@ pub(crate) fn eval_query(db: &Database, sess: &mut Session, q: &Query, snapshot:
         SetExpr::Select(s) => s.as_ref(),
         other => return Err(SqlError::not_supported(format!("set op: {}", short_str(other)))),
     };
+    // DISTINCT 投影显式拒绝（第二十一轮 R21-17：静默忽略 = 语义黑洞）
+    if select.distinct.is_some() {
+        return Err(SqlError::not_supported("SELECT DISTINCT"));
+    }
     // Q-1 LIMIT 下推：无 ORDER BY **且无 WHERE** 时扫描期早停——
     // WHERE 过滤后行数未知，先截断会静默漏行（第十八轮 R18-1 探针实证：
     // WHERE id>=900 LIMIT 5 曾返回 0 行）；有 ORDER BY 需全量排序，不下推

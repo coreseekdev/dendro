@@ -435,6 +435,7 @@ fn is_ddl(stmt: &Statement) -> bool {
             | Statement::AlterTable { .. }
             | Statement::Drop { .. }
             | Statement::Truncate { .. } // 第二十轮 R20-1：truncate_impl 同样 catalog_commit
+            | Statement::CreateView { .. } // 第二十一轮 R21-16：CREATE VIEW 也是 catalog 写
     )
 }
 

@@ -674,3 +674,19 @@ fn views_persist_across_restart() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn r21_distinct_explicit_rejection() {
+    // 第二十一轮 R21-17：SELECT DISTINCT 投影静默忽略 = 语义黑洞，改为 0A000
+    let db = Database::open(DbOptions::memory()).unwrap();
+    let mut s = db.new_session();
+    s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+    for i in 1..=10 {
+        s.exec(&format!("INSERT INTO t VALUES ({}, 'v{}')", i, i % 3)).unwrap();
+    }
+    let e = match s.exec("SELECT DISTINCT v FROM t") {
+        Ok(_) => panic!("SELECT DISTINCT 应显式拒绝"),
+        Err(e) => e,
+    };
+    assert_eq!(e.state, "0A000", "{e}");
+}
