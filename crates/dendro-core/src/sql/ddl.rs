@@ -408,6 +408,13 @@ fn insert_row(
         return Err(SqlError::new("23502", "null value in primary key column"));
     }
     let key = encode_key(&pk_vals);
+    // Q-16：同一显式事务内两次 INSERT 同键，第二次必须 23505
+    //（此前写集不可见 → 静默覆盖）
+    if txn.writes.contains_key(&(table_id, key.clone())) {
+        return Err(SqlError::duplicate_key(
+            "duplicate key value violates primary key constraint (key already inserted in this transaction)".to_string(),
+        ));
+    }
     // 主键冲突检查（快照内已存在 + 事务写集）。
     // **墓碑感知**（第七轮 R7-1 伴生）：DELETE 是 overlay 墓碑（树旧行在下次
     // checkpoint 前仍物理存在）——可见墓碑（latest_ts <= 快照）下重插同键

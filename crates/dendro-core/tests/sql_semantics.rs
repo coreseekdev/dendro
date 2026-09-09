@@ -521,3 +521,24 @@ fn q1_cursor_count_limit_255() {
     s.exec("CLOSE c0").unwrap();
     s.exec("DECLARE c255 CURSOR FOR SELECT id FROM t").unwrap();
 }
+
+#[test]
+fn q16_in_txn_duplicate_insert_rejected() {
+    // Q-16：显式事务内同一键两次 INSERT → 23505（此前静默覆盖）
+    let db = Database::open(DbOptions::memory()).unwrap();
+    let mut s = db.new_session();
+    s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+    s.exec("BEGIN").unwrap();
+    s.exec("INSERT INTO t VALUES (1, 'first')").unwrap();
+    let e = match s.exec("INSERT INTO t VALUES (1, 'second')") {
+        Ok(_) => panic!("事务内重复键应被拒"),
+        Err(e) => e,
+    };
+    assert_eq!(e.state, "23505", "{e}");
+    // aborted 后 ROLLBACK
+    s.exec("ROLLBACK").unwrap();
+    match &s.exec("SELECT count(*) FROM t").unwrap()[0] {
+        dendro_core::Output::Rows(rs) => assert_eq!(rs.text_rows()[0][0].as_deref(), Some("0"), "事务回滚后无数据"),
+        _ => panic!(),
+    }
+}
