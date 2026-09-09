@@ -1,0 +1,69 @@
+# dendro k8s 部署清单（G3 ✅ 收官件：M-8）
+# 用法：kubectl apply -f deploy/k8s.yaml（需先创建 rustfs/minio S3 端点或用本地盘）
+# 特性：非 root、readiness/liveness 探针（/readyz）、resources 上界、
+#       SIGTERM 优雅关闭（terminationGracePeriodSeconds 覆盖 WAL flush 窗口）
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dendro-data
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: dendro
+spec:
+  serviceName: dendro
+  replicas: 1 # 单写者模型；读副本可横向扩展（共享 OSS 数据根）
+  selector:
+    matchLabels:
+      app: dendro
+  template:
+    metadata:
+      labels:
+        app: dendro
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: dendro
+          image: dendro:latest
+          ports:
+            - { containerPort: 5432, name: pg }
+            - { containerPort: 3306, name: mysql }
+            - { containerPort: 9469, name: metrics }
+          env:
+            - { name: RUST_LOG, value: info }
+          resources:
+            requests: { cpu: "1", memory: 1Gi }
+            limits: { cpu: "4", memory: 4Gi }
+          readinessProbe:
+            httpGet: { path: /readyz, port: 9469 }
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /readyz, port: 9469 }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          volumeMounts:
+            - { name: data, mountPath: /data }
+          lifecycle:
+            preStop:
+              exec: { command: ["sleep", "2"] } # 排流窗口
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: dendro-data }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dendro
+spec:
+  selector:
+    app: dendro
+  ports:
+    - { name: pg, port: 5432, targetPort: 5432 }
+    - { name: metrics, port: 9469, targetPort: 9469 }
