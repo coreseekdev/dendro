@@ -137,3 +137,28 @@ fn limit_with_where_does_not_pushdown() {
         _ => panic!(),
     }
 }
+
+#[test]
+fn limit_with_join_no_pushdown() {
+    // 第十八轮 R18-1 扩展：JOIN + LIMIT 时不下推到单表（LIMIT 作用于 join 结果）
+    let db = Database::open(DbOptions::memory()).unwrap();
+    {
+        let mut s = db.new_session();
+        s.exec("CREATE TABLE a (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+        s.exec("CREATE TABLE b (bid BIGINT PRIMARY KEY, aid BIGINT)").unwrap();
+        for i in 1..=100 {
+            s.exec(&format!("INSERT INTO a VALUES ({i}, 'v{i}')")).unwrap();
+            s.exec(&format!("INSERT INTO b VALUES ({i}, {i})")).unwrap();
+        }
+    }
+    let o = s_exec(&db, "SELECT a.id, a.v FROM a JOIN b ON a.id = b.bid LIMIT 5");
+    match &o[0] {
+        dendro_core::Output::Rows(rs) => assert_eq!(rs.total_rows(), 5, "JOIN + LIMIT 应返回 5 行"),
+        _ => panic!(),
+    }
+}
+
+fn s_exec(db: &std::sync::Arc<Database>, sql: &str) -> Vec<dendro_core::types::Output> {
+    let mut s = db.new_session();
+    s.exec(sql).unwrap()
+}

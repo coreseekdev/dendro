@@ -70,8 +70,9 @@ pub(crate) fn eval_query(db: &Database, sess: &mut Session, q: &Query, snapshot:
     // Q-1 LIMIT 下推：无 ORDER BY **且无 WHERE** 时扫描期早停——
     // WHERE 过滤后行数未知，先截断会静默漏行（第十八轮 R18-1 探针实证：
     // WHERE id>=900 LIMIT 5 曾返回 0 行）；有 ORDER BY 需全量排序，不下推
+    let has_join = select.from.iter().any(|twj| !twj.joins.is_empty());
     let pushdown_limit: Option<usize> = match (&q.order_by, &q.limit_clause) {
-        _ if select.selection.is_some() => None,
+        _ if select.selection.is_some() || has_join => None,
         (None, Some(sqlparser::ast::LimitClause::LimitOffset { limit, offset, .. })) => {
             let off = match offset {
                 Some(off) => Some(eval_const(&off.value)? as usize),
@@ -378,6 +379,8 @@ fn eval_from(
     snapshot: u64,
     pushdown_limit: Option<usize>,
 ) -> Result<TableView> {
+
+
     let twj = select
         .from
         .first()
