@@ -410,7 +410,8 @@ fn insert_row(
     let key = encode_key(&pk_vals);
     // Q-16：同一显式事务内两次 INSERT 同键，第二次必须 23505
     //（此前写集不可见 → 静默覆盖）
-    if txn.writes.contains_key(&(table_id, key.clone())) {
+    // 按 mutation 类型判别（第二十一轮 R21-2）：Delete + INSERT = 合法替换
+    if let Some(crate::prolly::Mutation::Put(_)) = txn.writes.get(&(table_id, key.clone())) {
         return Err(SqlError::duplicate_key(
             "duplicate key value violates primary key constraint (key already inserted in this transaction)".to_string(),
         ));
@@ -422,8 +423,13 @@ fn insert_row(
     let b = db.branch(&sess.branch)?;
     let tm = b.mem.table(table_id);
     let tombstoned = tm.latest_ts(&key).is_some_and(|ts| ts <= txn.snapshot);
-    let exists_mem = tm.get(&key, txn.snapshot).is_some();
-    let exists_tree = if tombstoned {
+    // 事务自身 Delete → memtx/tree 旧行视为已删（不参与 dup 检查）
+    let txn_deleted = matches!(
+        txn.writes.get(&(table_id, key.clone())),
+        Some(crate::prolly::Mutation::Delete)
+    );
+    let exists_mem = if txn_deleted { false } else { tm.get(&key, txn.snapshot).is_some() };
+    let exists_tree = if tombstoned || txn_deleted {
         false
     } else {
         match &entry_root(db, sess, table_id)? {

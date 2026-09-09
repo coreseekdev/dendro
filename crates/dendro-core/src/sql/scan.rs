@@ -71,8 +71,13 @@ pub(crate) fn eval_query(db: &Database, sess: &mut Session, q: &Query, snapshot:
     // WHERE 过滤后行数未知，先截断会静默漏行（第十八轮 R18-1 探针实证：
     // WHERE id>=900 LIMIT 5 曾返回 0 行）；有 ORDER BY 需全量排序，不下推
     let has_join = select.from.iter().any(|twj| !twj.joins.is_empty());
+    // R21-1：聚合/GROUP BY/HAVING 存在时 LIMIT 作用于聚合结果集而非扫描行，
+    // 下推到扫描层会静默截断（count(*) LIMIT 1 返回 1 而非全表计数）
+    let has_agg = projection_aggregates(&select.projection).is_some()
+        || select.having.as_ref().map(has_agg_expr).unwrap_or(false);
+    let has_group = matches!(&select.group_by, sqlparser::ast::GroupByExpr::Expressions(_, _) if !select.group_by.to_string().is_empty());
     let pushdown_limit: Option<usize> = match (&q.order_by, &q.limit_clause) {
-        _ if select.selection.is_some() || has_join => None,
+        _ if select.selection.is_some() || has_join || has_agg || has_group => None,
         (None, Some(sqlparser::ast::LimitClause::LimitOffset { limit, offset, .. })) => {
             let off = match offset {
                 Some(off) => Some(eval_const(&off.value)? as usize),

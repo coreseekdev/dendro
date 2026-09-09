@@ -593,3 +593,21 @@ fn optimizer_constant_where_short_circuit() {
         _ => panic!(),
     }
 }
+
+#[test]
+fn q16_delete_then_insert_allowed() {
+    // 第二十一轮 R21-2：DELETE 后同事务重插同键必须允许（PG 语义）
+    let db = Database::open(DbOptions::memory()).unwrap();
+    let mut s = db.new_session();
+    s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+    s.exec("INSERT INTO t VALUES (1, 'a')").unwrap();
+    s.exec("BEGIN").unwrap();
+    s.exec("DELETE FROM t WHERE id = 1").unwrap();
+    // 同事务内 DELETE 后重插：合法（墓碑 + 新 Put）
+    s.exec("INSERT INTO t VALUES (1, 'reborn')").unwrap();
+    s.exec("COMMIT").unwrap();
+    match &s.exec("SELECT v FROM t WHERE id = 1").unwrap()[0] {
+        dendro_core::Output::Rows(rs) => assert_eq!(rs.text_rows()[0][0].as_deref(), Some("reborn"), "DELETE 后重插应生效"),
+        _ => panic!(),
+    }
+}
