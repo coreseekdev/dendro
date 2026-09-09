@@ -1,0 +1,68 @@
+# 分支生命周期：创建/切换/写入/合并/删除/隔离
+statement ok
+CREATE TABLE bl (id BIGINT PRIMARY KEY, v TEXT)
+
+statement ok
+INSERT INTO bl VALUES (1, 'base')
+
+# 创建分支 + 切换 + 写入
+statement ok
+CREATE BRANCH feature1 FROM main
+
+statement ok
+USE BRANCH feature1
+
+statement ok
+INSERT INTO bl VALUES (2, 'feat1')
+
+# 切回 main 验证隔离
+statement ok
+USE BRANCH main
+
+query I
+SELECT count(*) FROM bl
+----
+1
+
+# 合并 feature1 → main
+statement ok
+MERGE BRANCH feature1 INTO main
+
+query I
+SELECT count(*) FROM bl
+----
+2
+
+# 创建第二个分支 + 写入 + 合并
+statement ok
+CREATE BRANCH feature2 FROM main
+
+statement ok
+USE BRANCH feature2
+
+statement ok
+INSERT INTO bl VALUES (3, 'feat2')
+
+statement ok
+MERGE BRANCH feature2 INTO main
+
+# 切回 main 验证两个分支的数据
+statement ok
+USE BRANCH main
+
+query I
+SELECT count(*) FROM bl
+----
+3
+
+# 删除分支（不影响数据）
+statement ok
+DROP BRANCH feature1
+
+statement ok
+DROP BRANCH feature2
+
+query I
+SELECT count(*) FROM bl
+----
+3

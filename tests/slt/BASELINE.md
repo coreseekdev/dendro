@@ -11,7 +11,7 @@
 | 2026-09-08 | + checkpoint 可见性基线（009，评审 R7-P0） | 9 | 9 | 0 |
 | 2026-09-08 | + 游标/事务组合基线（010，Q-1b/Q-10） | 10 | 10 | 0 |
 | 2026-09-09 | + 可见性矩阵基线（013，Q-1 优化器/R7-P0 回归防线） | 13 | 13 | 0 |
-| 2026-09-09 | + 字符串操作 + 视图基线（014/015） | 15 | 15 | 0 |
+| 2026-09-09 | + 字符串操作 + 视图基线（014/015）+ 事务矩阵 + 分支生命周期（016/017） | 17 | 17 | 0 |
 
 ## 语料矩阵
 
@@ -31,6 +31,8 @@
 | 013_visibility.slt | NULL 三值逻辑、常量短路（WHERE 1=0 / WHERE NULL）、LIMIT 下推、聚合 NULL 计数 |
 | 014_string_ops.slt | upper/lower/length/substr、LIKE-free WHERE 比较、空串 ≠ NULL |
 | 015_views.slt | CREATE VIEW / DROP VIEW / OR REPLACE / 视图筛选 |
+| 016_txn_matrix.slt | 事务矩阵：DML 提交/回滚、空事务、自动提交混合 |
+| 017_branch_lifecycle.slt | 分支创建/切换/写入/合并/删除/隔离 |
 
 ## 语义注记（与 PG 对齐的行为）
 

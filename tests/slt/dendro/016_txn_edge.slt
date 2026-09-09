@@ -1,0 +1,100 @@
+# 事务边缘场景（显式事务嵌套拒绝/空语句/隐式+显式混合）
+statement ok
+CREATE TABLE tx (id BIGINT PRIMARY KEY, v TEXT)
+
+statement ok
+INSERT INTO tx VALUES (1, 'init')
+
+# 事务内 INSERT + SELECT（读自己的写）
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO tx VALUES (2, 'ins-tx')
+
+query IT
+SELECT id, v FROM tx WHERE id = 2
+----
+2 ins-tx
+
+statement ok
+COMMIT
+
+query IT
+SELECT id, v FROM tx WHERE id = 2
+----
+2 ins-tx
+
+# 事务内 UPDATE + ROLLBACK
+statement ok
+BEGIN
+
+statement ok
+UPDATE tx SET v = 'rolled' WHERE id = 1
+
+query T
+SELECT v FROM tx WHERE id = 1
+----
+rolled
+
+statement ok
+ROLLBACK
+
+query T
+SELECT v FROM tx WHERE id = 1
+----
+init
+
+# 事务内 DELETE + INSERT 同键（替换语义）
+statement ok
+BEGIN
+
+statement ok
+DELETE FROM tx WHERE id = 1
+
+statement ok
+INSERT INTO tx VALUES (1, 'reborn')
+
+statement ok
+COMMIT
+
+query T
+SELECT v FROM tx WHERE id = 1
+----
+reborn
+
+# 跨事务可见性
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO tx VALUES (3, 'three')
+
+statement ok
+COMMIT
+
+query I
+SELECT count(*) FROM tx
+----
+3
+
+# 事务内已有键 UPDATE + 事务内新键 INSERT 组合
+statement ok
+BEGIN
+
+statement ok
+UPDATE tx SET v = 'updated' WHERE id = 2
+
+statement ok
+INSERT INTO tx VALUES (4, 'four')
+
+statement ok
+COMMIT
+
+query IT
+SELECT id, v FROM tx ORDER BY id
+----
+1 reborn
+2 updated
+3 three
+4 four
