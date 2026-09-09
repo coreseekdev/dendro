@@ -125,6 +125,22 @@ fn render_metrics(db: &Arc<Database>) -> String {
     let _ = writeln!(out, "# TYPE dendro_branch_lease_ttl_ms gauge");
     let _ = writeln!(out, "# HELP dendro_branch_read_only branch is a read-only replica (no writer lease)");
     let _ = writeln!(out, "# TYPE dendro_branch_read_only gauge");
+    // M-5：延迟指标
+    for (name, cnt, sum) in [
+        ("dendro_txn_commit", db.lat_commit_cnt.load(std::sync::atomic::Ordering::Relaxed), db.lat_commit_sum_us.load(std::sync::atomic::Ordering::Relaxed)),
+        ("dendro_wal_flush", db.lat_flush_cnt.load(std::sync::atomic::Ordering::Relaxed), db.lat_flush_sum_us.load(std::sync::atomic::Ordering::Relaxed)),
+        ("dendro_manifest_commit", db.lat_manifest_cnt.load(std::sync::atomic::Ordering::Relaxed), db.lat_manifest_sum_us.load(std::sync::atomic::Ordering::Relaxed)),
+    ] {
+        let _ = writeln!(out, "# HELP {name}_us latency (count/sum_us/avg_us)");
+        let _ = writeln!(out, "# TYPE {name}_us gauge");
+        let _ = writeln!(out, "{name}_count {cnt}");
+        let _ = writeln!(out, "{name}_sum_us {sum}");
+        if cnt > 0 {
+            let avg = sum.checked_div(cnt).unwrap_or(0);
+            let _ = writeln!(out, "{name}_avg_us {avg}");
+        }
+
+    }
     for b in branches {
         let name = &b.name;
         let watermark = b.snapshot();

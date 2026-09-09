@@ -8,6 +8,10 @@ use bytes::Bytes;
 use parking_lot::{Condvar, Mutex};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+/// M-5：进程级 WAL flush PUT 延迟累计（微秒 / 次数）
+pub static FLUSH_LATENCY_US: AtomicU64 = AtomicU64::new(0);
+pub static FLUSH_LATENCY_CNT: AtomicU64 = AtomicU64::new(0);
 use std::time::Duration;
 
 pub const FRAME_MAGIC: u32 = 0x4F524E44; // "DRNO" LE 视觉可辨
@@ -422,6 +426,7 @@ impl WalWriter {
     /// Uncertain 语义：同路径重试 PUT 为超集覆盖，最后写者胜。
     /// 计数器在锁内、缓冲被取走时清零；失败路径把本段计数归还。
     pub fn flush_now(&self) -> Result<u64> {
+        let t0 = std::time::Instant::now();
         let _single = self.flush_mu.lock();
         let (seg, bytes, max_seq, seg_frames, seg_min) = {
             let mut g = self.shared.lock();
@@ -467,7 +472,11 @@ impl WalWriter {
         self.advance_durable(seg, max_seq);
         let mut g = self.shared.lock();
         g.cur_seg = g.cur_seg.max(seg + 1);
+        let us = t0.elapsed().as_micros() as u64;
         drop(g);
+        // M-5：flush PUT 延迟（含上传）— 优雅关闭/毒化时不上报
+        FLUSH_LATENCY_US.fetch_add(us, Ordering::Relaxed);
+        FLUSH_LATENCY_CNT.fetch_add(1, Ordering::Relaxed);
         drop(_single);
         Ok(seg)
     }

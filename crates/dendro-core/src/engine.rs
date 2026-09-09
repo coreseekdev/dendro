@@ -353,6 +353,16 @@ pub struct Database {
     stop_cp: Arc<std::sync::atomic::AtomicBool>,
     /// 优雅关闭进行中标志（Q-12b：/readyz 据此返回 503 排流）
     pub(crate) stopping: Arc<std::sync::atomic::AtomicBool>,
+    /// M-5 延迟计数器：(count_us, sum_us, count) — commit/WAL flush/manifest
+    pub lat_commit_us: AtomicU64,
+    pub lat_commit_sum_us: AtomicU64,
+    pub lat_commit_cnt: AtomicU64,
+    pub lat_flush_us: AtomicU64,
+    pub lat_flush_sum_us: AtomicU64,
+    pub lat_flush_cnt: AtomicU64,
+    pub lat_manifest_us: AtomicU64,
+    pub lat_manifest_sum_us: AtomicU64,
+    pub lat_manifest_cnt: AtomicU64,
     columnar: arc_swap::ArcSwap<Option<std::sync::Arc<dyn ColumnarStore>>>,
 }
 
@@ -439,6 +449,15 @@ impl Database {
             chunk_seen: Mutex::new(HashSet::new()),
             stop_cp: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             stopping: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            lat_commit_us: AtomicU64::new(0),
+            lat_commit_sum_us: AtomicU64::new(0),
+            lat_commit_cnt: AtomicU64::new(0),
+            lat_flush_us: AtomicU64::new(0),
+            lat_flush_sum_us: AtomicU64::new(0),
+            lat_flush_cnt: AtomicU64::new(0),
+            lat_manifest_us: AtomicU64::new(0),
+            lat_manifest_sum_us: AtomicU64::new(0),
+            lat_manifest_cnt: AtomicU64::new(0),
             columnar: arc_swap::ArcSwap::from_pointee(None),
         });
         // 惰性打开（S-1）：不再启动即打开全部分支——每分支一线程 + 一租约
@@ -828,8 +847,14 @@ impl Database {
                 self.state.store(Arc::new(DbSnapshot { manifest: m }));
                 return Ok(());
             }
+            let t_manifest = std::time::Instant::now();
             match self.manifest_store.commit(ver, m.clone()) {
                 Ok(_new_ver) => {
+                    self.lat_manifest_cnt.fetch_add(1, Ordering::Relaxed);
+                    self.lat_manifest_sum_us.fetch_add(
+                        t_manifest.elapsed().as_micros() as u64,
+                        Ordering::Relaxed,
+                    );
                     // 自发布：commit 的就是我们刚构造的 m（版本号 new_ver），
                     // 直接作为本进程快照，无需再 LIST 刷新（P1-F：每次发布省 1 LIST）
                     self.state.store(Arc::new(DbSnapshot { manifest: m }));
@@ -1311,7 +1336,10 @@ pub(crate) fn commit_tx(db: &Database, sess_branch: &str, txn: &Txn) -> Result<u
         };
         recs.push(crate::wal::TxnRecord { table_id: tid, ops: vec![(key.clone(), val)] });
     }
+    let t_flush = std::time::Instant::now();
     b.wal.append(crate::wal::FrameType::Txn, ts, &crate::wal::encode_txn(&recs), db.opts.durability)?;
+    db.lat_commit_cnt.fetch_add(1, Ordering::Relaxed);
+    db.lat_commit_sum_us.fetch_add(t_flush.elapsed().as_micros() as u64, Ordering::Relaxed);
     // Phase 3: 安装（durable 之后才产生可见状态）+ pending 登记（checkpoint 积压）
     crate::memtx::install(&b.mem, &[], txn, ts);
     let mut plen = 0usize;
