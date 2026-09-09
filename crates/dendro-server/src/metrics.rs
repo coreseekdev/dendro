@@ -128,7 +128,7 @@ fn render_metrics(db: &Arc<Database>) -> String {
     // M-5：延迟指标
     for (name, cnt, sum) in [
         ("dendro_txn_commit", db.lat_commit_cnt.load(std::sync::atomic::Ordering::Relaxed), db.lat_commit_sum_us.load(std::sync::atomic::Ordering::Relaxed)),
-        ("dendro_wal_flush", db.lat_flush_cnt.load(std::sync::atomic::Ordering::Relaxed), db.lat_flush_sum_us.load(std::sync::atomic::Ordering::Relaxed)),
+        ("dendro_wal_flush", dendro_core::wal::FLUSH_LATENCY_CNT.load(std::sync::atomic::Ordering::Relaxed), dendro_core::wal::FLUSH_LATENCY_US.load(std::sync::atomic::Ordering::Relaxed)),
         ("dendro_manifest_commit", db.lat_manifest_cnt.load(std::sync::atomic::Ordering::Relaxed), db.lat_manifest_sum_us.load(std::sync::atomic::Ordering::Relaxed)),
     ] {
         let _ = writeln!(out, "# HELP {name}_us latency (count/sum_us/avg_us)");
