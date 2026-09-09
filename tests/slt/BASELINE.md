@@ -10,6 +10,7 @@
 | 2026-09-07 | + JOIN 基线（008，评审 P1-6） | 8 | 8 | 0 |
 | 2026-09-08 | + checkpoint 可见性基线（009，评审 R7-P0） | 9 | 9 | 0 |
 | 2026-09-08 | + 游标/事务组合基线（010，Q-1b/Q-10） | 10 | 10 | 0 |
+| 2026-09-09 | + 可见性矩阵基线（013，Q-1 优化器/R7-P0 回归防线） | 13 | 13 | 0 |
 
 ## 语料矩阵
 
@@ -25,6 +26,8 @@
 | 008_join.slt | INNER/LEFT JOIN、NULL 键不匹配、一对多放大、三表链、复合键（AND）、JOIN+GROUP BY、派生表 |
 | 009_checkpoint_visibility.slt | **checkpoint→变更→查询**（UPDATE/DELETE 后归并、点查墓碑、重插已删键、空表 count、检查点后唯一性）|
 | 010_cursors_txn.slt | 游标声明/分批 FETCH/ALL 耗尽/CLOSE；事务内 DML 与读一致性 |
+| 011_edge_cases.slt | NULL 传播、空串 ≠ NULL、负数、i64 上界、ORDER BY NULL 筛选 |
+| 013_visibility.slt | NULL 三值逻辑、常量短路（WHERE 1=0 / WHERE NULL）、LIMIT 下推、聚合 NULL 计数 |
 
 ## 语义注记（与 PG 对齐的行为）
 
