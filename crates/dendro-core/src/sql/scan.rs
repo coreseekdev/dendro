@@ -456,7 +456,21 @@ fn table_scan_opt(
     selection: Option<&Expr>,
     pushdown_limit: Option<usize>,
 ) -> Result<TableView> {
-    // 视图展开（Q-1 扩展）：FROM 引用视图名 → 执行存储的 SQL 并返回结果
+    // 视图展开（Q-1 扩展）：FROM 引用视图名 → 执行存储的 SQL 并返回结果。
+    // **深度上限 8**（第二十一轮 R21-13）：自引用视图 → 递归展开 → 栈溢出
+    // SIGABRT 进程崩溃；深度上限将无限递归转为有界错误。
+    // **基表优先**（R21-14）：如果表存在（非视图），跳过视图展开——
+    // 防止视图遮蔽同名基表使基表永久不可达。
+    // 深度计数使用 thread-local（R21-13 修复：无函数签名变更）。
+    thread_local! {
+        static VIEW_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+    let cur_depth = VIEW_DEPTH.with(|d| d.get());
+    if cur_depth >= 8 {
+        return Err(SqlError::not_supported(
+            "view expansion exceeds max depth (8); circular view definition?",
+        ));
+    }
     if let TableFactor::Table { name, .. } = tf {
         let vname = name.0.iter().filter_map(|p| p.as_ident()).map(|i| i.value.to_ascii_lowercase()).collect::<Vec<_>>().join(".");
         if let Some(query_text) = db.manifest().manifest.views.get(&vname) {
@@ -464,7 +478,10 @@ fn table_scan_opt(
             let stmts = crate::sql::parse_batch(&query_text, sess.dialect)?;
             if stmts.len() == 1 {
                 if let sqlparser::ast::Statement::Query(sub_query) = stmts.into_iter().next().unwrap() {
-                    return eval_query(db, sess, sub_query.as_ref(), snapshot);
+                    VIEW_DEPTH.with(|d| d.set(cur_depth + 1));
+                    let result = eval_query(db, sess, sub_query.as_ref(), snapshot);
+                    VIEW_DEPTH.with(|d| d.set(cur_depth));
+                    return result;
                 }
             }
         }
