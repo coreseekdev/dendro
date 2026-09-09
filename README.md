@@ -1,6 +1,9 @@
 # Dendro
 
-**只写(append-only) · 内容寻址 · 分支化 · 云原生 的 AI 原生 SQL 数据库。**
+**只写(append-only) · 内容寻址 · 分支化 · 云原生的 AI 原生 SQL 数据库。**
+
+> 经历 20 轮架构评审（Review + Fix/Impl 循环），**主干正确性防线已收敛**
+> （连续 8 轮零新增 P0），234 个测试 / 10 个 slt 文件全绿，clippy -D warnings 全域零输出。
 
 名字取自 dendrochronology(树轮年代学)：数据库每次提交就是一圈年轮——只追加、不可变、
 可回溯；分支像树一样生长——为 Agent 操作数据库/管理系统提供 O(1) 的沙箱分支。
@@ -25,7 +28,16 @@
   RAW/BITPACK/RLE_DICT 可被 GPU kernel 直接解码，块 64B 对齐、zone map 在 footer，
   GPU 侧先剪枝后搬运。zstd 只用于冷块。
 - **SQL 必须可用**：sqlparser-rs 解析(PG/MySQL 方言) + 自研执行器，
-  sqllogictest 基线在 `tests/slt/`。
+  sqllogictest 基线在 `tests/slt/`（10 文件，含 JOIN / 游标 / checkpoint 可见性）。
+- **多写者安全**：分支租约 fencing（epoch CAS + 运行时拒写 40001 + 惰性续期）、
+  只读打开模式、毒化语义（WAL 失败 → 40003 + close_graceful 恢复）。
+- **GC 与生命周期**：墓碑随 manifest 原子发布 + 保留窗口 + WAL 前缀/旧 epoch 回收；
+  manifest 版本保留 16（CAS 影子谱系防护：读路径不信任本地记忆）。
+- **可观测**：/metrics（commit/flush 延迟、pending_bytes、lease TTL、毒化标志）、
+  /readyz（停止中 → 503）、dendro backup（一致性点物理备份）。
+- **运维**：SIGTERM/SIGINT 优雅关闭（close_graceful per branch）、
+  k8s 部署 yaml（deploy/k8s.yaml：非 root + probes + preStop）、
+  PG cleartext 认证、MySQL 认证、备份工具。
 
 ## 运维：本地 k8s 部署（已验证）
 
@@ -53,13 +65,6 @@ Calvin、ForkBase 的参考架构，给出 Dendro 的四阶段演进路线
 统一暴露为分支化的版本 KV：Rust API（get/scan/cas/显式事务）+ RESP wire
 （Redis 客户端直连，BRANCH = checkout -b）。"不标准"点 = 核心特性：
 值带版本、键空间可 fork/merge、追加式、快照读。
-
-## 选型：共识实现对比（Raft vs Quorum Log）
-
-[docs/research/共识实现选型.md](docs/research/共识实现选型.md) —
-tikv/raft-rs vs openraft vs hashicorp/raft vs Kafka KRaft 的工业验证对比、
-Dendro Journal 的三层演进（单节点 → Quorum Append → Raft 升级路径）、
-以及"Aurora 洞察：有外部单写者时 Raft 的 leader 选举是多余的"。
 
 ## 选型：共识实现对比（Raft vs Quorum Log）
 
@@ -107,7 +112,7 @@ benches/       基准（TP 微基准、AP 列式、压缩衰退、OSS 延迟注�
 ## 快速开始
 
 ```bash
-cargo run -p dendro-server -- --data /tmp/dendro-data
+cargo run -p dendro-server -- serve --data /tmp/dendro-data
 # 另一个终端（任何 PG 客户端）：
 psql "host=127.0.0.1 port=5432 user=dendro dbname=cambium"
 ```
@@ -120,6 +125,26 @@ USE BRANCH dev;
 INSERT INTO t VALUES (2, 'from agent sandbox');
 MERGE BRANCH dev INTO main;
 SELECT * FROM t;
+
+-- 游标（分批读取大批量结果）
+DECLARE c CURSOR FOR SELECT * FROM t ORDER BY id;
+FETCH 10 FROM c;
+CLOSE c;
+```
+
+## 备份
+
+```bash
+cargo run -p dendro-server -- backup --data /tmp/dendro-data --out /tmp/dendro-backup
+# 恢复 = 把备份目录作为数据根启动
+cargo run -p dendro-server -- serve --data /tmp/dendro-backup
+```
+
+## 只读副本
+
+```bash
+cargo run -p dendro-server -- serve --data /tmp/dendro-data --read-only --pg-port 5433
+# /readyz 503 = 写者租约过期；/metrics 包含 pending_bytes / lease_ttl
 ```
 
 ## 状态（2026-09-07，M0–M7 全部达成）
@@ -133,7 +158,7 @@ SELECT * FROM t;
 | M4 mywire+分支 SQL+merge | ✅ | mysql 真客户端对拍；分支/合并/冲突 e2e |
 | M5 CBF 列存+AP 执行+物化 | ✅ | columnar 12 测；AP 集成测试（CBF+WAL overlay 合并）|
 | M6 基准 | ✅ | benches/results/*.json（TP/组提交/分支/恢复/AP）|
-| M7 slt 基线 | ✅ | tests/slt 9/9 语料全绿（含 008 JOIN、009 checkpoint 可见性）+ BASELINE.md |
+| M7 slt 基线 | ✅ | tests/slt 10/10 语料全绿（含 008 JOIN、009 checkpoint 可见性、010 游标/事务）+ BASELINE.md |
 
 **核心数字**（进程内引擎天花板，详见 benches/results/README.md）：
 
