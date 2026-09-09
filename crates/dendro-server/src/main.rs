@@ -309,13 +309,18 @@ fn main() {
             }
         }
         Cmd::BenchCompress { rows, out } => {
-            match dendro_server::bench::compression_curve(rows, &out) {
-                Ok(()) => println!("compression curve written: {}", out.display()),
-                Err(e) => {
-                    eprintln!("compression curve failed: {e}");
-                    std::process::exit(1);
+            // M-3 Q 曲线：多行数阶梯采样（1k/10k/rows），JSON 各自落盘
+            let mut sizes: Vec<usize> = vec![1_000.min(rows), 10_000.min(rows), rows];
+            sizes.sort();
+            sizes.dedup();
+            for n in sizes {
+                let path = out.with_extension(format!("{n}.json"));
+                match dendro_server::bench::compression_curve(n, &path) {
+                    Ok(()) => println!("  {n} rows → {}", path.display()),
+                    Err(e) => eprintln!("  {n} rows failed: {e}"),
                 }
             }
+            println!("compression curves done → {}", out.parent().unwrap_or(&out).display());
         }
         Cmd::Bench { out } => {
             dendro_server::bench::run_all(&out);
