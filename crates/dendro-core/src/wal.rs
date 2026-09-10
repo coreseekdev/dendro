@@ -434,8 +434,9 @@ impl WalWriter {
         }
         let frame = encode_frame(ty, seq, payload);
         let _size = frame.len();
-        let mut full = false;
+        let full;
         {
+
             let mut g = self.shared.lock();
             if g.buf.is_empty() {
                 g.min_seq = seq;
