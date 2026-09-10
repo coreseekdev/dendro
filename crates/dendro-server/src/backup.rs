@@ -52,7 +52,9 @@ pub fn backup_dir(src_root: &Path, dst_root: &Path) -> Result<(usize, u64), ObjE
 /// 递归拷贝 `cur` 下全部文件到 `dst_root/<相对 root 的路径>`；
 /// `skip`（相对 root 的前缀，如 "manifest/"）用于数据阶段跳过 manifest；
 /// `""` = 不跳过。返回 (文件数, 字节数)。目标已存在同路径文件则跳过
-/// （append-only ⇒ 同路径同内容，幂等）。
+/// （append-only ⇒ 同路径同内容，幂等；例外：WAL 段追加模式下**当前打开
+/// 段**会增长——但同尺寸 ⇒ 同字节仍成立（文件只增长），尺寸相等跳过安全，
+/// 中途拷贝的撕裂尾由恢复端容忍，且打开段必为该 epoch 快照的最后一段）。
 fn copy_tree_rooted(
     cur: &Path,
     dst_root: &Path,
@@ -84,9 +86,10 @@ fn copy_tree_rooted(
         let target = dst_root.join(rel);
         files += 1; // 计数含幂等跳过者（调用方以"是否见过对象"判断，非拷贝数）
         if let Ok(dst_meta) = std::fs::metadata(&target) {
-            // 幂等 + 守卫（第五轮 P1）：append-only ⇒ 同路径同内容；但上次
-            // 中断可能留下**截断文件**（旧版直接 fs::copy 非原子）——尺寸
-            // 不符即重拷修复，绝不让撕裂文件固化。
+            // 幂等 + 守卫（第五轮 P1）：append-only ⇒ 同路径同内容（WAL
+            // 打开段例外：只增长，同尺寸仍 ⇒ 同字节）；但上次中断可能留下
+            // **截断文件**（旧版直接 fs::copy 非原子）——尺寸不符即重拷
+            // 修复，绝不让撕裂文件固化。
             if dst_meta.len() == p.metadata().map_err(|e| ObjError::Io(e.to_string()))?.len() {
                 continue;
             }

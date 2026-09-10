@@ -43,12 +43,11 @@ fn seed_db(dir: &std::path::Path) {
 }
 
 /// 把 {dir}/wal/main/e*/ 下第一个段的帧 0 的 len 字段改成 u32::MAX
-fn corrupt_first_frame_len(dir: &std::path::Path) -> usize {
-    let seg = find_first_segment(dir);
-    let mut data = std::fs::read(&seg).unwrap();
+fn corrupt_frame_len_at(seg: &std::path::Path) -> usize {
+    let mut data = std::fs::read(seg).unwrap();
     assert!(data.len() > HEADER_LEN);
     data[16..20].copy_from_slice(&u32::MAX.to_le_bytes());
-    std::fs::write(&seg, &data).unwrap();
+    std::fs::write(seg, &data).unwrap();
     data.len()
 }
 
@@ -147,7 +146,19 @@ fn open_rejects_corrupted_wal_segment() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     seed_db_closed(&dir);
-    corrupt_first_frame_len(&dir);
+    // 多段化（小段阈值）确保被破坏的是**非最后段**：最后一段的帧错误按
+    // 撕裂写容忍（追加模式 P2-6e 合同），非最后段损坏仍严格报错
+    let first = find_first_segment(&dir);
+    let mut target = first.clone();
+    let mut segs: Vec<std::path::PathBuf> = walk(first.parent().unwrap())
+        .into_iter()
+        .filter(|p| p.extension().map(|x| x == "wal").unwrap_or(false))
+        .collect();
+    segs.sort();
+    if segs.len() > 1 {
+        target = segs[0].clone();
+    }
+    corrupt_frame_len_at(&target);
     // len=u32::MAX 曾经会直接越界 panic；现在必须返回 Err。
     // 惰性打开（S-1）后恢复回放发生在分支首次触达——损坏在触达时暴露。
     let db = match Database::open(opts_store(StoreConfig::LocalDir(dir.clone()))) {
@@ -166,15 +177,23 @@ fn open_rejects_corrupted_wal_segment() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// seed + **优雅关闭**：close_graceful 封段（trailer 落盘）→ 严格校验合同
+/// seed + **优雅关闭**：close_graceful 封段（trailer 落盘）→ 严格校验合同。
+/// 小段阈值（4KB）强制多段，确保存在"非最后段"可测严格路径
 fn seed_db_closed(dir: &std::path::Path) {
-    let db = Database::open(opts_store(StoreConfig::LocalDir(dir.to_path_buf()))).unwrap();
+    let db = Database::open(DbOptions {
+        wal_segment_bytes: 4096,
+        ..opts_store(StoreConfig::LocalDir(dir.to_path_buf()))
+    })
+    .unwrap();
     let mut s = db.new_session();
     s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
         .unwrap();
-    for i in 0..3 {
-        s.exec(&format!("INSERT INTO t VALUES ({i}, 'v{i}')"))
-            .unwrap();
+    // 足量数据跨段（4KB 阈值 → 多段；带填充确保字节量）
+    for i in 0..200 {
+        s.exec(&format!(
+            "INSERT INTO t VALUES ({i}, 'value-{i}-padding-padding-padding')"
+        ))
+        .unwrap();
     }
     drop(s);
     db.shutdown();

@@ -98,6 +98,7 @@ impl ObjStore for LocalObjStore {
 
     fn append(&self, path: &str, data: &[u8]) -> ObjResult<()> {
         let p = self.full(path)?;
+        let parent_existed = p.parent().map(|d| d.exists()).unwrap_or(true);
         if let Some(parent) = p.parent() {
             fs::create_dir_all(parent).map_err(|e| map_io(e, &p))?;
         }
@@ -110,11 +111,19 @@ impl ObjStore for LocalObjStore {
         f.write_all(data).map_err(|e| map_io(e, &p))?;
         f.sync_all().map_err(|e| map_io(e, &p))?;
         if !existed {
-            // 目录项持久化：首建的文件若目录项未落盘，掉电后文件消失——
-            // 而 Group 提交者已按 durable ack（每段一次，成本可摊薄）
+            // 目录项持久化链（审计 R5-2）：文件已 fsync，但目录项/新建的
+            // epoch 目录本身可能未落盘——掉电后整个目录（含已 fsync 的段）
+            // 消失 = 已 ack 提交丢失。父目录 + （新建时的）祖父目录都要
+            // fsync。失败**上抛**：目录项不持久 = ack 不安全，调用方按
+            // Uncherent 毒化（每段一次，成本可摊薄）。
             if let Some(parent) = p.parent() {
-                if let Ok(d) = fs::File::open(parent) {
-                    let _ = d.sync_all();
+                let d = fs::File::open(parent).map_err(|e| map_io(e, &p))?;
+                d.sync_all().map_err(|e| map_io(e, &p))?;
+                if !parent_existed {
+                    if let Some(gp) = parent.parent() {
+                        let gd = fs::File::open(gp).map_err(|e| map_io(e, &p))?;
+                        gd.sync_all().map_err(|e| map_io(e, &p))?;
+                    }
                 }
             }
         }
