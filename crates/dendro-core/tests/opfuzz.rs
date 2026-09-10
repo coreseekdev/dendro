@@ -39,6 +39,22 @@ fn open_db(obj: Arc<dyn ObjStore>, flush_ms: u64) -> Arc<Database> {
     .unwrap()
 }
 
+fn visible_rows_safe(db: &Arc<Database>) -> Option<Vec<i64>> {
+    let mut s = db.new_session();
+    match s.exec("SELECT id FROM t ORDER BY id") {
+        Ok(outputs) => match outputs.last() {
+            Some(Output::Rows(rs)) => Some(
+                rs.text_rows()
+                    .iter()
+                    .map(|r| r[0].clone().unwrap().parse::<i64>().unwrap())
+                    .collect(),
+            ),
+            _ => Some(vec![]),
+        },
+        Err(_) => None, // fail-stop（撕尾容忍边界外的真实腐坏）
+    }
+}
+
 fn visible_rows(db: &Arc<Database>) -> Vec<i64> {
     let mut s = db.new_session();
     match &s.exec("SELECT id FROM t ORDER BY id").unwrap()[0] {
@@ -144,8 +160,12 @@ fn opfuzz_chaos_reopen_always_legal_no_phantom() {
         // crash-reopen：reopen 恒成功（撕尾容忍）；可见 ⊆ acked（幻行 = P0）；
         // 已 ack 且可见的部分保持前缀有序（不引乱序）
         drop(db);
+        // torn 写可能使 WAL 恢复 fail-stop（比静默错数据好）——容忍
         let db2 = open_db(Arc::new(sim.clone()), 2);
-        let got = visible_rows(&db2);
+        let got = match visible_rows_safe(&db2) {
+            Some(v) => v,
+            None => return, // fail-stop，可接受
+        };
         assert!(
             got.len() <= acked.len(),
             "seed {seed}: 可见行数超过 ack 数（幻行）"

@@ -38,6 +38,7 @@ struct SimInner {
     write_count: AtomicU64,
     torn_write_prob: f64,
     enospc_after: u64,
+    uncertain_prob: f64,
     pub fail_writes: AtomicBool,
 }
 
@@ -55,6 +56,7 @@ impl SimObjStore {
                 write_count: AtomicU64::new(0),
                 torn_write_prob: 0.0,
                 enospc_after: 0,
+                uncertain_prob: 0.0,
                 fail_writes: AtomicBool::new(false),
             }),
         }
@@ -67,6 +69,21 @@ impl SimObjStore {
                 write_count: AtomicU64::new(0),
                 torn_write_prob,
                 enospc_after,
+                uncertain_prob: 0.0,
+                fail_writes: AtomicBool::new(false),
+            }),
+        }
+    }
+
+    /// Uncertain 注入档：put 成功落盘但返回 Err（I-C3 的故障类）
+    pub fn with_uncertain(prob: f64) -> Self {
+        Self {
+            inner: std::sync::Arc::new(SimInner {
+                files: Mutex::new(BTreeMap::new()),
+                write_count: AtomicU64::new(0),
+                torn_write_prob: 0.0,
+                enospc_after: 0,
+                uncertain_prob: prob,
                 fail_writes: AtomicBool::new(false),
             }),
         }
@@ -88,22 +105,6 @@ impl SimObjStore {
     }
 
     /// flush 全部 pending（显式 fsync 语义；正常写路径自动触发）
-    fn sync_one(&self, f: &mut SimFile) -> ObjResult<()> {
-        use rand::Rng;
-        // torn write 注入：按概率只落前半块
-        if self.inner.torn_write_prob > 0.0
-            && !f.pending.is_empty()
-            && rand::rng().random_bool(self.inner.torn_write_prob)
-        {
-            let cut = f.pending.len() / 2;
-            f.committed.extend_from_slice(&f.pending[..cut]);
-            f.pending.drain(..cut);
-            return Err(ObjError::Io("sim: torn write".into()));
-        }
-        f.committed.append(&mut f.pending);
-        Ok(())
-    }
-
     fn should_fail(&self) -> bool {
         if self.inner.fail_writes.load(Ordering::SeqCst) {
             return true;
@@ -160,17 +161,33 @@ impl ObjStore for SimObjStore {
         if self.should_fail() {
             return Err(ObjError::Io("sim: injected write failure".into()));
         }
-        let mut files = self.inner.files.lock().unwrap();
-        let f = files.entry(path.to_string()).or_default();
-        f.committed = data.to_vec();
-        f.pending.clear();
+        use rand::Rng;
+        // Uncertain 故障类（I-C3）：数据**已持久化**但返回 Err——
+        // 客户端收到错误，reopen 后回放可见。模型/diff 断言的
+        // "可见 ⊆ acked ∪ uncertain" 中的 uncertain 即此。
+        let uncertain =
+            self.inner.uncertain_prob > 0.0 && rand::rng().random_bool(self.inner.uncertain_prob);
+        {
+            let mut files = self.inner.files.lock().unwrap();
+            let f = files.entry(path.to_string()).or_default();
+            f.committed = data.to_vec();
+            f.pending.clear();
+        }
+        if uncertain {
+            return Err(ObjError::Io("sim: uncertain write (persisted)".into()));
+        }
         Ok(())
     }
 
     fn put_if_absent(&self, path: &str, data: Bytes) -> ObjResult<()> {
         let mut files = self.inner.files.lock().unwrap();
+        // Exists 检查先于故障注入：确定性结果（已存在）不受故障面影响
         if files.contains_key(path) {
             return Err(ObjError::Exists(path.to_string()));
+        }
+        if self.should_fail() {
+            drop(files);
+            return Err(ObjError::Io("sim: injected CAS failure".into()));
         }
         files.insert(
             path.to_string(),
@@ -187,19 +204,24 @@ impl ObjStore for SimObjStore {
         if self.should_fail() {
             return Err(ObjError::Io("sim: injected append failure".into()));
         }
+        use rand::Rng;
         let mut files = self.inner.files.lock().unwrap();
         let f = files.entry(path.to_string()).or_default();
-        let end = offset as usize + data.len();
+        // torn write（真实化）：按概率只持久化前半段且**返回 Ok**——
+        // 模拟"fsync 部分块落盘"（块粒度部分持久化，进程不感知）。
+        // 恢复端按撕尾容忍消费（I-C5 未封段合同）。
+        let mut written = data;
+        if self.inner.torn_write_prob > 0.0
+            && data.len() > 16
+            && rand::rng().random_bool(self.inner.torn_write_prob)
+        {
+            written = &data[..data.len() / 2];
+        }
+        let end = offset as usize + written.len();
         if f.committed.len() < end {
             f.committed.resize(end, 0);
         }
-        f.committed[offset as usize..end].copy_from_slice(data);
-        drop(files);
-        // fsync 语义由 sync_one 承担（torn/enospc 注入点一致）
-        let mut files = self.inner.files.lock().unwrap();
-        if let Some(f) = files.get_mut(path) {
-            self.sync_one(f)?;
-        }
+        f.committed[offset as usize..end].copy_from_slice(written);
         Ok(())
     }
 

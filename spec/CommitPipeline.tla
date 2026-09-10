@@ -96,13 +96,17 @@ Install(ts) ==
     /\ lost' = lost
 
 (* 环境动作：写入丢失（AppendFail / 非持久崩溃）——未 durable 的 in-flight
- * 被丢弃，永不安装、永不 ack（客户端收到错误） *)
+ * 被丢弃，永不安装、永不 ack（客户端收到错误）。
+ * 摘除必须重算水位（R8-WM 修复回灌：任何摘除路径同公式）。 *)
 UltimateDrop(ts) ==
     /\ ts \in inFlight
     /\ ts \notin durable
     /\ inFlight' = inFlight \ {ts}
     /\ lost' = lost \union {ts}
-    /\ UNCHANGED <<nextSeq, durable, installed, acked, waterMark, installedMax>>
+    /\ waterMark' = Max2(waterMark,
+                          IF inFlight' = {} THEN installedMax
+                          ELSE Min2(installedMax, MinOf(inFlight') - 1))
+    /\ UNCHANGED <<nextSeq, durable, installed, acked, installedMax>>
 
 (* 环境动作：Uncertain（帧已 durable 但客户端收到错误）——in-flight 摘除，
  * ts 既不安装也不 lost（本进程内"结果未知"；落盘帧留 crash-replay 裁决）。
@@ -112,7 +116,10 @@ UncertainDrop(ts) ==
     /\ ts \in durable
     /\ inFlight' = inFlight \ {ts}
     /\ lost' = lost \union {ts}
-    /\ UNCHANGED <<nextSeq, durable, installed, acked, waterMark, installedMax>>
+    /\ waterMark' = Max2(waterMark,
+                          IF inFlight' = {} THEN installedMax
+                          ELSE Min2(installedMax, MinOf(inFlight') - 1))
+    /\ UNCHANGED <<nextSeq, durable, installed, acked, installedMax>>
 
 Next ==
     \E ts \in AgSeq :

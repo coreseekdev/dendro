@@ -7,7 +7,8 @@
 
 ## 0. 状态
 
-- L1（Kani 无 panic harness）：🚧 verification/kani/ 起步（WAL FrameIter）
+- L1（Kani 无 panic harness）：✅ verification/kani/wal_frame.rs（3 harness：
+  任意输入不 panic / 编解码对偶 / 撕尾容忍；运行 `kani --standalone verification/kani/wal_frame.rs`）
 - L2（TLA+ 模型检查）：✅ spec/CommitPipeline.tla 首个模型全空间绿
   （1001 状态，5 安全不变式 + StallFreedom 活性），**且已产出实现修复**
   （R8-WM in-flight 摘除不推进水位——TLC 反例→实现修复→回归测试闭环）
@@ -23,8 +24,8 @@
 
 | # | 不变式 | 内容 | 违反后果 | 检测 |
 |---|--------|------|---------|------|
-| I-A1 | **AckedInstalled** | 已 ack 提交 ⊆ installed——ack 先于安装 = 幽灵/丢失根源 | ack 数据不可见 | TLC ✅ + opfuzz clean |
-| I-A2 | **WatermarkVisible** | ∀ seq ≤ watermark：installed ∪ lost——可见性不含未决提交 | 事务内可见性翻转（重复读违约，R5 实证） | TLC ✅ + repeatable-read 回归 |
+| I-A1 | **AckedInstalled** | 已 ack 提交 ⊆ installed——ack 先于安装 = 幽灵/丢失根源 | ack 数据不可见 | TLC ✅（**机制锁**：模型内 ack 与安装同动作原子发生，无独立判别力；适用域 durability ∈ {Group, Always}——NoWait 设计性不成立）+ opfuzz clean |
+| I-A2 | **WatermarkVisible** | 快照读到的每行其 ts ≤ watermark 且已安装（实现无持久 lost 集；validate 失败消耗 seq 产生合法空洞） | 事务内可见性翻转（重复读违约，R5 实证） | TLC ✅ + repeatable-read 回归 |
 | I-A3 | **WatermarkBound** | watermark ≤ installed_max | 可见性超前 = 未安装读 | TLC ✅ |
 | I-A4 | **InFlightSane** | in-flight ∩ (installed ∪ lost) = ∅ | 摘除不完备 | TLC ✅ |
 | I-A5 | **Disjoint** | installed ∩ lost = ∅ | 双重结算 | TLC ✅ |
@@ -48,7 +49,7 @@
 |---|--------|------|---------|---------|
 | I-C1 | AckedSurvives | Group ack 提交在 crash+reopen 后完整可见 | 丢 ack 数据（P0） | opfuzz clean ✅ |
 | I-C2 | ReopenLegal | 任意故障序列后 reopen 恒成功、帧流 CRC 合法前缀可用 | 打不开库 | opfuzz chaos ✅ |
-| I-C3 | NoPhantom | 可见行 ⊆ 已 ack 行（未 ack 帧永不回放为可见） | 幻行 | opfuzz chaos ✅ |
+| I-C3 | NoPhantom | 可见行 ⊆ acked ∪ uncertain-durable（Uncertain = 已持久化但客户端收到错误，reopen 后可见且未 ack——SPEC 02 §3.5） | 幻行 | opfuzz chaos（uncertain 注入档 🚧 待接） |
 | I-C4 | 段退休安全 | retire_bound ≤ 全部已安装前沿（在途帧段不可退休） | reopen 丢已 ack 数据（R6 实证） | retirement_bounded ✅ |
 | I-C5 | 撕尾合同二分 | 已封段严格 / 未封段容忍 | 两个方向各有一种静默丢 | 双合同测试 ✅ |
 | I-C6 | FrameIter 不可信输入 | 任意字节输入不 panic（Err/None 而非 UB） | 网络可达 DoS | 边界测试 ✅ + Kani harness 🚧 |
@@ -61,6 +62,28 @@
 | I-D1 | 分支上限原子 | CAS 重试以最新 manifest 重评估（预检只是快路径） | race 测试 ✅ |
 | I-D2 | 三方合并正确 | base 左右三方归并，行冲突显式 40001 | 合并冲突测试 ✅（criss-cross 多父 ⬜）|
 | I-D3 | manifest CAS 单调 | 版本号递增、发布原子（失败重试不留半状态） | 隐式（乐观提交重试）⬜ 显式测试 |
+
+### I-F fencing / 租约（⬜ reviewer 补充：I-F3 P0）
+
+| # | 不变式 | 内容 | 检测现状 |
+|---|--------|------|---------|
+| I-F1 | epoch 唯一单调 | acquire 条件写领取 max+1，无物两主 | multi_node 8 项 ✅（须入账本目录）|
+| I-F2 | 过期写者零新副作用 | 租约过期后无新 WAL 段/manifest 推进 | ⚠️ 缺口：flush_loop 不查租约（fence.rs 诚实边界承认靠回放消解）|
+| I-F3 | 脑裂收敛 | 双 epoch 并发 ack 的提交恢复后收敛为高 epoch 串行历史 | ⬜ P0 零覆盖（opfuzz 双 Database 扩档）|
+
+### I-G GC 墓碑（⬜）
+
+| # | 不变式 | 内容 | 检测现状 |
+|---|--------|------|---------|
+| I-G1 | 墓碑与停止引用同版本原子发布 | 滞后读者不读被删对象 | ⬜ 无专项测试 |
+| I-G2 | 保留窗口覆盖假设 | retention ≥ 最大读者停顿 ∧ keep-16 ≥ 读者代数 | ⬜ 假设未成文 |
+
+### I-H 列存一致（⬜）
+
+| # | 不变式 | 内容 | 检测现状 |
+|---|--------|------|---------|
+| I-H1 | AP/TP 同快照一致 | col_segments + col_deletes ≡ 行树同 checkpoint 可见行 | ⬜ 差分对拍缺 |
+| I-H2 | col_deletes 与 reinsert 抑制 | 重插 key 不被删抑制 | ⬜ |
 
 ### I-E 资源守卫（✅ 已闭合）
 
@@ -111,3 +134,5 @@ standalone harness 口径）、Verus（未引入；触发条件见 basalt §4.1 
 | 12 | 段退休含在途帧（R6-P0） | 退休界与安装前沿解耦缺失 | 复核 agent 探针 | retire_bound(covered) + 回归 |
 | 13 | 毒化热旋 100% CPU（R4-F1） | 状态机停等缺失 | 复核 agent CPU tick 探针 | 毒化挂起 + CPU tick 回归 |
 | 14 | **in-flight 摘除不推进水位（R8-WM）** | 摘除路径前沿缺失 | **TLA+ liveness（StallFreedom）反例** ✅ 首例 | recompute_watermark_on_removal 统一 + watermark_recovers 回归 |
+| 15 | ConnGuard exit 非原子 RMW（并发 enter 覆盖 → 慢泄漏 + 伪 53300） | 计数器 RMW 竞态 | 形式化评审 agent 探针（8 线程×30 万次，泄漏 62 + 35901 伪拒绝） | exit 对称 fetch_update + 并发配额测试 |
+| 16 | 模型 drop 路径未回灌水位重算（模型-实现精化桥断裂）+ Makefile tail 吞 exit 13 | 精化桥断裂 + 门禁失效 | 形式化评审 agent 复验（账本 ✅ 不实） | drop 动作补 frontier 公式 + Makefile 去 tail |

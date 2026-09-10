@@ -181,11 +181,13 @@ impl ConnGuard {
         }
     }
     pub fn exit(&self) {
-        let prev = self.cur.load(std::sync::atomic::Ordering::Acquire);
-        if prev > 0 {
-            self.cur
-                .store(prev - 1, std::sync::atomic::Ordering::Release);
-        }
+        // 与 enter 对称的原子 RMW（R7 评审 #15）：load+store 在并发
+        // enter 下会互相覆盖——慢泄漏至永久 53300
+        let _ = self.cur.fetch_update(
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+            |c| (c > 0).then_some(c - 1),
+        );
     }
     pub fn active(&self) -> usize {
         self.cur.load(std::sync::atomic::Ordering::Acquire)

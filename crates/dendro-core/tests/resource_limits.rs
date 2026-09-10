@@ -413,8 +413,8 @@ fn watermark_recovers_when_inflight_drains_via_failures() {
             _ => 0,
         }
     };
-    assert!(
-        got >= acked_n.min(1),
-        "已 ack 行在无新提交时不可见（水位未随摘除推进）：got={got} acked={acked_n}"
+    assert_eq!(
+        got, acked_n,
+        "已 ack 行在无新提交时必须全部可见（水位随摘除精确推进）：got={got} acked={acked_n}"
     );
 }
