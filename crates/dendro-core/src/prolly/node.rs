@@ -156,9 +156,15 @@ impl Node {
     }
 
     pub fn key(&self, i: usize) -> Vec<u8> {
+        self.key_slice(i).to_vec()
+    }
+
+    /// 第 i 个键的借用切片（P2-6 热路径去分配：lower_bound/lookup 的逐比较
+    /// `key()` 曾每次二分步分配一个 Vec——节点数据被 Node 持有，借用零成本）
+    pub fn key_slice(&self, i: usize) -> &[u8] {
         let off = self.rd_u32(self.key_offs_off() + i * 4) as usize;
         let len = self.rd_u16(self.key_lens_off() + i * 2) as usize;
-        self.data[self.key_bytes_off() + off..self.key_bytes_off() + off + len].to_vec()
+        &self.data[self.key_bytes_off() + off..self.key_bytes_off() + off + len]
     }
 
     /// 条目值（叶=Item 字节拷贝；内部=Child 解码）
@@ -192,7 +198,7 @@ impl Node {
         let mut hi = self.count();
         while lo < hi {
             let mid = (lo + hi) / 2;
-            if self.key(mid).as_slice() < key {
+            if self.key_slice(mid) < key {
                 lo = mid + 1;
             } else {
                 hi = mid;

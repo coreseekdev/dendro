@@ -62,7 +62,7 @@ fn diff_nodes(store: &Arc<NodeStore>, a: &Hash, b: &Hash, out: &mut Vec<Change>)
             let mut ia = 0usize;
             let mut ib = 0usize;
             while ia < na.count() || ib < nb.count() {
-                if ib >= nb.count() || (ia < na.count() && na.key(ia) < nb.key(ib)) {
+                if ib >= nb.count() || (ia < na.count() && na.key_slice(ia) < nb.key_slice(ib)) {
                     // 仅 a 有：整棵删除
                     let child = match na.value(ia) {
                         EntryVal::Child(c, _) => c,
@@ -70,7 +70,7 @@ fn diff_nodes(store: &Arc<NodeStore>, a: &Hash, b: &Hash, out: &mut Vec<Change>)
                     };
                     emit_subtree(store, &child, None, out)?;
                     ia += 1;
-                } else if ia >= na.count() || na.key(ia) > nb.key(ib) {
+                } else if ia >= na.count() || na.key_slice(ia) > nb.key_slice(ib) {
                     let child = match nb.value(ib) {
                         EntryVal::Child(c, _) => c,
                         _ => unreachable!(),
@@ -98,14 +98,14 @@ fn diff_nodes(store: &Arc<NodeStore>, a: &Hash, b: &Hash, out: &mut Vec<Change>)
             let mut ia = 0usize;
             let mut ib = 0usize;
             while ia < na.count() || ib < nb.count() {
-                if ib >= nb.count() || (ia < na.count() && na.key(ia) < nb.key(ib)) {
+                if ib >= nb.count() || (ia < na.count() && na.key_slice(ia) < nb.key_slice(ib)) {
                     out.push(Change {
                         key: na.key(ia),
                         old: Some(leaf_val(&na, ia)),
                         new: None,
                     });
                     ia += 1;
-                } else if ia >= na.count() || na.key(ia) > nb.key(ib) {
+                } else if ia >= na.count() || na.key_slice(ia) > nb.key_slice(ib) {
                     out.push(Change {
                         key: nb.key(ib),
                         old: None,

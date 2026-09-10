@@ -286,12 +286,10 @@ fn merge_leaf(node: &Node, muts: &[(Vec<u8>, Mutation)]) -> Result<Vec<(Vec<u8>,
     let mut ei = 0usize;
     let mut mi = 0usize;
     while ei < node.count() || mi < muts.len() {
-        if mi >= muts.len()
-            || (ei < node.count() && node.key(ei).as_slice() < muts[mi].0.as_slice())
-        {
+        if mi >= muts.len() || (ei < node.count() && node.key_slice(ei) < muts[mi].0.as_slice()) {
             out.push((node.key(ei), node.value(ei)));
             ei += 1;
-        } else if ei >= node.count() || node.key(ei).as_slice() > muts[mi].0.as_slice() {
+        } else if ei >= node.count() || node.key_slice(ei) > muts[mi].0.as_slice() {
             match &muts[mi].1 {
                 Mutation::Put(v) => out.push((muts[mi].0.clone(), EntryVal::Item(v.clone()))),
                 Mutation::Delete => {}

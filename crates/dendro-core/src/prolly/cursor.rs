@@ -151,7 +151,7 @@ pub fn lookup(store: &NodeStore, root: &Hash, key: &[u8]) -> Result<Option<Vec<u
         }
         match node.value(i) {
             EntryVal::Item(v) => {
-                if node.key(i).as_slice() == key {
+                if node.key_slice(i) == key {
                     return Ok(Some(v));
                 }
                 return Ok(None);
