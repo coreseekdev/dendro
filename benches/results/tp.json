@@ -1,11 +1,11 @@
 {
   "suite": "tp",
   "rows": [
-  {"name": "oltp_insert", "value": 166043.679, "unit": "txn/s"},
-  {"name": "oltp_insert_p50_us", "value": 5.460, "unit": "us"},
-  {"name": "oltp_insert_p99_us", "value": 12.604, "unit": "us"},
-  {"name": "oltp_point_select", "value": 188764.782, "unit": "txn/s"},
-  {"name": "oltp_point_select_p50_us", "value": 5.160, "unit": "us"},
-  {"name": "oltp_point_select_p99_us", "value": 5.801, "unit": "us"}
+  {"name": "oltp_insert", "value": 134199.162, "unit": "txn/s"},
+  {"name": "oltp_insert_p50_us", "value": 5.700, "unit": "us"},
+  {"name": "oltp_insert_p99_us", "value": 18.505, "unit": "us"},
+  {"name": "oltp_point_select", "value": 172653.102, "unit": "txn/s"},
+  {"name": "oltp_point_select_p50_us", "value": 5.280, "unit": "us"},
+  {"name": "oltp_point_select_p99_us", "value": 11.271, "unit": "us"}
   ]
 }

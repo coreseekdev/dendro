@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+lru.workspace = true
 thiserror.workspace = true
 parking_lot.workspace = true
 arc-swap.workspace = true

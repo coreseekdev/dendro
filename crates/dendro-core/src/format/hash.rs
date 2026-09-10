@@ -23,6 +23,11 @@ impl Hash {
         &self.0
     }
 
+    /// 分片/布桶用 64 位视图（SHA-512 前缀，均匀分布；非内容寻址身份）
+    pub fn as_u64(&self) -> u64 {
+        u64::from_be_bytes(self.0[..8].try_into().unwrap())
+    }
+
     pub fn from_bytes(a: [u8; 20]) -> Self {
         Hash(a)
     }

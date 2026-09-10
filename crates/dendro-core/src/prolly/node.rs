@@ -21,6 +21,59 @@ pub struct Node {
     data: Arc<Vec<u8>>,
     /// 完整 chunk 地址 = H([type_tag] ++ data)，构建/加载时算一次
     addr: Hash,
+    /// 分区偏移（P2-6d）：构造时一次 O(count) 解析。此前每次 `value()`
+    /// 重走两遍 Σ键长/Σ值长 循环、二分查找每步比较都带 O(count) 推导
+    /// ——点查实为 O(n log n)（perf 实证 val_offs_off 链占 39.7% CPU）
+    layout: NodeLayout,
+}
+
+/// 节点分区偏移（一次性解析，Copy 零成本）
+#[derive(Clone, Copy)]
+struct NodeLayout {
+    key_lens_off: usize,
+    key_bytes_off: usize,
+    key_offs_off: usize,
+    val_lens_off: usize,
+    val_bytes_off: usize,
+    val_offs_off: usize,
+    #[allow(dead_code)]
+    addr_slots_off: usize,
+}
+
+impl Node {
+    /// 从 data 一次解析全部分区偏移（两个 Σ 循环；构造时付一次）
+    fn parse_layout(data: &[u8]) -> NodeLayout {
+        let count = u32::from_le_bytes(data[1..5].try_into().unwrap()) as usize;
+        let key_lens_off = 5;
+        let key_bytes_off = key_lens_off + count * 2;
+        let mut key_offs_off = key_bytes_off;
+        for i in 0..count {
+            key_offs_off += u16::from_le_bytes(
+                data[key_lens_off + i * 2..key_lens_off + i * 2 + 2]
+                    .try_into()
+                    .unwrap(),
+            ) as usize;
+        }
+        let val_lens_off = key_offs_off + count * 4;
+        let val_bytes_off = val_lens_off + count * 4;
+        let mut val_offs_off = val_bytes_off;
+        for i in 0..count {
+            val_offs_off += u32::from_le_bytes(
+                data[val_lens_off + i * 4..val_lens_off + i * 4 + 4]
+                    .try_into()
+                    .unwrap(),
+            ) as usize;
+        }
+        NodeLayout {
+            key_lens_off,
+            key_bytes_off,
+            key_offs_off,
+            val_lens_off,
+            val_bytes_off,
+            val_offs_off,
+            addr_slots_off: val_offs_off + count * 4,
+        }
+    }
 }
 
 /// 叶/内部统一的条目值
@@ -95,7 +148,15 @@ impl Node {
         buf.push(super::super::objstore::cas::ChunkType::Node as u8);
         buf.extend_from_slice(&data);
         let addr = Hash::of(&buf);
-        Node { data, addr }
+        let layout = Self::parse_layout(&data);
+        Node { data, addr, layout }
+    }
+
+    /// 读取路径构造：地址即查询键（内容寻址身份由写入端哈希 + crc32c
+    /// 校验保证），跳过 SHA-512 重算——每次缓存未命中省一次全节点哈希
+    pub fn from_arc_with_addr(data: Arc<Vec<u8>>, addr: Hash) -> Node {
+        let layout = Self::parse_layout(&data);
+        Node { data, addr, layout }
     }
 
     pub fn data(&self) -> &[u8] {
@@ -120,39 +181,25 @@ impl Node {
         self.rd_u32(1) as usize
     }
     fn key_lens_off(&self) -> usize {
-        5
+        self.layout.key_lens_off
     }
     fn key_bytes_off(&self) -> usize {
-        self.key_lens_off() + self.count() * 2
+        self.layout.key_bytes_off
     }
     fn key_offs_off(&self) -> usize {
-        self.key_bytes_off() + self.keys_total_len()
-    }
-    fn keys_total_len(&self) -> usize {
-        let mut t = 0;
-        for i in 0..self.count() {
-            t += self.rd_u16(self.key_lens_off() + i * 2) as usize;
-        }
-        t
+        self.layout.key_offs_off
     }
     fn val_lens_off(&self) -> usize {
-        self.key_offs_off() + self.count() * 4
+        self.layout.val_lens_off
     }
     fn val_bytes_off(&self) -> usize {
-        self.val_lens_off() + self.count() * 4
-    }
-    fn vals_total_len(&self) -> usize {
-        let mut t = 0;
-        for i in 0..self.count() {
-            t += self.rd_u32(self.val_lens_off() + i * 4) as usize;
-        }
-        t
+        self.layout.val_bytes_off
     }
     fn val_offs_off(&self) -> usize {
-        self.val_bytes_off() + self.vals_total_len()
+        self.layout.val_offs_off
     }
     fn addr_slots_off(&self) -> usize {
-        self.val_offs_off() + self.count() * 4
+        self.layout.addr_slots_off
     }
 
     pub fn key(&self, i: usize) -> Vec<u8> {

@@ -1,8 +1,8 @@
 {
   "suite": "ap",
   "rows": [
-  {"name": "ap_load_rows_s", "value": 0.750, "unit": "s"},
-  {"name": "ap_group_agg_200000_ms", "value": 72.696, "unit": "ms"},
+  {"name": "ap_load_rows_s", "value": 0.802, "unit": "s"},
+  {"name": "ap_group_agg_200000_ms", "value": 98.161, "unit": "ms"},
   {"name": "ap_groups_200000", "value": 4.000, "unit": "groups"}
   ]
 }
