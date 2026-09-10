@@ -16,7 +16,7 @@
 //! validity 位图独立成区（64B 对齐、LSB-first、Arrow 同构），flags.bit0=1 时省略。
 //!
 //! codec（SPEC 05 §3 + SPEC 08 §5 实证）：
-//! `RAW=0 / BITPACK=1 / RLE_DICT=2 / ZSTD=3 / DELTA=5`。
+//! `RAW=0 / BITPACK=1 / RLE_DICT=2 / ZSTD=3 / FSST=4 / DELTA=5`。
 //!
 //! # v1 相对 SPEC 05 的已文档化偏差/简化
 //!
@@ -39,16 +39,18 @@
 //! - 64B 对齐 + validity 与数据分离 ⇒ 显存拷贝无需重排；
 //! - footer (min,max,null_count) 常驻内存做 zone map 剪枝；
 //! - ZSTD 只经 `codec_choice` 回调进入（冷块，SPEC 08 §1/§5）。
+//! - FSST（高基数文本）非熵编码：字节对齐码流 + 查表展开，GPU 侧可按码本
+//!   展开（码本 2312B 常驻共享内存）；符号表按块内联保证块自描述。
 
 #![forbid(unsafe_code)]
 #![allow(clippy::type_complexity)]
 
 pub mod codec;
 pub mod footer;
+pub mod integrate;
 pub mod reader;
 pub mod stats;
 pub mod writer;
-pub mod integrate;
 
 pub use codec::{choose_codec, CodecId};
 pub use footer::{BlockMeta, CbfFooter, ChunkMeta, RgMeta};
@@ -86,6 +88,8 @@ pub enum Error {
     CodecNotApplicable(CodecId),
     #[error("zstd: {0}")]
     Zstd(String),
+    #[error("fsst: {0}")]
+    Fsst(String),
     #[error("arrow: {0}")]
     Arrow(#[from] arrow::error::ArrowError),
 }
@@ -118,7 +122,12 @@ pub fn read_footer(data: &[u8]) -> Result<CbfFooter> {
 }
 
 /// 解码指定行组的指定列（zone map 剪枝后的按需读取）。
-pub fn read_column_chunk(data: &[u8], footer: &CbfFooter, rg: usize, col: usize) -> Result<ArrayRef> {
+pub fn read_column_chunk(
+    data: &[u8],
+    footer: &CbfFooter,
+    rg: usize,
+    col: usize,
+) -> Result<ArrayRef> {
     reader::read_column_chunk(data, footer, rg, col)
 }
 

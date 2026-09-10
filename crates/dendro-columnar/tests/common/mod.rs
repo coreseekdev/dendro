@@ -47,38 +47,78 @@ pub fn assert_array_eq(expected: &dyn Array, got: &dyn Array, ctx: &str) {
         "{ctx}: null_count mismatch"
     );
     for i in 0..expected.len() {
-        assert_eq!(expected.is_null(i), got.is_null(i), "{ctx}: row {i} null flag");
+        assert_eq!(
+            expected.is_null(i),
+            got.is_null(i),
+            "{ctx}: row {i} null flag"
+        );
         if expected.is_null(i) {
             continue;
         }
         let ok = match expected.data_type() {
             DataType::Boolean => {
-                expected.as_any().downcast_ref::<BooleanArray>().unwrap().value(i)
-                    == got.as_any().downcast_ref::<BooleanArray>().unwrap().value(i)
+                expected
+                    .as_any()
+                    .downcast_ref::<BooleanArray>()
+                    .unwrap()
+                    .value(i)
+                    == got
+                        .as_any()
+                        .downcast_ref::<BooleanArray>()
+                        .unwrap()
+                        .value(i)
             }
             DataType::Int32 => {
-                expected.as_any().downcast_ref::<Int32Array>().unwrap().value(i)
+                expected
+                    .as_any()
+                    .downcast_ref::<Int32Array>()
+                    .unwrap()
+                    .value(i)
                     == got.as_any().downcast_ref::<Int32Array>().unwrap().value(i)
             }
             DataType::Int64 => {
-                expected.as_any().downcast_ref::<Int64Array>().unwrap().value(i)
+                expected
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap()
+                    .value(i)
                     == got.as_any().downcast_ref::<Int64Array>().unwrap().value(i)
             }
             DataType::Float64 => {
-                let a = expected.as_any().downcast_ref::<Float64Array>().unwrap().value(i);
-                let b = got.as_any().downcast_ref::<Float64Array>().unwrap().value(i);
+                let a = expected
+                    .as_any()
+                    .downcast_ref::<Float64Array>()
+                    .unwrap()
+                    .value(i);
+                let b = got
+                    .as_any()
+                    .downcast_ref::<Float64Array>()
+                    .unwrap()
+                    .value(i);
                 a.to_bits() == b.to_bits()
             }
             DataType::Utf8 => {
-                expected.as_any().downcast_ref::<StringArray>().unwrap().value(i)
+                expected
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .unwrap()
+                    .value(i)
                     == got.as_any().downcast_ref::<StringArray>().unwrap().value(i)
             }
             DataType::Binary => {
-                expected.as_any().downcast_ref::<BinaryArray>().unwrap().value(i)
+                expected
+                    .as_any()
+                    .downcast_ref::<BinaryArray>()
+                    .unwrap()
+                    .value(i)
                     == got.as_any().downcast_ref::<BinaryArray>().unwrap().value(i)
             }
             DataType::Date32 => {
-                expected.as_any().downcast_ref::<Date32Array>().unwrap().value(i)
+                expected
+                    .as_any()
+                    .downcast_ref::<Date32Array>()
+                    .unwrap()
+                    .value(i)
                     == got.as_any().downcast_ref::<Date32Array>().unwrap().value(i)
             }
             DataType::Timestamp(arrow::datatypes::TimeUnit::Millisecond, _) => {
@@ -108,7 +148,11 @@ pub fn roundtrip_single_col(
 ) -> (Vec<u8>, dendro_columnar::CbfFooter, Vec<RecordBatch>) {
     use arrow::datatypes::{Field, Schema};
     use dendro_columnar::write_cbf;
-    let schema = std::sync::Arc::new(Schema::new(vec![Field::new(col_name, col.data_type().clone(), true)]));
+    let schema = std::sync::Arc::new(Schema::new(vec![Field::new(
+        col_name,
+        col.data_type().clone(),
+        true,
+    )]));
     let batch = RecordBatch::try_new(schema.clone(), vec![col.clone()]).unwrap();
     let bytes = write_cbf(&[batch], rg_rows, Some(&move |_, _, _| codec)).unwrap();
     let (schema2, batches) = read_cbf(&bytes).unwrap();

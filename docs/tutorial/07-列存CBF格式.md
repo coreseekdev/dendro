@@ -50,7 +50,7 @@ struct BlockHeader {            // 52 字节字段 + 12B 零填充 = 64B
 64B 对齐 + 头部自带统计 ⇒ **GPU/CPU 拿到裸指针就能剪枝、就能解码**，
 不需要先解析容器。
 
-## 3. 五种 codec 的字节布局
+## 3. 六种 codec 的字节布局
 
 | id | 名 | 字节布局 | 适用 | GPU 可解 |
 |----|----|----------|------|:---:|
@@ -58,6 +58,7 @@ struct BlockHeader {            // 52 字节字段 + 12B 零填充 = 64B
 | 1 | BITPACK | `bit_width u8` + LSB-first 位流 | 窄整数 | ✅ 位搬运 |
 | 2 | RLE_DICT | 定宽：`dict_len u32`,`width u8`,字典 RAW,id 流 BITPACK；变宽：`dict_len u32`,`width=0`,`bytes_len u32`,offsets,bytes,id 流 | 低中基数 | ✅ gather |
 | 3 | ZSTD | 整块 zstd（level 在 flags 高位） | 冷块 | ❌ 熵解码 |
+| 4 | FSST | `符号表 2312B` + `每行码偏移 u32×(n+1)` + FSST 码流 | 高基数文本 | ✅ 查表展开 |
 | 5 | DELTA | `baseline u64 LE` + Σ varint(zigzag(v[i]−v[i−1])) | 顺序 pk/ts | ✅ 前缀扫描 |
 
 DELTA 编码示例（顺序列 100, 102, 105）：
@@ -69,6 +70,14 @@ zigzag: 0→0, +2→4, +3→6
        └ baseline 100 (LE)      └varint└varint     顺序 i64 每值 ~1 字节
 ```
 
+FSST（id=4）值得单独说两句：它不压"重复值"（那是 RLE_DICT 的活），压的是
+**字符级的重复模式**——"http://"、"SELECT "、邮箱后缀这种跨行共享的字节片段。
+编码器先采样 ≤16KB 训练一张 255 个符号（1–8 字节长）的码本，每字节查最长
+匹配符号 → 1 字节码；不在码本里的字节走 escape(255)+原字节，**保证无损**。
+解码就是逐码查表展开，无熵解码依赖，字节对齐——所以热层可用，GPU 侧码本
+放共享内存即可。自然文本约 2R；输入 <32KB 自动退化为原样拷贝（码本里
+switch=0），小块无收益也无损失。符号表内联在块里（2312B），块保持自描述。
+
 选择策略（`choose_codec`，采样首行组前 64K 行）：
 
 ```
@@ -77,7 +86,9 @@ zigzag: 0→0, +2→4, +3→6
 整型  其他                   → RAW
 f64                         → RAW              （mantissa 低位近随机，压不动）
 字符串 distinct<20%          → RLE_DICT         （实测低基数 R≈48）
-字符串 其他                  → RAW
+字符串 高基数 & 均长≥6B      → FSST             ← 自然文本 ≈2R，无熵解码
+字符串 其他（短串高基数）    → RAW
+Bytes 高基数                → RAW              （blob 常不可压，FSST 可显式指定）
 ZSTD 只由调用方显式指定（冷块再编码，v2）
 ```
 

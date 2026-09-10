@@ -50,7 +50,7 @@
 Block 头 64B (与 GPU segment/cache line 对齐):
   magic        u16 = 0xCB71
   version      u16 = 1
-  codec_id     u8    // 0 RAW  1 BITPACK  2 RLE_DICT  3 ZSTD  (4 FSST 保留 5 DELTA 保留)
+  codec_id     u8    // 0 RAW  1 BITPACK  2 RLE_DICT  3 ZSTD  4 FSST  5 DELTA
   flags        u8    // bit0: all_non_null(无 validity 区) bit1: sorted
   rows         u32
   null_count   u32
@@ -67,6 +67,9 @@ data 区按 codec:
   RLE_DICT dict 页: {dict_len u32}{width u8}{字典值 RAW}{id 流 BITPACK}
            变宽字典: 字典区 offsets+bytes，id 流纯 u32 ⇒ GPU gather 理想
   ZSTD     整块 zstd(可带级别在 flags 高位)；只用于冷块
+  FSST     [symbol_table 2312B 定长][comp_offsets (rows+1)×u32 LE][comp 码流]
+           高基数文本的符号级压缩(VLDB'20)；码本内联保证块自描述；
+           输入 <32KB 自动退化为原样拷贝(符号表 switch=0)；crc32c 覆盖三段
 validity  位图区(64B 对齐，LSB-first，Arrow 同构)——flags.bit0=1 时省略
 ```
 
@@ -79,6 +82,8 @@ validity  位图区(64B 对齐，LSB-first，Arrow 同构)——flags.bit0=1 时
    供 kernel 生成器/未来 CPU SIMDMaterialize 使用
 5. zstd 只允许出现在冷块 ⇒ 热/GPU 路径永不过熵解码器（tonbo 默认全 zstd 是
    其 GPU 不友好根因——调研结论）
+6. FSST 同为字节对齐码流（无熵解码）：GPU 侧可把 2312B 码本常驻共享内存，
+   逐码查表展开 1–8B 符号；escape 码(255)+原始字节保证无损
 
 ## 4. 编码器选择策略（列级自适应）
 
@@ -86,7 +91,8 @@ validity  位图区(64B 对齐，LSB-first，Arrow 同构)——flags.bit0=1 时
 采样列值(每 RG 前 64K 行):
   定宽整数: distinct_ratio < 0.1 → RLE_DICT else if 值域窄 → BITPACK else RAW(+ZSTD 冷)
   浮点:     RAW(+ZSTD 冷)；时间戳: DELTA(保留)/RAW
-  字符串:   distinct_ratio < 0.2 → RLE_DICT(字典字符串) else ZSTD(冷)/RAW(热)
+  字符串:   distinct_ratio < 0.2 → RLE_DICT(字典字符串)
+            else avg_len ≥ 6B → FSST(热层高基数文本, ≈2R) / 短串 RAW / ZSTD(冷)
   排序检测: 前缀有序 → flags.sorted (供 binary search / PGM)
 ```
 
@@ -118,7 +124,7 @@ validity  位图区(64B 对齐，LSB-first，Arrow 同构)——flags.bit0=1 时
 | SPEC 条目 | 代码 |
 |-----------|------|
 | CBF 读写 | `dendro-columnar/src/cbf/{writer,reader,footer}.rs` |
-| 编码器 | `dendro-columnar/src/codec/{raw,bitpack,rledict,zstd}.rs` |
+| 编码器 | `dendro-columnar/src/codec/{raw,bitpack,rledict,zstd,fsst}.rs` |
 | 统计/剪枝 | `dendro-columnar/src/stats.rs` |
 | parquet 导出 | `dendro-columnar/src/parquet_export.rs` (feature) |
 | 物化器 | `dendro-core/src/materializer.rs` |

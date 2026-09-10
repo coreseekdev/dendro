@@ -23,11 +23,7 @@ pub(crate) fn read_cbf(data: &[u8]) -> Result<(SchemaRef, Vec<RecordBatch>)> {
         }
         out.push(RecordBatch::try_new(footer.schema.clone(), cols)?);
     }
-    tracing::debug!(
-        row_groups = out.len(),
-        bytes = data.len(),
-        "read_cbf done"
-    );
+    tracing::debug!(row_groups = out.len(), bytes = data.len(), "read_cbf done");
     Ok((footer.schema, out))
 }
 
@@ -87,7 +83,13 @@ fn decode_block(
     if crc32c::crc32c(payload) != h.crc {
         return Err(Error::Corrupt("block crc32c mismatch".into()));
     }
-    let vals = decode_chunk(meta.codec, payload, h.raw_len as usize, meta.rows as usize, layout)?;
+    let vals = decode_chunk(
+        meta.codec,
+        payload,
+        h.raw_len as usize,
+        meta.rows as usize,
+        layout,
+    )?;
 
     // validity 位图独立区（LSB-first，Arrow 同构）
     let validity = if chunk.validity_len > 0 {
@@ -108,7 +110,9 @@ fn decode_block(
         Some(vb.to_vec())
     } else {
         if meta.null_count != 0 {
-            return Err(Error::Corrupt("null_count > 0 but no validity bitmap".into()));
+            return Err(Error::Corrupt(
+                "null_count > 0 but no validity bitmap".into(),
+            ));
         }
         None
     };

@@ -11,8 +11,9 @@
 
 mod bitpack;
 mod delta;
-mod rledict;
+mod fsst;
 mod raw;
+mod rledict;
 mod zstd;
 
 use crate::stats::ColStats;
@@ -22,17 +23,18 @@ use arrow::array::{
     ArrayRef, BinaryArray, BooleanArray, Date32Array, Float64Array, Int32Array, Int64Array,
     StringArray, TimestampMillisecondArray,
 };
-use arrow::buffer::{Buffer, BooleanBuffer, NullBuffer, OffsetBuffer, ScalarBuffer};
+use arrow::buffer::{BooleanBuffer, Buffer, NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::datatypes::{DataType, TimeUnit};
 use dendro_core::types::ColType;
 
-/// 块编码器 id（SPEC 05 §3：0 RAW 1 BITPACK 2 RLE_DICT 3 ZSTD，4 FSST 保留，5 DELTA）
+/// 块编码器 id（SPEC 05 §3：0 RAW 1 BITPACK 2 RLE_DICT 3 ZSTD 4 FSST 5 DELTA）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CodecId {
     Raw = 0,
     BitPack = 1,
     RleDict = 2,
     Zstd = 3,
+    Fsst = 4,
     Delta = 5,
 }
 
@@ -43,6 +45,7 @@ impl CodecId {
             1 => CodecId::BitPack,
             2 => CodecId::RleDict,
             3 => CodecId::Zstd,
+            4 => CodecId::Fsst,
             5 => CodecId::Delta,
             other => return Err(Error::Corrupt(format!("unknown codec id {other}"))),
         })
@@ -314,7 +317,9 @@ pub(crate) fn merge_chunks(mut parts: Vec<ChunkPart>) -> Result<ChunkPart> {
         Some(out)
     };
     let vals = match &parts[0].vals {
-        ColumnValues::Fixed { width, is_float, .. } => {
+        ColumnValues::Fixed {
+            width, is_float, ..
+        } => {
             let mut values = Vec::with_capacity(total_rows);
             for p in &parts {
                 match &p.vals {
@@ -322,7 +327,11 @@ pub(crate) fn merge_chunks(mut parts: Vec<ChunkPart>) -> Result<ChunkPart> {
                     _ => return Err(Error::Corrupt("merge type mismatch".into())),
                 }
             }
-            ColumnValues::Fixed { width: *width, is_float: *is_float, values }
+            ColumnValues::Fixed {
+                width: *width,
+                is_float: *is_float,
+                values,
+            }
         }
         ColumnValues::Var { .. } => {
             let mut offsets = Vec::with_capacity(total_rows + 1);
@@ -330,7 +339,10 @@ pub(crate) fn merge_chunks(mut parts: Vec<ChunkPart>) -> Result<ChunkPart> {
             offsets.push(0u32);
             for p in &parts {
                 match &p.vals {
-                    ColumnValues::Var { offsets: o, bytes: b } => {
+                    ColumnValues::Var {
+                        offsets: o,
+                        bytes: b,
+                    } => {
                         for &off in &o[1..] {
                             offsets.push(off + bytes.len() as u32);
                         }
@@ -386,32 +398,39 @@ pub(crate) fn build_array(mut part: ChunkPart, dt: &DataType) -> Result<ArrayRef
         }
         DataType::Int32 => {
             let values = fixed_of(&part, CodecId::Raw)?;
-            let sb: ScalarBuffer<i32> =
-                values.iter().map(|&v| v as u32 as i32).collect::<Vec<_>>().into();
+            let sb: ScalarBuffer<i32> = values
+                .iter()
+                .map(|&v| v as u32 as i32)
+                .collect::<Vec<_>>()
+                .into();
             Arc::new(Int32Array::new(sb, nulls))
         }
         DataType::Int64 => {
             let values = fixed_of(&part, CodecId::Raw)?;
-            let sb: ScalarBuffer<i64> =
-                values.iter().map(|&v| v as i64).collect::<Vec<_>>().into();
+            let sb: ScalarBuffer<i64> = values.iter().map(|&v| v as i64).collect::<Vec<_>>().into();
             Arc::new(Int64Array::new(sb, nulls))
         }
         DataType::Float64 => {
             let values = fixed_of(&part, CodecId::Raw)?;
-            let sb: ScalarBuffer<f64> =
-                values.iter().map(|&v| f64::from_bits(v)).collect::<Vec<_>>().into();
+            let sb: ScalarBuffer<f64> = values
+                .iter()
+                .map(|&v| f64::from_bits(v))
+                .collect::<Vec<_>>()
+                .into();
             Arc::new(Float64Array::new(sb, nulls))
         }
         DataType::Date32 => {
             let values = fixed_of(&part, CodecId::Raw)?;
-            let sb: ScalarBuffer<i32> =
-                values.iter().map(|&v| v as u32 as i32).collect::<Vec<_>>().into();
+            let sb: ScalarBuffer<i32> = values
+                .iter()
+                .map(|&v| v as u32 as i32)
+                .collect::<Vec<_>>()
+                .into();
             Arc::new(Date32Array::new(sb, nulls))
         }
         DataType::Timestamp(TimeUnit::Millisecond, _) => {
             let values = fixed_of(&part, CodecId::Raw)?;
-            let sb: ScalarBuffer<i64> =
-                values.iter().map(|&v| v as i64).collect::<Vec<_>>().into();
+            let sb: ScalarBuffer<i64> = values.iter().map(|&v| v as i64).collect::<Vec<_>>().into();
             Arc::new(TimestampMillisecondArray::new(sb, nulls))
         }
         DataType::Utf8 | DataType::Binary => {
@@ -451,9 +470,7 @@ pub(crate) fn encode_chunk(codec: CodecId, part: &ChunkPart, out: &mut Vec<u8>) 
                 ColumnValues::Fixed { width, values, .. } => {
                     rledict::encode_fixed(*width, values, out)?
                 }
-                ColumnValues::Var { offsets, bytes } => {
-                    rledict::encode_var(offsets, bytes, out)?
-                }
+                ColumnValues::Var { offsets, bytes } => rledict::encode_var(offsets, bytes, out)?,
             }
             let _ = l0;
             Ok(part.vals.raw_len())
@@ -470,6 +487,16 @@ pub(crate) fn encode_chunk(codec: CodecId, part: &ChunkPart, out: &mut Vec<u8>) 
             let values = fixed_of(part, codec)?;
             delta::encode(values, out);
             Ok(part.vals.raw_len())
+        }
+        CodecId::Fsst => {
+            // 高基数文本（SPEC 05 §3 FSST）：符号表 + 码流偏移 + 码流全部内联在 data 区
+            match &part.vals {
+                ColumnValues::Var { offsets, bytes } => {
+                    fsst::encode(offsets, bytes, out)?;
+                    Ok(part.vals.raw_len())
+                }
+                ColumnValues::Fixed { .. } => Err(Error::CodecNotApplicable(codec)),
+            }
         }
     }
 }
@@ -505,6 +532,7 @@ pub(crate) fn decode_chunk(
                 values: delta::decode(data, rows)?,
             })
         }
+        CodecId::Fsst => fsst::decode(data, raw_len, rows, layout),
     }
 }
 
@@ -523,27 +551,43 @@ fn fixed_layout(layout: &Layout, codec: CodecId) -> Result<(usize, bool)> {
     }
 }
 
-/// 内置自适应 codec 策略（SPEC 05 §4 规则 + SPEC 08 §5 实证表）。
+/// 内置自适应 codec 策略（SPEC 05 §4 规则 + SPEC 08 §5 实证表 + FSST VLDB'20）。
 ///
 /// - 顺序/单调整型（pk/ts）→ DELTA（实证：zstd 独占 delta 熵 3.9-10.8R，
 ///   内置 DELTA 摆脱对 zstd 的隐性依赖；SPEC 08 §5 发现 3）
 /// - 低基数（distinct_ratio < 0.1 整型 / < 0.2 文本）→ RLE_DICT
 ///   （实证：mid-card dict 13.8-15R vs raw+zstd 2.6R，10 倍差距）
+/// - 高基数文本（ratio ≥ 0.2 且均长 ≥ 6B）→ FSST（符号级压缩、无熵解码依赖，
+///   自然文本 ≈2R；过短串摊不平符号表查找，沿用 lance 实现的 ≥5B 门槛并留裕量）
 /// - 值域窄 → BITPACK（id 流/窄整数位搬运，T 接近 RAW）
-/// - 随机整型 / f64 → RAW（实证：zstd 无益甚至负收益；mantissa 低位近随机）
+/// - 随机整型 / f64 / 短串高基数文本 / Bytes → RAW（实证：zstd 无益甚至负收益；
+///   Bytes 列常为不可压 blob，FSST 只进 Utf8 默认策略，冷块可经 codec_choice 指定）
 /// - ZSTD 不进默认策略（热层永不过熵解码器，SPEC 05 §3；冷块经 codec_choice 指定）
 pub fn choose_codec(_name: &str, ty: ColType, s: &ColStats) -> CodecId {
     let ratio = s.distinct_ratio();
     match ty {
         ColType::Float64 => CodecId::Raw,
-        ColType::Utf8 | ColType::Bytes => {
+        ColType::Utf8 => {
+            if ratio < 0.2 {
+                CodecId::RleDict
+            } else if s.avg_len >= 6.0 {
+                CodecId::Fsst
+            } else {
+                CodecId::Raw
+            }
+        }
+        ColType::Bytes => {
             if ratio < 0.2 {
                 CodecId::RleDict
             } else {
                 CodecId::Raw
             }
         }
-        ColType::Bool | ColType::Int32 | ColType::Int64 | ColType::Date32 | ColType::TimestampMs => {
+        ColType::Bool
+        | ColType::Int32
+        | ColType::Int64
+        | ColType::Date32
+        | ColType::TimestampMs => {
             if s.monotonic {
                 CodecId::Delta
             } else if ratio < 0.1 {

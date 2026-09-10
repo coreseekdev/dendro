@@ -101,12 +101,15 @@ pub(crate) fn decode(data: &[u8], rows: usize, layout: &Layout) -> Result<Column
             obytes.extend_from_slice(s);
             offsets.push(obytes.len() as u32);
         }
-        Ok(ColumnValues::Var { offsets, bytes: obytes })
+        Ok(ColumnValues::Var {
+            offsets,
+            bytes: obytes,
+        })
     } else {
         // 定宽字典
-        let need = dict_len.checked_mul(width as usize).ok_or_else(|| {
-            Error::Corrupt("dict size overflow".into())
-        })?;
+        let need = dict_len
+            .checked_mul(width as usize)
+            .ok_or_else(|| Error::Corrupt("dict size overflow".into()))?;
         if cur.len() < need {
             return Err(Error::Corrupt("dict entries truncated".into()));
         }
@@ -123,9 +126,9 @@ pub(crate) fn decode(data: &[u8], rows: usize, layout: &Layout) -> Result<Column
         let ids = bitpack::decode(cur, rows)?;
         let mut values = Vec::with_capacity(rows);
         for &id in &ids {
-            let v = *dict.get(id as usize).ok_or_else(|| {
-                Error::Corrupt(format!("dict id {id} out of range"))
-            })?;
+            let v = *dict
+                .get(id as usize)
+                .ok_or_else(|| Error::Corrupt(format!("dict id {id} out of range")))?;
             values.push(v);
         }
         let is_float = matches!(layout, Layout::Float64);

@@ -10,6 +10,7 @@ thiserror.workspace = true
 bytes.workspace = true
 crc32c.workspace = true
 zstd.workspace = true
+fsst.workspace = true
 arrow.workspace = true
 tracing.workspace = true
 

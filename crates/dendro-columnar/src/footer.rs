@@ -150,7 +150,9 @@ pub(crate) fn parse_block_header(b: &[u8]) -> Result<BlockHeader> {
     }
     let version = u16::from_le_bytes([b[2], b[3]]);
     if version != crate::BLOCK_VERSION {
-        return Err(Error::Corrupt(format!("block version {version} unsupported")));
+        return Err(Error::Corrupt(format!(
+            "block version {version} unsupported"
+        )));
     }
     let u32le = |s: &[u8]| u32::from_le_bytes([s[0], s[1], s[2], s[3]]);
     let u64le = |s: &[u8]| {
@@ -283,14 +285,30 @@ pub(crate) fn parse_footer(data: &[u8]) -> Result<CbfFooter> {
                 let flags = take_u8(&mut c);
                 let min = take_u64(&mut c);
                 let max = take_u64(&mut c);
-                blocks.push(BlockMeta { offset, rows, null_count, codec, flags, min, max });
+                blocks.push(BlockMeta {
+                    offset,
+                    rows,
+                    null_count,
+                    codec,
+                    flags,
+                    min,
+                    max,
+                });
             }
             need!(16, "validity meta");
             let validity_offset = take_u64(&mut c);
             let validity_len = take_u64(&mut c);
-            cols.push(ChunkMeta { blocks, validity_offset, validity_len });
+            cols.push(ChunkMeta {
+                blocks,
+                validity_offset,
+                validity_len,
+            });
         }
-        rgs.push(RgMeta { first_row, rows, cols });
+        rgs.push(RgMeta {
+            first_row,
+            rows,
+            cols,
+        });
     }
     if !c.is_empty() {
         return Err(Error::Corrupt(format!(

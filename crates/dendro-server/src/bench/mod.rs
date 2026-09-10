@@ -26,9 +26,18 @@ impl BenchResult {
         let rows: Vec<String> = self
             .rows
             .iter()
-            .map(|r| format!(r#"  {{"name": "{}", "value": {:.3}, "unit": "{}"}}"#, r.name, r.value, r.unit))
+            .map(|r| {
+                format!(
+                    r#"  {{"name": "{}", "value": {:.3}, "unit": "{}"}}"#,
+                    r.name, r.value, r.unit
+                )
+            })
             .collect();
-        format!("{{\n  \"suite\": \"{}\",\n  \"rows\": [\n{}\n  ]\n}}", self.suite, rows.join(",\n"))
+        format!(
+            "{{\n  \"suite\": \"{}\",\n  \"rows\": [\n{}\n  ]\n}}",
+            self.suite,
+            rows.join(",\n")
+        )
     }
 }
 
@@ -70,20 +79,34 @@ pub fn bench_tp(n_insert: usize, n_select: usize) -> BenchResult {
     let mut rows = Vec::new();
     let db = mem_db(Durability::NoWait, 1);
     let mut s = db.new_session();
-    s.exec("CREATE TABLE b (id BIGINT PRIMARY KEY, v TEXT, n BIGINT)").unwrap();
+    s.exec("CREATE TABLE b (id BIGINT PRIMARY KEY, v TEXT, n BIGINT)")
+        .unwrap();
 
     // 1. 插入吞吐（自动提交逐行）
     let mut lat = Vec::with_capacity(n_insert);
     let t0 = Instant::now();
     for i in 0..n_insert {
         let t = Instant::now();
-        s.exec(&format!("INSERT INTO b VALUES ({i}, 'v{i}', {i})")).unwrap();
+        s.exec(&format!("INSERT INTO b VALUES ({i}, 'v{i}', {i})"))
+            .unwrap();
         lat.push(t.elapsed().as_secs_f64() * 1e6);
     }
     let total = t0.elapsed().as_secs_f64();
-    rows.push(BenchRow { name: "oltp_insert".into(), value: n_insert as f64 / total, unit: "txn/s" });
-    rows.push(BenchRow { name: "oltp_insert_p50_us".into(), value: pct(&lat, 0.5), unit: "us" });
-    rows.push(BenchRow { name: "oltp_insert_p99_us".into(), value: pct(&lat, 0.99), unit: "us" });
+    rows.push(BenchRow {
+        name: "oltp_insert".into(),
+        value: n_insert as f64 / total,
+        unit: "txn/s",
+    });
+    rows.push(BenchRow {
+        name: "oltp_insert_p50_us".into(),
+        value: pct(&lat, 0.5),
+        unit: "us",
+    });
+    rows.push(BenchRow {
+        name: "oltp_insert_p99_us".into(),
+        value: pct(&lat, 0.99),
+        unit: "us",
+    });
 
     // 2. 点查吞吐（写集预热后）
     let mut lat = Vec::with_capacity(n_select);
@@ -102,18 +125,36 @@ pub fn bench_tp(n_insert: usize, n_select: usize) -> BenchResult {
     }
     let total = t0.elapsed().as_secs_f64();
     assert_eq!(hits, n_select);
-    rows.push(BenchRow { name: "oltp_point_select".into(), value: n_select as f64 / total, unit: "txn/s" });
-    rows.push(BenchRow { name: "oltp_point_select_p50_us".into(), value: pct(&lat, 0.5), unit: "us" });
-    rows.push(BenchRow { name: "oltp_point_select_p99_us".into(), value: pct(&lat, 0.99), unit: "us" });
+    rows.push(BenchRow {
+        name: "oltp_point_select".into(),
+        value: n_select as f64 / total,
+        unit: "txn/s",
+    });
+    rows.push(BenchRow {
+        name: "oltp_point_select_p50_us".into(),
+        value: pct(&lat, 0.5),
+        unit: "us",
+    });
+    rows.push(BenchRow {
+        name: "oltp_point_select_p99_us".into(),
+        value: pct(&lat, 0.99),
+        unit: "us",
+    });
 
-    BenchResult { suite: "tp".into(), rows }
+    BenchResult {
+        suite: "tp".into(),
+        rows,
+    }
 }
 
 /// 组提交延迟 vs durability 模式 vs 模拟 RTT（LocalDir + flush 间隔）
 pub fn bench_commit_latency() -> BenchResult {
     let mut rows = Vec::new();
     let n = 200;
-    for (dur_name, dur) in [("no_wait", Durability::NoWait), ("group", Durability::Group)] {
+    for (dur_name, dur) in [
+        ("no_wait", Durability::NoWait),
+        ("group", Durability::Group),
+    ] {
         for interval in [1u64, 5, 25, 50] {
             let db = local_db(&format!("cl-{dur_name}-{interval}"), dur, interval);
             let mut s = db.new_session();
@@ -136,7 +177,10 @@ pub fn bench_commit_latency() -> BenchResult {
             });
         }
     }
-    BenchResult { suite: "commit_latency".into(), rows }
+    BenchResult {
+        suite: "commit_latency".into(),
+        rows,
+    }
 }
 
 /// 分支操作 O(1) 验证：不同数据规模下 CREATE BRANCH / MERGE 耗时
@@ -145,7 +189,8 @@ pub fn bench_branch() -> BenchResult {
     for size in [10_000usize, 100_000, 500_000] {
         let db = local_db("br", Durability::NoWait, 1);
         let mut s = db.new_session();
-        s.exec("CREATE TABLE big (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+        s.exec("CREATE TABLE big (id BIGINT PRIMARY KEY, v TEXT)")
+            .unwrap();
         // 分块批量插入（避免巨型 INSERT 的解析开销主导）
         let t0 = Instant::now();
         const CHUNK: usize = 2000;
@@ -188,13 +233,28 @@ pub fn bench_branch() -> BenchResult {
         s.exec("MERGE BRANCH agent INTO main").unwrap();
         let merge_us = t1.elapsed().as_secs_f64() * 1e6;
 
-        rows.push(BenchRow { name: format!("branch_load_{size}_rows_s"), value: load_s, unit: "s" });
-        rows.push(BenchRow { name: format!("branch_create_at_{size}_us"), value: create_us, unit: "us" });
-        rows.push(BenchRow { name: format!("branch_merge_diff1000_at_{size}_us"), value: merge_us, unit: "us" });
+        rows.push(BenchRow {
+            name: format!("branch_load_{size}_rows_s"),
+            value: load_s,
+            unit: "s",
+        });
+        rows.push(BenchRow {
+            name: format!("branch_create_at_{size}_us"),
+            value: create_us,
+            unit: "us",
+        });
+        rows.push(BenchRow {
+            name: format!("branch_merge_diff1000_at_{size}_us"),
+            value: merge_us,
+            unit: "us",
+        });
         // 结构共享验证：checkpoint 后统计 chunk 数
         let _ = db.checkpoint_branch("main").unwrap();
     }
-    BenchResult { suite: "branch".into(), rows }
+    BenchResult {
+        suite: "branch".into(),
+        rows,
+    }
 }
 
 /// AP 列式 vs TP 行式聚合（物化后 CBF 路由）
@@ -212,10 +272,13 @@ pub fn bench_ap(rows_n: usize) -> BenchResult {
         ..Default::default()
     })
     .unwrap();
-    db.set_columnar(Arc::new(dendro_columnar::integrate::CbfColumnar { row_group_rows: 1_048_576 }));
-    
+    db.set_columnar(Arc::new(dendro_columnar::integrate::CbfColumnar {
+        row_group_rows: 1_048_576,
+    }));
+
     let mut s = db.new_session();
-    s.exec("CREATE TABLE lineitem (id BIGINT PRIMARY KEY, region TEXT, qty BIGINT, price DOUBLE)").unwrap();
+    s.exec("CREATE TABLE lineitem (id BIGINT PRIMARY KEY, region TEXT, qty BIGINT, price DOUBLE)")
+        .unwrap();
     let t0 = Instant::now();
     const CHUNK: usize = 2000;
     let mut done = 0usize;
@@ -223,14 +286,24 @@ pub fn bench_ap(rows_n: usize) -> BenchResult {
         let end = (done + CHUNK).min(rows_n);
         let mut sql = String::from("INSERT INTO lineitem VALUES ");
         for i in done..end {
-            if i > done { sql.push(','); }
+            if i > done {
+                sql.push(',');
+            }
             let region = ["east", "west", "south", "north"][i % 4];
-            sql.push_str(&format!("({i}, '{region}', {}, {})", i % 50, (i % 1000) as f64 * 0.01 + 0.5));
+            sql.push_str(&format!(
+                "({i}, '{region}', {}, {})",
+                i % 50,
+                (i % 1000) as f64 * 0.01 + 0.5
+            ));
         }
         s.exec(&sql).unwrap();
         done = end;
     }
-    rows.push(BenchRow { name: "ap_load_rows_s".into(), value: t0.elapsed().as_secs_f64(), unit: "s" });
+    rows.push(BenchRow {
+        name: "ap_load_rows_s".into(),
+        value: t0.elapsed().as_secs_f64(),
+        unit: "s",
+    });
     s.exec("CHECKPOINT").unwrap();
 
     let q = "SELECT region, count(*), sum(price) FROM lineitem GROUP BY region";
@@ -238,12 +311,26 @@ pub fn bench_ap(rows_n: usize) -> BenchResult {
     let t1 = Instant::now();
     let out = s.exec(q).unwrap();
     let ap = t1.elapsed();
-    let groups = match &out[0] { dendro_core::types::Output::Rows(rs) => rs.total_rows(), _ => 0 };
+    let groups = match &out[0] {
+        dendro_core::types::Output::Rows(rs) => rs.total_rows(),
+        _ => 0,
+    };
     // TP（小表副本走行路径；用 EXPLAIN 不可行，直接以 force 小表对照：借 1 万行阈值以下副本）
-    rows.push(BenchRow { name: format!("ap_group_agg_{rows_n}_ms"), value: ap.as_secs_f64() * 1e3, unit: "ms" });
-    rows.push(BenchRow { name: format!("ap_groups_{rows_n}"), value: groups as f64, unit: "groups" });
+    rows.push(BenchRow {
+        name: format!("ap_group_agg_{rows_n}_ms"),
+        value: ap.as_secs_f64() * 1e3,
+        unit: "ms",
+    });
+    rows.push(BenchRow {
+        name: format!("ap_groups_{rows_n}"),
+        value: groups as f64,
+        unit: "groups",
+    });
     let _ = std::fs::remove_dir_all(&dir);
-    BenchResult { suite: "ap".into(), rows }
+    BenchResult {
+        suite: "ap".into(),
+        rows,
+    }
 }
 
 /// 恢复时间 vs WAL 未物化事务数
@@ -288,7 +375,11 @@ pub fn bench_recovery() -> BenchResult {
             dendro_core::types::Output::Rows(rs) => rs.text_rows()[0][0].clone().unwrap(),
             _ => "?".into(),
         };
-        rows.push(BenchRow { name: format!("recover_txns_{txn_count}_s"), value: recover_s, unit: "s" });
+        rows.push(BenchRow {
+            name: format!("recover_txns_{txn_count}_s"),
+            value: recover_s,
+            unit: "s",
+        });
         rows.push(BenchRow {
             name: format!("recovered_rows_{txn_count}"),
             value: count.parse().unwrap_or(0.0),
@@ -296,7 +387,10 @@ pub fn bench_recovery() -> BenchResult {
         });
         let _ = std::fs::remove_dir_all(&dir);
     }
-    BenchResult { suite: "recovery".into(), rows }
+    BenchResult {
+        suite: "recovery".into(),
+        rows,
+    }
 }
 
 pub fn run_all(out_dir: &PathBuf) {
@@ -369,9 +463,12 @@ fn compression_curve_impl(rows_n: usize, out_path: &PathBuf) -> Result<(), Strin
     let batches: Vec<(&str, ArrayRef)> = vec![
         ("id_seq", Arc::new(Int64Array::from(ids.clone()))),
         ("id_rand", Arc::new(Int64Array::from(rand_ids))),
-        ("text", Arc::new(StringArray::from(
-            texts.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
-        ))),
+        (
+            "text",
+            Arc::new(StringArray::from(
+                texts.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+            )),
+        ),
     ];
 
     #[derive(serde::Serialize)]
@@ -393,12 +490,21 @@ fn compression_curve_impl(rows_n: usize, out_path: &PathBuf) -> Result<(), Strin
         let raw_bytes = batch.get_array_memory_size();
 
         let codecs: &[CodecId] = match *col_name {
-            "text" => &[CodecId::Raw, CodecId::RleDict, CodecId::Zstd],
-            _ => &[CodecId::Raw, CodecId::BitPack, CodecId::RleDict, CodecId::Zstd, CodecId::Delta],
+            "text" => &[CodecId::Raw, CodecId::RleDict, CodecId::Fsst, CodecId::Zstd],
+            _ => &[
+                CodecId::Raw,
+                CodecId::BitPack,
+                CodecId::RleDict,
+                CodecId::Zstd,
+                CodecId::Delta,
+            ],
         };
         for codec in codecs {
             let name = format!("{codec:?}");
-            let choice = |_col: &str, _ty: dendro_core::types::ColType, _st: &dendro_columnar::ColStats| -> CodecId { *codec };
+            let choice = |_col: &str,
+                          _ty: dendro_core::types::ColType,
+                          _st: &dendro_columnar::ColStats|
+             -> CodecId { *codec };
             let mut enc = 0.0f64;
             let mut size = 0usize;
             let mut last_bytes: Option<Vec<u8>> = None;

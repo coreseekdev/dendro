@@ -21,16 +21,27 @@ fn median(v: &mut [f64]) -> f64 {
 }
 
 fn bench_column(name: &str, col: &ArrayRef, raw_bytes: u64, codecs: &[CodecId]) {
-    let schema = Arc::new(Schema::new(vec![Field::new("c", col.data_type().clone(), false)]));
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "c",
+        col.data_type().clone(),
+        false,
+    )]));
     let batch = arrow::array::RecordBatch::try_new(schema, vec![col.clone()]).unwrap();
-    println!("\n== {name} ==  rows={N} raw={:.2} MB", raw_bytes as f64 / 1e6);
+    println!(
+        "\n== {name} ==  rows={N} raw={:.2} MB",
+        raw_bytes as f64 / 1e6
+    );
     println!(
         "{:10} {:>12} {:>12} {:>12} {:>10}",
         "codec", "enc MB/s", "dec MB/s", "file MB", "R"
     );
     for codec in codecs {
         if *codec == CodecId::Delta && matches!(col.data_type(), DataType::Utf8) {
-            println!("{:10} {:>12} (DELTA 不适用变宽列)", format!("{codec:?}"), "-");
+            println!(
+                "{:10} {:>12} (DELTA 不适用变宽列)",
+                format!("{codec:?}"),
+                "-"
+            );
             continue;
         }
         let mut enc_t = Vec::new();
@@ -38,7 +49,12 @@ fn bench_column(name: &str, col: &ArrayRef, raw_bytes: u64, codecs: &[CodecId]) 
         let mut file_len = 0u64;
         for _ in 0..RUNS {
             let t0 = Instant::now();
-            let bytes = write_cbf(std::slice::from_ref(&batch), RG_ROWS, Some(&|_, _, _| *codec)).unwrap();
+            let bytes = write_cbf(
+                std::slice::from_ref(&batch),
+                RG_ROWS,
+                Some(&|_, _, _| *codec),
+            )
+            .unwrap();
             let t1 = Instant::now();
             let (_s, out) = read_cbf(&bytes).unwrap();
             let t2 = Instant::now();
@@ -68,12 +84,17 @@ fn bench_column(name: &str, col: &ArrayRef, raw_bytes: u64, codecs: &[CodecId]) 
 fn bench_cbf_throughput() {
     // 列 1：i64 顺序（pk/ts 形态；SPEC 08 §5 “顺序 int → 热层 RAW/DELTA”）
     let seq: ArrayRef = Arc::new(Int64Array::from((0..N as i64).collect::<Vec<_>>()));
-    bench_column("i64_seq (pk/ts)", &seq, (N * 8) as u64, &[
-        CodecId::Raw,
-        CodecId::Delta,
-        CodecId::RleDict,
-        CodecId::Zstd,
-    ]);
+    bench_column(
+        "i64_seq (pk/ts)",
+        &seq,
+        (N * 8) as u64,
+        &[
+            CodecId::Raw,
+            CodecId::Delta,
+            CodecId::RleDict,
+            CodecId::Zstd,
+        ],
+    );
 
     // 列 2：utf8 低基数（8 个 distinct 值，每值 ~14B）
     let texts: Vec<String> = (0..N)
@@ -81,9 +102,10 @@ fn bench_cbf_throughput() {
         .collect();
     let raw_text = texts.iter().map(|s| s.len()).sum::<usize>() as u64 + (N as u64 + 1) * 4;
     let txt: ArrayRef = Arc::new(StringArray::from(texts));
-    bench_column("utf8_low_card (8 distinct)", &txt, raw_text, &[
-        CodecId::Raw,
-        CodecId::RleDict,
-        CodecId::Zstd,
-    ]);
+    bench_column(
+        "utf8_low_card (8 distinct)",
+        &txt,
+        raw_text,
+        &[CodecId::Raw, CodecId::RleDict, CodecId::Zstd],
+    );
 }

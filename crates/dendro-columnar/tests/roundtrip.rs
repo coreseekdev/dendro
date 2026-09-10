@@ -62,8 +62,9 @@ fn make_columns(rng: &mut Rng, null_ratio: f64) -> Vec<(&'static str, ArrayRef)>
     cols.push(("utf8_low", Arc::new(StringArray::from(v))));
 
     // utf8 中基数（1e3 值）
-    let v: Vec<Option<String>> =
-        with_nulls(rng, N, null_ratio, |_, rng| format!("mid_{}", rng.below(1000)));
+    let v: Vec<Option<String>> = with_nulls(rng, N, null_ratio, |_, rng| {
+        format!("mid_{}", rng.below(1000))
+    });
     cols.push(("utf8_mid", Arc::new(StringArray::from(v))));
 
     // utf8 高基数（近乎唯一）
@@ -87,8 +88,9 @@ fn make_columns(rng: &mut Rng, null_ratio: f64) -> Vec<(&'static str, ArrayRef)>
     cols.push(("date32", Arc::new(Date32Array::from(v))));
 
     // timestamp ms（近单调）
-    let v: Vec<Option<i64>> =
-        with_nulls(rng, N, null_ratio, |i, _| 1_700_000_000_000 + (i as i64) * 1000);
+    let v: Vec<Option<i64>> = with_nulls(rng, N, null_ratio, |i, _| {
+        1_700_000_000_000 + (i as i64) * 1000
+    });
     cols.push(("ts_ms", Arc::new(TimestampMillisecondArray::from(v))));
 
     // bool
@@ -107,6 +109,7 @@ fn roundtrip_all_codecs_all_types() {
         CodecId::BitPack,
         CodecId::RleDict,
         CodecId::Zstd,
+        CodecId::Fsst,
         CodecId::Delta,
     ];
     for (ti, null_ratio) in [0.0f64, 0.1, 0.5].into_iter().enumerate() {
@@ -114,16 +117,18 @@ fn roundtrip_all_codecs_all_types() {
         for (name, col) in make_columns(&mut rng, null_ratio) {
             for codec in codecs {
                 let ctx = format!("ratio={null_ratio} col={name} codec={codec:?}");
-                // 契约：BITPACK/DELTA 只作用于定宽列（变宽列 → CodecNotApplicable）
+                // 契约：BITPACK/DELTA 只作用于定宽列，FSST 只作用于变宽列
+                //（越界组合 → CodecNotApplicable）
                 let is_var = matches!(col.data_type(), DataType::Utf8 | DataType::Binary);
-                if is_var && matches!(codec, CodecId::BitPack | CodecId::Delta) {
+                let inapplicable = matches!(codec, CodecId::BitPack | CodecId::Delta) && is_var
+                    || codec == CodecId::Fsst && !is_var;
+                if inapplicable {
                     let schema = Arc::new(Schema::new(vec![Field::new(
                         name,
                         col.data_type().clone(),
                         true,
                     )]));
-                    let batch =
-                        RecordBatch::try_new(schema, vec![col.clone()]).unwrap();
+                    let batch = RecordBatch::try_new(schema, vec![col.clone()]).unwrap();
                     let err = write_cbf(&[batch], RG_ROWS, Some(&|_, _, _| codec)).unwrap_err();
                     assert!(
                         matches!(err, Error::CodecNotApplicable(_)),
@@ -163,7 +168,12 @@ fn float_bit_domain_exactness() {
         _ => rng.next_u64() as f64,
     });
     let col: ArrayRef = Arc::new(Float64Array::from(vals));
-    for codec in [CodecId::BitPack, CodecId::RleDict, CodecId::Delta, CodecId::Zstd] {
+    for codec in [
+        CodecId::BitPack,
+        CodecId::RleDict,
+        CodecId::Delta,
+        CodecId::Zstd,
+    ] {
         let (_b, _f, batches) = roundtrip_single_col(&col, "f64bits", 128, codec);
         assert_roundtrip_eq(&col, &batches, &format!("f64bits/{codec:?}"));
     }
@@ -202,6 +212,36 @@ fn default_adaptive_strategy_roundtrip() {
     assert_eq!(row, N);
 }
 
+/// 默认策略 FSST 规则：高基数（ratio ≥ 0.2）且均长 ≥ 6B 的 Utf8 → FSST；
+/// 低基数 → RLE_DICT；短串高基数 / Bytes → RAW（codec_choice 可强制覆盖）
+#[test]
+fn fsst_policy_selection() {
+    use dendro_columnar::{choose_codec, ColStats, ColType};
+    let base = ColStats {
+        rows: 1000,
+        null_count: 0,
+        distinct: 0,
+        min: 0,
+        max: 0,
+        monotonic: false,
+        avg_len: 0.0,
+    };
+    let utf8 = |ratio: f64, avg: f64| ColStats {
+        distinct: (ratio * 1000.0) as usize,
+        avg_len: avg,
+        ..base.clone()
+    };
+    let c = |ty, s: &ColStats| choose_codec("x", ty, s);
+    // 高基数长串 → FSST
+    assert_eq!(c(ColType::Utf8, &utf8(0.95, 24.0)), CodecId::Fsst);
+    // 高基数但过短（摊不平符号表）→ RAW
+    assert_eq!(c(ColType::Utf8, &utf8(0.95, 3.0)), CodecId::Raw);
+    // 低基数 → RLE_DICT（FSST 不越过 dict 边界）
+    assert_eq!(c(ColType::Utf8, &utf8(0.05, 24.0)), CodecId::RleDict);
+    // Bytes 不进默认 FSST（blob 常不可压；冷块经 codec_choice 指定）
+    assert_eq!(c(ColType::Bytes, &utf8(0.95, 24.0)), CodecId::Raw);
+}
+
 /// 多 batch 输入（RG 边界切分 batch，SPEC 05 §2）
 #[test]
 fn multi_batch_row_group_split() {
@@ -216,6 +256,9 @@ fn multi_batch_row_group_split() {
     let b3 = RecordBatch::try_new(schema.clone(), vec![col.slice(650, 350)]).unwrap();
     let bytes = write_cbf(&[b1, b2, b3], 300, None).unwrap();
     let (_s, batches) = read_cbf(&bytes).unwrap();
-    assert_eq!(batches.iter().map(|b| b.num_rows()).collect::<Vec<_>>(), vec![300, 300, 300, 100]);
+    assert_eq!(
+        batches.iter().map(|b| b.num_rows()).collect::<Vec<_>>(),
+        vec![300, 300, 300, 100]
+    );
     assert_roundtrip_eq(&col, &batches, "multi-batch");
 }

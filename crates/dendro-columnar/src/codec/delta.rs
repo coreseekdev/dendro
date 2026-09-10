@@ -29,7 +29,9 @@ pub(crate) fn decode(data: &[u8], rows: usize) -> Result<Vec<u64>> {
         return Err(Error::Corrupt("delta baseline truncated".into()));
     }
     let mut cur = data;
-    let mut cur_v = u64::from_le_bytes([cur[0], cur[1], cur[2], cur[3], cur[4], cur[5], cur[6], cur[7]]);
+    let mut cur_v = u64::from_le_bytes([
+        cur[0], cur[1], cur[2], cur[3], cur[4], cur[5], cur[6], cur[7],
+    ]);
     cur = &cur[8..];
     let mut values = Vec::with_capacity(rows);
     values.push(cur_v);

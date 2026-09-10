@@ -1,12 +1,13 @@
 //! 列统计与 zone map 定点解释（SPEC 05 §3 min/max、§4 采样、§7 剪枝管线）。
 
 use crate::codec::{chunk_of, ChunkPart, Layout};
-use crate::Result;use arrow::array::ArrayRef;
+use crate::Result;
+use arrow::array::ArrayRef;
 
 /// 列/块统计。`min`/`max` 为**定点解释（order 域）**（SPEC 05 §3）：
 /// - 数值列：保序变换后的物理值（i64/i32 符号位翻转；f64 IEEE754 全序）；
 /// - 字符串列：前 8 字节大端序列（>8B 公共前缀退化为等值键，剪枝精度近似）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ColStats {
     pub rows: usize,
     pub null_count: usize,
@@ -16,6 +17,9 @@ pub struct ColStats {
     pub max: u64,
     /// 非空序列非递减（前缀有序 → 块 flags.sorted，供 binary search / PGM）
     pub monotonic: bool,
+    /// 变宽列非空值平均字节长（FSST 决策用：过短串摊不平符号表查找）；
+    /// 定宽列恒 0.0
+    pub avg_len: f64,
 }
 
 impl ColStats {
@@ -35,10 +39,12 @@ impl ColStats {
             min: 0,
             max: 0,
             monotonic: true,
+            avg_len: 0.0,
         };
         let mut min_set = false;
         let mut prev_key = 0u64;
         let mut prev_bytes: &[u8] = &[];
+        let mut var_total_len = 0usize;
         match &part.vals {
             crate::codec::ColumnValues::Fixed { values, .. } => {
                 let mut seen = std::collections::HashSet::with_capacity(values.len() / 4 + 1);
@@ -65,14 +71,14 @@ impl ColStats {
             }
             crate::codec::ColumnValues::Var { offsets, bytes } => {
                 let n = offsets.len().saturating_sub(1);
-                let mut seen =
-                    std::collections::HashSet::with_capacity(n / 4 + 1);
+                let mut seen = std::collections::HashSet::with_capacity(n / 4 + 1);
                 for i in 0..n {
                     if !part.is_valid(i) {
                         continue;
                     }
                     let s = &bytes[offsets[i] as usize..offsets[i + 1] as usize];
                     seen.insert(s);
+                    var_total_len += s.len();
                     let k = order_key_bytes(s);
                     if !min_set {
                         min_set = true;
@@ -92,6 +98,12 @@ impl ColStats {
             }
         }
         st.null_count = part.null_count();
+        let valid = st.rows.saturating_sub(st.null_count);
+        st.avg_len = if matches!(layout, Layout::Var) && valid > 0 {
+            var_total_len as f64 / valid as f64
+        } else {
+            0.0
+        };
         st
     }
 

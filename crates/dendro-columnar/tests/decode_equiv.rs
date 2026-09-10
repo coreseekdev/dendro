@@ -1,4 +1,3 @@
-
 //! M-4：**第二实现解码对拍**——GPU 内核等价性的前置证明。
 //!
 //! 块数据区的解码按 SPEC 05 §3 的 codec 语义（Raw 8B LE / Delta 首值 +
@@ -72,8 +71,8 @@ fn make_batch(n: i64) -> RecordBatch {
 
 /// 对单个 codec 做"写 → footer 定位块 → 独立解码 → 源值对拍"
 fn check_codec(codec: CodecId, n: i64) {
-    use dendro_core::types::ColType;
     use dendro_columnar::ColStats;
+    use dendro_core::types::ColType;
     let batch = make_batch(n);
     let choice = |_: &str, _: ColType, _: &ColStats| -> CodecId { codec };
     let bytes = write_cbf(std::slice::from_ref(&batch), 4096, Some(&choice)).unwrap();
@@ -87,9 +86,9 @@ fn check_codec(codec: CodecId, n: i64) {
                 assert_eq!(bm.codec, codec, "块 codec 应与声明一致");
                 // 块头 64B 内 data_len（偏移 14..22）给出本块数据区实际长度
                 let hdr_off = bm.offset as usize;
-                let data_len = u64::from_le_bytes(
-                    bytes[hdr_off + 14..hdr_off + 22].try_into().unwrap(),
-                ) as usize;
+                let data_len =
+                    u64::from_le_bytes(bytes[hdr_off + 14..hdr_off + 22].try_into().unwrap())
+                        as usize;
                 let data_start = hdr_off + 64;
                 let data = &bytes[data_start..data_start + data_len];
                 ref_decoded.extend(ref_decode_block(codec, data, bm.rows as usize));
@@ -126,7 +125,10 @@ fn m4_official_reader_agrees_with_source() {
     // 源值 == 独立实现 == 官方 reader
     for codec in [CodecId::Raw, CodecId::Delta, CodecId::BitPack] {
         let batch = make_batch(50);
-        let choice = |_: &str, _: dendro_core::types::ColType, _: &dendro_columnar::ColStats| -> CodecId { codec };
+        let choice = |_: &str,
+                      _: dendro_core::types::ColType,
+                      _: &dendro_columnar::ColStats|
+         -> CodecId { codec };
         let bytes = write_cbf(&[batch], 4096, Some(&choice)).unwrap();
         let (_schema, batches) = read_cbf(&bytes).unwrap();
         let got: Vec<i64> = batches

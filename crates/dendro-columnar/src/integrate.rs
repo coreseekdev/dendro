@@ -36,7 +36,10 @@ impl CbfColumnar {
         let colmeta: Vec<dendro_core::ColumnMeta> = schema
             .columns
             .iter()
-            .map(|c| dendro_core::ColumnMeta { name: c.name.clone(), ty: c.ty })
+            .map(|c| dendro_core::ColumnMeta {
+                name: c.name.clone(),
+                ty: c.ty,
+            })
             .collect();
         let mut batches = Vec::new();
         let n = rows.len();
@@ -44,10 +47,16 @@ impl CbfColumnar {
         let mut start = 0usize;
         while start < n {
             let end = (start + 8192).min(n);
-            let chunk: Vec<Vec<SqlValue>> =
-                rows.values().skip(start).take(end - start).cloned().collect();
+            let chunk: Vec<Vec<SqlValue>> = rows
+                .values()
+                .skip(start)
+                .take(end - start)
+                .cloned()
+                .collect();
             written += chunk.len() as u64;
-            batches.extend(dendro_core::sql::scan::rows_to_batches_typed(&colmeta, &chunk));
+            batches.extend(dendro_core::sql::scan::rows_to_batches_typed(
+                &colmeta, &chunk,
+            ));
             start = end;
         }
         (batches, written)
@@ -82,15 +91,30 @@ impl CbfColumnar {
         };
         let addr = Hash::of(&bytes).to_base32();
         let path = format!("col/{table}/{}.cbf", &addr[..12]);
-        obj.put(&path, bytes.into()).map_err(|e| SqlError::io(format!("cbf put: {e}")))?;
-        Ok(ColSegment { path, rows: total, pk_min, pk_max })
+        obj.put(&path, bytes.into())
+            .map_err(|e| SqlError::io(format!("cbf put: {e}")))?;
+        Ok(ColSegment {
+            path,
+            rows: total,
+            pk_min,
+            pk_max,
+        })
     }
 
-    fn key_rows(schema: &TableSchema, rows: &[Vec<SqlValue>]) -> Result<BTreeMap<Vec<u8>, Vec<SqlValue>>> {
-        let pkc = *schema.pk.first().ok_or_else(|| SqlError::internal("no pk"))? as usize;
+    fn key_rows(
+        schema: &TableSchema,
+        rows: &[Vec<SqlValue>],
+    ) -> Result<BTreeMap<Vec<u8>, Vec<SqlValue>>> {
+        let pkc = *schema
+            .pk
+            .first()
+            .ok_or_else(|| SqlError::internal("no pk"))? as usize;
         let mut keyed = BTreeMap::new();
         for r in rows {
-            let pkv = r.get(pkc).cloned().ok_or_else(|| SqlError::internal("row shorter than pk"))?;
+            let pkv = r
+                .get(pkc)
+                .cloned()
+                .ok_or_else(|| SqlError::internal("row shorter than pk"))?;
             keyed.insert(encode_key(&[pkv]), r.clone());
         }
         Ok(keyed)

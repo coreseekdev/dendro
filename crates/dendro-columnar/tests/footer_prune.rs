@@ -3,7 +3,7 @@
 mod common;
 
 use common::{assert_array_eq, Rng};
-use dendro_columnar::{read_cbf, read_column_chunk, read_footer, write_cbf, ColStats, CodecId};
+use dendro_columnar::{read_cbf, read_column_chunk, read_footer, write_cbf, CodecId, ColStats};
 use std::sync::Arc;
 
 use arrow::array::{ArrayRef, Int64Array, StringArray};
@@ -39,13 +39,17 @@ fn build_file() -> (Vec<u8>, ArrayRef, ArrayRef) {
             .unwrap(),
         );
     }
-    let bytes = write_cbf(&batches, 1000, Some(&|name, _ty, _s| {
-        if name == "pk" {
-            CodecId::Delta // pk 顺序列（SPEC 08 §5 发现 3）
-        } else {
-            CodecId::RleDict // 低基数文本（SPEC 05 §4 distinct<0.2）
-        }
-    }))
+    let bytes = write_cbf(
+        &batches,
+        1000,
+        Some(&|name, _ty, _s| {
+            if name == "pk" {
+                CodecId::Delta // pk 顺序列（SPEC 08 §5 发现 3）
+            } else {
+                CodecId::RleDict // 低基数文本（SPEC 05 §4 distinct<0.2）
+            }
+        }),
+    )
     .unwrap();
     (bytes, pk_col, txt_col)
 }
@@ -94,7 +98,17 @@ fn footer_metadata_and_pruning() {
     // column_stats 摘要接口（剪枝调用方视角）
     let cs = f.column_stats(0);
     assert_eq!(cs.len(), 3);
-    assert_eq!(cs[1], (1, 1000, f.rgs[1].cols[0].blocks[0].min, f.rgs[1].cols[0].blocks[0].max, 0, CodecId::Delta));
+    assert_eq!(
+        cs[1],
+        (
+            1,
+            1000,
+            f.rgs[1].cols[0].blocks[0].min,
+            f.rgs[1].cols[0].blocks[0].max,
+            0,
+            CodecId::Delta
+        )
+    );
 
     // 按需单行组单列解码（read_column_chunk）：只动 rg1
     let rg1_pk = read_column_chunk(&bytes, &f, 1, 0).unwrap();
@@ -107,8 +121,16 @@ fn footer_metadata_and_pruning() {
     // 全文件读回一致
     let (_s, batches) = read_cbf(&bytes).unwrap();
     assert_eq!(batches.len(), 3);
-    assert_array_eq(pk_col.slice(2000, 1000).as_ref(), batches[2].column(0).as_ref(), "rg2 pk full-read");
-    assert_array_eq(txt_col.slice(0, 1000).as_ref(), batches[0].column(1).as_ref(), "rg0 txt full-read");
+    assert_array_eq(
+        pk_col.slice(2000, 1000).as_ref(),
+        batches[2].column(0).as_ref(),
+        "rg2 pk full-read",
+    );
+    assert_array_eq(
+        txt_col.slice(0, 1000).as_ref(),
+        batches[0].column(1).as_ref(),
+        "rg0 txt full-read",
+    );
 }
 
 /// 测试 3：ColStats 与 footer 的 rows/null_count 记账（含全空列、全非空列）
@@ -141,8 +163,7 @@ fn stats_accounting() {
 
     // footer 记账与 ColStats 一致
     let schema = Arc::new(Schema::new(vec![Field::new("c", DataType::Int32, true)]));
-    let batch =
-        arrow::array::RecordBatch::try_new(schema, vec![with_nulls.clone()]).unwrap();
+    let batch = arrow::array::RecordBatch::try_new(schema, vec![with_nulls.clone()]).unwrap();
     let bytes = write_cbf(&[batch], 4, None).unwrap();
     let f = read_footer(&bytes).unwrap();
     assert_eq!(f.rgs.len(), 2); // 6 行 / rg_rows=4 ⇒ [4,2]
@@ -175,13 +196,23 @@ fn alignment_64b() {
                 assert_eq!(data_off % 64, 0, "data 区 offset 64B 对齐");
             }
             if cm.validity_len > 0 {
-                assert_eq!((cm.validity_offset as usize) % 64, 0, "validity 区 64B 对齐");
-                assert!(cm.validity_offset > cm.blocks[0].offset, "validity 在数据之后");
+                assert_eq!(
+                    (cm.validity_offset as usize) % 64,
+                    0,
+                    "validity 区 64B 对齐"
+                );
+                assert!(
+                    cm.validity_offset > cm.blocks[0].offset,
+                    "validity 在数据之后"
+                );
             }
         }
     }
     // 文件尾 8B：footer_len + magic（read_footer 成功即隐含校验；显式断言魔数）
-    assert_eq!(&bytes[bytes.len() - 4..], &dendro_columnar::footer::FILE_MAGIC.to_le_bytes());
+    assert_eq!(
+        &bytes[bytes.len() - 4..],
+        &dendro_columnar::footer::FILE_MAGIC.to_le_bytes()
+    );
 }
 
 /// 损坏检测：翻转数据区一位 → crc32c 校验失败

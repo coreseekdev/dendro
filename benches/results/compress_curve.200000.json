@@ -1,0 +1,142 @@
+[
+  {
+    "column": "id_seq",
+    "codec": "Raw",
+    "rows": 200000,
+    "raw_bytes": 1600096,
+    "compressed_bytes": 1606619,
+    "ratio": 0.9959399210391512,
+    "enc_mrows_s": 34.90331345880493,
+    "dec_mrows_s": 556.9014006070225
+  },
+  {
+    "column": "id_seq",
+    "codec": "BitPack",
+    "rows": 200000,
+    "raw_bytes": 1600096,
+    "compressed_bytes": 427483,
+    "ratio": 3.7430634668513134,
+    "enc_mrows_s": 15.092230127532362,
+    "dec_mrows_s": 91.98506530479713
+  },
+  {
+    "column": "id_seq",
+    "codec": "RleDict",
+    "rows": 200000,
+    "raw_bytes": 1600096,
+    "compressed_bytes": 1909723,
+    "ratio": 0.8378681096682608,
+    "enc_mrows_s": 12.747707882449562,
+    "dec_mrows_s": 102.25827167159552
+  },
+  {
+    "column": "id_seq",
+    "codec": "Zstd",
+    "rows": 200000,
+    "raw_bytes": 1600096,
+    "compressed_bytes": 215963,
+    "ratio": 7.409121006839134,
+    "enc_mrows_s": 24.6648113795547,
+    "dec_mrows_s": 139.51934191516804
+  },
+  {
+    "column": "id_seq",
+    "codec": "Delta",
+    "rows": 200000,
+    "raw_bytes": 1600096,
+    "compressed_bytes": 209755,
+    "ratio": 7.628404567233201,
+    "enc_mrows_s": 35.05014799924993,
+    "dec_mrows_s": 943.7924411663387
+  },
+  {
+    "column": "id_rand",
+    "codec": "Raw",
+    "rows": 200000,
+    "raw_bytes": 1600096,
+    "compressed_bytes": 1606620,
+    "ratio": 0.995939301141527,
+    "enc_mrows_s": 28.718128979435235,
+    "dec_mrows_s": 209.60273992701633
+  },
+  {
+    "column": "id_rand",
+    "codec": "BitPack",
+    "rows": 200000,
+    "raw_bytes": 1600096,
+    "compressed_bytes": 1210652,
+    "ratio": 1.3216812097943917,
+    "enc_mrows_s": 6.438438197142016,
+    "dec_mrows_s": 33.36471841178602
+  },
+  {
+    "column": "id_rand",
+    "codec": "RleDict",
+    "rows": 200000,
+    "raw_bytes": 1600096,
+    "compressed_bytes": 1909724,
+    "ratio": 0.8378676709304591,
+    "enc_mrows_s": 12.954079343217815,
+    "dec_mrows_s": 98.13118962478559
+  },
+  {
+    "column": "id_rand",
+    "codec": "Zstd",
+    "rows": 200000,
+    "raw_bytes": 1600096,
+    "compressed_bytes": 1361372,
+    "ratio": 1.1753554502369667,
+    "enc_mrows_s": 29.242224309792128,
+    "dec_mrows_s": 171.22833212474671
+  },
+  {
+    "column": "id_rand",
+    "codec": "Delta",
+    "rows": 200000,
+    "raw_bytes": 1600096,
+    "compressed_bytes": 1009756,
+    "ratio": 1.584636288370656,
+    "enc_mrows_s": 34.14177062978081,
+    "dec_mrows_s": 416.56339365865546
+  },
+  {
+    "column": "text",
+    "codec": "Raw",
+    "rows": 200000,
+    "raw_bytes": 9188792,
+    "compressed_bytes": 5838041,
+    "ratio": 1.5739512620757545,
+    "enc_mrows_s": 16.59520907930527,
+    "dec_mrows_s": 169.40194337909446
+  },
+  {
+    "column": "text",
+    "codec": "RleDict",
+    "rows": 200000,
+    "raw_bytes": 9188792,
+    "compressed_bytes": 6138137,
+    "ratio": 1.497000148416368,
+    "enc_mrows_s": 7.747027630122659,
+    "dec_mrows_s": 57.390521840537
+  },
+  {
+    "column": "text",
+    "codec": "Fsst",
+    "rows": 200000,
+    "raw_bytes": 9188792,
+    "compressed_bytes": 2311513,
+    "ratio": 3.975228346109237,
+    "enc_mrows_s": 3.3263629397929972,
+    "dec_mrows_s": 125.96401837815029
+  },
+  {
+    "column": "text",
+    "codec": "Zstd",
+    "rows": 200000,
+    "raw_bytes": 9188792,
+    "compressed_bytes": 1724441,
+    "ratio": 5.328562705247672,
+    "enc_mrows_s": 10.853115080083239,
+    "dec_mrows_s": 56.81766529395187
+  }
+]

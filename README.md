@@ -25,8 +25,8 @@
 - **云原生**：TP 侧 WAL 与 AP 侧列存全部落在对象存储（本地目录/S3 兼容）；
   计算节点无状态，重启从 manifest + WAL 恢复；分支 = 元数据指针，跨计算节点共享存储。
 - **列存为 GPU 保留优化机制**：CBF(Cambium/Dendro Block Format) 块级 codec 分层，
-  RAW/BITPACK/RLE_DICT 可被 GPU kernel 直接解码，块 64B 对齐、zone map 在 footer，
-  GPU 侧先剪枝后搬运。zstd 只用于冷块。
+  RAW/BITPACK/RLE_DICT/FSST 可被 GPU kernel 直接解码（FSST 无熵解码、码本共享内存），
+  块 64B 对齐、zone map 在 footer，GPU 侧先剪枝后搬运。zstd 只用于冷块。
 - **SQL 必须可用**：sqlparser-rs 解析(PG/MySQL 方言) + 自研执行器，
   sqllogictest 基线在 `tests/slt/`（10 文件，含 JOIN / 游标 / checkpoint 可见性）。
 - **多写者安全**：分支租约 fencing（epoch CAS + 运行时拒写 40001 + 惰性续期）、
@@ -166,7 +166,8 @@ cargo run -p dendro-server -- serve --data /tmp/dendro-data --read-only --pg-por
 - 组提交延迟 p50 ≈ flush_interval，p99≈p50+0.1ms（尾延迟压平）
 - CREATE BRANCH 225µs @1 万行（与数据量无关）；MERGE 306µs @千行 diff
 - 崩溃恢复 2 万事务 8ms（HEAD 探测，无 LIST）
-- CBF：DELTA 顺序列 R=8 解码 2.3GB/s；低基数文本 RLE_DICT 48×
+- CBF：DELTA 顺序列 R=8 解码 2.3GB/s；低基数文本 RLE_DICT 48×；
+  高基数文本 FSST R=4 解码 126 Mrow/s（≈2.2× zstd，热层免熵解码）
 
 ## 云原生（✅ 真实对象存储验证）
 

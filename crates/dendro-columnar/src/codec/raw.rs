@@ -23,7 +23,12 @@ pub(crate) fn encode(part: &ChunkPart, out: &mut Vec<u8>) -> usize {
     out.len() - l0
 }
 
-pub(crate) fn decode(data: &[u8], raw_len: usize, rows: usize, layout: &Layout) -> Result<ColumnValues> {
+pub(crate) fn decode(
+    data: &[u8],
+    raw_len: usize,
+    rows: usize,
+    layout: &Layout,
+) -> Result<ColumnValues> {
     if data.len() != raw_len {
         return Err(Error::Corrupt(format!(
             "raw data_len {} != raw_len {}",

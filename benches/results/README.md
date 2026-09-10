@@ -75,9 +75,17 @@ cargo build --release -p dendro-server
 | i64 顺序 | DELTA | 2,272 MB/s | 8.00 |
 | i64 顺序 | ZSTD3 | 1,124 MB/s | 7.60 |
 | utf8 低基数 | RLE_DICT | 2,279 MB/s | 47.96 |
+| utf8 高基数 | FSST | 126 Mrow/s | 3.98 |
+| utf8 高基数 | ZSTD3 | 57 Mrow/s | 5.33 |
+| utf8 高基数 | RAW | 169 Mrow/s | 1.57 |
+
+（高基数行取自 `bench-compress --rows 200000`：`region-{i%64}-order-{i*7919}`，
+均长 ≈45B。FSST 解码 ≈2.2× ZSTD3，R 达其 75%，且**无熵解码依赖**——
+热层可用；ZSTD3 保持冷块定位。）
 
 与 Python 原型（spec/08 §5）结论一致：DELTA 吃掉顺序列熵（GPU 可直解，
-热层免熵解码），ZSTD3 解码吞吐减半 → 冷块定位成立。
+热层免熵解码），ZSTD3 解码吞吐减半 → 冷块定位成立。高基数文本由 FSST
+接管热层（VLDB'20：符号级字节对齐码流，≈2× zstd 解码速度）。
 
 ## 待办（v2）
 
