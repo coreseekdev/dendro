@@ -242,6 +242,54 @@ fn fsst_policy_selection() {
     assert_eq!(c(ColType::Bytes, &utf8(0.95, 24.0)), CodecId::Raw);
 }
 
+/// FSST switch-on 不可压输入回归：4096 行 × 64B 随机 blob = 256KB 块（>32KB）。
+/// compress_bulk 对每字节投机写 out[curr+1]，输出缓冲预置不足会越界 panic
+///（修复：编码缓冲预置 2×+8，内部按实际缩回）。
+#[test]
+fn fsst_switch_on_incompressible_roundtrip() {
+    let mut rng = Rng::new(0xBADF00D);
+    let v: Vec<Option<Vec<u8>>> = (0..4096)
+        .map(|_| Some((0..64).map(|_| rng.below(256) as u8).collect::<Vec<u8>>()))
+        .collect();
+    let refs: Vec<Option<&[u8]>> = v.iter().map(|o| o.as_deref()).collect();
+    let col: ArrayRef = Arc::new(BinaryArray::from(refs));
+    let (_bytes, footer, batches) = roundtrip_single_col(&col, "bin_fsst", 4096, CodecId::Fsst);
+    assert_roundtrip_eq(&col, &batches, "fsst-incompressible");
+    assert_eq!(footer.rgs[0].cols[0].blocks[0].codec, CodecId::Fsst);
+}
+
+/// 默认策略负收益守卫：高均长高基数但近随机（base62 token）→ choose_codec
+/// 初选 FSST，样本试编码收益 <10%（≥90% 原始大小）→ 全文件降级 RAW。
+/// 显式 codec_choice 强制 FSST 不受守卫影响（视为契约）。
+#[test]
+fn fsst_default_policy_downgrades_incompressible() {
+    use arrow::datatypes::{Field, Schema};
+    use dendro_columnar::{read_cbf, read_footer, write_cbf};
+    let mut rng = Rng::new(0xFEED);
+    let alpha = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    let v: Vec<Option<String>> = (0..20_000)
+        .map(|_| {
+            Some(
+                (0..32)
+                    .map(|_| alpha[rng.below(alpha.len() as u64) as usize] as char)
+                    .collect(),
+            )
+        })
+        .collect();
+    let col: ArrayRef = Arc::new(StringArray::from(v));
+    let schema = Arc::new(Schema::new(vec![Field::new("tok", DataType::Utf8, true)]));
+    let batch = RecordBatch::try_new(schema, vec![col.clone()]).unwrap();
+    let bytes = write_cbf(&[batch], 20_000, None).unwrap();
+    let footer = read_footer(&bytes).unwrap();
+    assert_eq!(
+        footer.rgs[0].cols[0].blocks[0].codec,
+        CodecId::Raw,
+        "不可压高基数文本应经试编码降级 RAW"
+    );
+    let (_s, batches) = read_cbf(&bytes).unwrap();
+    assert_roundtrip_eq(&col, &batches, "fsst-downgrade");
+}
+
 /// 多 batch 输入（RG 边界切分 batch，SPEC 05 §2）
 #[test]
 fn multi_batch_row_group_split() {

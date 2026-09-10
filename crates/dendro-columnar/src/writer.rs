@@ -5,6 +5,9 @@ use crate::codec::{chunk_of, col_type_of, encode_chunk, layout_of, merge_chunks,
 use crate::footer::{pad_align, write_block_header, write_footer, BlockHeader, ChunkMeta, RgMeta};
 use crate::stats::{order_minmax, ColStats};
 use crate::{Error, Result, ALIGN, BLOCK_HEADER_LEN, SAMPLE_ROWS, ZSTD_LEVEL};
+
+/// FSST 负收益试编码的样本行数（≥8192 行 × 均长 ≥6B ⇒ ≥48KB，走 switch-on）
+const FSST_TRIAL_ROWS: usize = 8192;
 use arrow::array::{ArrayRef, RecordBatch};
 use arrow::datatypes::SchemaRef;
 use dendro_core::types::ColType;
@@ -201,10 +204,30 @@ fn decide_codecs(
             let part = merge_chunks(parts)?;
             let stats = ColStats::from_chunk(&part, &layouts[c]);
             let name = schema.field(c).name();
-            Ok(match codec_choice {
+            let mut codec = match codec_choice {
                 Some(f) => f(name, ctypes[c], &stats),
                 None => crate::choose_codec(name, ctypes[c], &stats),
-            })
+            };
+            // FSST 负收益守卫（仅默认策略；显式 codec_choice 强制 FSST 视为契约，
+            // 冷块重编码等场景不静默改写）：决策样本试编码，收益 <10%（≥90% 原始
+            // 大小）→ 降级 RAW。FSST 的 255 个单字节符号可覆盖 <256 值域的任意
+            // 字节字母表 ⇒ 高熵文本最坏也有 ~4-6% 收益（二元符号采集），但相对
+            // RAW 5× 的编码 CPU 不成比例；自然文本 2-4R 远离该边界。决策对全文
+            // 件该列生效。样本 ≥8192 行且均长 ≥6B ⇒ 试编码输入 ≥48KB，必走
+            // switch-on 路径（<32KB 的退化路径不参与判定）。
+            if codec == CodecId::Fsst && codec_choice.is_none() && !sample_cols[c].is_empty() {
+                let first = &sample_cols[c][0];
+                let trial = first.slice(0, first.len().min(FSST_TRIAL_ROWS));
+                if let Ok(tp) = chunk_of(&trial) {
+                    let mut out = Vec::new();
+                    if encode_chunk(CodecId::Fsst, &tp, &mut out).is_ok()
+                        && out.len() as u64 >= tp.vals.raw_len() * 90 / 100
+                    {
+                        codec = CodecId::Raw;
+                    }
+                }
+            }
+            Ok(codec)
         })
         .collect()
 }

@@ -36,8 +36,9 @@ pub(crate) fn encode(offsets: &[u32], bytes: &[u8], out: &mut Vec<u8>) -> Result
     }
     let mut sym = vec![0u8; SYMBOL_TABLE_LEN];
     let in_offs: Vec<i32> = offsets.iter().map(|&o| o as i32).collect();
-    // crate 契约：调用前 out 缓冲 len ≥ 输入（内部按实际缩回）
-    let mut comp = vec![0u8; bytes.len()];
+    // crate 契约：compress_bulk 对每个输入字节投机写 out[curr+1]（escape 预写），
+    // 不可压输入最坏 2×膨胀 —— 预置 2×+8，内部按实际缩回（精确长度会越界 panic）
+    let mut comp = vec![0u8; bytes.len().saturating_mul(2) + 8];
     let mut comp_offs: Vec<i32> = vec![0; in_offs.len()];
     compress::<i32>(&mut sym, bytes, &in_offs, &mut comp, &mut comp_offs)
         .map_err(|e| Error::Fsst(format!("encode: {e}")))?;
@@ -49,7 +50,8 @@ pub(crate) fn encode(offsets: &[u32], bytes: &[u8], out: &mut Vec<u8>) -> Result
     Ok(())
 }
 
-/// 解码一个变宽块。`raw_len` 来自块头（crc32c 已校验），用于解压后一致性对账。
+/// 解码一个变宽块。`raw_len` 来自块头（注意：crc32c 只覆盖 data 区，不含块头），
+/// 解码后与 `(rows+1)×4 + 解压字节数` 对账。
 pub(crate) fn decode(
     data: &[u8],
     raw_len: usize,
@@ -87,9 +89,18 @@ pub(crate) fn decode(
         return Err(corrupt("fsst code offsets not monotonic / end mismatch"));
     }
 
-    // crate 契约：解码前 out 缓冲 len ≥ 8×码流（1B 码最多展开 8B 符号）；按实际缩回
-    let cap = comp.len().saturating_mul(8).max(raw_len);
-    let mut out_bytes = vec![0u8; cap];
+    // raw_len 来自块头，但 crc32c 只覆盖 data 区（块头本身不在 crc 内）——
+    // 分配前先对账上界，防伪造 raw_len 触发巨额分配。
+    // crate 契约的预置需求是 8×码流（1B 码最多展开 8B 符号；switch=0 时 1×），
+    // 8×comp 恒满足两种模式 ⇒ 分配上界 = 8×data_len，且 raw_len 一致性对账在解码后。
+    let max_raw = (rows + 1)
+        .checked_mul(4)
+        .and_then(|o| o.checked_add(comp.len().saturating_mul(8)))
+        .ok_or_else(|| corrupt("fsst raw_len overflow"))?;
+    if raw_len > max_raw {
+        return Err(corrupt("fsst raw_len implausible vs block size"));
+    }
+    let mut out_bytes = vec![0u8; comp.len().saturating_mul(8)];
     let mut out_offs: Vec<i32> = vec![0; rows + 1];
     decompress::<i32>(sym, comp, &in_offs, &mut out_bytes, &mut out_offs)
         .map_err(|e| Error::Corrupt(format!("fsst decode: {e}")))?;
@@ -248,5 +259,28 @@ mod tests {
         // 解码端同样拒绝
         let layout = crate::codec::layout_of(arr.data_type()).unwrap();
         assert!(decode(&[0u8; SYMBOL_TABLE_LEN + 4], 0, 0, &layout).is_err());
+    }
+
+    #[test]
+    fn fsst_roundtrip_rows_zero() {
+        // 空块（rows=0）：offsets=[0]、空码流，switch-off 退化路径
+        let part = crate::codec::ChunkPart {
+            vals: ColumnValues::Var {
+                offsets: vec![0],
+                bytes: vec![],
+            },
+            validity: None,
+        };
+        let mut data = Vec::new();
+        let raw = encode_chunk(CodecId::Fsst, &part, &mut data).unwrap();
+        assert_eq!(raw, 4);
+        let back = decode(&data, raw as usize, 0, &crate::codec::Layout::Var).unwrap();
+        assert_eq!(
+            back,
+            ColumnValues::Var {
+                offsets: vec![0],
+                bytes: vec![]
+            }
+        );
     }
 }

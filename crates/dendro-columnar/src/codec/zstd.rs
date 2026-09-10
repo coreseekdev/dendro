@@ -9,6 +9,16 @@ pub(crate) fn compress(input: &[u8], level: i32) -> Result<Vec<u8>> {
 }
 
 pub(crate) fn decompress(input: &[u8], raw_len: usize) -> Result<Vec<u8>> {
+    // raw_len 来自块头（crc 只覆盖 data 区）：先按压缩比上界对账再分配，
+    // 防伪造 raw_len 触发巨额分配。zstd 理论压缩比上界取保守 2^10（zstd 文档
+    // 压缩极限 ~2^10-2^11，超出即视为腐坏）。
+    let plausible = input.len().saturating_mul(1024).saturating_add(1 << 20);
+    if raw_len > plausible {
+        return Err(Error::Corrupt(format!(
+            "zstd raw_len {raw_len} implausible vs compressed {}",
+            input.len()
+        )));
+    }
     let out = zstd::bulk::decompress(input, raw_len).map_err(|e| Error::Zstd(e.to_string()))?;
     if out.len() != raw_len {
         return Err(Error::Corrupt(format!(
