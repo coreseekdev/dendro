@@ -1,7 +1,9 @@
 //! 内存事务引擎（SPEC 04）：OCC MVCC，分支内单写者提交，无锁快照读。
 //!
 //! 数据结构：
-//! - 每表 64 shard 的 HashMap<Key, Arc<VersionVec>>（写短锁；读锁粒度=单 key 查找）
+//! - 每表 64 shard 的 BTreeMap<Key, Arc<VersionVec>>（写短锁；读锁粒度=单 key 查找）。
+//!   BTreeMap（而非 HashMap）：键序分片迭代是范围扫描/可见性快照的地基（P2-6g）；
+//!   点查代价 +O(log n)（10 万 overlay ≈ 200ns，占点查 ~4%）
 //! - VersionVec: 按提交序排列的不可变 VerCell（ts 升序），读者二分找可见版本
 //! - checkpoint 后 ts ≤ ckpt_seq 的历史版本被释放（内存有界 = checkpoint 窗口写入量）
 //!
@@ -23,7 +25,7 @@ pub struct VerCell {
 type VersionVec = Vec<Arc<VerCell>>;
 
 struct Shard {
-    map: RwLock<HashMap<Box<[u8]>, Arc<VersionVec>>>,
+    map: RwLock<BTreeMap<Box<[u8]>, Arc<VersionVec>>>,
 }
 
 pub const NSHARD: usize = 64;
@@ -43,7 +45,7 @@ impl Default for TableMem {
         Self {
             shards: (0..NSHARD)
                 .map(|_| Shard {
-                    map: RwLock::new(HashMap::new()),
+                    map: RwLock::new(BTreeMap::new()),
                 })
                 .collect(),
         }
@@ -135,6 +137,61 @@ impl TableMem {
                 let idx = vv.partition_point(|c| c.ts <= snapshot);
                 if idx > 0 {
                     out.insert(k.to_vec(), vv[idx - 1].val.clone());
+                }
+            }
+        }
+        out
+    }
+
+    /// 范围可见性快照（P2-6g）：只物化 `[start, end)` 键区间的 overlay——
+    /// 此前 `snapshot_rows` 每查询全量物化（10 万 overlay 行的选择性范围
+    /// 查询与全表扫描同价）。可见性判定与 [`Self::snapshot_rows`] 完全一致。
+    pub fn snapshot_rows_in_range(
+        &self,
+        start: Option<&[u8]>,
+        end: Option<&[u8]>,
+        snapshot: u64,
+    ) -> BTreeMap<Vec<u8>, Option<Arc<Vec<u8>>>> {
+        let mut out = BTreeMap::new();
+        for sh in &self.shards {
+            let g = sh.map.read();
+            // 分片键序 = 全局键序（BTreeMap 子区间），跨分片合并由调用方
+            // 的 BTreeMap 覆盖语义保证
+            let a: Option<&[u8]> = start;
+            let e: Option<&[u8]> = end;
+            // 端点装箱锚定 K 同型（Box<[u8]>: Borrow<Box<[u8]>> 无歧义；
+            // &[u8] 端点会推出 T=&[u8] 与 Borrow 不符——std 泛型陷阱）
+            let push = |k: &[u8],
+                        vv: &Arc<VersionVec>,
+                        out: &mut BTreeMap<Vec<u8>, Option<Arc<Vec<u8>>>>| {
+                let idx = vv.partition_point(|c| c.ts <= snapshot);
+                if idx > 0 {
+                    out.insert(k.to_vec(), vv[idx - 1].val.clone());
+                }
+            };
+            match (a, e) {
+                (Some(a), Some(e)) => {
+                    let (a, e): (Box<[u8]>, Box<[u8]>) = (a.into(), e.into());
+                    for (k, vv) in g.range(a..e) {
+                        push(k, vv, &mut out);
+                    }
+                }
+                (Some(a), None) => {
+                    let a: Box<[u8]> = a.into();
+                    for (k, vv) in g.range(a..) {
+                        push(k, vv, &mut out);
+                    }
+                }
+                (None, Some(e)) => {
+                    let e: Box<[u8]> = e.into();
+                    for (k, vv) in g.range(..e) {
+                        push(k, vv, &mut out);
+                    }
+                }
+                (None, None) => {
+                    for (k, vv) in g.iter() {
+                        push(k, vv, &mut out);
+                    }
                 }
             }
         }

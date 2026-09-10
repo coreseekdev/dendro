@@ -547,7 +547,7 @@ pub(crate) fn table_scan_by_name(
         sample: None,
         with_ordinality: false,
     };
-    table_scan(db, sess, &tf, snapshot, None)
+    table_scan(db, sess, &tf, snapshot, None, None)
 }
 
 /// 带谓词的单表扫描：pk 等值/IN 下推走直查（TP 点查路径）
@@ -623,7 +623,7 @@ fn table_scan_opt(
     if let Some(tv) = try_ap_scan(db, sess, tf, selection, snapshot, pushdown_limit)? {
         return Ok(tv);
     }
-    table_scan(db, sess, tf, snapshot, pushdown_limit)
+    table_scan(db, sess, tf, snapshot, pushdown_limit, selection)
 }
 
 /// AP 路径：表有列存投影且行数达标时走 CBF 扫描
@@ -957,6 +957,96 @@ fn rows_from_batches(
         rows.push(row);
     }
     Ok(rows)
+}
+
+/// 提取单列数字 PK 的范围合取（P2-6g）：返回 (lo, hi)，各为 (值, 是否含端点)。
+/// 识别 AND 树中的 `pk >/>=/</<= 字面量`（字面量在另一侧亦可，方向自动翻转）；
+/// 非 PK/非数字字面量的合取返回 None——由下游常规过滤承担，不影响正确性。
+/// 返回 None = 无任何范围界（不做下推）。
+fn extract_pk_int_range(e: &Expr, pk: &str) -> Option<(Option<(i64, bool)>, Option<(i64, bool)>)> {
+    use sqlparser::ast::BinaryOperator as Op;
+    match e {
+        Expr::Nested(inner) => extract_pk_int_range(inner, pk),
+        Expr::BinaryOp {
+            left,
+            op: Op::And,
+            right,
+        } => {
+            let a = extract_pk_int_range(left, pk);
+            let b = extract_pk_int_range(right, pk);
+            match (a, b) {
+                (Some((l1, h1)), Some((l2, h2))) => {
+                    // 交：lo 取更紧（大者），hi 取更紧（小者）
+                    let lo = match (l1, l2) {
+                        (Some(x), Some(y)) => Some(if x >= y { x } else { y }),
+                        (x, None) => x,
+                        (None, y) => y,
+                    };
+                    let hi = match (h1, h2) {
+                        (Some(x), Some(y)) => Some(if x <= y { x } else { y }),
+                        (x, None) => x,
+                        (None, y) => y,
+                    };
+                    Some((lo, hi))
+                }
+                (a, b) => a.or(b),
+            }
+        }
+        Expr::BinaryOp {
+            left,
+            op: op @ (Op::Gt | Op::GtEq | Op::Lt | Op::LtEq),
+            right,
+        } => {
+            // 主键列在左/右识别 + 字面量提取
+            let (col_first, other): (bool, &Expr) = match (left.as_ref(), right.as_ref()) {
+                (Expr::Identifier(id), v) if id.value.eq_ignore_ascii_case(pk) => (true, v),
+                (v, Expr::Identifier(id)) if id.value.eq_ignore_ascii_case(pk) => (false, v),
+                _ => return None,
+            };
+            let v = match other {
+                Expr::Value(vws) => super::expr::value_from_parser(vws.value.clone()),
+                _ => return None,
+            };
+            let i = match v {
+                SqlValue::Int64(i) => i,
+                SqlValue::Int32(i) => i as i64,
+                _ => return None, // 字符串/浮点/NULL 字面量 → 不下推
+            };
+            let lower = matches!(op, Op::Gt | Op::GtEq);
+            let incl = matches!(op, Op::GtEq | Op::LtEq);
+            if col_first == lower {
+                // col 在左且是下界（>/>=），或 col 在右且是上界（</<=）
+                Some((Some((i, incl)), None))
+            } else {
+                // col 在左且是上界（</<=），或 col 在右且是下界（>/>=）
+                Some((None, Some((i, incl))))
+            }
+        }
+        _ => None,
+    }
+}
+
+/// 范围界 → 树键界（encode_key 对整数是 8B 定宽保序：值域 ±1 即键域 ±1）。
+/// hi 一律转排他（range_scan 端点排他）；溢出 = 该侧无界（由下游过滤兜底）。
+fn pk_range_keys(
+    lo: &Option<(i64, bool)>,
+    hi: &Option<(i64, bool)>,
+) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
+    let start = match lo {
+        Some((v, true)) => Some(crate::format::row::encode_key(&[SqlValue::Int64(*v)])),
+        Some((v, false)) => v
+            .checked_add(1)
+            .map(|x| crate::format::row::encode_key(&[SqlValue::Int64(x)])),
+        None => None,
+    };
+    let end = match hi {
+        Some((v, true)) => v
+            .checked_add(1)
+            .map(|x| crate::format::row::encode_key(&[SqlValue::Int64(x)])),
+        Some((v, false)) => Some(crate::format::row::encode_key(&[SqlValue::Int64(*v)])),
+        None => None,
+    };
+    (start, end)
 }
 
 /// 判定 WHERE 是否为 pk 直查形态
@@ -1357,6 +1447,7 @@ fn table_scan(
     tf: &TableFactor,
     snapshot: u64,
     pushdown_limit: Option<usize>,
+    selection: Option<&Expr>,
 ) -> Result<TableView> {
     match tf {
         TableFactor::Table { name, version, .. } => {
@@ -1439,7 +1530,53 @@ fn table_scan(
                 .table_root
                 .as_ref()
                 .and_then(|s| crate::format::hash::Hash::from_base32(s));
-            let overlay = b.mem.table(entry.id).snapshot_rows(snapshot);
+            // PK 范围下推（P2-6g）：数字型单列主键 + WHERE 中的 >/>=/</<= 合取
+            // → 树走 range_scan、overlay 走区间物化（此前选择性范围查询与
+            // 全表扫描同价：30 万行树 + 10 万 overlay 全量物化 ≈ 180ms）。
+            // 余下非范围谓词由下游常规过滤承担——区间只是超集收窄，语义不变。
+            let pk_range = selection.and_then(|sel| {
+                if schema.pk.len() == 1 {
+                    let pk_col = &schema.columns[schema.pk[0] as usize];
+                    if matches!(
+                        pk_col.ty,
+                        ColType::Int64 | ColType::Int32 | ColType::Date32 | ColType::TimestampMs
+                    ) {
+                        return extract_pk_int_range(sel, &pk_col.name);
+                    }
+                }
+                None
+            });
+            let (range_keys, overlay) = match &pk_range {
+                Some((lo, hi)) => {
+                    let tm = b.mem.table(entry.id);
+                    let (start_key, end_key) = pk_range_keys(lo, hi);
+                    let overlay = tm.snapshot_rows_in_range(
+                        start_key.as_deref(),
+                        end_key.as_deref(),
+                        snapshot,
+                    );
+                    if let (Some(a), Some(b2)) = (&start_key, &end_key) {
+                        if a >= b2 {
+                            // 空区间（lo ≥ hi）：直接空视图
+                            return Ok(TableView {
+                                names: schema.columns.iter().map(|c| c.name.clone()).collect(),
+                                rows: vec![],
+                            });
+                        }
+                    }
+                    let rk = match &root {
+                        Some(r) => crate::prolly::cursor::range_scan(
+                            db.store.clone(),
+                            r,
+                            start_key.as_deref(),
+                            end_key.as_deref(),
+                        )?,
+                        None => vec![],
+                    };
+                    (Some(rk), overlay)
+                }
+                None => (None, b.mem.table(entry.id).snapshot_rows(snapshot)),
+            };
             if std::env::var("DENDRO_SCAN_DEBUG").is_ok() {
                 eprintln!(
                     "[scan] table={full} root={root:?} overlay={overlay:?} schema={:?}",
@@ -1457,11 +1594,20 @@ fn table_scan(
             // 后，键序错误在结构上无处可写。
             let mut visible: std::collections::BTreeMap<Vec<u8>, Arc<Vec<u8>>> =
                 std::collections::BTreeMap::new();
-            // ① 树（checkpoint 物化态）
-            if let Some(r) = &root {
-                let mut it = crate::prolly::cursor::TreeIter::new(db.store.clone(), r)?;
-                while let Some((k, v)) = it.next_item()? {
-                    visible.insert(k, Arc::new(v));
+            // ① 树（checkpoint 物化态）；范围下推时只取 [start, end)
+            match &range_keys {
+                Some(rk) => {
+                    for (k, v) in rk {
+                        visible.insert(k.to_vec(), Arc::new(v.to_vec()));
+                    }
+                }
+                None => {
+                    if let Some(r) = &root {
+                        let mut it = crate::prolly::cursor::TreeIter::new(db.store.clone(), r)?;
+                        while let Some((k, v)) = it.next_item()? {
+                            visible.insert(k, Arc::new(v));
+                        }
+                    }
                 }
             }
             // ② memtx overlay（checkpoint 之后的已提交变更）；None = 墓碑
