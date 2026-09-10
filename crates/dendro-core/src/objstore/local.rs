@@ -106,6 +106,7 @@ impl ObjStore for LocalObjStore {
         let f = fs::OpenOptions::new()
             .write(true)
             .create(true)
+            .truncate(false)
             .open(&p)
             .map_err(|e| map_io(e, &p))?;
         // 预分配尺寸内的写入不改文件尺寸 ⇒ fdatasync 纯数据刷盘（无元数据
@@ -147,6 +148,7 @@ impl ObjStore for LocalObjStore {
             let f = fs::OpenOptions::new()
                 .write(true)
                 .create(true)
+                .truncate(false)
                 .open(&p)
                 .map_err(|e| map_io(e, &p))?;
             let ret = unsafe { libc::fallocate(f.as_raw_fd(), 0, 0, len as i64) };

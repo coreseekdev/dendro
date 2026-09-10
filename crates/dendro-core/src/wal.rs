@@ -805,7 +805,7 @@ impl WalWriter {
     /// 封口当前打开段（追加模式）：trailer 落盘 + 推进段号。缓冲应已空
     /// （close_graceful 先行 flush）；失败仅告警——reopen 撕尾容忍兜底。
     fn close_open_segment(&self) -> Result<()> {
-        let (path, trailer, off, seg) = {
+        let (path, trailer, off, _seg) = {
             let mut g = self.shared.lock();
             if g.seg_appended == 0 {
                 return Ok(());
