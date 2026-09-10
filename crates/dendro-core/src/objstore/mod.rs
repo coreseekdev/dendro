@@ -7,6 +7,7 @@ pub mod local;
 pub mod manifest;
 pub mod memory;
 pub mod s3;
+pub mod sim;
 pub mod throttled;
 
 use bytes::Bytes;

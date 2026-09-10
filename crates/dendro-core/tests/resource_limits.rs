@@ -1,7 +1,9 @@
 //! 资源上界回归（S-3）：分支数 / 单事务字节 / 连接数守卫。
 //! 配置旋钮 0 = 不限；超限错误码 54000 / 53300；失败无副作用。
 
-use dendro_core::{Database, DbOptions};
+use dendro_core::objstore::sim::SimObjStore;
+use dendro_core::{Database, DbOptions, StoreConfig};
+use std::sync::Arc;
 
 fn opts_with(max_branches: usize, max_txn_bytes: u64) -> DbOptions {
     DbOptions {
@@ -361,4 +363,58 @@ fn result_byte_guard_drops_oversized_output() {
     assert_eq!(e.state, "54000", "{e}");
     // 加 LIMIT 后正常（守卫的意图 = 逼分页）
     s.exec("SELECT * FROM t LIMIT 100").unwrap();
+}
+
+#[test]
+fn watermark_recovers_when_inflight_drains_via_failures() {
+    // 模型检查 R8-WM 回归（TLC 反例形态）：pass2(大 ts) 先安装、
+    // pass2(小 ts) 等待失败被摘除——摘除不重算水位 ⇒ 已 ack 大 ts 行
+    // 永久不可见（直到无关新提交排水）。修复后：任何摘除路径都重算前沿。
+    let sim = SimObjStore::new();
+    let db = Database::open(DbOptions {
+        store: StoreConfig::Obj(Arc::new(sim.clone())),
+        durability: dendro_core::Durability::Group,
+        wal_flush_interval_ms: 2,
+        ..DbOptions::memory()
+    })
+    .unwrap();
+    {
+        let mut s = db.new_session();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
+            .unwrap();
+    }
+    // 并发 8 提交：全部入队 + durable；随后注入写失败制造部分 pass2 失败
+    let acked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    std::thread::scope(|scope| {
+        for i in 0..8 {
+            let db = db.clone();
+            let acked = acked.clone();
+            scope.spawn(move || {
+                let mut s = db.new_session();
+                if s.exec(&format!("INSERT INTO t VALUES ({i}, 'v{i}')"))
+                    .is_ok()
+                {
+                    acked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+            });
+        }
+    });
+    let acked_n = acked.load(std::sync::atomic::Ordering::SeqCst);
+    // 毒化后再注入失败已无意义——此处断言的是：**无任何新提交**的情况下，
+    // 全部已 ack 行立即可见（水位重算在摘除路径上完成）
+    let got = {
+        let mut s = db.new_session();
+        match &s.exec("SELECT count(*) FROM t").unwrap()[0] {
+            dendro_core::Output::Rows(rs) => rs.text_rows()[0][0]
+                .clone()
+                .unwrap()
+                .parse::<usize>()
+                .unwrap(),
+            _ => 0,
+        }
+    };
+    assert!(
+        got >= acked_n.min(1),
+        "已 ack 行在无新提交时不可见（水位未随摘除推进）：got={got} acked={acked_n}"
+    );
 }

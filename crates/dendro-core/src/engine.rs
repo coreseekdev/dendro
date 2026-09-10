@@ -1665,6 +1665,7 @@ pub(crate) fn commit_tx(db: &Database, sess_branch: &str, txn: &Txn) -> Result<u
     if let Err(e) = wr {
         guard.disarm();
         b.inflight.lock().remove(&ts);
+        recompute_watermark_on_removal(&b);
         return Err(e);
     }
     // 延迟口径 = 裁决 + 入队 + durable 等待（客户端可感知的提交时延；
@@ -1690,20 +1691,12 @@ pub(crate) fn commit_tx(db: &Database, sess_branch: &str, txn: &Txn) -> Result<u
             }
         }
         b.pending_bytes.fetch_add(plen as u64, Ordering::Release);
-        // 可见性推进：无间隙前沿 = min(installed_max, min(剩余 in-flight) − 1)。
-        // installed_max 记录已安装的最大 ts（与本提交取 max）；in-flight 非空时
-        // 前沿压在未安装最小 ts 之下，否则推到 installed_max——两支并发的
-        // pass2 完成序 ≠ ts 序，两个分量都必须持久跟踪（回归实证）。
+        // 可见性推进：无间隙前沿 = min(installed_max, min(剩余 in-flight) − 1)
+        //（模型检查 R8-WM 后统一走助手；公式与错误/恐慌路径一致）
         {
-            let mut g = b.inflight.lock();
-            g.remove(&ts);
-            let imax = b.installed_max.fetch_max(ts, Ordering::Release).max(ts);
-            let frontier = g
-                .keys()
-                .next()
-                .copied()
-                .map_or(imax, |m| imax.min(m.saturating_sub(1)));
-            b.watermark.fetch_max(frontier, Ordering::Release);
+            b.installed_max.fetch_max(ts, Ordering::Release);
+            b.inflight.lock().remove(&ts);
+            recompute_watermark_on_removal(&b);
         }
     }
     drop(guard);
@@ -1725,6 +1718,21 @@ fn validate_inflight(b: &Branch, txn: &Txn) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// in-flight 摘除后的水位重算（模型检查 R8-WM 修复）：**任何**摘除路径
+/// （安装/错误/恐慌守卫）都必须触发——错误摘除只移除条目不改水位时，
+/// "pass2(4) 先完成、1/2/3 等待失败被摘除"的交错会把水位永久压在 0，
+/// 已 ack 的行 4 不可见（TLC 反例实证）。与 Pass2 同公式：
+/// frontier = min(installed_max, min(in-flight)-1)。
+fn recompute_watermark_on_removal(b: &Branch) {
+    let mut g = b.inflight.lock();
+    let imax = b.installed_max.load(Ordering::Acquire);
+    let frontier = g
+        .keys()
+        .next()
+        .map_or(imax, |m| imax.min(m.saturating_sub(1)));
+    b.watermark.fetch_max(frontier, Ordering::Release);
 }
 
 /// in-flight 注册的恐慌/早退兜底（P2-6）：条目泄漏会让 watermark 前沿
@@ -1753,6 +1761,7 @@ impl Drop for InflightGuard {
     fn drop(&mut self) {
         if self.armed {
             self.b.inflight.lock().remove(&self.ts);
+            recompute_watermark_on_removal(&self.b);
         }
     }
 }

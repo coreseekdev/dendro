@@ -1,116 +1,74 @@
-# AGENTS.md — Dendro
+# AGENTS.md —— Agent 工作规则（强约束，任何 Agent 会话必须遵守）
 
-只写（append-only）· 内容寻址 · 分支化 · 云原生的 AI 原生 SQL 数据库。
-Rust workspace，edition 2021，无 CI、无 rust-toolchain/clippy/rustfmt 配置（用工具链默认值）。
+> 本文件是 coding agent 在本仓库工作的最高优先级流程约束。
+> 违反本文件的"完成"声明无效。验证账本：[docs/VERIFICATION.md](docs/VERIFICATION.md)。
+> 架构三约束：云原生（OSS + OSS 优化存储）、高性能（架构优化 + 测试）、
+> 高可靠（形式化验证 + 模型检查）——所有工作不得违背。
+> **追加-only 不可变（架构根约束）**：任何代码路径不得改写/删除已持久化
+> 内容——物理删除仅经 GC 墓碑保留窗口；对 append-only 的任何"优化"
+> （原地重写、截断复用）都是设计变更，须走审计。
 
-## 作者意图（原始立项 prompt 的硬性要求）
+## 1. 三类 Review Agent（定期 + 事件触发，必须启动）
 
-1. 协议与实现分离：对外 MySQL + PostgreSQL 双协议，**PG 优先**；协议层是薄适配层。
-2. 数据只写、git 式版本化：分支即沙箱，服务于 **Agent 操作数据库/管理系统** 这一
-   AI 原生场景（每个 Agent 开分支折腾，验证后合并或丢弃）。
-3. 云原生：TP 侧 WAL、AP 侧列存全部落 OSS；事务用内存引擎（HANA 式 OCC MVCC），
-   内存事务的并发度与"WAL 对 OSS 友好"是专项调研过的设计点。
-4. 列存为 GPU 优化保留机制（CBF 块 codec 分层、64B 对齐、footer zone map 先剪枝后搬运），
-   尽可能复用/参考现有组件与设计。
-5. SQL 是必备能力：必须有语法测试基线（tests/slt + tests/pg_grammar，PG 代码已作参考克隆）。
-6. 只写库会很大，**压缩是必须的**，且要持续测量压缩/性能的衰退情况（SPEC 08）。
-7. **性能绝对优先**：禁止 Rc/RefCell 等拖慢性能的方案（除非确实必须）；鼓励内存池等
-   高性能结构；只读数据结构可采用带部分元数据的改进型 B-tree 等高级结构
-   （Strange Loop 有专题汇报的方向）。
+| Agent | 触发条件 | 职责 |
+|---|---|---|
+| **Code Review** | 每轮存储/引擎/协议的实质性变更合并前 | 实现与理想的差距、隐藏 bug。**必须探针实证**（写临时测试跑通后删除），不接受纯读码结论 |
+| **形式化验证 Review** | spec/*.tla 变更后必须；平时定期 | 不变式合理性/完整性（对照 docs/VERIFICATION.md §1 验收不变式）、环境模型合理性、活性缺口；识别"构造恒真"的空洞不变式并降级标注 |
+| **性能 Review** | 定期 + 热路径变更后 | 分配/拷贝/syscall/索引/锁五个维度，结论须含验证方法（基准/perf）与 A/B 方案 |
 
-## 参考实现：`../readonly.refer/`（只读，禁止修改）
+Review 结论必须落盘入库（docs/review-*.md），作为后续工作的任务书。
+**实证先例**（本仓库已发生）：矛盾范围 BTreeMap panic、分支上限竞态、
+毒化热旋 100% CPU——三者均为 review agent **写探针跑通**后才发现，
+纯读码两轮未检出。
 
-仓库外的 `/home/nzinfo/src.db/readonly.refer/` 收录了立项时筛选的参考源码
-（均为 `--depth 1` 浅克隆，目录内 README.md 有完整清单与许可表）。按关注点查阅：
-
-- **git 式版本化 / prolly tree**：`dolt/`、`doltgresql/`（内容寻址 prolly tree、
-  分支/合并语义；其官方性能对标数据是 dendro 的对照系：Dolt 读延迟约为 PG 6.3×、
-  写 3.6×——dendro 的内存事务路线正是为了避开这个开销）
-- **OSS 原生存储**：`slatedb/`（WAL+SST 全落对象存储的最小完整实现）、
-  `neon/`（计算/存储分离）、`delta-rs/`、`iceberg/`、`iceberg-rust/`（append-only
-  事务日志、manifest 树、快照与时间旅行）
-- **列存 / Arrow 栈 / GPU 方向**：`influxdb3_core/`（Arrow+DataFusion+Parquet）、
-  `databend/`（云原生数仓；注意 `src/**/ee`、`src/bendsave` 为 Elastic-2.0 许可）、
-  `lancedb/`（lance 列存格式）
-- **嵌入式 KV / 树结构**：`redb/`（COW B-tree）、`fjall/`（LSM）、`sled/`（仅架构参考）
-- **Rust 全栈 SQL 引擎**：`limbo/`（Turso，io_uring 异步 I/O、确定性仿真测试）、
-  `gluesql/`（可换存储后端）、`tikv/`、`greptimedb/`、`qdrant/`
-- **SQL 测试基线语料**：`sqllogictest-corpus/`、`postgresql/`（PG 17.6 回归测试，
-  tests/pg_grammar/GRAMMAR.md 的勾选清单来源）
-
-**许可纪律**：`readonly.refer/restricted-license/`（immudb BSL、endb AGPL）仅留档，
-**不得复制其代码**；databend 的 ee 目录同理。参考其余仓库时读设计、读算法，
-抄思路不抄代码。同级的 `../risingwave/`（Apache-2.0）也可参考；`../cozo/`（MPL）、
-`../materialize/`（BSL）不在许可白名单内。
-
-## 架构速览
-
-对外说 PostgreSQL（优先）/MySQL 协议；事务在内存中做 OCC MVCC；提交以 group-commit
-WAL 直写对象存储；数据以内容寻址 prolly tree 版本化（git 语义）；后台物化为列存块
-CBF 供 AP 向量化执行。设计决策以 `spec/00–10`（11 篇 SPEC）为准，代码注释频繁引用
-SPEC 章节（如 `SPEC 06 §2.4`）——**改动语义前先读对应 SPEC**。
+## 2. 顺序约束（重要：Code Review 先于形式化验证）
 
 ```
-crates/
-  dendro-core      format → objstore → prolly → versioned → wal → memtx → sql → engine
-                   （分层单向依赖，见 src/lib.rs 顶部注释；顶层 re-export Database/Session/SqlError）
-  dendro-columnar  CBF 列存：writer/reader/footer/stats + codec/{raw,bitpack,rledict,delta,zstd}
-                   `#![forbid(unsafe_code)]`
-  dendro-pgwire    PG v3 协议薄适配层，`#![deny(unsafe_code)]`，把 SqlError 映射为 ErrorResponse
-  dendro-mywire    MySQL 协议，仅依赖 std::net + std::thread（SPEC 10 §7），禁止引入 tokio/bytes
-  dendro-server    bin `dendro`：serve / bench / smoke 三个子命令（clap 4 derive）
-  slt              bin `slt`：sqllogictest runner，进程内驱动引擎，每文件独立内存库
-prototype/         Python 原型（prolly tree、压缩基准），改动引擎语义时可参考其测试
-tests/slt/dendro/  SQL 基线 7 个 .slt 文件；tests/pg_grammar/GRAMMAR.md 是 PG 语法覆盖 roadmap
-benches/results/   基准结果 JSON + README（没有 criterion，见下文基准命令）
+code review agent（发现缺陷/语义澄清）
+  → 修复 + 回归测试（红转绿）
+  → 形式化验证跟进：不变式补充 / harness 扩展 / 规约 vN+1
+  → 不变式 review agent 校验
 ```
 
-## 常用命令
+**禁止并行启动 code review 与形式化验证评审**：code review 的结论
+（缺陷模式、边界语义、故障模型修正）是形式化验证的输入——并行会使
+规约与实现各自演化、精化桥断裂。本仓库依据：两轮审计中"负数字面量
+Int32 取负失效""段退休无界"等缺陷模式直接改写了范围下推与两段式
+提交的规约需求——若规约先行即冻结在错误语义上。
 
-```bash
-cargo test --workspace                                      # 全部单元/集成/e2e 测试
-cargo build -p slt && ./target/debug/slt run tests/slt/dendro   # SQL 基线（7 文件，必须全绿）
-cargo test -p dendro-columnar --release --test bench_cbf -- --ignored --nocapture  # CBF 微基准
-cargo build --release -p dendro-server && ./target/release/dendro bench --out benches/results
-./target/debug/dendro serve --data /tmp/dendro-data         # 起服务（serve 子命令不可省略）
-./target/debug/dendro smoke [sql]                           # 引擎自检
-```
+形式化验证内部的 review（不变式评审）可与 code review 的**修复实现**
+并行，但规约修订必须在 code review 结论入库之后。
 
-## 硬性纪律
+## 3. 缺陷 → 检测机制纪律（docs/VERIFICATION.md §12 矩阵）
 
-1. **SLT 回归红线**（tests/slt/BASELINE.md）：任何引擎变更后必须重跑
-   `slt run tests/slt/dendro`，当前基线 7/7 全过，通过数下降禁止合入。
-2. **语义常量**（改动会破基线，须同步更新 slt 与 BASELINE.md）：
-   `ORDER BY DESC` 默认 NULLS FIRST；PK 冲突 SQLSTATE 23505；未定义表 42P01；
-   合并冲突 40001。
-3. **性能红线**（SPEC 00 §6）：热路径禁止 Rc/RefCell，共享仅限不可变 Arc；
-   并发用 parking_lot + arc-swap。
-4. **unsafe**：全仓库无 unsafe。columnar 是 `forbid`、pgwire 是 `deny`，不得移除。
-5. **同步优先**：引擎主体是同步代码（std::thread + std::net）。tokio 只允许出现在
-   objstore/s3.rs（object_store 需要 runtime）、server、slt 与 wire 集成测试中。
+**每个已发生的缺陷必须落一个永久检测机制**，并在账本 §12 矩阵登记
+错误类别。机制分层：
+SimStore 故障注入（环境模型采样）→ opfuzz（状态机交互采样）→
+一致性/边界表/属性测试（确定性边界与表示不变式）→ TLC（协议语义）
+→ Kani（不可信输入边界）。只修不加机制 = 未完成。
 
-## 代码约定
+## 4. WIP 纪律
 
-- **依赖**：集中在根 `[workspace.dependencies]`，成员 crate 一律 `xxx.workspace = true`，
-  新增依赖先加到根再引用。
-- **错误处理**：thiserror 2。core 统一用 `SqlError { state: &'static str, message }`
-  （`dendro-core/src/error.rs`，携带 SQLSTATE，构造器如 `syntax()`/`undefined_table()`）
-  和 `pub type Result<T>`；columnar 用 thiserror 枚举 `Error`；wire 层不定义自己的错误，
-  只映射 `SqlError` → 协议错误响应。
-- **注释与文档**：中文（模块级 `//!`、doc、行内注释），并引用 SPEC 章节；
-  面向用户的错误消息、SQL 文本用英文。
-- **commit message**：英文短句，小写前缀 + 冒号（如 `final: live dual-protocol verification`）。
-- **日志**：tracing，但埋点极少——不要为了"完整性"到处加日志，跟随现有密度。
-- **测试**：单元测试内联 `#[cfg(test)]`（每文件一个 test module）；集成/e2e 在各 crate
-  `tests/` 目录；真实客户端对拍用 dev-dependencies 里的 tokio-postgres / mysql crate。
+- 未全绿的验证测试标 `#[ignore]` + WIP 注释（复现序列、疑点、修法方向
+  必须写入），**不计入账本已验证集合**；
+- 禁止 delete-to-pass：不得通过删除断言/弱化规约使测试变绿；
+- 账本状态必须与事实一致（✅/🚧/⬜），诚实标注证据边界。
 
-## 基准与证据
+## 5. 工具与版本锁定
 
-性能声明必须有据可查：`benches/results/*.json` 是当前数字（如 oltp_insert 157k txn/s、
-CREATE BRANCH 225µs @1 万行）。改了热路径就重跑 `dendro bench` 并更新结果与 README 表格。
-方法学见 `spec/09-bench-plan.md`。
+- tla2tools.jar 已入库（spec/tools/）；Kani 0.67.0 / Verus（引入时记录）；
+- 升级验证工具必须同步账本工具版本并全量重跑对应验证。
 
-## 已知文档偏差
+## 6. 提交纪律
 
-README "快速开始" 的 `cargo run -p dendro-server -- --data ...` 缺少 `serve` 子命令，
-正确形式见上文"常用命令"。
+- 原子提交：一个逻辑变更一笔（缺陷修复 / 机制新增 / 文档 分开）；
+- 提交前：涉及 crate 的全部测试 + 验证链路绿（见账本各 Claim 的复验命令）；
+- 中文 conventional commits；工作区保持干净。
+
+## 7. 参考索引
+
+- 验证总纲与账本：docs/VERIFICATION.md（§12 缺陷→机制矩阵）
+- 规约目录：spec/（CommitPipeline.tla 等；`make -C spec check`）
+- opfuzz：crates/dendro-core/tests/opfuzz.rs（SimStore 随机操作序列）
+- 故障模型单一事实源：crates/dendro-core/src/objstore/sim.rs
+- 同工作区先例：../stream-db/basalt（AGENTS.md / VERIFICATION.md 全套）
