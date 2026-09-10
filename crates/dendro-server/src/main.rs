@@ -62,6 +62,9 @@ enum Cmd {
         /// 资源上界：单事务写集字节上限（0 = 不限）
         #[arg(long, default_value_t = 256 << 20)]
         max_txn_bytes: u64,
+        /// 新会话默认语句超时毫秒（0 = 不限；会话可 SET statement_timeout 覆盖）
+        #[arg(long, default_value_t = 0)]
+        statement_timeout_ms: u64,
         /// PG 监听端口（0 = 关闭）
         #[arg(long, default_value_t = 5432)]
         pg_port: u16,
@@ -136,6 +139,7 @@ fn main() {
             max_connections,
             max_branches,
             max_txn_bytes,
+            statement_timeout_ms,
             s3_endpoint,
             s3_bucket,
             s3_access_key,
@@ -182,6 +186,7 @@ fn main() {
                 max_connections,
                 max_branches,
                 max_txn_bytes,
+                default_statement_timeout_ms: statement_timeout_ms,
             };
             let db =
                 Database::open(opts).unwrap_or_else(|e| panic!("open {}: {e}", data.display()));

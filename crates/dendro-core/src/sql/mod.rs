@@ -751,10 +751,44 @@ pub(crate) fn exec_statement(
                 )]],
             ))))
         }
-        Statement::Set(_) => Ok(Some(Output::Command {
-            tag: "SET".into(),
-            affected: 0,
-        })),
+        Statement::Set(set) => {
+            // S-3：`SET statement_timeout = <毫秒>` 是唯一实语义的会话参数
+            //（0 = 关闭）；其余 SET 维持宽松放行（SPEC 07）
+            if let sqlparser::ast::Set::SingleAssignment {
+                variable, values, ..
+            } = set
+            {
+                let name = variable
+                    .0
+                    .iter()
+                    .map(|p| p.as_ident().map(|i| i.value.clone()).unwrap_or_default())
+                    .collect::<Vec<_>>()
+                    .join(".")
+                    .to_ascii_lowercase();
+                if name == "statement_timeout" {
+                    let ms = values.first().and_then(|e| match e {
+                        sqlparser::ast::Expr::Value(vws) => match &vws.value {
+                            sqlparser::ast::Value::Number(n, _) => n.parse::<u64>().ok(),
+                            _ => None,
+                        },
+                        _ => None,
+                    });
+                    match ms {
+                        Some(v) => sess.statement_timeout_ms = v,
+                        None => {
+                            return Err(SqlError::new(
+                                "22023",
+                                "statement_timeout expects a non-negative integer (milliseconds)",
+                            ))
+                        }
+                    }
+                }
+            }
+            Ok(Some(Output::Command {
+                tag: "SET".into(),
+                affected: 0,
+            }))
+        }
         Statement::ShowVariable { variable } => {
             let name = variable
                 .iter()

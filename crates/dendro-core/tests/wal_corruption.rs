@@ -26,6 +26,7 @@ fn opts_store(store: StoreConfig) -> DbOptions {
         lease_ttl_ms: 60_000,
         read_only: false,
         gc_retention_ms: 24 * 3600 * 1000,
+        default_statement_timeout_ms: 0,
         max_connections: 0,
         max_branches: 0,
         max_txn_bytes: 0,

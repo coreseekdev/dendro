@@ -512,7 +512,7 @@ fn eval_from(
                         return Err(SqlError::syntax("join requires ON"))
                     }
                 };
-                tv = hash_join(tv, right, l)?;
+                tv = hash_join(tv, right, l, sess.stmt_deadline)?;
             }
             JoinOperator::Left(constraint) | JoinOperator::LeftOuter(constraint) => {
                 let right = table_scan_opt(db, sess, &j.relation, snapshot, None, None)?;
@@ -520,7 +520,7 @@ fn eval_from(
                     sqlparser::ast::JoinConstraint::On(e) => e,
                     _ => return Err(SqlError::not_supported("LEFT JOIN constraint")),
                 };
-                tv = hash_join_left(tv, right, e)?;
+                tv = hash_join_left(tv, right, e, sess.stmt_deadline)?;
             }
             _other => return Err(SqlError::not_supported("join type")),
         }
@@ -1643,7 +1643,12 @@ fn table_scan(
                 None => {
                     if let Some(r) = &root {
                         let mut it = crate::prolly::cursor::TreeIter::new(db.store.clone(), r)?;
+                        let mut n = 0usize;
                         while let Some((k, v)) = it.next_item()? {
+                            n += 1;
+                            if n.is_multiple_of(4096) {
+                                sess.deadline_check()?;
+                            }
                             visible.insert(k, Arc::new(v));
                         }
                     }
@@ -1688,11 +1693,16 @@ fn table_scan(
                     .min(visible.len())
                     .max(64),
             );
+            let mut n = 0usize;
             for (i, v) in visible.values().enumerate() {
                 if let Some(cap) = pushdown_limit {
                     if i >= cap {
                         break;
                     }
+                }
+                n += 1;
+                if n.is_multiple_of(4096) {
+                    sess.deadline_check()?;
                 }
                 rows.push(row_from_bytes(&schema, v)?);
             }
@@ -1757,7 +1767,12 @@ fn row_from_bytes(schema: &crate::versioned::TableSchema, bytes: &[u8]) -> Resul
 
 // ---------- JOIN ----------
 
-fn hash_join(l: TableView, r: TableView, on: &Expr) -> Result<TableView> {
+fn hash_join(
+    l: TableView,
+    r: TableView,
+    on: &Expr,
+    deadline: Option<std::time::Instant>,
+) -> Result<TableView> {
     // 找等值条件 col_l = col_r（支持 AND 链中提取多个）
     let eqs = extract_equi(on, &l.names, &r.names)?;
     let mut names = l.names.clone();
@@ -1780,7 +1795,16 @@ fn hash_join(l: TableView, r: TableView, on: &Expr) -> Result<TableView> {
         Some(k)
     };
     let mut hm: HashMap<Vec<String>, Vec<&Vec<SqlValue>>> = HashMap::new();
+    let mut hj_chk = 0usize;
     for rr in &r.rows {
+        hj_chk += 1;
+        if hj_chk.is_multiple_of(4096) {
+            if let Some(d) = deadline {
+                if std::time::Instant::now() >= d {
+                    return Err(SqlError::new("57014", "statement timeout"));
+                }
+            }
+        }
         if let Some(key) = mkkey(rr, &eqs.ridx) {
             hm.entry(key).or_default().push(rr);
         }
@@ -1802,12 +1826,26 @@ fn hash_join(l: TableView, r: TableView, on: &Expr) -> Result<TableView> {
     Ok(TableView { names, rows })
 }
 
-fn hash_join_left(l: TableView, r: TableView, on: &Expr) -> Result<TableView> {
+fn hash_join_left(
+    l: TableView,
+    r: TableView,
+    on: &Expr,
+    deadline: Option<std::time::Instant>,
+) -> Result<TableView> {
     let eqs = extract_equi(on, &l.names, &r.names)?;
     let mut names = l.names.clone();
     names.extend(r.names.clone());
     let mut hm: HashMap<Vec<String>, Vec<&Vec<SqlValue>>> = HashMap::new();
+    let mut hj_chk = 0usize;
     for rr in &r.rows {
+        hj_chk += 1;
+        if hj_chk.is_multiple_of(4096) {
+            if let Some(d) = deadline {
+                if std::time::Instant::now() >= d {
+                    return Err(SqlError::new("57014", "statement timeout"));
+                }
+            }
+        }
         let key: Vec<String> = eqs
             .ridx
             .iter()

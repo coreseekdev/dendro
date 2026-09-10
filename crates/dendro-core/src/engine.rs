@@ -76,6 +76,8 @@ pub struct DbOptions {
     pub max_branches: usize,
     /// 资源上界（S-3）：单事务写集字节上限（0 = 不限）
     pub max_txn_bytes: u64,
+    /// 新会话的默认语句超时毫秒（S-3；0 = 不限；`SET statement_timeout` 可逐会话覆盖）
+    pub default_statement_timeout_ms: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,6 +107,7 @@ impl Default for DbOptions {
             max_connections: 1_000,
             max_branches: 10_000,
             max_txn_bytes: 256 << 20,
+            default_statement_timeout_ms: 0,
         }
     }
 }
@@ -608,6 +611,8 @@ impl Database {
             failed_txn: false,
             dialect: crate::sql::SqlDialect::Pg,
             cursors: HashMap::new(),
+            statement_timeout_ms: self.opts.default_statement_timeout_ms,
+            stmt_deadline: None,
         }
     }
 
@@ -1456,6 +1461,24 @@ pub struct Session {
     pub(crate) dialect: crate::sql::SqlDialect,
     /// 已声明游标（Q-1b v1：INSENSITIVE/READ ONLY——DECLARE 时物化结果集）
     pub(crate) cursors: HashMap<String, (crate::types::RecordSet, usize)>,
+    /// 语句超时毫秒（S-3 生产化：0 = 不限；`SET statement_timeout = N` 可调）
+    pub(crate) statement_timeout_ms: u64,
+    /// 当前语句的截止时刻（exec 入口按 statement_timeout 设置）
+    pub(crate) stmt_deadline: Option<std::time::Instant>,
+}
+
+impl Session {
+    /// 语句超时检查点（S-3）：重循环每 4096 次迭代调用。
+    /// 超时 → 57014 query_canceled（PG 同码），当前语句终止、无副作用
+    /// （只读扫描本就无写；写事务超时 = 事务失败回滚语义，ROLLBACK 可清）。
+    pub(crate) fn deadline_check(&self) -> Result<()> {
+        if let Some(d) = self.stmt_deadline {
+            if std::time::Instant::now() >= d {
+                return Err(SqlError::new("57014", "statement timeout"));
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Drop for Session {
@@ -1483,10 +1506,20 @@ impl Session {
     /// 执行一段 SQL（可含多语句，`;` 分隔）；空/纯注释 → 空 Vec
     pub fn exec(&mut self, sql: &str) -> Result<Vec<Output>> {
         let db = self.db.clone();
+        // 语句超时（S-3）：每语句重置截止时刻；执行器在循环检查点查询
+        self.stmt_deadline = if self.statement_timeout_ms > 0 {
+            Some(
+                std::time::Instant::now()
+                    + std::time::Duration::from_millis(self.statement_timeout_ms),
+            )
+        } else {
+            None
+        };
         let result = crate::sql::exec_batch(&db, self, sql);
         if result.is_err() && self.txn.is_some() {
             self.failed_txn = true;
         }
+        self.stmt_deadline = None;
         result
     }
     /// PG extended：Parse

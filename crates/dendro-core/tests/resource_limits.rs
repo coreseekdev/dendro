@@ -217,3 +217,57 @@ fn branch_limit_sequential_probe() {
         }
     }
 }
+
+#[test]
+fn statement_timeout_aborts_runaway_query() {
+    // S-3 语句超时：大表 count(*) + 50ms 超时 → 57014 query_canceled；
+    // 随后语句不受影响（deadline 逐语句重置）；SET 0 = 关闭。
+    let db = Database::open(DbOptions::memory()).unwrap();
+    {
+        let mut s = db.new_session();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
+            .unwrap();
+        for batch in (0..300_000).step_by(10_000) {
+            let vals: Vec<String> = (batch..batch + 10_000)
+                .map(|i| format!("({i}, 'v{i}')"))
+                .collect();
+            s.exec(&format!("INSERT INTO t VALUES {}", vals.join(", ")))
+                .unwrap();
+        }
+        s.exec("CHECKPOINT").unwrap();
+    }
+    let mut s = db.new_session();
+    s.exec("SET statement_timeout = 50").unwrap();
+    // 全表扫描（>50ms）→ 57014
+    let mut timed_out = false;
+    for _ in 0..5 {
+        match s.exec("SELECT count(*) FROM t") {
+            Ok(_) => {}
+            Err(e) => {
+                assert_eq!(e.state, "57014", "{e}");
+                timed_out = true;
+                break;
+            }
+        }
+    }
+    assert!(timed_out, "50ms 超时下 30 万行全表扫描应触发 57014");
+    // 关闭超时后同查询正常完成
+    s.exec("SET statement_timeout = 0").unwrap();
+    let n = rows(&db, "SELECT count(*) FROM t");
+    assert_eq!(n[0], "300000");
+}
+
+#[test]
+fn statement_timeout_does_not_affect_fast_queries() {
+    let db = Database::open(DbOptions::memory()).unwrap();
+    {
+        let mut s = db.new_session();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY)").unwrap();
+        s.exec("INSERT INTO t VALUES (1)").unwrap();
+    }
+    let mut s = db.new_session();
+    s.exec("SET statement_timeout = 50").unwrap();
+    for _ in 0..10 {
+        s.exec("SELECT count(*) FROM t WHERE id = 1").unwrap();
+    }
+}
