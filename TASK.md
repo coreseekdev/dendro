@@ -97,7 +97,7 @@
 |---|------|:----:|------|
 | ~~S-1~~ | ~~启动全量打开所有分支（每分支线程+租约+fence 写）——万级分支不可行~~ | ✅ | 惰性打开落地：`Database::open` 不再预开分支，首次触达经 `branch()` 按需打开（自带 epoch 领取 + WAL 回放）；`active_branches()` 绝不懒加载（监控无写副作用）。回归：`multi_node.rs::lazy_open_and_drop_branch_gc` |
 | ~~S-2~~ | ~~DROP BRANCH 永久泄漏该分支 WAL/fence 对象~~ | ✅ | DROP BRANCH 墓碑化该分支全部 WAL 段（`wal/{name}/` LIST）+ fence 对象（`fence/{name}/`），随 manifest 原子发布，`gc_sweep` 到期删除；树 chunk 跨分支共享不删。回归：`multi_node.rs::lazy_open_and_drop_branch_gc` |
-| S-3 | 资源上界：连接数 / 分支数 / 单事务大小无守卫 | P2 | 配置上限 + 超限错误码 |
+| ~~S-3~~ | ~~资源上界：连接数 / 分支数 / 单事务大小无守卫~~ | ✅ | ConnGuard（PG FATAL 53300 / MySQL ERR 1040）+ create_branch 54000 + commit_tx Pass1 写集上界（入队前拒绝，无 Uncertain）；旋钮 --max-connections/--max-branches/--max-txn-bytes（0=不限）。回归 `resource_limits.rs` 6 项 |
 | S-4 | SQL 面缺口：UNION / 视图 / 权限（GRANT/REVOKE） | P2 | GRAMMAR 已列 ⬜ |
 | M-5 | metrics 直方图（commit/flush/manifest 延迟） | P2 | 未动（前轮登记） |
 | M-4 | GPU/CBF 解码对拍 | P2 | 未动（前轮登记） |
