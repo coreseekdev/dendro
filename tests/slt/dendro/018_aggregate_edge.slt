@@ -1,0 +1,36 @@
+# 聚合场景（简化版：确定性高的查询）
+statement ok
+CREATE TABLE ag (id BIGINT PRIMARY KEY, cat TEXT, val BIGINT)
+
+statement ok
+INSERT INTO ag VALUES (1, 'A', 10), (2, 'A', 20), (3, 'B', 30), (4, 'B', 40), (5, 'C', 50)
+
+query T
+SELECT cat FROM ag WHERE val = 30
+----
+B
+
+query I
+SELECT count(*) FROM ag
+----
+5
+
+query I
+SELECT count(*) FROM ag WHERE cat = 'A'
+----
+2
+
+query I
+SELECT sum(val) FROM ag WHERE cat = 'A'
+----
+30
+
+query I
+SELECT min(val) FROM ag WHERE cat = 'A'
+----
+10
+
+query I
+SELECT max(val) FROM ag WHERE cat = 'A'
+----
+20
