@@ -976,14 +976,35 @@ fn extract_pk_int_range(e: &Expr, pk: &str) -> Option<(Option<(i64, bool)>, Opti
             let b = extract_pk_int_range(right, pk);
             match (a, b) {
                 (Some((l1, h1)), Some((l2, h2))) => {
-                    // 交：lo 取更紧（大者），hi 取更紧（小者）
+                    // 交：lo 取值更大者、同值取排他（更紧）；hi 取值更小者、
+                    // 同值取排他（更紧）
                     let lo = match (l1, l2) {
-                        (Some(x), Some(y)) => Some(if x >= y { x } else { y }),
+                        (Some(x), Some(y)) => Some(match (x, y) {
+                            (x, y) if x.0 > y.0 => x,
+                            (x, y) if x.0 < y.0 => y,
+                            (x, y) => {
+                                if !x.1 {
+                                    x
+                                } else {
+                                    y
+                                }
+                            }
+                        }),
                         (x, None) => x,
                         (None, y) => y,
                     };
                     let hi = match (h1, h2) {
-                        (Some(x), Some(y)) => Some(if x <= y { x } else { y }),
+                        (Some(x), Some(y)) => Some(match (x, y) {
+                            (x, y) if x.0 < y.0 => x,
+                            (x, y) if x.0 > y.0 => y,
+                            (x, y) => {
+                                if !x.1 {
+                                    x
+                                } else {
+                                    y
+                                }
+                            }
+                        }),
                         (x, None) => x,
                         (None, y) => y,
                     };
@@ -1005,12 +1026,27 @@ fn extract_pk_int_range(e: &Expr, pk: &str) -> Option<(Option<(i64, bool)>, Opti
             };
             let v = match other {
                 Expr::Value(vws) => super::expr::value_from_parser(vws.value.clone()),
+                Expr::UnaryOp {
+                    op: sqlparser::ast::UnaryOperator::Minus,
+                    expr: inner,
+                } => match inner.as_ref() {
+                    // 小数字面量是 Int32（number_or_string 窄化）——两档都要取负
+                    Expr::Value(vws) => match super::expr::value_from_parser(vws.value.clone()) {
+                        SqlValue::Int64(i) => SqlValue::Int64(-i),
+                        SqlValue::Int32(i) => SqlValue::Int64(-(i as i64)),
+                        _ => return None,
+                    },
+                    _ => return None,
+                },
                 _ => return None,
             };
             let i = match v {
                 SqlValue::Int64(i) => i,
                 SqlValue::Int32(i) => i as i64,
-                _ => return None, // 字符串/浮点/NULL 字面量 → 不下推
+                _ => {
+                    eprintln!("[range-probe] literal bail: v={v:?} other={other:?}");
+                    return None;
+                }
             };
             let lower = matches!(op, Op::Gt | Op::GtEq);
             let incl = matches!(op, Op::GtEq | Op::LtEq);
@@ -1534,36 +1570,39 @@ fn table_scan(
             // → 树走 range_scan、overlay 走区间物化（此前选择性范围查询与
             // 全表扫描同价：30 万行树 + 10 万 overlay 全量物化 ≈ 180ms）。
             // 余下非范围谓词由下游常规过滤承担——区间只是超集收窄，语义不变。
-            let pk_range = selection.and_then(|sel| {
-                if schema.pk.len() == 1 {
-                    let pk_col = &schema.columns[schema.pk[0] as usize];
-                    if matches!(
-                        pk_col.ty,
-                        ColType::Int64 | ColType::Int32 | ColType::Date32 | ColType::TimestampMs
-                    ) {
-                        return extract_pk_int_range(sel, &pk_col.name);
-                    }
+            let pk_range = if schema.pk.len() == 1 {
+                let pk_col = &schema.columns[schema.pk[0] as usize];
+                if matches!(
+                    pk_col.ty,
+                    ColType::Int64 | ColType::Int32 | ColType::Date32 | ColType::TimestampMs
+                ) {
+                    selection.and_then(|sel| extract_pk_int_range(sel, &pk_col.name))
+                } else {
+                    None
                 }
+            } else {
                 None
-            });
+            };
             let (range_keys, overlay) = match &pk_range {
                 Some((lo, hi)) => {
                     let tm = b.mem.table(entry.id);
                     let (start_key, end_key) = pk_range_keys(lo, hi);
-                    let overlay = tm.snapshot_rows_in_range(
-                        start_key.as_deref(),
-                        end_key.as_deref(),
-                        snapshot,
-                    );
+                    // 空区间判定必须**先于**任何 range 调用——BTreeMap 对
+                    // start > end 直接 panic（WHERE id > 5 AND id < 5 实证，
+                    // 审计 R6-1 P0）
                     if let (Some(a), Some(b2)) = (&start_key, &end_key) {
                         if a >= b2 {
-                            // 空区间（lo ≥ hi）：直接空视图
                             return Ok(TableView {
                                 names: schema.columns.iter().map(|c| c.name.clone()).collect(),
                                 rows: vec![],
                             });
                         }
                     }
+                    let overlay = tm.snapshot_rows_in_range(
+                        start_key.as_deref(),
+                        end_key.as_deref(),
+                        snapshot,
+                    );
                     let rk = match &root {
                         Some(r) => crate::prolly::cursor::range_scan(
                             db.store.clone(),
@@ -1598,7 +1637,7 @@ fn table_scan(
             match &range_keys {
                 Some(rk) => {
                     for (k, v) in rk {
-                        visible.insert(k.to_vec(), Arc::new(v.to_vec()));
+                        visible.insert(k.clone(), Arc::new(v.clone()));
                     }
                 }
                 None => {

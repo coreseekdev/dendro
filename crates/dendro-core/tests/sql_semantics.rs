@@ -762,3 +762,112 @@ fn r21_distinct_explicit_rejection() {
     };
     assert_eq!(e.state, "0A000", "{e}");
 }
+
+// ---- P2-6g：PK 范围下推语义回归（含审计 R6-1 P0：矛盾范围 panic）----
+
+fn rows(db: &std::sync::Arc<Database>, sql: &str) -> Vec<Vec<String>> {
+    let mut s = db.new_session();
+    match &s
+        .exec(sql)
+        .unwrap_or_else(|e| panic!("SQL 失败 {sql}: {e}"))[0]
+    {
+        dendro_core::Output::Rows(rs) => rs
+            .text_rows()
+            .iter()
+            .map(|r| r.iter().map(|c| c.clone().unwrap_or_default()).collect())
+            .collect(),
+        _ => panic!("expected rows: {sql}"),
+    }
+}
+
+fn seed_range_table(db: &std::sync::Arc<Database>, overlay_rows: usize) {
+    let mut s = db.new_session();
+    s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
+        .unwrap();
+    for batch in (0..50_000).step_by(10_000) {
+        let vals: Vec<String> = (batch..batch + 10_000)
+            .map(|i| format!("({i}, 'tree-{i}')"))
+            .collect();
+        s.exec(&format!("INSERT INTO t VALUES {}", vals.join(", ")))
+            .unwrap();
+    }
+    s.exec("CHECKPOINT").unwrap();
+    // overlay（未物化）：负数 + 0 + 尾部
+    let mut vals: Vec<String> = ((-10i64)..0).map(|i| format!("({i}, 'neg-{i}')")).collect();
+    for i in 50_000_i64..(50_000 + overlay_rows as i64) {
+        vals.push(format!("({i}, 'hot-{i}')"));
+    }
+    s.exec(&format!(
+        "INSERT INTO t VALUES {}",
+        vals.into_iter().collect::<Vec<_>>().join(", ")
+    ))
+    .unwrap();
+}
+
+#[test]
+fn pk_range_pushdown_semantics() {
+    let db = open_mem();
+    seed_range_table(&db, 10_000);
+
+    // 树内范围
+    assert_eq!(
+        rows(&db, "SELECT count(*) FROM t WHERE id >= 100 AND id < 200")[0][0],
+        "100"
+    );
+    // 边界含排他
+    assert_eq!(
+        rows(&db, "SELECT count(*) FROM t WHERE id > 100 AND id <= 105")[0][0],
+        "5"
+    );
+    // overlay 区间（负数——符号翻转键序）
+    assert_eq!(rows(&db, "SELECT count(*) FROM t WHERE id < 0")[0][0], "10");
+    assert_eq!(
+        rows(&db, "SELECT count(*) FROM t WHERE id >= -3 AND id < 0")[0][0],
+        "3"
+    );
+    // overlay 尾部区间
+    assert_eq!(
+        rows(&db, "SELECT count(*) FROM t WHERE id >= 50000")[0][0],
+        "10000"
+    );
+    // 非范围合取混入（v 过滤由下游承担）
+    assert_eq!(
+        rows(
+            &db,
+            "SELECT count(*) FROM t WHERE id >= 100 AND id < 200 AND v = 'tree-150'"
+        )[0][0],
+        "1"
+    );
+}
+
+#[test]
+fn pk_range_contradictory_bounds_return_empty() {
+    // 审计 R6-1 P0 回归：lo > hi 曾在 memtx BTreeMap::range panic（连接线程死）
+    let db = open_mem();
+    seed_range_table(&db, 100);
+    for q in [
+        "SELECT count(*) FROM t WHERE id > 5 AND id < 5",
+        "SELECT count(*) FROM t WHERE id > 7 AND id < 3",
+        "SELECT count(*) FROM t WHERE id >= 7 AND id < 3",
+        "SELECT count(*) FROM t WHERE id > 7 AND id <= 3",
+        "SELECT count(*) FROM t WHERE id <= 5 AND id > 5",
+    ] {
+        assert_eq!(rows(&db, q)[0][0], "0", "矛盾范围必须空集：{q}");
+    }
+}
+
+#[test]
+fn pk_range_negative_literals_pushdown() {
+    // 审计 R6-3：负数字面量（UnaryOp::Minus）参与下推
+    let db = open_mem();
+    seed_range_table(&db, 100);
+    // id > -3 排除 -10..-3 共 8 行（负数界真实过滤语义）
+    assert_eq!(
+        rows(&db, "SELECT count(*) FROM t WHERE id > -3")[0][0],
+        rows(&db, "SELECT count(*) FROM t WHERE id >= -2")[0][0]
+    );
+    assert_eq!(
+        rows(&db, "SELECT count(*) FROM t WHERE id <= -8")[0][0],
+        "3" // -10,-9,-8
+    );
+}
