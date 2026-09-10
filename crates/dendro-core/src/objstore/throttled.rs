@@ -136,4 +136,12 @@ impl ObjStore for ThrottledObjStore {
         let _g = self.gate(&self.get_lat);
         self.inner.copy(from, to)
     }
+    fn append(&self, path: &str, data: &[u8]) -> ObjResult<()> {
+        // 追加按单次写计延迟（WAL 段 = 写密集路径，注入即代表性采样）
+        let _g = self.gate(&self.put_lat);
+        self.inner.append(path, data)
+    }
+    fn supports_append(&self) -> bool {
+        self.inner.supports_append()
+    }
 }

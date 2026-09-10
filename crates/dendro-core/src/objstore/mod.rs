@@ -61,6 +61,17 @@ pub trait ObjStore: Send + Sync + 'static {
     /// 仅本地/内存实现高效；恢复关键路径不得依赖
     fn list_prefix(&self, prefix: &str) -> ObjResult<Vec<String>>;
     fn copy(&self, from: &str, to: &str) -> ObjResult<()>;
+    /// 就地追加（P2-6e WAL 段优化）：字节序续写到既存/新建对象尾部并 fsync。
+    /// 语义契约：单写者（调用方 = 分支 flush 单飞）；追加非原子——读到中途
+    /// 字节的读者按"撕尾容忍"处理（WAL 段专用，恢复端 FrameIter 已容忍）。
+    /// 默认不支持（对象存储不可追加）——`supports_append()` = false，
+    /// WAL 写入端自动退化为整段 put。
+    fn append(&self, _path: &str, _data: &[u8]) -> ObjResult<()> {
+        Err(ObjError::Io("append unsupported by this store".into()))
+    }
+    fn supports_append(&self) -> bool {
+        false
+    }
 }
 
 pub type SharedObjStore = Arc<dyn ObjStore>;

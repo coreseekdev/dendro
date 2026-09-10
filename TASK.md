@@ -52,7 +52,7 @@
 | P2-3 | 基准证据链整改（环境指纹/中位数/恢复率断言/README CI 生成） | ⬜ | `benches/results/` |
 | P2-4 | 共识选型文档修订（消除正文与决策的矛盾） | ⬜ | 决策理由已补，正文需同步 |
 | P2-5 | 死代码清理 | 🔧 | clippy 清零已带走大部分；余 `retry()`/`RootView` 等 |
-| P2-6 | 性能：`Node.key()` 去分配 / NodeStore 真正 LRU / commit_mu 与 flush 解耦 | 🔧 | `key_slice`（点查 +25.5%、插入 +17.6%）+ **commit_mu-flush 解耦**（两段式提交：in-flight 裁决/memtx 有序安装/无间隙前沿；8 并发组提交 20→160 commits/s，8×）落地；NodeStore LRU 待做 |
+| P2-6 | 性能：`Node.key()` 去分配 / NodeStore 真正 LRU / commit_mu 与 flush 解耦 | ✅ | `key_slice`（点查 +25%）+ 两段式提交（in-flight 裁决/无间隙前沿；8 并发 20→12.5万 commits/s）+ 事件驱动刷盘（Group 延迟 26µs 与间隔无关）+ NodeStore 分片真 LRU/节点布局预解析（修复满即冻结 + O(n log n) 二分；30 万行点查 34k→143k q/s）+ **WAL 段追加模式**（段数每 flush 一个→按 32MB 封段；附录 benches/results 横向对比表）|
 | P2-7 | GRAMMAR.md 修正（WITH ⬜、CHECKPOINT ✅、differential 目录删除） | ⬜ | 与代码对齐 |
 | P2-8 | AGENTS.md 架构清单补 kv/journal/consensus/fence | ⬜ | 文档同步 |
 

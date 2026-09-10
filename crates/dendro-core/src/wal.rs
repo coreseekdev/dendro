@@ -245,6 +245,12 @@ struct WalShared {
     flushed_seg: u64,    // 已成功上传的最高段
     durable_seq: u64,    // 已 durable 的最高 seq
     pending_frames: u64, // 当前缓冲帧数（唤醒用）
+    /// 追加模式（P2-6e，仅 supports_append 存储）：当前打开段累计字节数
+    /// （0 = 未打开/不支持）。段按 segment_bytes 封口（追加 trailer），
+    /// 段数从"每 flush 一个"降到"每 segment_bytes 一个"
+    seg_appended: u64,
+    seg_frames_total: u64, // 当前打开段累计帧数（封段 trailer 用）
+    seg_min_seq_open: u64, // 当前打开段最小 seq（封段 trailer 用）
     /// **写者毒化（P0-D 错误语义定案）**：任何 flush PUT 失败后置位。
     /// 置位后：append 一律拒绝（SQLSTATE 40003 completion_unknown），
     /// flush_loop 停止上传（确定失败的帧绝不持久化——错误 = 未提交）；
@@ -302,6 +308,9 @@ impl WalWriter {
                 flushed_seg: start_seg.saturating_sub(1),
                 durable_seq: 0,
                 pending_frames: 0,
+                seg_appended: 0,
+                seg_frames_total: 0,
+                seg_min_seq_open: 0,
                 poisoned: false,
             }),
             cv: Condvar::new(),
@@ -368,6 +377,9 @@ impl WalWriter {
                 flushed_seg: start_seg.saturating_sub(1),
                 durable_seq: 0,
                 pending_frames: 0,
+                seg_appended: 0,
+                seg_frames_total: 0,
+                seg_min_seq_open: 0,
                 poisoned: false,
             }),
             cv: Condvar::new(),
@@ -511,6 +523,77 @@ impl WalWriter {
     pub fn flush_now(&self) -> Result<u64> {
         let t0 = std::time::Instant::now();
         let _single = self.flush_mu.lock();
+        // ── 追加模式（P2-6e，supports_append 存储）──
+        // 帧字节就地续写当前打开段（无 trailer），按 segment_bytes 封段
+        // （追加 32B trailer + 推进 cur_seg）。段数从"每 flush 一个"降到
+        // "每 segment_bytes 一个"；durable 提交从"建写整段+fsync+rename"
+        // 降为"尾部追加 fsync"。
+        // 撕尾容忍：追加非原子，崩溃留部分帧——FrameIter 对 epoch 最后
+        // 一段的帧错误按 torn tail 处理（recovery 端，SPEC 01 §4）。
+        if self.obj.supports_append() {
+            // 锁内取批 + 封段判定（**含 cur_seg 推进**）；I/O 必须在锁外——
+            // append 持锁做 fsync 会阻塞全部提交者入队（且 advance_durable
+            // 再取同锁自死锁，首版实证）。
+            // will_close 时同步推进 cur_seg：失败路径已毒化（不再写、无段洞
+            // ——P0 不变量"失败不产生段号空洞"由毒化保证），成功路径段已封口；
+            // 窗口期新帧入队自然落到下一段，不会写进已封 trailer 的段。
+            let (seg, payload, batch_max, _will_close) = {
+                let mut g = self.shared.lock();
+                if g.poisoned || g.buf.is_empty() {
+                    return Ok(g.flushed_seg);
+                }
+                let seg = g.cur_seg;
+                let batch_frames = g.frames;
+                let batch_min = g.min_seq;
+                let batch_max = g.max_seq;
+                let min_open = if g.seg_min_seq_open == 0 {
+                    batch_min
+                } else {
+                    g.seg_min_seq_open
+                };
+                let mut payload = std::mem::take(&mut g.buf);
+                g.frames = 0;
+                g.pending_frames = 0;
+                g.min_seq = 0;
+                g.max_seq = 0;
+                let will_close = g.seg_appended + payload.len() as u64 + TRAILER_LEN as u64
+                    >= self.cfg.segment_bytes;
+                if will_close {
+                    let seg_frames_total = g.seg_frames_total + batch_frames;
+                    payload.extend_from_slice(&encode_trailer(
+                        seg_frames_total,
+                        min_open,
+                        batch_max,
+                    ));
+                    g.seg_appended = 0;
+                    g.seg_frames_total = 0;
+                    g.seg_min_seq_open = 0;
+                    g.cur_seg = g.cur_seg.max(seg + 1);
+                } else {
+                    g.seg_appended += payload.len() as u64;
+                    g.seg_frames_total += batch_frames;
+                    g.seg_min_seq_open = min_open;
+                }
+                (seg, payload, batch_max, will_close)
+            };
+            let path = Self::seg_path(&self.branch, self.epoch, seg);
+            if let Err(e) = self.obj.append(&path, &payload) {
+                // 失败：毒化且**不回滚缓冲**——append 可能已写入部分字节，
+                // 回滚会造成 reopen 后重放重复帧。已落盘前缀由帧 CRC 守护，
+                // 撕尾由恢复端容忍；本批事务按 Uncertain 对账（SPEC 02 §3.5）。
+                self.shared.lock().poisoned = true;
+                return Err(SqlError::new(
+                    "40003",
+                    format!("wal append failed, writer poisoned; reopen required: {e}"),
+                ));
+            }
+            self.advance_durable(seg, batch_max);
+            let us = t0.elapsed().as_micros() as u64;
+            FLUSH_LATENCY_US.fetch_add(us, Ordering::Relaxed);
+            FLUSH_LATENCY_CNT.fetch_add(1, Ordering::Relaxed);
+            return Ok(seg);
+        }
+        // ── 整段模式（对象存储 / 不支持追加的包装层）──
         let (seg, bytes, max_seq, seg_frames, seg_min) = {
             let mut g = self.shared.lock();
             // 毒化后不再上传（P0-D）：确定失败的帧绝不持久化；
@@ -670,8 +753,42 @@ impl WalWriter {
     pub fn close_graceful(&self) {
         if !self.shared.lock().poisoned {
             let _ = self.flush_now();
+            // 追加模式：把打开段封口（追加 trailer + 推进 cur_seg）——
+            // 优雅关闭的段不依赖撕尾容忍 reopen
+            if self.obj.supports_append() {
+                let g = self.shared.lock();
+                if g.seg_appended > 0 && !g.poisoned {
+                    drop(g);
+                    let _ = self.close_open_segment();
+                }
+            }
         }
         self.close();
+    }
+
+    /// 封口当前打开段（追加模式）：trailer 落盘 + 推进段号。缓冲应已空
+    /// （close_graceful 先行 flush）；失败仅告警——reopen 撕尾容忍兜底。
+    fn close_open_segment(&self) -> Result<()> {
+        let (path, trailer, seg) = {
+            let mut g = self.shared.lock();
+            if g.seg_appended == 0 {
+                return Ok(());
+            }
+            let trailer = encode_trailer(
+                g.seg_frames_total,
+                g.seg_min_seq_open,
+                g.durable_seq & 0xFFFF_FFFF,
+            );
+            g.seg_appended = 0;
+            g.seg_frames_total = 0;
+            g.seg_min_seq_open = 0;
+            let seg = g.cur_seg;
+            g.cur_seg += 1;
+            (Self::seg_path(&self.branch, self.epoch, seg), trailer, seg)
+        };
+        self.obj.append(&path, &trailer)?;
+        self.advance_durable(seg, 0);
+        Ok(())
     }
 }
 
@@ -720,6 +837,19 @@ pub fn probe_tail(obj: &Arc<dyn ObjStore>, branch: &str, epoch: u64, lo_seg: u64
 }
 
 /// 读取并解码一个段
+/// 段尾是否为有效 trailer（封段完成标记）。区分两类合同：
+/// 已封段（优雅关闭/按阈值封口）帧损坏 = 真实腐坏，恢复严格报错；
+/// 未封段（追加中崩溃）帧错误 = 撕尾容忍，回放已 durable 前缀。
+pub fn segment_closed(data: &[u8]) -> bool {
+    if data.len() < TRAILER_LEN {
+        return false;
+    }
+    let t = &data[data.len() - TRAILER_LEN..];
+    let magic = u32::from_le_bytes(t[..4].try_into().unwrap());
+    let crc = u32::from_le_bytes(t[28..32].try_into().unwrap());
+    magic == SEGMENT_MAGIC && crc32c::crc32c(&t[..28]) == crc
+}
+
 pub fn read_segment(
     obj: &Arc<dyn ObjStore>,
     branch: &str,

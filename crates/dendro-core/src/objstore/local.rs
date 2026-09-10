@@ -96,6 +96,35 @@ impl ObjStore for LocalObjStore {
         }
     }
 
+    fn append(&self, path: &str, data: &[u8]) -> ObjResult<()> {
+        let p = self.full(path)?;
+        if let Some(parent) = p.parent() {
+            fs::create_dir_all(parent).map_err(|e| map_io(e, &p))?;
+        }
+        let existed = p.exists();
+        let mut f = fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&p)
+            .map_err(|e| map_io(e, &p))?;
+        f.write_all(data).map_err(|e| map_io(e, &p))?;
+        f.sync_all().map_err(|e| map_io(e, &p))?;
+        if !existed {
+            // 目录项持久化：首建的文件若目录项未落盘，掉电后文件消失——
+            // 而 Group 提交者已按 durable ack（每段一次，成本可摊薄）
+            if let Some(parent) = p.parent() {
+                if let Ok(d) = fs::File::open(parent) {
+                    let _ = d.sync_all();
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn supports_append(&self) -> bool {
+        true
+    }
+
     fn delete(&self, path: &str) -> ObjResult<()> {
         let p = self.full(path)?;
         match fs::remove_file(&p) {

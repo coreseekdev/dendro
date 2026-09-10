@@ -141,10 +141,12 @@ fn frame_iter_trailer_not_decoded_as_frame() {
 
 #[test]
 fn open_rejects_corrupted_wal_segment() {
+    // **已封段**（优雅关闭 = trailer 落盘）的帧损坏 = 真实腐坏，恢复严格报错。
+    // 追加模式合同：未封段（崩溃撕尾）走容忍路径，见下一个测试。
     let dir = std::env::temp_dir().join(format!("dendro-walc1-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    seed_db(&dir);
+    seed_db_closed(&dir);
     corrupt_first_frame_len(&dir);
     // len=u32::MAX 曾经会直接越界 panic；现在必须返回 Err。
     // 惰性打开（S-1）后恢复回放发生在分支首次触达——损坏在触达时暴露。
@@ -157,10 +159,56 @@ fn open_rejects_corrupted_wal_segment() {
         }
     };
     let err = match db.branch("main") {
-        Ok(_) => panic!("损坏段应导致分支恢复失败"),
+        Ok(_) => panic!("已封段的损坏应导致分支恢复失败"),
         Err(e) => e,
     };
     assert!(err.message.contains("wal"), "错误应来自 WAL 解析：{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// seed + **优雅关闭**：close_graceful 封段（trailer 落盘）→ 严格校验合同
+fn seed_db_closed(dir: &std::path::Path) {
+    let db = Database::open(opts_store(StoreConfig::LocalDir(dir.to_path_buf()))).unwrap();
+    let mut s = db.new_session();
+    s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
+        .unwrap();
+    for i in 0..3 {
+        s.exec(&format!("INSERT INTO t VALUES ({i}, 'v{i}')"))
+            .unwrap();
+    }
+    drop(s);
+    db.shutdown();
+    drop(db);
+}
+
+#[test]
+fn open_tolerates_unclosed_torn_tail() {
+    // **未封段**（崩溃模拟：直接 drop，无 shutdown）的撕尾帧 = 追加中途
+    // 崩溃 → 容忍，回放已 durable 前缀（追加模式 P2-6e 合同）
+    let dir = std::env::temp_dir().join(format!("dendro-walc3-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    seed_db(&dir); // 无 shutdown：段未封口
+                   // 在段尾追加一个撕碎的帧（len 声称 1KB 但只有 4B payload）
+    use dendro_core::wal::{encode_frame, FrameType};
+    let seg = find_first_segment(&dir);
+    let torn = encode_frame(FrameType::Txn, 99, &vec![b'x'; 1024]);
+    {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new().append(true).open(&seg).unwrap();
+        f.write_all(&torn[..24 + 4]).unwrap(); // 帧头 + 撕裂的 len 前缀
+    }
+    let db = Database::open(opts_store(StoreConfig::LocalDir(dir.clone()))).unwrap();
+    let mut s = db.new_session();
+    s.exec("USE BRANCH main").unwrap();
+    let o = s.exec("SELECT count(*) FROM t").unwrap();
+    if let dendro_core::Output::Rows(rs) = &o[0] {
+        assert_eq!(
+            rs.text_rows()[0][0].as_deref(),
+            Some("3"),
+            "已 durable 前缀必须完整回放（撕尾帧被容忍）"
+        );
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -721,4 +769,70 @@ fn poisoned_writer_flush_thread_does_not_hot_spin() {
         "毒化写者刷盘线程热旋：300ms 窗口消耗 {} tick",
         c1 - c0
     );
+}
+
+#[test]
+fn append_mode_batches_segments_by_size() {
+    // P2-6e 对象数收益：追加模式按 segment_bytes 封段——50 次 Group 提交
+    // （每帧 ~100B）只应产生极少的段对象；旧整段模式下 = 每 flush 一段
+    // （事件驱动下 ≈ 50 段）。
+    let dir = std::env::temp_dir().join(format!("dendro-append-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let db = Database::open(DbOptions {
+        store: StoreConfig::LocalDir(dir.clone()),
+        durability: dendro_core::Durability::Group,
+        ..opts_store(StoreConfig::LocalDir(dir.clone()))
+    })
+    .unwrap();
+    {
+        let mut s = db.new_session();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY)").unwrap();
+        for i in 0..50 {
+            s.exec(&format!("INSERT INTO t VALUES ({i})")).unwrap();
+        }
+    }
+    db.shutdown();
+    let wal_dir = {
+        let mut best = None;
+        for e in std::fs::read_dir(dir.join("wal")).unwrap().flatten() {
+            best = Some(e.path());
+        }
+        best.unwrap()
+    };
+    // 递归数段对象
+    let mut segs = 0usize;
+    for e in walk(&wal_dir) {
+        if e.extension().map(|x| x == "wal").unwrap_or(false) {
+            segs += 1;
+        }
+    }
+    assert!(
+        segs <= 4,
+        "追加模式段数应远小于 flush 数（50）：实际 {segs}"
+    );
+    // 全部提交可见
+    drop(db);
+    let db = Database::open(opts_store(StoreConfig::LocalDir(dir.clone()))).unwrap();
+    let mut s = db.new_session();
+    s.exec("USE BRANCH main").unwrap();
+    let o = s.exec("SELECT count(*) FROM t").unwrap();
+    if let dendro_core::Output::Rows(rs) = &o[0] {
+        assert_eq!(rs.text_rows()[0][0].as_deref(), Some("50"));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn walk(p: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    if p.is_dir() {
+        for e in std::fs::read_dir(p).unwrap().flatten() {
+            let ep = e.path();
+            if ep.is_dir() {
+                out.extend(walk(&ep));
+            } else {
+                out.push(ep);
+            }
+        }
+    }
+    out
 }

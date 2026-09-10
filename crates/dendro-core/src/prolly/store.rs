@@ -6,7 +6,6 @@ use crate::error::Result;
 use crate::format::hash::Hash;
 use crate::objstore::cas::{CasStore, Chunk, ChunkType};
 use parking_lot::Mutex;
-use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 

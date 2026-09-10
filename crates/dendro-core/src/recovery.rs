@@ -60,8 +60,22 @@ pub(crate) fn replay_branch(
         for seg in lo..=tail {
             let data = crate::wal::read_segment(&db.obj, &b.name, epoch, seg)?;
             let mut it = crate::wal::FrameIter::new(&data);
+            // 追加模式（P2-6e）：epoch **最后一段**且**未封段**（段尾无有效
+            // trailer = 追加中途崩溃）的帧错误按撕裂写容忍；已封段的帧损坏
+            // 是真实腐坏，严格报错。非最后一段其后的段存在而本段帧损坏
+            // 同样严格——不得静默截断。
+            let last = seg == tail;
+            let closed = crate::wal::segment_closed(&data);
             while let Some(f) = it.next_frame() {
-                let (ty, seq, payload) = f?;
+                let (ty, seq, payload) = match f {
+                    Ok(x) => x,
+                    Err(e) if last && !closed => {
+                        tracing::warn!(branch = %b.name, epoch, seg, error = %e,
+                            "torn tail on unclosed last wal segment; replaying durable prefix");
+                        break;
+                    }
+                    Err(e) => return Err(e),
+                };
                 let ts = composite_ts(epoch, seq);
                 match ty {
                     crate::wal::FrameType::Txn => {
