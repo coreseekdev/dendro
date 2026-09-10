@@ -40,7 +40,7 @@
 | P1-7 | 多线程 OCC 并发测试 | ⬜ | `tests/concurrent.rs` |
 | ~~P1-8~~ | ~~真 kill 崩溃恢复测试（子进程 SIGKILL）~~ | ✅ | `dendro-server/tests/crash.rs`：spawn 真实 serve + PG 线协议写 5 行（3 checkpoint/2 WAL）→ SIGKILL → 重启全可见（见十六轮回应） |
 | ~~P1-9~~ | ~~fencing 安全性质测试~~ | ✅ | 本提交：`fence_expired_writer_rejected` 即评审要的"旧实例写被拒"断言 |
-| P1-10 | time travel SQL 入口（`AS OF` / `FOR SYSTEM_TIME`） | ⬜ | 数据层已支持，缺 SQL 面 |
+| ~~P1-10~~ | ~~time travel SQL 入口（`AS OF` / `FOR SYSTEM_TIME`）~~ | ✅ | `scan.rs::time_travel_scan`：哈希精读/时间戳第一父链解析（跨 fork）/22023 错误面；`DendroTimeTravelDialect` 重解析兜底；回归 `slt/019_time_travel.slt` + `dendro-core/tests/time_travel.rs`（5 测试） |
 | ~~P1-11~~ | ~~`/metrics` `/readyz` 端点~~ | ✅ | 本提交：`dendro-server/src/metrics.rs`（serve `--metrics-port`，默认 9469）。/metrics 暴露每驻留分支 pending_bytes（扩容信号）/watermark/durable 水位/lease 剩余 TTL；`Database::active_branches()` 只读快照，绝不懒加载分支。回归：`tests/metrics_endpoint.rs` |
 
 ## P2 — 质量 / 性能 / 证据链
@@ -95,8 +95,8 @@
 
 | # | 任务 | 优先级 | 备注 |
 |---|------|:----:|------|
-| S-1 | 启动全量打开所有分支（每分支线程+租约+fence 写）——万级分支不可行 | P1 | 惰性打开（会话/查询触达时 branch()）+ load_open_branches 仅恢复有租约分支 |
-| S-2 | DROP BRANCH 永久泄漏该分支 WAL/fence 对象 | P1 | 删除分支时墓碑化其全部对象（复用 GC 机制） |
+| ~~S-1~~ | ~~启动全量打开所有分支（每分支线程+租约+fence 写）——万级分支不可行~~ | ✅ | 惰性打开落地：`Database::open` 不再预开分支，首次触达经 `branch()` 按需打开（自带 epoch 领取 + WAL 回放）；`active_branches()` 绝不懒加载（监控无写副作用）。回归：`multi_node.rs::lazy_open_and_drop_branch_gc` |
+| ~~S-2~~ | ~~DROP BRANCH 永久泄漏该分支 WAL/fence 对象~~ | ✅ | DROP BRANCH 墓碑化该分支全部 WAL 段（`wal/{name}/` LIST）+ fence 对象（`fence/{name}/`），随 manifest 原子发布，`gc_sweep` 到期删除；树 chunk 跨分支共享不删。回归：`multi_node.rs::lazy_open_and_drop_branch_gc` |
 | S-3 | 资源上界：连接数 / 分支数 / 单事务大小无守卫 | P2 | 配置上限 + 超限错误码 |
 | S-4 | SQL 面缺口：UNION / 视图 / 权限（GRANT/REVOKE） | P2 | GRAMMAR 已列 ⬜ |
 | M-5 | metrics 直方图（commit/flush/manifest 延迟） | P2 | 未动（前轮登记） |

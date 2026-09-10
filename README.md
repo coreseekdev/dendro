@@ -126,6 +126,11 @@ INSERT INTO t VALUES (2, 'from agent sandbox');
 MERGE BRANCH dev INTO main;
 SELECT * FROM t;
 
+-- 时间旅行：读任意提交的历史快照（append-only 的自然能力）
+SELECT * FROM cambium.commit_log('main');
+SELECT * FROM t FOR SYSTEM_TIME AS OF '<上面查到的 commit 哈希>';
+SELECT count(*) FROM t FOR SYSTEM_TIME AS OF '2099-01-01';  -- 时间戳=最近提交
+
 -- 游标（分批读取大批量结果）
 DECLARE c CURSOR FOR SELECT * FROM t ORDER BY id;
 FETCH 10 FROM c;

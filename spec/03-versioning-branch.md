@@ -133,7 +133,26 @@ SHOW BRANCHES                  -- → catalog map 扫描
 MERGE BRANCH src INTO target   -- 见 §6
 SELECT * FROM cambium.branches           -- 系统视图
 SELECT * FROM cambium.commit_log('main') -- 提交历史(parent 链回溯)
+-- time travel（P1-10，§5.1）
+SELECT * FROM t FOR SYSTEM_TIME AS OF '<epoch_ms | ISO8601 | commit_hash>' [AS alias]
 ```
+
+### 5.1 Time Travel（提交快照语义）
+
+```sql
+SELECT * FROM t FOR SYSTEM_TIME AS OF '2099-01-01'            -- 时间戳（ISO8601 UTC）
+SELECT * FROM t FOR SYSTEM_TIME AS OF 1736000000000           -- epoch 毫秒
+SELECT * FROM t FOR SYSTEM_TIME AS OF '<commit_hash>'         -- 提交哈希精读
+```
+
+- **精度 = 提交粒度**：commit = checkpoint = 完整物化树；未 CHECKPOINT 的事务
+  不在任何提交里，AS OF 不可见（append-only 模型的自然推论）。
+- 时间戳沿分支**第一父链**找 `ts_ms ≤ 目标` 的最近提交；链跨 fork 边界
+  （分支继承源提交），故可回溯到 fork 之前。早于首个提交 → SQLSTATE 22023。
+- 哈希命中 CAS 即用（跨分支快照读允许）；历史树 chunk 不可变 ⇒ 快照稳定可重复。
+- 只读：无 memtx overlay、无会话写；谓词/LIMIT/JOIN（各表可独立 AS OF）正常组合。
+- 方言注：sqlparser 对 PG 关闭 `supports_table_versioning`；含该子句的语句
+  经 `DendroTimeTravelDialect`（版本子句开）重解析兜底（`sql/mod.rs`）。
 
 - 分支内事务提交 = 新 commit 节点 + catalog CAS（乐观；冲突重读重试）
 - `USE BRANCH` 只是会话态；跨会话并发写同一分支由 commit CAS 串行化（first-writer-wins

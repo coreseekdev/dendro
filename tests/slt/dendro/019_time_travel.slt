@@ -1,0 +1,95 @@
+# time travel（P1-10）：`FOR SYSTEM_TIME AS OF '<epoch_ms|ISO8601|commit_hash>'`
+# 本文件只放**时间无关**的确定性用例（slang 语料无 now 时钟）：
+# 未来时间戳 → 最近提交 = 当前 HEAD；早于首个提交 → 22023；
+# 伪表拒绝；别名次序（版本子句在表名后、别名前）；谓词/LIMIT 组合。
+# 中间时刻/哈希精读/跨 fork 回溯见 crates/dendro-core/tests/time_travel.rs。
+
+statement ok
+CREATE TABLE tt (id BIGINT PRIMARY KEY, v TEXT)
+
+statement ok
+INSERT INTO tt VALUES (1, 'a'), (2, 'b')
+
+statement ok
+CHECKPOINT
+
+# 未来时间戳 → 解析到最近提交（HEAD），当前数据全可见
+query I
+SELECT count(*) FROM tt FOR SYSTEM_TIME AS OF '9999999999999'
+----
+2
+
+query T
+SELECT v FROM tt FOR SYSTEM_TIME AS OF '9999999999999' WHERE id = 2
+----
+b
+
+# 表名后、别名前（sqlparser 解析次序）
+query T
+SELECT h.v FROM tt FOR SYSTEM_TIME AS OF '9999999999999' AS h WHERE h.id = 1
+----
+a
+
+# epoch ms 纯数字字面量
+query I
+SELECT count(*) FROM tt FOR SYSTEM_TIME AS OF 9999999999999
+----
+2
+
+# ISO8601 日期（2026-09-01 < 首次 CHECKPOINT？否——2026-09 是"现在"，
+# 提交 ts 是墙钟。日期取 2099 年：必在所有提交之后）
+query I
+SELECT count(*) FROM tt FOR SYSTEM_TIME AS OF '2099-01-01'
+----
+2
+
+query I
+SELECT count(*) FROM tt FOR SYSTEM_TIME AS OF '2099-01-01 00:00:00.000'
+----
+2
+
+# 早于历史起点 → 22023（无快照）
+statement error
+SELECT * FROM tt FOR SYSTEM_TIME AS OF '1970-01-01'
+
+statement error
+SELECT * FROM tt FOR SYSTEM_TIME AS OF 0
+
+# 伪表无历史链
+statement error
+SELECT * FROM cambium.branches FOR SYSTEM_TIME AS OF '9999999999999'
+
+# 非字面量 AS OF → 0A000
+statement error
+SELECT * FROM tt FOR SYSTEM_TIME AS OF now()
+
+# LIMIT 下推与 AS OF 组合
+query I
+SELECT count(*) FROM (SELECT id FROM tt FOR SYSTEM_TIME AS OF '9999999999999' LIMIT 1) x
+----
+1
+
+# 写路径不受 time travel 语法影响（travel 只读）
+statement ok
+INSERT INTO tt VALUES (3, 'c')
+
+query I
+SELECT count(*) FROM tt
+----
+3
+
+# 提交粒度语义：未物化（未 CHECKPOINT）的事务不在任何提交里，
+# AS OF 最近提交仍见 2 行——这是文档口径，不是丢数据
+query I
+SELECT count(*) FROM tt FOR SYSTEM_TIME AS OF '9999999999999'
+----
+2
+
+statement ok
+CHECKPOINT
+
+# 物化后新提交可见
+query I
+SELECT count(*) FROM tt FOR SYSTEM_TIME AS OF '9999999999999'
+----
+3

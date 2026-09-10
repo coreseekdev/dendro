@@ -38,6 +38,7 @@ Int32 回绕（曾因 `as i32` 截断产生静默错值）；溢出时报 SQLSTA
 | EXPLAIN [ANALYZE] | ✔(计划文本) | |
 | COPY | 报错 0A000 | v2 |
 | **分支族**(见 SPEC 03 §5) | ✔ | |
+| time travel: `FROM t FOR SYSTEM_TIME AS OF '<ts\|hash>'`（SPEC 03 §5.1） | ✔ | 提交粒度；写面 v2 |
 | information_schema.tables/columns + pg_catalog 最小集 | ✔ | |
 
 TP/AP 路由（会话内自动）：SELECT 且 (无索引点查条件 or 聚合/大范围) → AP 列式执行器；

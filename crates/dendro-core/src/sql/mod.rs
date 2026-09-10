@@ -37,19 +37,54 @@ pub fn agg_display(e: &sqlparser::ast::Expr) -> String {
 }
 
 pub(crate) fn parse_batch(sql: &str, d: SqlDialect) -> Result<Vec<Statement>> {
-    let dialect = match d {
-        SqlDialect::Pg => &PostgreSqlDialect {} as &dyn sqlparser::dialect::Dialect,
+    let dialect: &dyn sqlparser::dialect::Dialect = match d {
+        SqlDialect::Pg => &PostgreSqlDialect {},
         SqlDialect::MySql => &MySqlDialect {},
     };
     // 分支族语句先于 sqlparser（其语法非标准）
     if let Some(st) = branch_statement(sql) {
         return Ok(vec![st]);
     }
-    Parser::new(dialect)
-        .try_with_sql(sql)
-        .map_err(|e| SqlError::syntax(short_err(&e)))?
-        .parse_statements()
-        .map_err(|e| SqlError::syntax(short_err(&e)))
+    let parse = |dialect: &dyn sqlparser::dialect::Dialect| {
+        Parser::new(dialect)
+            .try_with_sql(sql)
+            .map_err(|e| SqlError::syntax(short_err(&e)))?
+            .parse_statements()
+            .map_err(|e| SqlError::syntax(short_err(&e)))
+    };
+    match parse(dialect) {
+        Ok(stmts) => Ok(stmts),
+        Err(e) => {
+            // P1-10 time travel：PG/MySQL 方言 supports_table_versioning=false，
+            // `FOR SYSTEM_TIME AS OF` 子句解析失败。仅含该子句的查询改用
+            // DendroTimeTravelDialect（版本子句开 + 通用词法）重解析——
+            // 其余查询保持原方言精度，不受影响。
+            if sql.to_ascii_uppercase().contains("FOR SYSTEM_TIME") {
+                return parse(&DendroTimeTravelDialect);
+            }
+            Err(e)
+        }
+    }
+}
+
+/// time travel 查询专用方言（P1-10）：sqlparser 只对 BigQuery/MSSQL/Snowflake/
+/// Databricks 开 `supports_table_versioning`；本方言仅打开该开关，其余取
+/// trait 默认。只用于含 `FOR SYSTEM_TIME` 的重解析兜底（子集语法已验证：
+/// `FROM t FOR SYSTEM_TIME AS OF '<ts|hash>' [AS alias]`，版本子句在表名后、
+/// 别名前——sqlparser 的解析次序如此）。
+#[derive(Debug)]
+struct DendroTimeTravelDialect;
+
+impl sqlparser::dialect::Dialect for DendroTimeTravelDialect {
+    fn supports_table_versioning(&self) -> bool {
+        true
+    }
+    fn is_identifier_start(&self, c: char) -> bool {
+        c.is_alphabetic() || c == '_' || c == '#'
+    }
+    fn is_identifier_part(&self, c: char) -> bool {
+        c.is_alphanumeric() || c == '_' || c == '$' || c == '#'
+    }
 }
 
 fn short_err(e: &sqlparser::parser::ParserError) -> String {
