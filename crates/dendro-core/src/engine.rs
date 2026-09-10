@@ -136,6 +136,8 @@ pub struct DbSnapshot {
 pub struct ConnGuard {
     cur: std::sync::atomic::AtomicUsize,
     max: usize,
+    /// 因超限被拒绝的连接次数（/metrics 可观测）
+    pub rejected: std::sync::atomic::AtomicU64,
 }
 
 impl ConnGuard {
@@ -143,27 +145,28 @@ impl ConnGuard {
         Self {
             cur: std::sync::atomic::AtomicUsize::new(0),
             max,
+            rejected: std::sync::atomic::AtomicU64::new(0),
         }
     }
-    /// 进入连接。超限 → 53300 too_many_connections
+    /// 进入连接。超限 → 53300 too_many_connections（计数器 +1）
     pub fn enter(&self) -> Result<()> {
         if self.max == 0 {
             return Ok(());
         }
-        let prev = self
-            .cur
-            .fetch_update(
-                std::sync::atomic::Ordering::AcqRel,
-                std::sync::atomic::Ordering::Acquire,
-                |c| (c < self.max).then_some(c + 1),
-            )
-            .map(|_| ());
-        prev.map_err(|_| {
-            SqlError::new(
-                "53300",
-                format!("too many connections (max {max})", max = self.max),
-            )
-        })
+        match self.cur.fetch_update(
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+            |c| (c < self.max).then_some(c + 1),
+        ) {
+            Ok(_) => Ok(()),
+            Err(_) => {
+                self.rejected.fetch_add(1, Ordering::Relaxed);
+                Err(SqlError::new(
+                    "53300",
+                    format!("too many connections (max {max})", max = self.max),
+                ))
+            }
+        }
     }
     pub fn exit(&self) {
         let prev = self.cur.load(std::sync::atomic::Ordering::Acquire);
@@ -174,6 +177,31 @@ impl ConnGuard {
     }
     pub fn active(&self) -> usize {
         self.cur.load(std::sync::atomic::Ordering::Acquire)
+    }
+    pub fn max(&self) -> usize {
+        self.max
+    }
+}
+
+/// 连接生命周期守卫（恐慌安全，S-3 审计 R7-1）：持有期间计数 +1，
+/// Drop（含 panic 展开时）必然 -1——此前 handle_connection panic 会
+/// 泄漏计数直至永久拒服
+pub struct ConnSession {
+    guard: Arc<ConnGuard>,
+}
+
+impl ConnSession {
+    pub fn enter(guard: &Arc<ConnGuard>) -> Result<Self> {
+        guard.enter()?;
+        Ok(Self {
+            guard: guard.clone(),
+        })
+    }
+}
+
+impl Drop for ConnSession {
+    fn drop(&mut self) {
+        self.guard.exit();
     }
 }
 
@@ -770,6 +798,9 @@ impl Database {
         // 资源上界（S-3）：分支数（含 main）；0 = 不限。超限 54000
         // program_limit_exceeded——catalog 的结构性上限必须在写前拒绝，
         // 否则分支元数据泄漏无界增长（每分支 = 租约/WAL 目录/manifest 项）。
+        // **快路径预检**（避免无谓 checkpoint）；权威复查在下方 manifest
+        // CAS 闭包内——预检与 CAS 之间可能有并发创建越过上限（审计 R7-2：
+        // CAS 冲突重试会以**最新** manifest 重跑闭包，闭包内检查才原子）。
         let max_b = self.opts.max_branches;
         if max_b > 0 && self.manifest().manifest.refs.len() >= max_b {
             return Err(SqlError::new(
@@ -786,6 +817,13 @@ impl Database {
             (h.commit.clone(), h.wal_seg)
         };
         self.update_manifest(|m| {
+            // 权威上限复查（CAS 重试时以最新 manifest 评估；并发越限在此拦截）
+            if max_b > 0 && m.refs.len() >= max_b {
+                return Err(SqlError::new(
+                    "54000",
+                    format!("branch limit exceeded (max {max_b})"),
+                ));
+            }
             m.refs.insert(
                 name.to_string(),
                 crate::objstore::manifest::BranchHead {

@@ -119,12 +119,11 @@ pub fn serve_listener(listener: TcpListener, db: Arc<Database>, cfg: PgConfig) -
                 let guard = cfg.conn_guard.clone();
                 thread::spawn(move || {
                     let _ = stream.set_nodelay(true);
-                    // Session 单线程使用（SPEC 10 §7）；move 进连接线程
+                    // ConnSession：Drop 保证 panic 时计数必然回收（R7-1）
+                    let _cs = guard.as_ref().map(dendro_core::engine::ConnSession::enter);
                     let sess: Box<dyn WireSession> = Box::new(db.new_session());
                     let r = handle_connection(stream, sess, cfg);
-                    if let Some(g) = &guard {
-                        g.exit();
-                    }
+                    drop(_cs);
                     if let Err(e) = r {
                         tracing::debug!(error = %e, "dendro-pgwire: connection ended");
                     }

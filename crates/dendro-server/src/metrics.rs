@@ -107,6 +107,30 @@ fn now_ms() -> i64 {
 fn render_metrics(db: &Arc<Database>) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
+    // S-3 资源上界可观测性：连接守卫现状 + 超限拒绝累计
+    let g = &db.conn_guard;
+    let _ = writeln!(
+        out,
+        "# HELP dendro_connections_active current active connections (S-3 guard)"
+    );
+    let _ = writeln!(out, "# TYPE dendro_connections_active gauge");
+    let _ = writeln!(out, "dendro_connections_active {}", g.active());
+    let _ = writeln!(
+        out,
+        "# HELP dendro_connections_max configured connection limit (0 = unlimited)"
+    );
+    let _ = writeln!(out, "# TYPE dendro_connections_max gauge");
+    let _ = writeln!(out, "dendro_connections_max {}", g.max());
+    let _ = writeln!(
+        out,
+        "# HELP dendro_connections_rejected_total connections rejected over the limit"
+    );
+    let _ = writeln!(out, "# TYPE dendro_connections_rejected_total counter");
+    let _ = writeln!(
+        out,
+        "dendro_connections_rejected_total {}",
+        g.rejected.load(std::sync::atomic::Ordering::Relaxed)
+    );
     let _ = writeln!(out, "# HELP dendro_up process serving requests");
     let _ = writeln!(out, "# TYPE dendro_up gauge");
     let _ = writeln!(out, "dendro_up 1");

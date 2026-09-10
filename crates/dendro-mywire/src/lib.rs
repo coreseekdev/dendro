@@ -158,9 +158,11 @@ impl MyServer {
                 }
                 let guard = g.clone();
                 std::thread::spawn(move || {
+                    // ConnSession：Drop 保证 panic 时计数回收（R7-1）
+                    let _cs = dendro_core::engine::ConnSession::enter(&guard);
                     let sess = factory();
                     let r = handle_connection(stream, sess, cfg);
-                    guard.exit();
+                    drop(_cs);
                     if let Err(e) = r {
                         tracing::debug!(error = %e, "dendro-mywire: connection ended with io error");
                     }
