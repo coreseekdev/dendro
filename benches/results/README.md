@@ -93,3 +93,29 @@ cargo build --release -p dendro-server
 - 向量化 AP 算子（当前算子层行式，扫描层已列式）
 - 冷/热分层 + OSS 延迟注入曲线（ThrottledObjStore 已实现）
 - CBF 增量投影（当前 checkpoint 全量重建该表投影）
+
+## 横向对比（2026-09-10，同机实测：AMD Ryzen AI 9 H365 / 20 核 / NVMe / tmpfs=/tmp）
+
+Dendro = 进程内 session.exec（**含全量 SQL 文本解析**，无预编译语句缓存）。
+SQLite 3.46 经 python sqlite3（语句缓存命中 ≈ 预编译）。同口径才可比：
+
+| 场景 | SQLite | Dendro | 差距与原因 |
+|------|-------:|-------:|-----------|
+| 内存无持久化，自动提交插入 | 1.18M/s（0.8µs） | 166k/s（5.5µs） | 7×：Dendro 每语句重解析 SQL + OCC + WAL 帧；SQLite 走预编译微路径 |
+| 真盘 WAL，进程崩溃安全 | 66k/s（9µs，sync=NORMAL） | 135k/s（7µs，NoWait）* | Dendro 反超，但契约略弱：NoWait 未刷窗口进程崩溃即丢；SQLite NORMAL 数据即时进页缓存 |
+| 真盘掉电安全单提交 | 3.2k/s（296µs，sync=FULL=每提交 fsync） | 1.2k/s（768µs，Group=每段 fsync×tmp+rename） | 2.5×：Dendro 对象模型是整段重写+改名（≈2 次 fsync），SQLite 是 WAL 追加+1 次 fsync——云原生"段=不可变对象"在本地的代价 |
+| 点查（重开持久读） | 0.8-1.3M/s（预编译） | 99-135k/s | 6-10×：同上，SQL 重解析为主；预编译/AST 缓存是明确优化项 |
+| 8 并发同库写入 | SQLite 单写者锁（近似串行） | 125k commits/s | Dendro 优：分支内两段式组提交线性并发 |
+
+* Dendro NoWait 在 LocalDir 下刷盘线程仍按默认 fsync 落盘，只是客户端不等待。
+
+**进程外参考量级**（网络+完整服务端，不可与本表直接比）：MySQL/PG 单连接
+durable 自动提交插入 ≈1-3k/s（redo/WAL fsync 界，与 Dendro Group 同量级）；
+多连接聚合插入 30-100k/s；sysbench 点查聚合 100-400k q/s（服务器级硬件）。
+RocksDB（KV 层）：预编译级点查单线程 200-500k/s，批量写（WAL off）>1M/s。
+
+**结论**：进程内无持久化与点查场景 Dendro 落后 SQLite 5-10×（主因 SQL
+重解析，预编译语句缓存是明确的追赶项）；掉电安全单提交落后 2.5×（对象
+模型本地代价，OSS 上 RTT 主导时该差距被网络淹没）；并发写入与分支能力
+（O(1) CREATE BRANCH / 全历史时间旅行 / git 式合并）是 SQLite/MySQL/
+RocksDB 不具备的维度。
