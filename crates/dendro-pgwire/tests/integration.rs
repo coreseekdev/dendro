@@ -30,7 +30,7 @@ fn is_eof(s: &mut UnixStream) -> bool {
 
 #[test]
 fn startup_trust_full_sequence() {
-    let (mut s, _h) = spawn_conn(Box::new(MockSession::new()), PgConfig::default());
+    let (mut s, _h) = spawn_conn(Box::new(MockSession::new()), PgConfig::trust());
     let msgs = handshake(&mut s, &[("user", "alice")]).unwrap();
 
     // AuthenticationOk 'R' i32=0
@@ -70,9 +70,9 @@ fn startup_pids_increment() {
         let k = msgs.iter().find(|(t, _)| *t == b'K').unwrap();
         i32::from_be_bytes(k.1[0..4].try_into().unwrap())
     };
-    let (mut s1, _) = spawn_conn(Box::new(MockSession::new()), PgConfig::default());
+    let (mut s1, _) = spawn_conn(Box::new(MockSession::new()), PgConfig::trust());
     let m1 = handshake(&mut s1, &[]).unwrap();
-    let (mut s2, _) = spawn_conn(Box::new(MockSession::new()), PgConfig::default());
+    let (mut s2, _) = spawn_conn(Box::new(MockSession::new()), PgConfig::trust());
     let m2 = handshake(&mut s2, &[]).unwrap();
     // 测试并行跑时可能有其他连接插入 pid，这里只断言单调递增
     assert!(pid_of(&m2) > pid_of(&m1));
@@ -80,7 +80,7 @@ fn startup_pids_increment() {
 
 #[test]
 fn startup_ssl_request_rejected_then_normal() {
-    let (mut s, _h) = spawn_conn(Box::new(MockSession::new()), PgConfig::default());
+    let (mut s, _h) = spawn_conn(Box::new(MockSession::new()), PgConfig::trust());
     s.write_all(&startup_bytes(SSL_REQUEST, &[])).unwrap();
     let mut n = [0u8; 1];
     s.read_exact(&mut n).unwrap();
@@ -92,7 +92,7 @@ fn startup_ssl_request_rejected_then_normal() {
 
 #[test]
 fn startup_gssenc_request_rejected() {
-    let (mut s, _h) = spawn_conn(Box::new(MockSession::new()), PgConfig::default());
+    let (mut s, _h) = spawn_conn(Box::new(MockSession::new()), PgConfig::trust());
     s.write_all(&startup_bytes(GSSENC_REQUEST, &[])).unwrap();
     let mut n = [0u8; 1];
     s.read_exact(&mut n).unwrap();
@@ -101,7 +101,7 @@ fn startup_gssenc_request_rejected() {
 
 #[test]
 fn startup_cancel_request_closes_without_response() {
-    let (mut s, _h) = spawn_conn(Box::new(MockSession::new()), PgConfig::default());
+    let (mut s, _h) = spawn_conn(Box::new(MockSession::new()), PgConfig::trust());
     let mut b = vec![0, 0, 0, 16];
     b.extend_from_slice(&CANCEL_REQUEST.to_be_bytes());
     b.extend_from_slice(&1i32.to_be_bytes());
@@ -114,7 +114,7 @@ fn startup_cancel_request_closes_without_response() {
 
 #[test]
 fn startup_unsupported_protocol_28000() {
-    let (mut s, _h) = spawn_conn(Box::new(MockSession::new()), PgConfig::default());
+    let (mut s, _h) = spawn_conn(Box::new(MockSession::new()), PgConfig::trust());
     s.write_all(&startup_bytes(2 << 16, &[("user", "x")]))
         .unwrap();
     // 服务端发 FATAL 28000 后断连（没有 ReadyForQuery）
@@ -130,7 +130,7 @@ fn startup_unsupported_protocol_28000() {
 #[test]
 fn startup_missing_user_defaults_to_dendro() {
     // user 缺省不报错（默认 "dendro"），trust 直接就绪
-    let (mut s, _h) = spawn_conn(Box::new(MockSession::new()), PgConfig::default());
+    let (mut s, _h) = spawn_conn(Box::new(MockSession::new()), PgConfig::trust());
     let msgs = handshake(&mut s, &[]).unwrap();
     assert_eq!(msgs[0].0, b'R');
     assert_eq!(msgs.last().unwrap().0, b'Z');
@@ -142,6 +142,7 @@ fn auth_cleartext_ok() {
         Box::new(MockSession::new()),
         PgConfig {
             password: Some("sesame".into()),
+            conn_guard: None,
         },
     );
     s.write_all(&startup_bytes(PROTO_3_0, &[("user", "alice")]))
@@ -163,6 +164,7 @@ fn auth_cleartext_wrong_password_28p01() {
         Box::new(MockSession::new()),
         PgConfig {
             password: Some("sesame".into()),
+            conn_guard: None,
         },
     );
     s.write_all(&startup_bytes(PROTO_3_0, &[("user", "alice")]))
@@ -181,7 +183,7 @@ fn auth_cleartext_wrong_password_28p01() {
 #[test]
 fn startup_fragmented_delivery() {
     // startup 与 Q 都分两次写，验证阻塞读的状态机完整性
-    let (mut s, _h) = spawn_conn(Box::new(MockSession::new()), PgConfig::default());
+    let (mut s, _h) = spawn_conn(Box::new(MockSession::new()), PgConfig::trust());
     let raw = startup_bytes(PROTO_3_0, &[("user", "carol")]);
     s.write_all(&raw[..5]).unwrap();
     s.flush().unwrap();
@@ -207,7 +209,7 @@ fn startup_fragmented_delivery() {
 #[test]
 fn simple_query_select_flow() {
     let sess = Box::new(MockSession::new());
-    let (mut s, _h) = spawn_conn(sess, PgConfig::default());
+    let (mut s, _h) = spawn_conn(sess, PgConfig::trust());
     handshake(&mut s, &[("user", "u")]).unwrap();
 
     s.write_all(&msg_bytes(b'Q', &cstr("SELECT 1"))).unwrap();
@@ -240,7 +242,7 @@ fn simple_query_select_flow() {
 #[test]
 fn simple_query_multi_statement_each_gets_output() {
     let sess = Box::new(MockSession::new());
-    let (mut s, _h) = spawn_conn(sess, PgConfig::default());
+    let (mut s, _h) = spawn_conn(sess, PgConfig::trust());
     handshake(&mut s, &[]).unwrap();
     s.write_all(&msg_bytes(b'Q', &cstr("SELECT 1; SELECT 1")))
         .unwrap();
@@ -256,7 +258,7 @@ fn simple_query_multi_statement_each_gets_output() {
 #[test]
 fn simple_query_command_tag_passthrough() {
     let sess = Box::new(MockSession::new());
-    let (mut s, _h) = spawn_conn(sess, PgConfig::default());
+    let (mut s, _h) = spawn_conn(sess, PgConfig::trust());
     handshake(&mut s, &[]).unwrap();
     s.write_all(&msg_bytes(b'Q', &cstr("CREATE TABLE t (a int)")))
         .unwrap();
@@ -271,7 +273,7 @@ fn simple_query_command_tag_passthrough() {
 #[test]
 fn simple_query_insert_tag() {
     let sess = Box::new(MockSession::new());
-    let (mut s, _h) = spawn_conn(sess, PgConfig::default());
+    let (mut s, _h) = spawn_conn(sess, PgConfig::trust());
     handshake(&mut s, &[]).unwrap();
     s.write_all(&msg_bytes(b'Q', &cstr("INSERT INTO t VALUES (1)")))
         .unwrap();
@@ -282,7 +284,7 @@ fn simple_query_insert_tag() {
 #[test]
 fn simple_query_empty_string_gets_empty_query_response() {
     let sess = Box::new(MockSession::new());
-    let (mut s, _h) = spawn_conn(sess, PgConfig::default());
+    let (mut s, _h) = spawn_conn(sess, PgConfig::trust());
     handshake(&mut s, &[]).unwrap();
     s.write_all(&msg_bytes(b'Q', &cstr("   "))).unwrap();
     let msgs = read_until(&mut s, b'Z').unwrap();
@@ -298,7 +300,7 @@ fn simple_query_error_keeps_connection_alive() {
         "relation \"missing\" does not exist",
     ));
     mock.exec_behavior.error_if_contains = Some("missing".into());
-    let (mut s, _h) = spawn_conn(Box::new(mock), PgConfig::default());
+    let (mut s, _h) = spawn_conn(Box::new(mock), PgConfig::trust());
     handshake(&mut s, &[]).unwrap();
 
     s.write_all(&msg_bytes(b'Q', &cstr("SELECT * FROM missing")))
@@ -321,7 +323,7 @@ fn simple_query_error_keeps_connection_alive() {
 #[test]
 fn simple_query_null_cell() {
     let sess = Box::new(MockSession::new());
-    let (mut s, _h) = spawn_conn(sess, PgConfig::default());
+    let (mut s, _h) = spawn_conn(sess, PgConfig::trust());
     handshake(&mut s, &[]).unwrap();
     // MockSession 默认无 NULL；这里通过 exec_prepared 的 Rows1 无法注入，
     // 改用带 NULL 的扩展查询路径在 extended 测试覆盖。此处测多列。
@@ -334,7 +336,7 @@ fn simple_query_null_cell() {
 #[test]
 fn ready_for_query_reflects_txn_status() {
     let sess = Box::new(MockSession::new().with_txn(b'T'));
-    let (mut s, _h) = spawn_conn(sess, PgConfig::default());
+    let (mut s, _h) = spawn_conn(sess, PgConfig::trust());
     handshake(&mut s, &[]).unwrap();
     s.write_all(&msg_bytes(b'Q', &cstr("BEGIN"))).unwrap();
     let msgs = read_until(&mut s, b'Z').unwrap();
@@ -348,7 +350,7 @@ fn ready_for_query_reflects_txn_status() {
 #[test]
 fn extended_full_flow_text_param() {
     let sess = Box::new(MockSession::new());
-    let (mut s, _h) = spawn_conn(sess, PgConfig::default());
+    let (mut s, _h) = spawn_conn(sess, PgConfig::trust());
     handshake(&mut s, &[]).unwrap();
 
     let mut raw = Vec::new();
@@ -421,7 +423,7 @@ fn extended_full_flow_text_param() {
 #[test]
 fn extended_binary_param_and_result() {
     let sess = Box::new(MockSession::new());
-    let (mut s, _h) = spawn_conn(sess, PgConfig::default());
+    let (mut s, _h) = spawn_conn(sess, PgConfig::trust());
     handshake(&mut s, &[]).unwrap();
 
     let mut raw = Vec::new();
@@ -499,7 +501,7 @@ fn extended_params_recorded_correctly() {
     //   因此用 EchoInt8Param 回显行为断言参数值）
     let mut sess = MockSession::new();
     sess.ep_behavior = EpBehavior::EchoInt8Param;
-    let (mut s, _h) = spawn_conn(Box::new(sess), PgConfig::default());
+    let (mut s, _h) = spawn_conn(Box::new(sess), PgConfig::trust());
     handshake(&mut s, &[]).unwrap();
 
     let mut raw = Vec::new();
@@ -532,7 +534,7 @@ fn extended_params_recorded_correctly() {
 fn extended_parse_error_skips_until_sync() {
     let mut sess = MockSession::new();
     sess.prepare_error = Some(SqlError::syntax("bad grammar near x"));
-    let (mut s, _h) = spawn_conn(Box::new(sess), PgConfig::default());
+    let (mut s, _h) = spawn_conn(Box::new(sess), PgConfig::trust());
     handshake(&mut s, &[]).unwrap();
 
     let mut raw = Vec::new();
@@ -563,7 +565,7 @@ fn extended_parse_error_skips_until_sync() {
 fn extended_exec_prepared_error_skips_until_sync() {
     let mut sess = MockSession::new();
     sess.ep_error = Some(SqlError::undefined_table("relation \"t\" does not exist"));
-    let (mut s, _h) = spawn_conn(Box::new(sess), PgConfig::default());
+    let (mut s, _h) = spawn_conn(Box::new(sess), PgConfig::trust());
     handshake(&mut s, &[]).unwrap();
 
     let mut raw = Vec::new();
@@ -596,7 +598,7 @@ fn extended_exec_prepared_error_skips_until_sync() {
 #[test]
 fn extended_describe_unknown_statement_26000() {
     let sess = Box::new(MockSession::new());
-    let (mut s, _h) = spawn_conn(sess, PgConfig::default());
+    let (mut s, _h) = spawn_conn(sess, PgConfig::trust());
     handshake(&mut s, &[]).unwrap();
     s.write_all(&msg_bytes(
         b'D',
@@ -616,7 +618,7 @@ fn extended_describe_unknown_statement_26000() {
 #[test]
 fn extended_describe_unknown_portal_26000() {
     let sess = Box::new(MockSession::new());
-    let (mut s, _h) = spawn_conn(sess, PgConfig::default());
+    let (mut s, _h) = spawn_conn(sess, PgConfig::trust());
     handshake(&mut s, &[]).unwrap();
     s.write_all(&msg_bytes(
         b'D',
@@ -635,7 +637,7 @@ fn extended_describe_unknown_portal_26000() {
 #[test]
 fn extended_execute_unknown_portal_26000() {
     let sess = Box::new(MockSession::new());
-    let (mut s, _h) = spawn_conn(sess, PgConfig::default());
+    let (mut s, _h) = spawn_conn(sess, PgConfig::trust());
     handshake(&mut s, &[]).unwrap();
     let mut body = cstr("nope");
     put_i32(&mut body, 0);
@@ -648,7 +650,7 @@ fn extended_execute_unknown_portal_26000() {
 #[test]
 fn extended_bind_unknown_statement_26000() {
     let sess = Box::new(MockSession::new());
-    let (mut s, _h) = spawn_conn(sess, PgConfig::default());
+    let (mut s, _h) = spawn_conn(sess, PgConfig::trust());
     handshake(&mut s, &[]).unwrap();
     let mut body = cstr("");
     body.extend(cstr("ghost"));
@@ -664,7 +666,7 @@ fn extended_bind_unknown_statement_26000() {
 #[test]
 fn extended_named_statement_close_removes_it() {
     let sess = Box::new(MockSession::new());
-    let (mut s, _h) = spawn_conn(sess, PgConfig::default());
+    let (mut s, _h) = spawn_conn(sess, PgConfig::trust());
     handshake(&mut s, &[]).unwrap();
 
     let mut raw = Vec::new();
@@ -704,7 +706,7 @@ fn extended_named_statement_close_removes_it() {
 #[test]
 fn extended_unnamed_reparse_overwrites() {
     let sess = Box::new(MockSession::new());
-    let (mut s, _h) = spawn_conn(sess, PgConfig::default());
+    let (mut s, _h) = spawn_conn(sess, PgConfig::trust());
     handshake(&mut s, &[]).unwrap();
     // 连续两次 Parse unnamed 都应 ParseComplete（覆盖旧语句，SPEC 10 §2）
     let mut raw = Vec::new();
@@ -723,7 +725,7 @@ fn extended_unnamed_reparse_overwrites() {
 #[test]
 fn flush_message_flushes_buffer() {
     let sess = Box::new(MockSession::new());
-    let (mut s, _h) = spawn_conn(sess, PgConfig::default());
+    let (mut s, _h) = spawn_conn(sess, PgConfig::trust());
     handshake(&mut s, &[]).unwrap();
     let mut raw = Vec::new();
     let mut body = cstr("");
@@ -744,7 +746,7 @@ fn flush_message_flushes_buffer() {
 #[test]
 fn terminate_closes_connection() {
     let sess = Box::new(MockSession::new());
-    let (mut s, _h) = spawn_conn(sess, PgConfig::default());
+    let (mut s, _h) = spawn_conn(sess, PgConfig::trust());
     handshake(&mut s, &[]).unwrap();
     s.write_all(&msg_bytes(b'X', &[])).unwrap();
     std::thread::sleep(Duration::from_millis(50));
@@ -754,7 +756,7 @@ fn terminate_closes_connection() {
 #[test]
 fn copy_subprotocol_rejected_0a000() {
     let sess = Box::new(MockSession::new());
-    let (mut s, _h) = spawn_conn(sess, PgConfig::default());
+    let (mut s, _h) = spawn_conn(sess, PgConfig::trust());
     handshake(&mut s, &[]).unwrap();
     s.write_all(&msg_bytes(b'd', &[1, 2, 3])).unwrap();
     s.write_all(&msg_bytes(b'S', &[])).unwrap();
@@ -767,7 +769,7 @@ fn copy_subprotocol_rejected_0a000() {
 fn utf8_sql_and_multibyte_result() {
     // UTF-8 通路：SQL 与文本结果均含多字节字符
     let sess = Box::new(MockSession::new());
-    let (mut s, _h) = spawn_conn(sess, PgConfig::default());
+    let (mut s, _h) = spawn_conn(sess, PgConfig::trust());
     handshake(&mut s, &[]).unwrap();
     s.write_all(&msg_bytes(b'Q', &cstr("SELECT '数据库'")))
         .unwrap();

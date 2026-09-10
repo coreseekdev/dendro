@@ -70,6 +70,12 @@ pub struct DbOptions {
     /// GC 保留窗口（毫秒）：墓碑对象登记后至少保留这么久，覆盖滞后读者。
     /// 默认 24h；< 0 = 禁用回收。
     pub gc_retention_ms: i64,
+    /// 资源上界（S-3）：最大并发连接数（PG+MySQL 合计；0 = 不限）
+    pub max_connections: usize,
+    /// 资源上界（S-3）：最大分支数（含 main；0 = 不限）
+    pub max_branches: usize,
+    /// 资源上界（S-3）：单事务写集字节上限（0 = 不限）
+    pub max_txn_bytes: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,6 +102,9 @@ impl Default for DbOptions {
             lease_ttl_ms: 30_000,
             read_only: false,
             gc_retention_ms: 24 * 3600 * 1000,
+            max_connections: 1_000,
+            max_branches: 10_000,
+            max_txn_bytes: 256 << 20,
         }
     }
 }
@@ -119,6 +128,53 @@ pub fn now_ms() -> i64 {
 /// manifest 快照（原子换新）
 pub struct DbSnapshot {
     pub manifest: Manifest,
+}
+
+/// 连接数守卫（S-3）：PG/MySQL 两协议共享一个计数器（服务器装配时来自
+/// `Database::conn_guard`），accept 时 enter、连接结束 exit
+#[derive(Debug)]
+pub struct ConnGuard {
+    cur: std::sync::atomic::AtomicUsize,
+    max: usize,
+}
+
+impl ConnGuard {
+    pub fn new(max: usize) -> Self {
+        Self {
+            cur: std::sync::atomic::AtomicUsize::new(0),
+            max,
+        }
+    }
+    /// 进入连接。超限 → 53300 too_many_connections
+    pub fn enter(&self) -> Result<()> {
+        if self.max == 0 {
+            return Ok(());
+        }
+        let prev = self
+            .cur
+            .fetch_update(
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+                |c| (c < self.max).then_some(c + 1),
+            )
+            .map(|_| ());
+        prev.map_err(|_| {
+            SqlError::new(
+                "53300",
+                format!("too many connections (max {max})", max = self.max),
+            )
+        })
+    }
+    pub fn exit(&self) {
+        let prev = self.cur.load(std::sync::atomic::Ordering::Acquire);
+        if prev > 0 {
+            self.cur
+                .store(prev - 1, std::sync::atomic::Ordering::Release);
+        }
+    }
+    pub fn active(&self) -> usize {
+        self.cur.load(std::sync::atomic::Ordering::Acquire)
+    }
 }
 
 /// 分支运行态
@@ -386,6 +442,8 @@ pub struct Database {
     pub(crate) manifest_store: Arc<ManifestStore>,
     pub(crate) state: ArcSwap<DbSnapshot>,
     pub(crate) branches: RwLock<HashMap<String, Arc<Branch>>>,
+    /// 连接数守卫（S-3）：两协议共享
+    pub conn_guard: Arc<ConnGuard>,
     /// 每-名字打开互斥（branch 创建 / reopen 驱逐串行化）
     open_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     pub(crate) session_seq: AtomicU64,
@@ -478,6 +536,7 @@ impl Database {
         }
         let (ver, manifest) = manifest_store.load_latest().map_err(SqlError::from)?;
         crate::recovery::recover_branches(&obj, &manifest)?;
+        let conn_guard = Arc::new(ConnGuard::new(opts.max_connections));
         let db = Arc::new(Database {
             opts,
             obj,
@@ -486,6 +545,7 @@ impl Database {
             manifest_store,
             state: ArcSwap::from_pointee(DbSnapshot { manifest }),
             branches: RwLock::new(HashMap::new()),
+            conn_guard,
             open_locks: Mutex::new(HashMap::new()),
             session_seq: AtomicU64::new(1),
             chunk_seen: Mutex::new(HashSet::new()),
@@ -536,6 +596,14 @@ impl Database {
     /// 已驻留内存的分支快照（监控/负载自感知用）。
     /// 注意：与 `branch()` 不同，这里**绝不**懒加载——不会为仅存在于
     /// manifest 的分支领 epoch/起 WAL writer（否则读监控会产生写副作用）。
+    /// 连接进入/退出（S-3；wire 层 accept/结束时调用）
+    pub fn conn_enter(&self) -> Result<()> {
+        self.conn_guard.enter()
+    }
+    pub fn conn_exit(&self) {
+        self.conn_guard.exit()
+    }
+
     pub fn active_branches(&self) -> Vec<Arc<Branch>> {
         self.branches.read().values().cloned().collect()
     }
@@ -698,6 +766,16 @@ impl Database {
             return Err(SqlError::duplicate_table(format!(
                 "branch \"{name}\" already exists"
             )));
+        }
+        // 资源上界（S-3）：分支数（含 main）；0 = 不限。超限 54000
+        // program_limit_exceeded——catalog 的结构性上限必须在写前拒绝，
+        // 否则分支元数据泄漏无界增长（每分支 = 租约/WAL 目录/manifest 项）。
+        let max_b = self.opts.max_branches;
+        if max_b > 0 && self.manifest().manifest.refs.len() >= max_b {
+            return Err(SqlError::new(
+                "54000",
+                format!("branch limit exceeded (max {max_b})"),
+            ));
         }
         self.checkpoint_branch(from)?;
         let (src_commit, src_seg) = {
@@ -1435,15 +1513,32 @@ pub(crate) fn commit_tx(db: &Database, sess_branch: &str, txn: &Txn) -> Result<u
         crate::memtx::validate_only(&b.mem, &[], txn)?;
         validate_inflight(&b, txn)?;
         let mut recs: Vec<crate::wal::TxnRecord> = Vec::new();
+        let mut txn_bytes = 0u64;
         for (tid, key, m) in iter_writes(txn) {
             let val = match m {
                 Mutation::Put(v) => Some(v.clone()),
                 Mutation::Delete => None,
             };
+            txn_bytes += (key.len()
+                + match m {
+                    Mutation::Put(v) => v.len(),
+                    Mutation::Delete => 0,
+                }) as u64;
             recs.push(crate::wal::TxnRecord {
                 table_id: tid,
                 ops: vec![(key.clone(), val)],
             });
+        }
+        // 资源上界（S-3）：单事务写集字节；0 = 不限。超限 54000——
+        // **必须在入队前**拒绝（入队后即 Uncertain 域），失败无副作用
+        let max_txn = db.opts.max_txn_bytes;
+        if max_txn > 0 && txn_bytes > max_txn {
+            return Err(SqlError::new(
+                "54000",
+                format!(
+                    "transaction too large: {txn_bytes} bytes (max {max_txn}); split the transaction"
+                ),
+            ));
         }
         b.wal.enqueue_only(
             crate::wal::FrameType::Txn,

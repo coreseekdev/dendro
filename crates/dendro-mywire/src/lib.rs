@@ -31,6 +31,9 @@ pub struct MyConfig {
     pub server_version: String,
     /// 读侧单逻辑包上限；超限回 ERR 1153 "08S01" 后断开
     pub max_allowed_packet: usize,
+    /// 连接数守卫（S-3）：超限回 ERR 1040 "08004" 后断开；None = 不限。
+    /// 由服务器装配提供（PG/MySQL 共享同一计数器）
+    pub conn_guard: Option<std::sync::Arc<dendro_core::engine::ConnGuard>>,
 }
 
 impl Default for MyConfig {
@@ -39,6 +42,7 @@ impl Default for MyConfig {
             password: None,
             server_version: "8.0.36-dendro".to_string(),
             max_allowed_packet: codec::DEFAULT_MAX_ALLOWED_PACKET,
+            conn_guard: None,
         }
     }
 }
@@ -143,6 +147,26 @@ impl MyServer {
             let Ok(stream) = stream else { continue };
             let cfg = self.cfg.clone();
             let factory = self.factory.clone();
+            // 资源上界（S-3）：超限回 ERR 1040 "08004" 后立即断开
+            if let Some(g) = &self.cfg.conn_guard {
+                let mut stream = stream;
+                if let Err(e) = g.enter() {
+                    use std::io::Write;
+                    let pkt = codec::err_packet(1040, "08004", &e.message);
+                    let _ = stream.write_all(&pkt);
+                    continue;
+                }
+                let guard = g.clone();
+                std::thread::spawn(move || {
+                    let sess = factory();
+                    let r = handle_connection(stream, sess, cfg);
+                    guard.exit();
+                    if let Err(e) = r {
+                        tracing::debug!(error = %e, "dendro-mywire: connection ended with io error");
+                    }
+                });
+                continue;
+            }
             std::thread::spawn(move || {
                 let sess = factory();
                 if let Err(e) = handle_connection(stream, sess, cfg) {

@@ -37,10 +37,23 @@ use dendro_core::engine::WireSession;
 use crate::codec::{FeMessage, PgStream};
 
 /// 连接级配置（SPEC 10 §8：认证 trust / cleartext）
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct PgConfig {
     /// Some → AuthenticationCleartextPassword 流程；None → trust
     pub password: Option<String>,
+    /// 连接数守卫（S-3）：超限回 FATAL 53300 后断开；None = 不限。
+    /// 由服务器装配提供（PG/MySQL 共享同一计数器）
+    pub conn_guard: Option<std::sync::Arc<dendro_core::engine::ConnGuard>>,
+}
+
+impl PgConfig {
+    /// trust 认证 + 无连接守卫
+    pub fn trust() -> Self {
+        Self {
+            password: None,
+            conn_guard: None,
+        }
+    }
 }
 
 static NEXT_BACKEND_PID: AtomicI32 = AtomicI32::new(1);
@@ -71,7 +84,7 @@ pub(crate) fn next_backend_secret() -> u32 {
 ///
 /// 单个连接的错误只影响该连接（记日志后丢弃）；accept 错误记日志继续。
 pub fn serve(addr: SocketAddr, db: Arc<Database>) -> io::Result<()> {
-    serve_with_config(addr, db, PgConfig::default())
+    serve_with_config(addr, db, PgConfig::trust())
 }
 
 /// 带认证配置的监听（trust / cleartext，SPEC 10 §8；第四轮评审 §3 认证接线）
@@ -89,11 +102,30 @@ pub fn serve_listener(listener: TcpListener, db: Arc<Database>, cfg: PgConfig) -
             Ok(stream) => {
                 let db = Arc::clone(&db);
                 let cfg = cfg.clone();
+                // 资源上界（S-3）：超限回 FATAL 53300 后立即断开（不占线程、
+                // 不进会话）。PG 协议允许在任意时刻发 ErrorResponse 后断连。
+                if let Some(g) = &cfg.conn_guard {
+                    if let Err(e) = g.enter() {
+                        use std::io::Write;
+                        let mut stream = stream;
+                        let _ = stream.set_nodelay(true);
+                        let msg = crate::error::fatal_response("53300", e.message.clone());
+                        let mut buf = bytes::BytesMut::new();
+                        crate::codec::write_be_message(&mut buf, &msg);
+                        let _ = stream.write_all(&buf);
+                        continue;
+                    }
+                }
+                let guard = cfg.conn_guard.clone();
                 thread::spawn(move || {
                     let _ = stream.set_nodelay(true);
                     // Session 单线程使用（SPEC 10 §7）；move 进连接线程
                     let sess: Box<dyn WireSession> = Box::new(db.new_session());
-                    if let Err(e) = handle_connection(stream, sess, cfg) {
+                    let r = handle_connection(stream, sess, cfg);
+                    if let Some(g) = &guard {
+                        g.exit();
+                    }
+                    if let Err(e) = r {
                         tracing::debug!(error = %e, "dendro-pgwire: connection ended");
                     }
                 });

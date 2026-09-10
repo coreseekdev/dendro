@@ -24,6 +24,9 @@ fn opts(obj: Arc<dyn ObjStore>, retention_ms: i64) -> DbOptions {
         lease_ttl_ms: 60_000,
         read_only: false,
         gc_retention_ms: retention_ms,
+        max_connections: 0,
+        max_branches: 0,
+        max_txn_bytes: 0,
     }
 }
 

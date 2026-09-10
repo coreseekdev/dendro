@@ -55,7 +55,7 @@ fn conn_string(port: u16, user: &str, password: Option<&str>) -> String {
 
 #[tokio::test]
 async fn real_client_connect_simple_and_extended() {
-    let port = spawn_server(PgConfig::default(), MockSession::new);
+    let port = spawn_server(PgConfig::trust(), MockSession::new);
     let (client, connection) = tokio_postgres::connect(&conn_string(port, "postgres", None), NoTls)
         .await
         .expect("connect");
@@ -100,7 +100,7 @@ async fn real_client_connect_simple_and_extended() {
 #[tokio::test]
 async fn real_client_param_echo_roundtrip() {
     // int8 参数（binary）Bind → 引擎回显为结果 → 客户端 binary 解码
-    let port = spawn_server(PgConfig::default(), || {
+    let port = spawn_server(PgConfig::trust(), || {
         let mut m = MockSession::new();
         m.ep_behavior = common::EpBehavior::EchoInt8Param;
         m
@@ -121,7 +121,7 @@ async fn real_client_param_echo_roundtrip() {
 #[tokio::test]
 async fn real_client_error_sqlstate_and_connection_reuse() {
     // 仅对含 "missing" 的语句报 42P01，其余正常
-    let port = spawn_server(PgConfig::default(), || {
+    let port = spawn_server(PgConfig::trust(), || {
         let mut m = MockSession::new();
         m.ep_error = Some(SqlError::undefined_table(
             "relation \"missing\" does not exist",
@@ -159,6 +159,7 @@ async fn real_client_cleartext_password() {
     let port = spawn_server(
         PgConfig {
             password: Some("sesame".into()),
+            conn_guard: None,
         },
         MockSession::new,
     );

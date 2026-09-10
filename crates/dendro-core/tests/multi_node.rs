@@ -18,6 +18,9 @@ fn opts(dir: &std::path::Path, ttl_ms: i64) -> DbOptions {
         lease_ttl_ms: ttl_ms,
         read_only: false,
         gc_retention_ms: 24 * 3600 * 1000,
+        max_connections: 0,
+        max_branches: 0,
+        max_txn_bytes: 0,
     }
 }
 
@@ -276,6 +279,9 @@ fn fence_expired_writer_rejected() {
         lease_ttl_ms: 80,
         read_only: false,
         gc_retention_ms: 24 * 3600 * 1000,
+        max_connections: 0,
+        max_branches: 0,
+        max_txn_bytes: 0,
     };
     let db = Database::open(opts).unwrap();
     {
@@ -519,6 +525,9 @@ fn lazy_open_and_drop_branch_gc() {
             lease_ttl_ms: 300,
             read_only: false,
             gc_retention_ms: 300,
+            max_connections: 0,
+            max_branches: 0,
+            max_txn_bytes: 0,
         })
         .unwrap();
         {

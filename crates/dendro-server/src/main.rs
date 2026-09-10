@@ -53,6 +53,15 @@ enum Cmd {
         /// GC 保留窗口毫秒（墓碑对象登记后至少保留时长；<0 禁用）
         #[arg(long, default_value_t = 24 * 3600 * 1000)]
         gc_retention_ms: i64,
+        /// 资源上界：最大并发连接数（PG+MySQL 合计；0 = 不限）
+        #[arg(long, default_value_t = 1_000)]
+        max_connections: usize,
+        /// 资源上界：最大分支数（含 main；0 = 不限）
+        #[arg(long, default_value_t = 10_000)]
+        max_branches: usize,
+        /// 资源上界：单事务写集字节上限（0 = 不限）
+        #[arg(long, default_value_t = 256 << 20)]
+        max_txn_bytes: u64,
         /// PG 监听端口（0 = 关闭）
         #[arg(long, default_value_t = 5432)]
         pg_port: u16,
@@ -124,6 +133,9 @@ fn main() {
             metrics_port,
             read_only,
             gc_retention_ms,
+            max_connections,
+            max_branches,
+            max_txn_bytes,
             s3_endpoint,
             s3_bucket,
             s3_access_key,
@@ -167,6 +179,9 @@ fn main() {
                 lease_ttl_ms: 30_000,
                 read_only,
                 gc_retention_ms,
+                max_connections,
+                max_branches,
+                max_txn_bytes,
             };
             let db =
                 Database::open(opts).unwrap_or_else(|e| panic!("open {}: {e}", data.display()));
@@ -234,6 +249,7 @@ fn main() {
                 let db_my = db.clone();
                 let cfg = dendro_mywire::MyConfig {
                     password: password.clone(),
+                    conn_guard: Some(db.conn_guard.clone()),
                     ..Default::default()
                 };
                 let l = listeners.remove("mysql").unwrap();
@@ -263,6 +279,7 @@ fn main() {
                         .spawn(move || {
                             let cfg = dendro_pgwire::PgConfig {
                                 password: password.clone(),
+                                conn_guard: Some(db_pg.conn_guard.clone()),
                             };
                             dendro_pgwire::serve_listener(l, db_pg, cfg).expect("pg listener")
                         })
