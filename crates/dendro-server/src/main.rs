@@ -309,10 +309,11 @@ fn main() {
             }
         }
         Cmd::BenchCompress { rows, out } => {
-            // M-3 Q 曲线：多行数阶梯采样（1k/10k/rows），JSON 各自落盘
-            let mut sizes: Vec<usize> = vec![1_000.min(rows), 10_000.min(rows), rows];
+            // M-3 Q 曲线：多行数阶梯采样，JSON 各自落盘
+            let mut sizes: Vec<usize> = vec![1_000, 10_000, rows];
             sizes.sort();
             sizes.dedup();
+            sizes.retain(|&s| s <= rows);
             for n in sizes {
                 let path = out.with_extension(format!("{n}.json"));
                 match dendro_server::bench::compression_curve(n, &path) {
