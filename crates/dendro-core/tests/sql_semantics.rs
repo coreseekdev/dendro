@@ -871,3 +871,61 @@ fn pk_range_negative_literals_pushdown() {
         "3" // -10,-9,-8
     );
 }
+
+// ---- 负数全面审计（R8）：字面量提取曾只认 Expr::Value——IN 负数成员
+// ---- 被静默过滤（丢行）；点查/范围/列取负/运行时求值全面覆盖 ----
+
+#[test]
+fn negative_literals_all_surfaces() {
+    let db = open_mem();
+    {
+        let mut s = db.new_session();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
+            .unwrap();
+        s.exec("INSERT INTO t VALUES (-3,'a'),(-1,'b'),(2,'c'),(4,'d')")
+            .unwrap();
+    }
+    // PK 等值直查（负数字面量）
+    assert_eq!(
+        rows(&db, "SELECT v FROM t WHERE id = -3"),
+        vec![vec!["a".to_string()]]
+    );
+    // PK IN 含负数成员（曾丢 -3 的行）
+    assert_eq!(
+        rows(&db, "SELECT v FROM t WHERE id IN (-3, 4) ORDER BY v"),
+        vec![vec!["a".to_string()], vec!["d".to_string()]]
+    );
+    // PK 范围（负下界）
+    assert_eq!(
+        rows(&db, "SELECT v FROM t WHERE id > -2 ORDER BY id"),
+        vec![
+            vec!["b".to_string()],
+            vec!["c".to_string()],
+            vec!["d".to_string()]
+        ]
+    );
+    // 非下推路径（v 过滤）
+    assert_eq!(
+        rows(&db, "SELECT id FROM t WHERE v = 'a'"),
+        vec![vec!["-3".to_string()]]
+    );
+    // 列取负（运行时求值）
+    assert_eq!(
+        rows(&db, "SELECT -id FROM t WHERE id = 2"),
+        vec![vec!["-2".to_string()]]
+    );
+    // 负界 + 正界组合
+    assert_eq!(
+        rows(&db, "SELECT count(*) FROM t WHERE id >= -3 AND id <= -1")[0][0],
+        "2"
+    );
+    // UPDATE SET 负数字面量
+    {
+        let mut s = db.new_session();
+        s.exec("UPDATE t SET v = '-5' WHERE id = -3").unwrap();
+        assert_eq!(
+            rows(&db, "SELECT v FROM t WHERE id = -3"),
+            vec![vec!["-5".to_string()]]
+        );
+    }
+}

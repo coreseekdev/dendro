@@ -1176,6 +1176,30 @@ fn is_col_vs_value(a: &Expr, b: &Expr, pk: &str) -> bool {
 }
 
 /// pk 直查视图：memtx ∪ 树
+/// 表达式 → 字面量 SqlValue（S-3 负数审计 R8）：`Value` 与
+/// `UnaryOp::Minus(数值)` 两类；其余（列引用/函数/算式）→ None。
+/// 此前 Eq/IN 直查只认 `Expr::Value`——负数字面量被静默过滤成
+/// 空键集（`id = -3` 恰好有非下推回退路径兜底，`IN (-3, 4)` 则
+/// **静默丢行**）。
+fn expr_to_literal(e: &Expr) -> Option<SqlValue> {
+    match e {
+        Expr::Value(vws) => Some(super::expr::value_from_parser(vws.value.clone())),
+        Expr::UnaryOp {
+            op: sqlparser::ast::UnaryOperator::Minus,
+            expr: inner,
+        } => match super::expr::value_from_parser(match inner.as_ref() {
+            Expr::Value(vws) => vws.value.clone(),
+            _ => return None,
+        }) {
+            SqlValue::Int64(i) => Some(SqlValue::Int64(-i)),
+            SqlValue::Int32(i) => Some(SqlValue::Int32(-i)),
+            SqlValue::Float64(f) => Some(SqlValue::Float64(-f)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn build_point_view(
     db: &Database,
     sess: &mut Session,
@@ -1197,10 +1221,7 @@ fn build_point_view(
             } else {
                 left.as_ref()
             };
-            match v {
-                Expr::Value(vws) => vec![super::expr::value_from_parser(vws.value.clone())],
-                _ => vec![],
-            }
+            expr_to_literal(v).into_iter().collect()
         }
         Expr::InList {
             expr,
@@ -1208,12 +1229,7 @@ fn build_point_view(
             negated,
         } if !*negated => {
             let _ = expr;
-            list.iter()
-                .filter_map(|e| match e {
-                    Expr::Value(vws) => Some(super::expr::value_from_parser(vws.value.clone())),
-                    _ => None,
-                })
-                .collect()
+            list.iter().filter_map(expr_to_literal).collect()
         }
         _ => vec![],
     };
