@@ -482,10 +482,14 @@ fn eval_from(
     snapshot: u64,
     pushdown_limit: Option<usize>,
 ) -> Result<TableView> {
-    let twj = select
-        .from
-        .first()
-        .ok_or_else(|| SqlError::syntax("missing FROM"))?;
+    let Some(twj) = select.from.first() else {
+        // 无 FROM 常量投影（S 缺口，SELECT -3 / SELECT 1+1）：标准语义 =
+        // 单行零列输入——投影/聚合（count(*) → 1）在此行上正常求值
+        return Ok(TableView {
+            names: vec![],
+            rows: vec![vec![]],
+        });
+    };
     let mut tv = table_scan_opt(
         db,
         sess,

@@ -929,3 +929,18 @@ fn negative_literals_all_surfaces() {
         );
     }
 }
+
+#[test]
+fn select_without_from_constant_projection() {
+    let db = open_mem();
+    // 常量投影（含负数：曾 42601 missing FROM）
+    assert_eq!(rows(&db, "SELECT -3")[0][0], "-3");
+    assert_eq!(rows(&db, "SELECT 1 + 1")[0][0], "2");
+    // 别名
+    assert_eq!(rows(&db, "SELECT -3 AS x")[0][0], "-3");
+    // 聚合标准语义：无输入行 count(*) = 1
+    assert_eq!(rows(&db, "SELECT count(*)")[0][0], "1");
+    // WHERE 恒假常量短路 → 空集
+    let r = rows(&db, "SELECT -3 WHERE 1 = 0");
+    assert!(r.is_empty(), "恒假 WHERE 应短路为空集");
+}
