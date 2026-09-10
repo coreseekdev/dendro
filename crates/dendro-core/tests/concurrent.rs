@@ -400,3 +400,85 @@ fn concurrent_drop_branch_fails_inflight_txn_cleanly() {
     // main 不受影响（孤儿写入未泄漏到其他分支）
     assert_eq!(rows(&db, "SELECT count(*) FROM t")[0][0], "0");
 }
+
+// ---- P2-6 两段式提交（组提交解耦）回归 ----
+
+#[test]
+fn two_pass_group_commit_batches_concurrent_writers() {
+    // **吞吐回归**：durable 等待移出 commit_mu 后，8 并发写者的帧并入同一
+    // 组刷盘（8×/间隔）；此前每间隔恰 1 提交（缓冲永远只有 1 帧）。
+    // 800 提交 × 50ms 间隔：串行基线 ≈ 40s，成批 ≈ 5s —— 断言 < 20s
+    // （4× 余量，CI 过载下的误报防护）。
+    let db = Database::open(DbOptions::memory()).unwrap();
+    {
+        let mut s = db.new_session();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY)").unwrap();
+    }
+    let t0 = std::time::Instant::now();
+    std::thread::scope(|scope| {
+        for th in 0..8u64 {
+            let db = db.clone();
+            scope.spawn(move || {
+                let mut s = db.new_session();
+                for i in 0..100u64 {
+                    s.exec(&format!("INSERT INTO t VALUES ({})", th * 1000 + i))
+                        .unwrap();
+                }
+            });
+        }
+    });
+    let elapsed = t0.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_secs(20),
+        "组提交未成批（串行基线 40s）：{elapsed:?}"
+    );
+    assert_eq!(
+        rows(&db, "SELECT count(*) FROM t")[0][0],
+        "800",
+        "全部提交可见（watermark 无间隙前沿）"
+    );
+}
+
+#[test]
+fn two_pass_repeatable_read_gap_free_watermark() {
+    // 无间隙前沿：读事务快照固定后，并发提交陆续安装——重复读必须稳定
+    //（watermark 跳过未安装版本会导致事务内可见性翻转）。此前的
+    // repeatable_read 用单写者；此处 8 并发写者 × 安装乱序压前沿逻辑。
+    let db = Database::open(DbOptions::memory()).unwrap();
+    {
+        let mut s = db.new_session();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY)").unwrap();
+    }
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let writers: Vec<_> = (0..8)
+        .map(|th| {
+            let db = db.clone();
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                let mut s = db.new_session();
+                let mut n = 0u64;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let id = th * 100_000 + n;
+                    if s.exec(&format!("INSERT INTO t VALUES ({id})")).is_err() {
+                        break;
+                    }
+                    n += 1;
+                }
+                n
+            })
+        })
+        .collect();
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    // 读者事务：写者并发提交 + 安装乱序期间，重复读稳定
+    let mut s = db.new_session();
+    s.exec("BEGIN").unwrap();
+    let c1 = rows_in(&mut s, "SELECT count(*) FROM t")[0][0].clone();
+    std::thread::sleep(std::time::Duration::from_millis(40));
+    let c2 = rows_in(&mut s, "SELECT count(*) FROM t")[0][0].clone();
+    assert_eq!(c1, c2, "并发安装乱序下可重复读被破坏：{c1} vs {c2}");
+    s.exec("COMMIT").unwrap();
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let total: u64 = writers.into_iter().map(|w| w.join().unwrap()).sum();
+    let after: u64 = rows(&db, "SELECT count(*) FROM t")[0][0].parse().unwrap();
+    assert_eq!(after, total, "全部提交最终可见且恰一次");
+}

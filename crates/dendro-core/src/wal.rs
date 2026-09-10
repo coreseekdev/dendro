@@ -268,6 +268,12 @@ pub struct WalWriter {
     flush_mu: Mutex<()>,
     /// GC 起始段号：之前的段已登记墓碑且 covered（GC 定案）
     first_seg: AtomicU64,
+    /// 每-段最大 seq（P2-6 段退休安全界）：seg → 该段内最大帧 seq。
+    /// 两段式提交下 durable-but-in-flight 的帧可落在 checkpoint 帧之前的段里
+    /// ——段退休（wal_first_seg 推进）必须以"段内全部帧已安装"为界
+    /// （retire_bound：max seq 的 ts ≤ covered 才可退休），否则重启回放跳过
+    /// 含在途帧的段 = 已 ack 提交丢失（审计 R3-P0 实证）。
+    seg_max_seq: Mutex<std::collections::BTreeMap<u64, u64>>,
     /// 首个未上传段号（恢复起点提示；进程内缓存）
     stop: Mutex<bool>,
     handle: Mutex<Option<std::thread::JoinHandle<()>>>,
@@ -300,6 +306,7 @@ impl WalWriter {
             }),
             cv: Condvar::new(),
             flush_mu: Mutex::new(()),
+            seg_max_seq: Mutex::new(std::collections::BTreeMap::new()),
             first_seg: AtomicU64::new(start_seg),
             stop: Mutex::new(false),
             handle: Mutex::new(None),
@@ -353,6 +360,7 @@ impl WalWriter {
             }),
             cv: Condvar::new(),
             flush_mu: Mutex::new(()),
+            seg_max_seq: Mutex::new(std::collections::BTreeMap::new()),
             first_seg: AtomicU64::new(start_seg),
             stop: Mutex::new(true),
             handle: Mutex::new(None),
@@ -375,6 +383,22 @@ impl WalWriter {
         payload: &[u8],
         durability: crate::engine::Durability,
     ) -> Result<()> {
+        self.enqueue_only(ty, seq, payload)?;
+        match durability {
+            crate::engine::Durability::NoWait => Ok(()),
+            crate::engine::Durability::Always => {
+                self.flush_now()?;
+                self.await_durable(seq)
+            }
+            crate::engine::Durability::Group => self.await_durable(seq),
+        }
+    }
+
+    /// 仅入队（P2-6 组提交解耦）：缓冲追加 + 段满通知，**不等待 durable**。
+    /// 供两段式提交使用——validate+enqueue 持 commit_mu，durable 等待在锁外
+    /// 并发进行（多提交并入同一组刷盘），install 在 durable 之后二次持锁。
+    /// 与 [`Self::append`] 相同的毒化/只读守卫。
+    pub fn enqueue_only(&self, ty: FrameType, seq: u64, payload: &[u8]) -> Result<()> {
         if self.read_only {
             return Err(SqlError::new("25006", "read-only branch: cannot write"));
         }
@@ -398,6 +422,17 @@ impl WalWriter {
                 self.cv.notify_all();
             }
         }
+        Ok(())
+    }
+
+    /// 两段式提交的 durable 等待（P2-6）：按持久性等级等待 seq 落盘。
+    /// Always 立即触发一次 flush（单飞）；Group 依赖 flush_loop 节拍或
+    /// 等待者超时自触发——并发等待者的帧天然并入同一组。
+    pub(crate) fn wait_durable(
+        &self,
+        seq: u64,
+        durability: crate::engine::Durability,
+    ) -> Result<()> {
         match durability {
             crate::engine::Durability::NoWait => Ok(()),
             crate::engine::Durability::Always => {
@@ -504,13 +539,32 @@ impl WalWriter {
 
     /// flush 线程收到上传完成后的 durable 推进（带段内最大 seq）
     pub fn advance_durable(&self, seg: u64, max_seq: u64) {
-        let mut g = self.shared.lock();
-        if seg > g.flushed_seg {
-            g.flushed_seg = seg;
+        {
+            let mut g = self.shared.lock();
+            if seg > g.flushed_seg {
+                g.flushed_seg = seg;
+            }
+            g.durable_seq = g.durable_seq.max(max_seq);
         }
-        g.durable_seq = g.durable_seq.max(max_seq);
-        drop(g);
+        // 段-最大 seq 记账（成功上传后；段退休安全界的依据）
+        if max_seq > 0 {
+            self.seg_max_seq.lock().insert(seg, max_seq);
+        }
         self.cv.notify_all();
+    }
+
+    /// 段退休安全界（P2-6）：**最高**的"段内最大帧 ts ≤ covered_ts"段号。
+    /// 返回 0 = 无可退休段（含 in-flight 帧的段 ts 超 covered，一律不退）。
+    /// 段号与 max_seq 单调对应 ⇒ 满足条件的段构成前缀。
+    pub fn retire_bound(&self, covered_ts: u64) -> u64 {
+        let g = self.seg_max_seq.lock();
+        let mut best = 0u64;
+        for (&seg, &max_seq) in g.iter() {
+            if crate::recovery::composite_ts(self.epoch, max_seq) <= covered_ts && seg > best {
+                best = seg;
+            }
+        }
+        best
     }
 
     /// 单次 tick（保活/上传）；返回 true = 应退出（stop 或外部 Arc 全释放）。

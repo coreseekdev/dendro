@@ -64,6 +64,33 @@ COMMIT:
 ROLLBACK: 丢弃写集
 ```
 
+### 3.1 两段式提交（P2-6 组提交解耦，实现口径）
+
+```
+Pass1 (持 commit_mu):
+  fence → Q-9 → OCC 裁决（memtx + in-flight 写集求交）→ seq 分配
+  → WAL 入队（enqueue_only，无 durable 等待）→ 注册 in-flight{ts → 写集}
+durable 等待（锁外）: 并发提交的帧并入同一组刷盘（组大小 = 并发度）
+Pass2 (持 commit_mu):
+  memtx 安装（VerVec 按 ts **有序插入**——pass2 完成序 ≠ ts 序）
+  → pending 登记 → 摘除自身 in-flight
+  → watermark = min(installed_max, min(in-flight)−1)   ← 无间隙前沿
+```
+
+- **无间隙前沿**：watermark 只推进到"全部更低 ts 均已安装"的位置——
+  否则并发读者快照跳过未安装版本，事务内可见性翻转（重复读违约）。
+  installed_max 与 min(in-flight) 两个分量都必须持久跟踪（只取自身 ts 会在
+  小 ts 后完成时把水位永久压低——回归 `two_pass_repeatable_read_gap_free_watermark`）。
+- **裁决有效性**：validate 与 install 之间插入的并发提交都在 in-flight
+  注册表内（Pass1 求交 40001）——等待移出锁外不弱化 first-committer-wins。
+- **失败语义**：等待失败（毒化 40003）→ InflightGuard 摘除注册 + 错误上抛；
+  同帧组内他者成功 = 既有 Uncertain 对账口径（SPEC 02 §3.5，按**段**为不确定域）。
+- **段退休安全界**（审计 R3-P0）：checkpoint 的 `wal_first_seg` 推进与段墓碑
+  以 `retire_bound(covered)` 为界——最高"段内最大帧 ts ≤ covered"段。旧单段
+  设计下"等待+安装同锁"保证 checkpoint 时无 durable-but-uninstalled 帧；
+  两段式下必须显式守卫。回归：`wal_corruption::segment_retirement_bounded_by_covered_frontier`。
+- **效果**：8 并发写者组提交吞吐 20 → 160 commits/s（8×，线性于并发度）。
+
 - 自动提交（默认）：每语句一事务，验证成本 O(写集)，无读集记账
 - 隔离级别：提供 `READ COMMITTED`(每语句新快照) 与 `SERIALIZABLE`(事务快照+验证，
   默认 SERIALIZABLE，名字诚实，因为验证确实是 SSI 的简化 OCC 版)

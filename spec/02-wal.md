@@ -64,6 +64,15 @@ append 帧 → seq 申请      │→ MPMC 队列 ─→ 聚帧器(当前段缓�
   - `always`：每事务独立触发 flush（OSS 上 = 每事务 ≥1 RTT，仅低频关键写用）
 - Latch 表：`DashMap<seq, broadcast>` 或原子 bitmap + condvar；实现用 `parking_lot`。
 - 写放大控制：CHECKPOINT 段(树物化)合并 TXN 段上传时机，避免双写抖动。
+- **成批的先决条件（P2-6 两段式，已实现）**：durable 等待必须在提交串行锁
+  （commit_mu）**之外**——此前等待持锁使缓冲永远只有 1 帧，"组"提交退化为
+  每间隔 1 提交（8 并发写者 20 commits/s）。解耦后并发提交帧并入同组：
+  8 并发 160 commits/s（8×，线性于并发度）。配套四件：
+  in-flight 写集裁决（等待期提交仍是冲突源）、memtx 按 ts 有序插入
+  （pass2 完成序 ≠ ts 序）、watermark = min(installed_max, min(in-flight)−1)
+  无间隙前沿（可见性不翻转）、**段退休安全界**（wal.retire_bound：段内最大
+  帧 ts ≤ covered 才可退休——在途帧可落在 checkpoint 帧之前的段里，无界
+  退休会在 reopen 时丢失已 ack 提交，审计 R3-P0 实证）。见 SPEC 04 §3。
 
 ## 3.5 上传失败错误语义（毒化，v1.1 定案）
 

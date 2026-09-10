@@ -86,14 +86,19 @@ impl TableMem {
         vv.last().map(|c| c.ts)
     }
 
-    /// 提交安装：key 的新版本（调用方已持有分支 commit 锁，见 engine::commit_tx）
+    /// 提交安装：key 的新版本（调用方已持有分支 commit 锁，见 engine::commit_tx）。
+    /// **按 ts 有序插入**（P2-6 两段式提交）：durable 等待移出 commit_mu 后，
+    /// 同组提交的二次持锁顺序 ≠ ts 顺序——version vec 被
+    /// `partition_point`（可见性/可见 ts 二分）依赖有序性，乱序到达必须
+    /// 插入排序位而非尾部 push。
     pub fn install(&self, key: Vec<u8>, ts: u64, val: Option<Arc<Vec<u8>>>) {
         let sh = &self.shards[shard_of(&key)];
         let mut g = sh.map.write();
         let vv = g.entry(key.into()).or_default();
-        // commit 锁保证 ts 单调
-        debug_assert!(vv.last().map(|c| c.ts) <= Some(ts));
-        Arc::make_mut(vv).push(Arc::new(VerCell { ts, val }));
+        // 已安装版本 ts 严格递增（重复 ts = seq 分配缺陷）
+        debug_assert!(vv.last().map(|c| c.ts) < Some(ts));
+        let idx = vv.partition_point(|c| c.ts <= ts);
+        Arc::make_mut(vv).insert(idx, Arc::new(VerCell { ts, val }));
     }
 
     /// checkpoint 截断：释放 ts <= ckpt_seq 的历史（若最新也 ≤，则整键移除）

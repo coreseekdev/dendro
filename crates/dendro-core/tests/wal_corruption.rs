@@ -551,3 +551,130 @@ fn close_graceful_flushes_no_wait_tail() {
         );
     }
 }
+
+#[test]
+fn concurrent_inflight_commits_fail_cleanly_on_poison() {
+    // P2-6 两段式提交 × 毒化：durable 等待移出 commit_mu 后，多个并发提交
+    // 同帧入组。注入 PUT 失败 → 写者毒化 → 所有等待者 40003（Uncertain
+    // 口径），in-flight 注册表被 InflightGuard 清空（watermark 不停滞），
+    // 毒化前已成功提交全部可见；reopen 后无幽灵行。
+    let obj = Arc::new(FlakyPutStore {
+        inner: MemoryObjStore::new(),
+        fail_puts_left: AtomicU32::new(0),
+        fail_prefix: String::new(),
+    });
+    let db = Database::open(opts_store(StoreConfig::Obj(obj.clone()))).unwrap();
+    {
+        let mut s = db.new_session();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY)").unwrap();
+        s.exec("INSERT INTO t VALUES (0)").unwrap(); // 段 1 正常
+    }
+    // 毒化 + 8 并发不同键提交：等待者要么成功（毒化前已落盘），要么 40003
+    obj.fail_puts_left.store(1, Ordering::SeqCst);
+    let results: Vec<Vec<Result<(), String>>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (1..=8)
+            .map(|i| {
+                let db = db.clone();
+                scope.spawn(move || {
+                    let mut s = db.new_session();
+                    match s.exec(&format!("INSERT INTO t VALUES ({i})")) {
+                        Ok(_) => Ok(()),
+                        Err(e) => Err(e.state.to_string()),
+                    }
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| vec![h.join().unwrap()])
+            .collect()
+    });
+    let flat: Vec<&Result<(), String>> = results.iter().flatten().collect();
+    let oks = flat.iter().filter(|r| r.is_ok()).count();
+    let errs = flat.iter().filter(|r| r.is_err()).count();
+    assert_eq!(oks + errs, 8, "每线程恰一结果");
+    // 成功者恰一次可见；失败者（40003）不得可见
+    let visible: usize = {
+        let mut s = db.new_session();
+        match s.exec("SELECT count(*) FROM t").unwrap().last().unwrap() {
+            dendro_core::Output::Rows(rs) => rs.text_rows()[0][0].clone().unwrap().parse().unwrap(),
+            _ => panic!("expected rows"),
+        }
+    };
+    assert_eq!(
+        visible,
+        1 + oks,
+        "可见行 = 成功提交数（毒化提交无进程内痕迹）"
+    );
+    // reopen：重新领 epoch 后提交继续工作（毒化自愈路径不回归）
+    drop(db);
+    let db2 = Database::open(opts_store(StoreConfig::Obj(obj.clone()))).unwrap();
+    {
+        let mut s = db2.new_session();
+        s.exec("INSERT INTO t VALUES (100)").unwrap();
+        let n = match s.exec("SELECT count(*) FROM t").unwrap().last().unwrap() {
+            dendro_core::Output::Rows(rs) => rs.text_rows()[0][0]
+                .clone()
+                .unwrap()
+                .parse::<usize>()
+                .unwrap(),
+            _ => panic!("expected rows"),
+        };
+        // 不确定域 = **失败 PUT 的整个段**（帧级而非行级）：FlakyPutStore 确定性
+        // 失败 ⇒ 该段 0 帧落盘 ⇒ n = 1 + oks 精确成立；真实 S3 超时下该段 k 帧
+        // 可能全部已落盘（Uncertain），n 上界 = 1 + oks + k ≤ 9（尝试总数）。
+        // 断言口径：n ∈ [1+oks, 9]（SPEC 02 §3.5 按段 Uncertain）
+        assert!(
+            (1 + oks..=9).contains(&n),
+            "reopen 后可见行数越界：n={n} oks={oks}"
+        );
+        assert!(n > oks, "成功提交必须在 reopen 后可见：n={n} oks={oks}");
+    }
+}
+
+#[test]
+fn segment_retirement_bounded_by_covered_frontier() {
+    // 审计 R3-P0 回归：两段式提交下 durable-but-in-flight 帧可落在
+    // checkpoint 帧之前的段里——段退休界必须按"段内最大帧 ts ≤ covered"，
+    // 否则重启回放从 wal_first_seg 起跳过含在途帧的段 = 已 ack 提交丢失。
+    // 本测试直接钉住 retire_bound 语义：含未覆盖帧的段不可退休。
+    use dendro_core::recovery::composite_ts;
+    use dendro_core::wal::{FrameType, WalConfig, WalWriter};
+
+    let dir = std::env::temp_dir().join(format!("dendro-retire-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let obj: Arc<dyn ObjStore> = Arc::new(MemoryObjStore::new());
+    let epoch = 1u64;
+    let cfg = WalConfig {
+        flush_interval: std::time::Duration::from_millis(1),
+        segment_bytes: 4 << 20,
+        durability: dendro_core::Durability::NoWait,
+        keepalive: None,
+    };
+    let w = WalWriter::open(obj, "retire", epoch, 1, cfg);
+    // 帧 seq 1..=10 入队并刷盘 → 段 1 的 max_seq = 10
+    for seq in 1..=10u64 {
+        w.enqueue_only(FrameType::Txn, seq, b"x").unwrap();
+    }
+    w.flush_now().unwrap();
+    // 全部覆盖（watermark = ts(10)）→ 段 1 可退休
+    assert_eq!(w.retire_bound(composite_ts(epoch, 10)), 1);
+    // 仅覆盖到 seq 3（= 段内含在途/未安装帧 4..10，模拟两段式 in-flight 窗口）
+    // → 段 1 的 max_seq=10 超 covered ⇒ **不可退休**（返回 0）
+    assert_eq!(w.retire_bound(composite_ts(epoch, 3)), 0);
+    // 空记账（无已刷段）→ 0
+    let w2 = WalWriter::open(
+        Arc::new(MemoryObjStore::new()),
+        "retire2",
+        epoch,
+        1,
+        WalConfig {
+            flush_interval: std::time::Duration::from_millis(1),
+            segment_bytes: 4 << 20,
+            durability: dendro_core::Durability::NoWait,
+            keepalive: None,
+        },
+    );
+    assert_eq!(w2.retire_bound(composite_ts(epoch, 100)), 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}

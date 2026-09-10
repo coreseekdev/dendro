@@ -127,8 +127,19 @@ pub struct Branch {
     pub wal: Arc<WalWriter>,
     /// memtx
     pub mem: BranchMem,
-    /// 提交串行化锁（OCC 验证+安装+WAL 序列 的原子域）
+    /// 提交串行化锁（P2-6 两段式：Pass1 = OCC 裁决 + WAL 入队；Pass2 = durable
+    /// 后安装。durable 等待在**锁外**并发进行——同组提交并入一次刷盘，此前
+    /// 等待持锁使组提交退化为每间隔 1 提交）
     pub commit_mu: Mutex<()>,
+    /// 两段式提交的 in-flight 注册表（P2-6）：commit ts → 写集键。
+    /// ① Pass1 裁决与它求交（未安装但已入队的并发写同样是冲突源——
+    /// first-committer-wins 不因等待移出锁外而失效）；
+    /// ② watermark 只推进到 **min(in-flight) − 1**（无间隙前沿）——
+    /// 否则快照跳过未安装版本会造成事务内可见性翻转；
+    /// ③ 等待失败/恐慌由 InflightGuard 兜底摘除（泄漏 = watermark 永久停滞）
+    pub(crate) inflight: Mutex<
+        std::collections::BTreeMap<u64, std::sync::Arc<std::collections::BTreeSet<(u32, Vec<u8>)>>>,
+    >,
     next_seq: AtomicU64,
     /// 本进程持有的写者世代（P1 fencing；0=未领取；只读分支=ref epoch）
     pub lease_epoch: AtomicU64,
@@ -146,6 +157,10 @@ pub struct Branch {
     pub lease: Arc<LeaseKeeper>,
     /// 已安装（可见）的提交水位
     pub watermark: AtomicU64,
+    /// 已安装的最大提交 ts（P2-6 无间隙前沿）：watermark = min(installed_max,
+    /// min(in-flight)−1)。缺 installed_max 时，"小 ts 提交最后完成 pass2"会把
+    /// 水位永久压在自己之下（大 ts 版本已安装但不可见——回归实证）
+    pub(crate) installed_max: AtomicU64,
     /// 自上次 checkpoint 的累积 pending 变更：table → (key → mut)
     pub pending: Mutex<HashMap<u32, BTreeMap<Vec<u8>, Mutation>>>,
     pub pending_bytes: AtomicU64,
@@ -648,6 +663,7 @@ impl Database {
             wal,
             mem: BranchMem::default(),
             commit_mu: Mutex::new(()),
+            inflight: Mutex::new(std::collections::BTreeMap::new()),
             next_seq: AtomicU64::new(0),
             lease_epoch: AtomicU64::new(lease_epoch),
             read_only: self.opts.read_only,
@@ -655,6 +671,7 @@ impl Database {
             active_snaps: Mutex::new(std::collections::BTreeMap::new()),
             lease: keeper,
             watermark: AtomicU64::new(0),
+            installed_max: AtomicU64::new(0),
             pending: Mutex::new(HashMap::new()),
             pending_bytes: AtomicU64::new(0),
         });
@@ -1114,8 +1131,18 @@ impl Database {
         let covered = ck.seq_covered;
         let cur_epoch = b.lease_epoch.load(Ordering::Acquire);
         let mut tombstone: Vec<String> = std::mem::take(&mut gc_retired);
+        // 段退休安全界（审计 R3-P0）：两段式提交下，durable-but-in-flight 的
+        // 帧可落在 checkpoint 帧之前的段里——这些段 **不可退休**（重启回放
+        // 从 wal_first_seg 起读，跳过即丢失已 ack 提交）。退休界 = 最高的
+        // "段内最大帧 ts ≤ covered（无间隙前沿 = 全部已安装）"段。
+        let retirable = b.wal.retire_bound(covered);
+        let new_first = if retirable == 0 {
+            b.wal.first_seg()
+        } else {
+            (retirable + 1).max(b.wal.first_seg())
+        };
         let first = b.wal.first_seg();
-        for seg in first..seg_now {
+        for seg in first..new_first.min(seg_now) {
             tombstone.push(crate::wal::WalWriter::seg_path(&b.name, cur_epoch, seg));
         }
         if cur_epoch > 1 {
@@ -1142,7 +1169,7 @@ impl Database {
             h.wal_seg = seg_now.max(h.wal_seg);
             h.covered_seq = covered;
             h.epoch = epoch_for_head;
-            h.wal_first_seg = seg_now.max(h.wal_first_seg);
+            h.wal_first_seg = new_first.max(h.wal_first_seg);
             for p in &tombstone {
                 if !m.tombstones.iter().any(|t| t.path == *p) {
                     m.tombstones.push(crate::objstore::manifest::Tombstone {
@@ -1359,70 +1386,163 @@ impl Session {
 }
 
 /// 提交一个事务的写集（engine 内部路径，sql 模块调用）。
-/// **管线顺序 = 裁决 → 持久化 → 安装 → 水位**（P2' 提交管线重构，
-/// docs/design/提交管线重构.md；第三轮评审 §5.5 验收项："install 必须在
-/// durable 之后"）。旧顺序先安装 memtx 再写 WAL，WAL 失败时 memtx 已带
-/// 数据而客户端收到错误（in-doubt：未提交数据可见 + 重启后幽灵行）；
-/// 新顺序下 WAL 失败 ⇒ 无任何可见状态，错误如实。
-/// 安全性：各阶段都在 commit_mu 内，validate 与 install 之间无并发写者
-/// （裁决结果不会被并发提交作废）。
+/// **管线顺序 = 裁决 → 入队 → [durable] → 安装 → 水位**（P2' 提交管线 +
+/// P2-6 两段式解耦，docs/design/提交管线重构.md；第三轮评审 §5.5 验收项：
+/// "install 必须在 durable 之后"）。旧顺序先安装 memtx 再写 WAL，WAL 失败时
+/// memtx 已带数据而客户端收到错误；WAL 失败 ⇒ 无任何可见状态，错误如实。
+///
+/// **两段式**（P2-6 组提交解耦）：
+/// - Pass1（持 commit_mu）：fence → Q-9 → OCC 裁决（memtx + in-flight 求交）
+///   → seq 分配 → WAL 入队（无 durable 等待）→ 注册 in-flight；
+/// - durable 等待（**锁外**）：并发提交并入同一组刷盘——此前等待持锁，
+///   缓冲永远只有 1 帧，组提交退化为每 flush 间隔 1 提交；
+/// - Pass2（持 commit_mu）：安装（memtx 按 ts 有序插入）→ pending 登记 →
+///   watermark 推进到 min(in-flight)−1 无间隙前沿。
+///
+/// 裁决有效性：validate 与 install 之间插入的并发提交都在 in-flight 注册表
+/// 里（Pass1 求交），裁决结果不会被并发提交作废。
+/// 失败语义：等待失败（毒化 40003/停止）→ in-flight 摘除 + 错误上抛——
+/// 帧可能已落盘（同组他者成功）= 既有 Uncertain 对账口径（SPEC 02 §3.5）。
 pub(crate) fn commit_tx(db: &Database, sess_branch: &str, txn: &Txn) -> Result<u64> {
     let b = db.branch(sess_branch)?;
-    let _g = b.commit_mu.lock();
-    b.fence_gate()?;
-    // Q-9：显式事务快照早于最近一次 checkpoint 的截断水位 ⇒ 该事务的冲突
-    // 检测存在盲区（memtx 历史已截断、树只有最新态）——静默 last-writer-wins
-    // 会造成丢失更新，改为显式 40001（客户端重试即获得完整视图）
-    if txn.explicit && txn.snapshot < b.covered_min.load(Ordering::Acquire) {
-        return Err(SqlError::serialization(
-            "transaction spans a checkpoint; conflict detection unavailable — retry",
-        ));
+    let t0 = std::time::Instant::now();
+    let ts;
+    // ---- Pass 1：裁决 + 入队（持 commit_mu，无 durable 等待）----
+    {
+        let _g = b.commit_mu.lock();
+        b.fence_gate()?;
+        // Q-9：显式事务快照早于最近一次 checkpoint 的截断水位 ⇒ 该事务的冲突
+        // 检测存在盲区（memtx 历史已截断、树只有最新态）——静默 last-writer-wins
+        // 会造成丢失更新，改为显式 40001（客户端重试即获得完整视图）
+        if txn.explicit && txn.snapshot < b.covered_min.load(Ordering::Acquire) {
+            return Err(SqlError::serialization(
+                "transaction spans a checkpoint; conflict detection unavailable — retry",
+            ));
+        }
+        let epoch = b.lease_epoch.load(Ordering::Acquire);
+        let seq = b.alloc_seq();
+        ts = crate::recovery::composite_ts(epoch, seq);
+        // OCC 裁决（只验证不安装；SPEC 04 §3 first-committer-wins）：
+        // memtx 已安装版本 + in-flight（已入队未安装）都是冲突源
+        crate::memtx::validate_only(&b.mem, &[], txn)?;
+        validate_inflight(&b, txn)?;
+        let mut recs: Vec<crate::wal::TxnRecord> = Vec::new();
+        for (tid, key, m) in iter_writes(txn) {
+            let val = match m {
+                Mutation::Put(v) => Some(v.clone()),
+                Mutation::Delete => None,
+            };
+            recs.push(crate::wal::TxnRecord {
+                table_id: tid,
+                ops: vec![(key.clone(), val)],
+            });
+        }
+        b.wal.enqueue_only(
+            crate::wal::FrameType::Txn,
+            ts,
+            &crate::wal::encode_txn(&recs),
+        )?;
+        let keys: std::collections::BTreeSet<(u32, Vec<u8>)> =
+            txn.writes.keys().map(|(t, k)| (*t, k.clone())).collect();
+        b.inflight.lock().insert(ts, std::sync::Arc::new(keys));
     }
-    let epoch = b.lease_epoch.load(Ordering::Acquire);
-    let seq = b.alloc_seq();
-    let ts = crate::recovery::composite_ts(epoch, seq);
-    // Phase 1: OCC 裁决（只验证不安装；SPEC 04 §3 first-committer-wins）
-    crate::memtx::validate_only(&b.mem, &[], txn)?;
-    // Phase 2: 持久化（组提交；失败 → 无可见状态，错误上抛）
-    let mut recs: Vec<crate::wal::TxnRecord> = Vec::new();
-    for (tid, key, m) in iter_writes(txn) {
-        let val = match m {
-            Mutation::Put(v) => Some(v.clone()),
-            Mutation::Delete => None,
-        };
-        recs.push(crate::wal::TxnRecord {
-            table_id: tid,
-            ops: vec![(key.clone(), val)],
-        });
+    // ---- durable 等待（锁外；并发提交在此并入同一组刷盘）----
+    // InflightGuard 兜底：等待失败/panic 摘除注册（泄漏 = watermark 永久停滞）
+    let guard = InflightGuard::new(&b, ts);
+    let wr = b.wal.wait_durable(ts, db.opts.durability);
+    if let Err(e) = wr {
+        guard.disarm();
+        b.inflight.lock().remove(&ts);
+        return Err(e);
     }
-    let t_flush = std::time::Instant::now();
-    b.wal.append(
-        crate::wal::FrameType::Txn,
-        ts,
-        &crate::wal::encode_txn(&recs),
-        db.opts.durability,
-    )?;
+    // 延迟口径 = 裁决 + 入队 + durable 等待（客户端可感知的提交时延；
+    // 仅成功提交计数——审计 R3-3：此前 cnt 在 pass1 计入失败、sum 只含等待）
     db.lat_commit_cnt.fetch_add(1, Ordering::Relaxed);
     db.lat_commit_sum_us
-        .fetch_add(t_flush.elapsed().as_micros() as u64, Ordering::Relaxed);
-    // Phase 3: 安装（durable 之后才产生可见状态）+ pending 登记（checkpoint 积压）
-    crate::memtx::install(&b.mem, &[], txn, ts);
-    let mut plen = 0usize;
+        .fetch_add(t0.elapsed().as_micros() as u64, Ordering::Relaxed);
+
+    // ---- Pass 2：安装（持 commit_mu；durable 已达成）----
     {
-        let mut pend = b.pending.lock();
-        for (tid, key, m) in iter_writes(txn) {
-            plen += key.len()
-                + match m {
-                    Mutation::Put(v) => v.len(),
-                    Mutation::Delete => 0,
-                };
-            pend.entry(tid).or_default().insert(key.clone(), m.clone());
+        let _g = b.commit_mu.lock();
+        crate::memtx::install(&b.mem, &[], txn, ts);
+        let mut plen = 0usize;
+        {
+            let mut pend = b.pending.lock();
+            for (tid, key, m) in iter_writes(txn) {
+                plen += key.len()
+                    + match m {
+                        Mutation::Put(v) => v.len(),
+                        Mutation::Delete => 0,
+                    };
+                pend.entry(tid).or_default().insert(key.clone(), m.clone());
+            }
+        }
+        b.pending_bytes.fetch_add(plen as u64, Ordering::Release);
+        // 可见性推进：无间隙前沿 = min(installed_max, min(剩余 in-flight) − 1)。
+        // installed_max 记录已安装的最大 ts（与本提交取 max）；in-flight 非空时
+        // 前沿压在未安装最小 ts 之下，否则推到 installed_max——两支并发的
+        // pass2 完成序 ≠ ts 序，两个分量都必须持久跟踪（回归实证）。
+        {
+            let mut g = b.inflight.lock();
+            g.remove(&ts);
+            let imax = b.installed_max.fetch_max(ts, Ordering::Release).max(ts);
+            let frontier = g
+                .keys()
+                .next()
+                .copied()
+                .map_or(imax, |m| imax.min(m.saturating_sub(1)));
+            b.watermark.fetch_max(frontier, Ordering::Release);
         }
     }
-    b.pending_bytes.fetch_add(plen as u64, Ordering::Release);
-    // Phase 4: 可见性推进
-    b.watermark.store(ts, Ordering::Release);
+    drop(guard);
     Ok(ts)
+}
+
+/// in-flight 求交（P2-6）：任一未安装并发提交的写集与本事务重叠 → 40001。
+/// in-flight 规模 = 并发等待提交数（小），逐键探测即可。
+fn validate_inflight(b: &Branch, txn: &Txn) -> Result<()> {
+    let g = b.inflight.lock();
+    for keys in g.values() {
+        for (t, k) in txn.writes.keys() {
+            if keys.contains(&(*t, k.clone())) {
+                return Err(SqlError::serialization(format!(
+                    "tuple updated by in-flight transaction (key {} bytes)",
+                    k.len()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// in-flight 注册的恐慌/早退兜底（P2-6）：条目泄漏会让 watermark 前沿
+/// 永久停滞在泄漏 ts 之下（全分支写不可见）。Drop 摘除；正常路径 Pass2
+/// 已摘除，Drop 再摘 = no-op（guard 保持 armed 到函数尾，覆盖 Pass2 panic）。
+struct InflightGuard {
+    b: Arc<Branch>,
+    ts: u64,
+    armed: bool,
+}
+
+impl InflightGuard {
+    fn new(b: &Arc<Branch>, ts: u64) -> Self {
+        Self {
+            b: b.clone(),
+            ts,
+            armed: true,
+        }
+    }
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.b.inflight.lock().remove(&self.ts);
+        }
+    }
 }
 
 fn iter_writes(txn: &Txn) -> impl Iterator<Item = (u32, &Vec<u8>, &Mutation)> {
