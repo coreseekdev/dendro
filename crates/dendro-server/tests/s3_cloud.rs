@@ -61,6 +61,9 @@ fn s3_lifecycle_and_crash_recovery() {
 
     let tag = format!("lc{}", std::process::id() % 100000);
     let opts = DbOptions {
+        max_cursor_bytes: 0,
+        max_prepared_per_session: 0,
+        max_result_bytes: 0,
         store: StoreConfig::Obj(cached.clone()),
         durability: dendro_core::Durability::Group,
         wal_flush_interval_ms: 20,
@@ -126,6 +129,9 @@ fn s3_lifecycle_and_crash_recovery() {
     // 5) 从 S3 重新打开（新"计算节点"）
     let (cached2, _s3b, _) = s3_stack("lifecycle");
     let db2 = Database::open(DbOptions {
+        max_cursor_bytes: 0,
+        max_prepared_per_session: 0,
+        max_result_bytes: 0,
         store: StoreConfig::Obj(cached2.clone()),
         durability: dendro_core::Durability::Group,
         wal_flush_interval_ms: 20,

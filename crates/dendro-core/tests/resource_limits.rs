@@ -271,3 +271,94 @@ fn statement_timeout_does_not_affect_fast_queries() {
         s.exec("SELECT count(*) FROM t WHERE id = 1").unwrap();
     }
 }
+
+// ---- S-3 会话配额：prepared / 游标字节 / 结果集字节 ----
+
+#[test]
+fn prepared_statement_count_quota() {
+    let db = Database::open(DbOptions {
+        max_prepared_per_session: 3,
+        ..DbOptions::memory()
+    })
+    .unwrap();
+    {
+        let mut s = db.new_session();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
+            .unwrap();
+    }
+    let mut s = db.new_session();
+    for i in 0..3 {
+        s.prepare(
+            &format!("p{i}"),
+            &format!("SELECT id FROM t WHERE id = {i}"),
+            &[],
+        )
+        .unwrap();
+    }
+    let e = s
+        .prepare("p3", "SELECT id FROM t WHERE id = 3", &[])
+        .unwrap_err();
+    assert_eq!(e.state, "54000", "{e}");
+    // 同名覆盖（replace）不受配额限制
+    s.prepare("p2", "SELECT v FROM t WHERE id = 2", &[])
+        .unwrap();
+    // 其他会话不受影响
+    let mut s2 = db.new_session();
+    s2.prepare("x", "SELECT id FROM t WHERE id = 1", &[])
+        .unwrap();
+}
+
+#[test]
+fn cursor_byte_quota_rejects_retention() {
+    let db = Database::open(DbOptions {
+        max_cursor_bytes: 1 << 20, // 1MB
+        ..DbOptions::memory()
+    })
+    .unwrap();
+    {
+        let mut s = db.new_session();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
+            .unwrap();
+        for batch in (0..60_000).step_by(10_000) {
+            let vals: Vec<String> = (batch..batch + 10_000)
+                .map(|i| format!("({i}, 'value-{i}-pad-pad-pad')"))
+                .collect();
+            s.exec(&format!("INSERT INTO t VALUES {}", vals.join(", ")))
+                .unwrap();
+        }
+    }
+    let mut s = db.new_session();
+    // 6 万行 × ~40B ≈ 2.4MB > 1MB → DECLARE 被拒（游标保留受限于配额）
+    let e = s.exec("DECLARE c CURSOR FOR SELECT * FROM t").unwrap_err();
+    assert_eq!(e.state, "54000", "{e}");
+    // 小结果集游标正常
+    s.exec("DECLARE small CURSOR FOR SELECT id FROM t WHERE id < 10")
+        .unwrap();
+    s.exec("FETCH 5 FROM small").unwrap();
+}
+
+#[test]
+fn result_byte_guard_drops_oversized_output() {
+    let db = Database::open(DbOptions {
+        max_result_bytes: 1 << 20, // 1MB
+        ..DbOptions::memory()
+    })
+    .unwrap();
+    {
+        let mut s = db.new_session();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
+            .unwrap();
+        for batch in (0..60_000).step_by(10_000) {
+            let vals: Vec<String> = (batch..batch + 10_000)
+                .map(|i| format!("({i}, 'value-{i}-pad-pad-pad')"))
+                .collect();
+            s.exec(&format!("INSERT INTO t VALUES {}", vals.join(", ")))
+                .unwrap();
+        }
+    }
+    let mut s = db.new_session();
+    let e = s.exec("SELECT * FROM t").unwrap_err();
+    assert_eq!(e.state, "54000", "{e}");
+    // 加 LIMIT 后正常（守卫的意图 = 逼分页）
+    s.exec("SELECT * FROM t LIMIT 100").unwrap();
+}

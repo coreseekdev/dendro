@@ -114,8 +114,8 @@ overlay 规模上界 = checkpoint 间隔内的写入量（默认 30s 或 16MB pe
 | 单事务字节 | Pass1 拒绝无副作用 | 入队前拒绝 ✓ | ✅ |
 | 拒绝可观测 | /metrics 拒绝率 | dendro_connections_{active,max,rejected_total} | ✅（R7-3） |
 | 语句超时 | statement_timeout 标配 | ✗ 缺失——失控查询占线程到永远 | ⬜ 需查询取消基础设施（PG CancelRequest + 执行器检查点） |
-| 每会话内存 | prepared/cursors 有界 | HashMap 无上界（游标物化结果集！） | ⬜ 会话级配额 |
-| 结果集流式 | 不整存整取 | TableView 全量物化后返回 | ⬜ 大结果集内存尖峰 |
+| 每会话内存 | prepared/cursors 有界 | prepared ≤1000、游标 ≤255 且单游标 ≤64MB（54000 拒绝保留）；旋钮可调 | ✅ 会话配额（R8） |
+| 结果集留存 | 大结果可限 | max_result_bytes（默认不限）超限丢输出回 54000 | ✅ 守卫（R8）；真流式 = 执行器惰性化仍 ⬜ |
 | 多节点全局配额 | 集群级连接数 | 每进程独立（N 节点 = N×上限） | ⚠️ 文档化；全局配额需分布式协调 |
 | 磁盘空间上界 | WAL/对象占用可观测可限 | checkpoint 回收 ✓；无空间水位拒绝 | ⬜ 可观测先行 |
 

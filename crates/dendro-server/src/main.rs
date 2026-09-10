@@ -173,6 +173,9 @@ fn main() {
                 StoreConfig::LocalDir(data.clone())
             };
             let opts = DbOptions {
+                max_cursor_bytes: 0,
+                max_prepared_per_session: 0,
+                max_result_bytes: 0,
                 store,
                 cache_budget_bytes: cache_bytes,
                 wal_flush_interval_ms: wal_interval_ms,

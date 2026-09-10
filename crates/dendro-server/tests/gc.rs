@@ -14,6 +14,9 @@ use std::time::Duration;
 
 fn opts(obj: Arc<dyn ObjStore>, retention_ms: i64) -> DbOptions {
     DbOptions {
+        max_cursor_bytes: 0,
+        max_prepared_per_session: 0,
+        max_result_bytes: 0,
         store: StoreConfig::Obj(obj),
         durability: dendro_core::Durability::Group,
         wal_flush_interval_ms: 10,

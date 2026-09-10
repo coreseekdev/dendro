@@ -78,6 +78,12 @@ pub struct DbOptions {
     pub max_txn_bytes: u64,
     /// 新会话的默认语句超时毫秒（S-3；0 = 不限；`SET statement_timeout` 可逐会话覆盖）
     pub default_statement_timeout_ms: u64,
+    /// 会话配额（S-3）：单游标物化字节上限（0 = 不限）
+    pub max_cursor_bytes: u64,
+    /// 会话配额（S-3）：每会话 prepared 语句数上限（0 = 不限）
+    pub max_prepared_per_session: usize,
+    /// 会话配额（S-3）：单语句结果集字节上限（0 = 不限）
+    pub max_result_bytes: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,6 +114,9 @@ impl Default for DbOptions {
             max_branches: 10_000,
             max_txn_bytes: 256 << 20,
             default_statement_timeout_ms: 0,
+            max_cursor_bytes: 64 << 20,
+            max_prepared_per_session: 1_000,
+            max_result_bytes: 0,
         }
     }
 }
@@ -1515,9 +1524,37 @@ impl Session {
         } else {
             None
         };
-        let result = crate::sql::exec_batch(&db, self, sql);
+        let mut result = crate::sql::exec_batch(&db, self, sql);
         if result.is_err() && self.txn.is_some() {
             self.failed_txn = true;
+        }
+        // 会话配额（S-3）：单语句结果集字节；0 = 不限。物化峰值 inherent
+        // （真流式 = 执行器惰性化，差距清单在案），本守卫限定**留存**——
+        // 超限丢弃输出回 54000，防大结果集在会话/网关层滞留
+        let max_res = self.db.opts.max_result_bytes;
+        if max_res > 0 {
+            if let Ok(outputs) = &mut result {
+                let mut over = None;
+                for o in outputs.iter() {
+                    if let Output::Rows(rs) = o {
+                        let mb = rs.memory_bytes();
+                        if mb > max_res {
+                            over = Some(mb);
+                            break;
+                        }
+                    }
+                }
+                if let Some(mb) = over {
+                    *outputs = Vec::new();
+                    self.stmt_deadline = None;
+                    return Err(SqlError::new(
+                        "54000",
+                        format!(
+                            "result too large: {mb} bytes (max {max_res}); add LIMIT or paginate"
+                        ),
+                    ));
+                }
+            }
         }
         self.stmt_deadline = None;
         result

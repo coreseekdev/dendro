@@ -905,6 +905,14 @@ pub(crate) fn prepare(
         param_types,
         result_columns,
     };
+    // 会话配额（S-3）：prepared 数量；0 = 不限。超限 54000
+    let max_prep = db.opts.max_prepared_per_session;
+    if max_prep > 0 && sess.prepared.len() >= max_prep && !sess.prepared.contains_key(name) {
+        return Err(SqlError::new(
+            "54000",
+            format!("too many prepared statements (max {max_prep} per session); close one first"),
+        ));
+    }
     sess.prepared.insert(
         name.to_string(),
         Prepared {
@@ -1319,6 +1327,19 @@ pub(crate) fn exec_cursor_statement(
                         return Err(SqlError::new(
                             "53310",
                             "too many cursors (max 255 per session); close one first",
+                        ));
+                    }
+                    // 会话配额（S-3）：单游标物化字节；0 = 不限。INSENSITIVE
+                    // 设计下结果集在 DECLARE 时已物化——本守卫限定**保留**
+                    // （峰值 inherent；真流式 = 执行器惰性化，已入差距清单）
+                    let max_cb = db.opts.max_cursor_bytes;
+                    if max_cb > 0 && rs.memory_bytes() > max_cb {
+                        return Err(SqlError::new(
+                            "54000",
+                            format!(
+                                "cursor result too large: {} bytes (max {max_cb}); narrow the query",
+                                rs.memory_bytes()
+                            ),
                         ));
                     }
                     sess.cursors.insert(name.to_ascii_lowercase(), (rs, 0));

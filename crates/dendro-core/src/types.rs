@@ -148,6 +148,15 @@ pub struct RecordSet {
 }
 
 impl RecordSet {
+    /// 物化内存估算（Arrow 数组自报尺寸之和；列元数据可忽略）
+    /// ——游标保留上限与结果集守卫（S-3 会话配额）的度量口径
+    pub fn memory_bytes(&self) -> u64 {
+        self.batches
+            .iter()
+            .map(|b| b.get_array_memory_size() as u64)
+            .sum()
+    }
+
     pub fn empty(columns: Vec<ColumnMeta>) -> Self {
         Self {
             columns,

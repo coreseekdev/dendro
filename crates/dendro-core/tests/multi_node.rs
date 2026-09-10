@@ -8,6 +8,9 @@ use std::time::{Duration, Instant};
 
 fn opts(dir: &std::path::Path, ttl_ms: i64) -> DbOptions {
     DbOptions {
+        max_cursor_bytes: 0,
+        max_prepared_per_session: 0,
+        max_result_bytes: 0,
         store: StoreConfig::LocalDir(dir.to_path_buf()),
         durability: dendro_core::Durability::Group,
         wal_flush_interval_ms: 10,
@@ -270,6 +273,9 @@ fn fence_expired_writer_rejected() {
     };
     let obj: std::sync::Arc<dyn dendro_core::objstore::ObjStore> = std::sync::Arc::new(store);
     let opts = DbOptions {
+        max_cursor_bytes: 0,
+        max_prepared_per_session: 0,
+        max_result_bytes: 0,
         store: StoreConfig::Obj(obj),
         durability: dendro_core::Durability::Group,
         wal_flush_interval_ms: 10,
@@ -517,6 +523,9 @@ fn lazy_open_and_drop_branch_gc() {
         );
         std::thread::sleep(Duration::from_millis(350));
         let db = Database::open(DbOptions {
+            max_cursor_bytes: 0,
+            max_prepared_per_session: 0,
+            max_result_bytes: 0,
             store: StoreConfig::LocalDir(dir.clone()),
             durability: dendro_core::Durability::Group,
             wal_flush_interval_ms: 10,

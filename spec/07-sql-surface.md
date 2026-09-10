@@ -35,6 +35,7 @@ Int32 回绕（曾因 `as i32` 截断产生静默错值）；溢出时报 SQLSTA
 | 窗口函数 | v2 | |
 | BEGIN/COMMIT/ROLLBACK/SAVEPOINT | ✔ / ✔ / ✔ / 报错 | |
 | SET / SHOW | ✔(会话参数, 宽松) | |
+| SET statement_timeout = <ms> | ✔(实语义: 语句超时, SQLSTATE 57014) | 0=不限; 会话级 |
 | EXPLAIN [ANALYZE] | ✔(计划文本) | |
 | COPY | 报错 0A000 | v2 |
 | **分支族**(见 SPEC 03 §5) | ✔ | |
