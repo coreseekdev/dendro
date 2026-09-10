@@ -9,19 +9,6 @@ fn open_local(dir: &std::path::Path) -> Arc<Database> {
     .unwrap()
 }
 
-fn q(db: &Arc<Database>, sql: &str) -> Vec<Vec<String>> {
-    let mut s = db.new_session();
-    let outs = s.exec(sql).unwrap();
-    let mut result = Vec::new();
-    for o in &outs {
-        if let dendro_core::Output::Rows(rs) = o {
-            for row in rs.text_rows() {
-                result.push(row.iter().map(|c| c.clone().unwrap_or_else(|| "NULL".into())).collect());
-            }
-        }
-    }
-    result
-}
 
 #[test]
 fn lifecycle_backup_readonly_txn() {
@@ -37,7 +24,7 @@ fn lifecycle_backup_readonly_txn() {
         s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
         s.exec("INSERT INTO t VALUES (1, 'a'), (2, 'b')").unwrap();
         s.exec("CREATE BRANCH dev FROM main").unwrap();
-        s.exec("USE BRANCH dev");
+        s.exec("USE BRANCH dev").unwrap();
         s.exec("INSERT INTO t VALUES (3, 'c')").unwrap();
         s.exec("CREATE VIEW v_cnt AS SELECT count(*) AS cnt FROM t").unwrap();
     }
