@@ -40,7 +40,10 @@ pub struct FenceStore {
 }
 
 pub(crate) fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64
 }
 
 impl FenceStore {
@@ -82,7 +85,13 @@ impl FenceStore {
     /// 领取新 epoch = max+1（条件写保证唯一；冲突 = 重试更高 epoch）。
     /// `min_epoch` 下界：接管者至少要超过已知的旧 epoch。
     /// 返回完整租约（engine 存入 Branch，供 fence_gate 过期检查/续期）。
-    pub fn acquire(&self, branch: &str, holder: &str, ttl_ms: i64, min_epoch: u64) -> Result<Lease> {
+    pub fn acquire(
+        &self,
+        branch: &str,
+        holder: &str,
+        ttl_ms: i64,
+        min_epoch: u64,
+    ) -> Result<Lease> {
         let mut epoch = self.max_epoch(branch)?.max(min_epoch) + 1;
         loop {
             let lease = Lease {
@@ -90,10 +99,10 @@ impl FenceStore {
                 holder: holder.into(),
                 expires_at_ms: now_ms() + ttl_ms,
             };
-            match self
-                .obj
-                .put_if_absent(&Self::lease_path(branch, epoch), serde_json::to_vec(&lease).unwrap().into())
-            {
+            match self.obj.put_if_absent(
+                &Self::lease_path(branch, epoch),
+                serde_json::to_vec(&lease).unwrap().into(),
+            ) {
                 Ok(()) => return Ok(lease),
                 Err(crate::objstore::ObjError::Exists(_)) => epoch += 1, // 同 epoch 竞争：加一重试
                 Err(e) => return Err(crate::error::SqlError::from(e)),
@@ -106,7 +115,10 @@ impl FenceStore {
     /// 租约等于替别人保活。
     pub fn renew(&self, branch: &str, lease: &Lease) -> Result<()> {
         self.obj
-            .put(&Self::lease_path(branch, lease.epoch), serde_json::to_vec(lease).unwrap().into())
+            .put(
+                &Self::lease_path(branch, lease.epoch),
+                serde_json::to_vec(lease).unwrap().into(),
+            )
             .map_err(crate::error::SqlError::from)
     }
 
@@ -130,7 +142,10 @@ mod tests {
         let l1 = f.acquire("b", "n1", 60_000, 0).unwrap();
         assert_eq!(l1.epoch, 1);
         let l2 = f.acquire("b", "n2", 60_000, 0).unwrap();
-        assert_eq!(l2.epoch, 2, "同持有多租约 → epoch 单调+1（跨进程打开即新世代）");
+        assert_eq!(
+            l2.epoch, 2,
+            "同持有多租约 → epoch 单调+1（跨进程打开即新世代）"
+        );
         // 过期判定
         assert!(!FenceStore::expired(&l1));
         // 两个并发竞争者抢同一 epoch：CAS 保证只有一个成功，且 epoch 连续
@@ -141,6 +156,10 @@ mod tests {
             let t2 = s.spawn(|| f2.acquire("c", "y", 60_000, 2).unwrap().epoch);
             (t1.join().unwrap(), t2.join().unwrap())
         });
-        assert_eq!(a.max(b), a.min(b) + 1, "并发竞争 → epoch 连续分配，无一物两主");
+        assert_eq!(
+            a.max(b),
+            a.min(b) + 1,
+            "并发竞争 → epoch 连续分配，无一物两主"
+        );
     }
 }

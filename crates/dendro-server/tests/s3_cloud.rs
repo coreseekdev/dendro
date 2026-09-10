@@ -8,13 +8,14 @@
 //! DENDRO_S3=1 cargo test -p dendro-server --test s3_cloud -- --nocapture
 //! ```
 
-use dendro_core::objstore::{cached::CachedObjStore, ObjStore};
 use dendro_core::objstore::s3::{S3Config, S3ObjStore};
+use dendro_core::objstore::{cached::CachedObjStore, ObjStore};
 use dendro_core::{Database, DbOptions, StoreConfig};
 use std::sync::Arc;
 
 fn s3_stack(prefix_tag: &str) -> (Arc<CachedObjStore>, Arc<S3ObjStore>, String) {
-    let endpoint = std::env::var("DENDRO_S3_ENDPOINT").unwrap_or_else(|_| "http://127.0.0.1:19000".into());
+    let endpoint =
+        std::env::var("DENDRO_S3_ENDPOINT").unwrap_or_else(|_| "http://127.0.0.1:19000".into());
     let bucket = std::env::var("DENDRO_S3_BUCKET").unwrap_or_else(|_| "dendro-test".into());
     let s3 = Arc::new(
         S3ObjStore::new(S3Config {
@@ -28,7 +29,10 @@ fn s3_stack(prefix_tag: &str) -> (Arc<CachedObjStore>, Arc<S3ObjStore>, String) 
         })
         .unwrap(),
     );
-    let cache_dir = std::env::temp_dir().join(format!("dendro-s3cache-{prefix_tag}-{}", std::process::id()));
+    let cache_dir = std::env::temp_dir().join(format!(
+        "dendro-s3cache-{prefix_tag}-{}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&cache_dir);
     let cached = Arc::new(CachedObjStore::new(s3.clone(), cache_dir, 512 << 20).unwrap());
     (cached, s3, bucket)
@@ -36,7 +40,11 @@ fn s3_stack(prefix_tag: &str) -> (Arc<CachedObjStore>, Arc<S3ObjStore>, String) 
 
 fn wipe(db: &dyn dendro_core::objstore::ObjStore) {
     for p in db.list_prefix("").unwrap_or_default() {
-        if p.ends_with(".cbf") || p.ends_with(".wal") || p.ends_with(".json") || p.ends_with(".chunk") {
+        if p.ends_with(".cbf")
+            || p.ends_with(".wal")
+            || p.ends_with(".json")
+            || p.ends_with(".chunk")
+        {
             let _ = db.delete(&p);
         }
     }
@@ -65,19 +73,25 @@ fn s3_lifecycle_and_crash_recovery() {
         gc_retention_ms: 24 * 3600 * 1000,
     };
     let db = Database::open(opts).unwrap();
-    db.set_columnar(Arc::new(dendro_columnar::integrate::CbfColumnar { row_group_rows: 4096 }));
+    db.set_columnar(Arc::new(dendro_columnar::integrate::CbfColumnar {
+        row_group_rows: 4096,
+    }));
     let mut s = db.new_session();
 
     // 1) DDL + 批量插入（跨 AP 阈值）
-    s.exec(&format!("CREATE TABLE t_{tag} (id BIGINT PRIMARY KEY, region TEXT, amount DOUBLE)"))
-        .unwrap();
+    s.exec(&format!(
+        "CREATE TABLE t_{tag} (id BIGINT PRIMARY KEY, region TEXT, amount DOUBLE)"
+    ))
+    .unwrap();
     let n = 12_000usize;
     let mut done = 0;
     while done < n {
         let end = (done + 2000).min(n);
         let mut sql = format!("INSERT INTO t_{tag} VALUES ");
         for i in done..end {
-            if i > done { sql.push(','); }
+            if i > done {
+                sql.push(',');
+            }
             let region = ["east", "west", "south"][i % 3];
             sql.push_str(&format!("({i}, '{region}', {})", (i % 500) as f64));
         }
@@ -88,11 +102,19 @@ fn s3_lifecycle_and_crash_recovery() {
     s.exec("CHECKPOINT").unwrap();
     let col_objs = s3.list_prefix("col/").unwrap_or_default();
     assert!(!col_objs.is_empty(), "列存段应已上传到 S3");
-    let bytes_after_ckpt = s3.stats().bytes_put.load(std::sync::atomic::Ordering::Relaxed);
-    println!("[bytes] after checkpoint: put={}B across {} objects", bytes_after_ckpt, col_objs.len());
+    let bytes_after_ckpt = s3
+        .stats()
+        .bytes_put
+        .load(std::sync::atomic::Ordering::Relaxed);
+    println!(
+        "[bytes] after checkpoint: put={}B across {} objects",
+        bytes_after_ckpt,
+        col_objs.len()
+    );
 
     // 3) checkpoint 后再写（仅 WAL）
-    s.exec(&format!("INSERT INTO t_{tag} VALUES (99999, 'north', 1.5)")).unwrap();
+    s.exec(&format!("INSERT INTO t_{tag} VALUES (99999, 'north', 1.5)"))
+        .unwrap();
 
     // 4) 模拟崩溃：直接 drop（无优雅关闭）
     drop(db);
@@ -112,7 +134,9 @@ fn s3_lifecycle_and_crash_recovery() {
         gc_retention_ms: 24 * 3600 * 1000,
     })
     .unwrap();
-    db2.set_columnar(Arc::new(dendro_columnar::integrate::CbfColumnar { row_group_rows: 4096 }));
+    db2.set_columnar(Arc::new(dendro_columnar::integrate::CbfColumnar {
+        row_group_rows: 4096,
+    }));
     let mut s2 = db2.new_session();
 
     // 6) 全量校验：列存段 + WAL 尾部 = 12001 行（AP 路径，含 overlay 合并）
@@ -122,37 +146,63 @@ fn s3_lifecycle_and_crash_recovery() {
         assert_eq!(c, "12001", "列存段 + WAL 尾部应完整恢复");
     }
     // 7) AP 聚合
-    let out = s2.exec(&format!("SELECT region, count(*) FROM t_{tag} GROUP BY region ORDER BY region")).unwrap();
+    let out = s2
+        .exec(&format!(
+            "SELECT region, count(*) FROM t_{tag} GROUP BY region ORDER BY region"
+        ))
+        .unwrap();
     if let dendro_core::Output::Rows(rs) = &out[0] {
         assert!(rs.total_rows() >= 4);
     }
     // 8) 分支 + 合并（全部状态在 S3）
     s2.exec("CREATE BRANCH feat FROM main").unwrap();
     s2.exec("USE BRANCH feat").unwrap();
-    s2.exec(&format!("INSERT INTO t_{tag} VALUES (88888, 'feat', 9.9)")).unwrap();
+    s2.exec(&format!("INSERT INTO t_{tag} VALUES (88888, 'feat', 9.9)"))
+        .unwrap();
     s2.exec("USE BRANCH main").unwrap();
     for br in ["feat", "main"] {
-        let o = s2.exec(&format!("SELECT commit, height FROM cambium.commit_log('{br}')")).unwrap();
+        let o = s2
+            .exec(&format!(
+                "SELECT commit, height FROM cambium.commit_log('{br}')"
+            ))
+            .unwrap();
         if let dendro_core::Output::Rows(rs) = &o[0] {
             println!("[diag] {br}: {:?}", rs.text_rows());
         }
     }
     let m = s2.exec("MERGE BRANCH feat INTO main");
     match &m {
-        Ok(o) => println!("[merge] ok: {:?}", o.iter().map(|x| match x { dendro_core::Output::Command{tag,..} => tag.clone(), _ => "rows".into() }).collect::<Vec<_>>()),
+        Ok(o) => println!(
+            "[merge] ok: {:?}",
+            o.iter()
+                .map(|x| match x {
+                    dendro_core::Output::Command { tag, .. } => tag.clone(),
+                    _ => "rows".into(),
+                })
+                .collect::<Vec<_>>()
+        ),
         Err(e) => println!("[merge] ERR: {} {}", e.state, e.message),
     }
     let _ = m.unwrap();
-    let o = s2.exec("SELECT commit, height FROM cambium.commit_log('main')").unwrap();
-    if let dendro_core::Output::Rows(rs) = &o[0] { println!("[post-merge] main: {:?}", rs.text_rows()); }
-    let o = s2.exec(&format!("SELECT count(*) FROM t_{tag} WHERE id = 88888")).unwrap();
-    if let dendro_core::Output::Rows(rs) = &o[0] { println!("[post-merge] row88888: {:?}", rs.text_rows()); }
+    let o = s2
+        .exec("SELECT commit, height FROM cambium.commit_log('main')")
+        .unwrap();
+    if let dendro_core::Output::Rows(rs) = &o[0] {
+        println!("[post-merge] main: {:?}", rs.text_rows());
+    }
+    let o = s2
+        .exec(&format!("SELECT count(*) FROM t_{tag} WHERE id = 88888"))
+        .unwrap();
+    if let dendro_core::Output::Rows(rs) = &o[0] {
+        println!("[post-merge] row88888: {:?}", rs.text_rows());
+    }
     let out = s2.exec(&format!("SELECT count(*) FROM t_{tag}")).unwrap();
     if let dendro_core::Output::Rows(rs) = &out[0] {
         assert_eq!(rs.text_rows()[0][0].clone().unwrap(), "12002");
     }
     // 9) DELETE → checkpoint → deletes 抑制
-    s2.exec(&format!("DELETE FROM t_{tag} WHERE id = 99999")).unwrap();
+    s2.exec(&format!("DELETE FROM t_{tag} WHERE id = 99999"))
+        .unwrap();
     s2.exec("CHECKPOINT").unwrap();
     let out = s2.exec(&format!("SELECT count(*) FROM t_{tag}")).unwrap();
     if let dendro_core::Output::Rows(rs) = &out[0] {
@@ -162,7 +212,10 @@ fn s3_lifecycle_and_crash_recovery() {
     let gets = s3.stats().gets.load(std::sync::atomic::Ordering::Relaxed);
     let ranges = s3.stats().ranges.load(std::sync::atomic::Ordering::Relaxed);
     let puts = s3.stats().puts.load(std::sync::atomic::Ordering::Relaxed);
-    let cond = s3.stats().conditional_puts.load(std::sync::atomic::Ordering::Relaxed);
+    let cond = s3
+        .stats()
+        .conditional_puts
+        .load(std::sync::atomic::Ordering::Relaxed);
     println!(
         "[net-audit] s3 gets={gets} ranges={ranges} puts={puts} cond_puts={cond} bytes_get={} bytes_put={}",
         s3.stats().bytes_get.load(std::sync::atomic::Ordering::Relaxed),
@@ -177,7 +230,8 @@ fn s3_manifest_conditional_put_conflict() {
         return;
     }
     // 独立桶：与 lifecycle 测试隔离（共享桶会互相污染 manifest 链）
-    let endpoint = std::env::var("DENDRO_S3_ENDPOINT").unwrap_or_else(|_| "http://127.0.0.1:19000".into());
+    let endpoint =
+        std::env::var("DENDRO_S3_ENDPOINT").unwrap_or_else(|_| "http://127.0.0.1:19000".into());
     let s3 = Arc::new(
         S3ObjStore::new(S3Config {
             bucket: "dendro-cond".into(),
@@ -189,7 +243,8 @@ fn s3_manifest_conditional_put_conflict() {
         })
         .unwrap(),
     );
-    let cache_dir = std::env::temp_dir().join(format!("dendro-s3cache-cond-{}", std::process::id()));
+    let cache_dir =
+        std::env::temp_dir().join(format!("dendro-s3cache-cond-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&cache_dir);
     let cached = Arc::new(CachedObjStore::new(s3.clone(), cache_dir, 32 << 20).unwrap());
     // 直接对同一 manifest 版本双写：第二个必须 Exists（乐观提交基石）

@@ -50,7 +50,11 @@ fn cache_key(path: &str) -> u64 {
 }
 
 impl CachedObjStore {
-    pub fn new(inner: Arc<dyn ObjStore>, dir: impl Into<PathBuf>, budget_bytes: u64) -> ObjResult<Self> {
+    pub fn new(
+        inner: Arc<dyn ObjStore>,
+        dir: impl Into<PathBuf>,
+        budget_bytes: u64,
+    ) -> ObjResult<Self> {
         let dir = dir.into();
         fs::create_dir_all(&dir)?;
         // 启动恢复：清点现存缓存文件（文件名 = {key:016x}-{off}-{len}）
@@ -60,7 +64,11 @@ impl CachedObjStore {
             for e in rd.flatten() {
                 let name = e.file_name().to_string_lossy().to_string();
                 let stem = name.strip_suffix(".c").unwrap_or(&name);
-                if let Some(key) = stem.split('-').next().and_then(|k| u64::from_str_radix(k, 16).ok()) {
+                if let Some(key) = stem
+                    .split('-')
+                    .next()
+                    .and_then(|k| u64::from_str_radix(k, 16).ok())
+                {
                     let sz = e.metadata().map(|m| m.len()).unwrap_or(0);
                     entries.insert(key, (e.path(), 0));
                     bytes += sz;
@@ -73,7 +81,11 @@ impl CachedObjStore {
             inner,
             dir,
             budget: budget_bytes,
-            idx: Mutex::new(CacheIndex { entries, bytes, tick: 0 }),
+            idx: Mutex::new(CacheIndex {
+                entries,
+                bytes,
+                tick: 0,
+            }),
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
         })
@@ -250,7 +262,11 @@ mod tests {
         let _ = cached.get("c/d").unwrap();
         {
             let idx = cached.idx.lock();
-            assert!(idx.bytes <= 2000 + 64, "eviction should bound bytes, got {}", idx.bytes);
+            assert!(
+                idx.bytes <= 2000 + 64,
+                "eviction should bound bytes, got {}",
+                idx.bytes
+            );
         }
         let _ = fs::remove_dir_all(&dir);
     }

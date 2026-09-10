@@ -17,15 +17,15 @@ pub fn eval(e: &Expr, row: &[SqlValue], cols: &dyn Fn(&str) -> Option<usize>) ->
         }
         Expr::Identifier(id) => {
             let name = id.value.as_str();
-            cols(name)
-                .map(|i| row[i].clone())
-                .ok_or_else(|| SqlError::undefined_column(format!("column \"{name}\" does not exist")))
+            cols(name).map(|i| row[i].clone()).ok_or_else(|| {
+                SqlError::undefined_column(format!("column \"{name}\" does not exist"))
+            })
         }
         Expr::CompoundIdentifier(parts) => {
             let name = parts.last().map(|p| p.value.clone()).unwrap_or_default();
-            cols(&name)
-                .map(|i| row[i].clone())
-                .ok_or_else(|| SqlError::undefined_column(format!("column \"{name}\" does not exist")))
+            cols(&name).map(|i| row[i].clone()).ok_or_else(|| {
+                SqlError::undefined_column(format!("column \"{name}\" does not exist"))
+            })
         }
         Expr::Wildcard(_) | Expr::QualifiedWildcard(..) => {
             Err(SqlError::syntax("wildcard not allowed in expression"))
@@ -51,22 +51,38 @@ pub fn eval(e: &Expr, row: &[SqlValue], cols: &dyn Fn(&str) -> Option<usize>) ->
             })
         }
         Expr::Nested(inner) => eval(inner, row, cols),
-        Expr::Cast { kind, expr, data_type, .. } => {
+        Expr::Cast {
+            kind,
+            expr,
+            data_type,
+            ..
+        } => {
             // v1 统一按普通 cast 处理（TRY_CAST 失败给 NULL）
             let v = eval(expr, row, cols);
             let out = match kind {
-                sqlparser::ast::CastKind::TryCast | sqlparser::ast::CastKind::SafeCast => {
-                    v.ok().and_then(|v| cast_value(v, data_type).ok()).unwrap_or(SqlValue::Null)
-                }
+                sqlparser::ast::CastKind::TryCast | sqlparser::ast::CastKind::SafeCast => v
+                    .ok()
+                    .and_then(|v| cast_value(v, data_type).ok())
+                    .unwrap_or(SqlValue::Null),
                 _ => cast_value(v?, data_type)?,
             };
             Ok(out)
         }
         Expr::IsNull(inner) => Ok(SqlValue::Bool(eval(inner, row, cols)?.is_null())),
         Expr::IsNotNull(inner) => Ok(SqlValue::Bool(!eval(inner, row, cols)?.is_null())),
-        Expr::IsTrue(inner) => Ok(SqlValue::Bool(matches!(as_bool(&eval(inner, row, cols)?), Ok(true)))),
-        Expr::IsFalse(inner) => Ok(SqlValue::Bool(matches!(as_bool(&eval(inner, row, cols)?), Ok(false)))),
-        Expr::InList { expr, list, negated } => {
+        Expr::IsTrue(inner) => Ok(SqlValue::Bool(matches!(
+            as_bool(&eval(inner, row, cols)?),
+            Ok(true)
+        ))),
+        Expr::IsFalse(inner) => Ok(SqlValue::Bool(matches!(
+            as_bool(&eval(inner, row, cols)?),
+            Ok(false)
+        ))),
+        Expr::InList {
+            expr,
+            list,
+            negated,
+        } => {
             let v = eval(expr, row, cols)?;
             let mut found = false;
             let mut has_null = false;
@@ -90,7 +106,12 @@ pub fn eval(e: &Expr, row: &[SqlValue], cols: &dyn Fn(&str) -> Option<usize>) ->
             };
             Ok(SqlValue::Bool(res != *negated))
         }
-        Expr::Between { expr, negated, low, high } => {
+        Expr::Between {
+            expr,
+            negated,
+            low,
+            high,
+        } => {
             let v = eval(expr, row, cols)?;
             let lo = eval(low, row, cols)?;
             let hi = eval(high, row, cols)?;
@@ -101,7 +122,12 @@ pub fn eval(e: &Expr, row: &[SqlValue], cols: &dyn Fn(&str) -> Option<usize>) ->
                 && cmp_values(&v, &hi)? != std::cmp::Ordering::Greater;
             Ok(SqlValue::Bool(inside != *negated))
         }
-        Expr::Case { operand, conditions, else_result, .. } => {
+        Expr::Case {
+            operand,
+            conditions,
+            else_result,
+            ..
+        } => {
             let opv = match operand {
                 Some(o) => Some(eval(o, row, cols)?),
                 None => None,
@@ -110,7 +136,9 @@ pub fn eval(e: &Expr, row: &[SqlValue], cols: &dyn Fn(&str) -> Option<usize>) ->
                 let cv = eval(&cw.condition, row, cols)?;
                 let hit = match &opv {
                     Some(o) => {
-                        !cv.is_null() && !o.is_null() && cmp_values(o, &cv)? == std::cmp::Ordering::Equal
+                        !cv.is_null()
+                            && !o.is_null()
+                            && cmp_values(o, &cv)? == std::cmp::Ordering::Equal
                     }
                     None => as_bool(&cv)?,
                 };
@@ -124,13 +152,21 @@ pub fn eval(e: &Expr, row: &[SqlValue], cols: &dyn Fn(&str) -> Option<usize>) ->
             }
         }
         Expr::Function(f) => eval_function(f, row, cols),
-        Expr::Substring { expr, substring_from, substring_for, special: _, shorthand: _ } => {
+        Expr::Substring {
+            expr,
+            substring_from,
+            substring_for,
+            special: _,
+            shorthand: _,
+        } => {
             let s0 = match eval(expr, row, cols)? {
                 SqlValue::Utf8(s) => s,
                 SqlValue::Null => return Ok(SqlValue::Null),
                 v => crate::sql::expr::to_text(v),
             };
-            let from_e: &Expr = substring_from.as_deref().ok_or_else(|| SqlError::syntax("substring missing FROM"))?;
+            let from_e: &Expr = substring_from
+                .as_deref()
+                .ok_or_else(|| SqlError::syntax("substring missing FROM"))?;
             let start = match eval(from_e, row, cols)? {
                 SqlValue::Null => return Ok(SqlValue::Null),
                 v => as_i64(&v)? - 1,
@@ -143,7 +179,11 @@ pub fn eval(e: &Expr, row: &[SqlValue], cols: &dyn Fn(&str) -> Option<usize>) ->
                         SqlValue::Null => return Ok(SqlValue::Null),
                         v => as_i64(&v)?.max(0) as usize,
                     };
-                    Ok(SqlValue::Utf8(chars[start..(start + len).min(chars.len())].iter().collect()))
+                    Ok(SqlValue::Utf8(
+                        chars[start..(start + len).min(chars.len())]
+                            .iter()
+                            .collect(),
+                    ))
                 }
                 None => Ok(SqlValue::Utf8(chars[start..].iter().collect())),
             }
@@ -152,7 +192,10 @@ pub fn eval(e: &Expr, row: &[SqlValue], cols: &dyn Fn(&str) -> Option<usize>) ->
             let sv = value_from_parser(ts.value.value.clone());
             cast_value(sv, &ts.data_type)
         }
-        other => Err(SqlError::not_supported(format!("expression: {}", short(other)))),
+        other => Err(SqlError::not_supported(format!(
+            "expression: {}",
+            short(other)
+        ))),
     }
 }
 
@@ -161,7 +204,11 @@ fn short(e: &Expr) -> String {
     s.chars().take(60).collect()
 }
 
-fn eval_function(f: &Function, row: &[SqlValue], cols: &dyn Fn(&str) -> Option<usize>) -> Result<SqlValue> {
+fn eval_function(
+    f: &Function,
+    row: &[SqlValue],
+    cols: &dyn Fn(&str) -> Option<usize>,
+) -> Result<SqlValue> {
     let name = f.name.to_string().to_ascii_lowercase();
     let args: &[FunctionArg] = match &f.args {
         sqlparser::ast::FunctionArguments::List(l) => &l.args,
@@ -170,7 +217,9 @@ fn eval_function(f: &Function, row: &[SqlValue], cols: &dyn Fn(&str) -> Option<u
     let ev = |a: &FunctionArg| -> Result<SqlValue> {
         match a {
             FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) => eval(e, row, cols),
-            FunctionArg::Unnamed(FunctionArgExpr::Wildcard) => Err(SqlError::syntax("wildcard arg")),
+            FunctionArg::Unnamed(FunctionArgExpr::Wildcard) => {
+                Err(SqlError::syntax("wildcard arg"))
+            }
             _ => Err(SqlError::syntax("named args unsupported")),
         }
     };
@@ -200,7 +249,11 @@ fn eval_function(f: &Function, row: &[SqlValue], cols: &dyn Fn(&str) -> Option<u
         }
         "round" => {
             let v = a0()?;
-            let d = if args.len() > 1 { as_i64(&a1()?)? as i32 } else { 0 };
+            let d = if args.len() > 1 {
+                as_i64(&a1()?)? as i32
+            } else {
+                0
+            };
             let f = f64v(v)?;
             let m = 10f64.powi(d);
             Ok(SqlValue::Float64((f * m).round() / m))
@@ -221,7 +274,11 @@ fn eval_function(f: &Function, row: &[SqlValue], cols: &dyn Fn(&str) -> Option<u
             _ => Err(SqlError::datatype_mismatch("length")),
         },
         "upper" | "lower" => match a0()? {
-            SqlValue::Utf8(s) => Ok(SqlValue::Utf8(if name == "upper" { s.to_uppercase() } else { s.to_lowercase() })),
+            SqlValue::Utf8(s) => Ok(SqlValue::Utf8(if name == "upper" {
+                s.to_uppercase()
+            } else {
+                s.to_lowercase()
+            })),
             SqlValue::Null => Ok(SqlValue::Null),
             _ => Err(SqlError::datatype_mismatch(name)),
         },
@@ -236,7 +293,11 @@ fn eval_function(f: &Function, row: &[SqlValue], cols: &dyn Fn(&str) -> Option<u
             let start = start.clamp(0, chars.len() as i64) as usize;
             if args.len() > 2 {
                 let len = as_i64(&ev(args.get(2).unwrap())?)?.max(0) as usize;
-                Ok(SqlValue::Utf8(chars[start..(start + len).min(chars.len())].iter().collect()))
+                Ok(SqlValue::Utf8(
+                    chars[start..(start + len).min(chars.len())]
+                        .iter()
+                        .collect(),
+                ))
             } else {
                 Ok(SqlValue::Utf8(chars[start..].iter().collect()))
             }
@@ -262,7 +323,13 @@ fn eval_function(f: &Function, row: &[SqlValue], cols: &dyn Fn(&str) -> Option<u
             _ => Err(SqlError::datatype_mismatch(name)),
         },
         "replace" => {
-            let (s, from, to) = (a0()?, a1()?, ev(args.get(2).ok_or_else(|| SqlError::syntax("replace arity"))?)?);
+            let (s, from, to) = (
+                a0()?,
+                a1()?,
+                ev(args
+                    .get(2)
+                    .ok_or_else(|| SqlError::syntax("replace arity"))?)?,
+            );
             match (s, from, to) {
                 (SqlValue::Utf8(s), SqlValue::Utf8(f), SqlValue::Utf8(t)) => {
                     Ok(SqlValue::Utf8(s.replace(&f, &t)))
@@ -303,7 +370,11 @@ fn eval_function(f: &Function, row: &[SqlValue], cols: &dyn Fn(&str) -> Option<u
                         } else {
                             ord == std::cmp::Ordering::Less
                         };
-                        if take_v { v } else { b }
+                        if take_v {
+                            v
+                        } else {
+                            b
+                        }
                     }
                 });
             }
@@ -410,11 +481,24 @@ pub fn cmp_values(l: &SqlValue, r: &SqlValue) -> Result<std::cmp::Ordering> {
     let rn = matches!(r, SqlValue::Null);
     if ln || rn {
         // SQL 三值逻辑由调用方处理；这里给确定序
-        return Ok(if ln && rn { Equal } else if ln { Less } else { Greater });
+        return Ok(if ln && rn {
+            Equal
+        } else if ln {
+            Less
+        } else {
+            Greater
+        });
     }
     // 数值族
     let numeric = |v: &SqlValue| {
-        matches!(v, SqlValue::Int32(_) | SqlValue::Int64(_) | SqlValue::Float64(_) | SqlValue::Date32(_) | SqlValue::TimestampMs(_))
+        matches!(
+            v,
+            SqlValue::Int32(_)
+                | SqlValue::Int64(_)
+                | SqlValue::Float64(_)
+                | SqlValue::Date32(_)
+                | SqlValue::TimestampMs(_)
+        )
     };
     if numeric(l) && numeric(r) {
         // 浮点优先，否则 i64
@@ -429,7 +513,11 @@ pub fn cmp_values(l: &SqlValue, r: &SqlValue) -> Result<std::cmp::Ordering> {
         (SqlValue::Bool(a), SqlValue::Bool(b)) => Ok(a.cmp(b)),
         (SqlValue::Utf8(a), SqlValue::Utf8(b)) => Ok(a.as_bytes().cmp(b.as_bytes())),
         (SqlValue::Bytes(a), SqlValue::Bytes(b)) => Ok(a.cmp(b)),
-        _ => Err(SqlError::datatype_mismatch(format!("cannot compare {} with {}", l.type_name(), r.type_name()))),
+        _ => Err(SqlError::datatype_mismatch(format!(
+            "cannot compare {} with {}",
+            l.type_name(),
+            r.type_name()
+        ))),
     }
 }
 
@@ -450,7 +538,10 @@ pub fn as_i64(v: &SqlValue) -> Result<i64> {
         SqlValue::Bool(b) => Ok(*b as i64),
         SqlValue::Date32(d) => Ok(*d as i64),
         SqlValue::TimestampMs(t) => Ok(*t),
-        _ => Err(SqlError::datatype_mismatch(format!("expected number, got {}", v.type_name()))),
+        _ => Err(SqlError::datatype_mismatch(format!(
+            "expected number, got {}",
+            v.type_name()
+        ))),
     }
 }
 
@@ -468,11 +559,18 @@ pub fn cast_value(v: SqlValue, ty: &PD) -> Result<SqlValue> {
     }
     Ok(match ty {
         PD::Boolean | PD::Bool => SqlValue::Bool(as_bool(&v)?),
-        PD::Int(_) | PD::Integer(_) | PD::SmallInt(_) | PD::Int2(_) => SqlValue::Int32(as_i64(&v)? as i32),
-        PD::BigInt(_) | PD::Int8(_) => SqlValue::Int64(as_i64(&v)?),
-        PD::Real | PD::Float(_) | PD::Float4 | PD::Float8 | PD::Double(_) | PD::DoublePrecision | PD::Decimal(_) | PD::Numeric { .. } => {
-            SqlValue::Float64(as_f64(&v)?)
+        PD::Int(_) | PD::Integer(_) | PD::SmallInt(_) | PD::Int2(_) => {
+            SqlValue::Int32(as_i64(&v)? as i32)
         }
+        PD::BigInt(_) | PD::Int8(_) => SqlValue::Int64(as_i64(&v)?),
+        PD::Real
+        | PD::Float(_)
+        | PD::Float4
+        | PD::Float8
+        | PD::Double(_)
+        | PD::DoublePrecision
+        | PD::Decimal(_)
+        | PD::Numeric { .. } => SqlValue::Float64(as_f64(&v)?),
         PD::Text | PD::Varchar(_) | PD::Char(_) | PD::String(_) | PD::CharacterVarying(_) => {
             SqlValue::Utf8(to_text(v))
         }
@@ -483,12 +581,17 @@ pub fn cast_value(v: SqlValue, ty: &PD) -> Result<SqlValue> {
         },
         PD::Date => match v {
             SqlValue::Date32(d) => SqlValue::Date32(d),
-            SqlValue::Utf8(s) => SqlValue::Date32(parse_date(&s).ok_or_else(|| SqlError::invalid_text(format!("bad date: {s}")))?),
+            SqlValue::Utf8(s) => SqlValue::Date32(
+                parse_date(&s).ok_or_else(|| SqlError::invalid_text(format!("bad date: {s}")))?,
+            ),
             _ => return Err(SqlError::datatype_mismatch("cast to date")),
         },
         PD::Timestamp(..) | PD::Datetime(_) => match v {
             SqlValue::TimestampMs(t) => SqlValue::TimestampMs(t),
-            SqlValue::Utf8(s) => SqlValue::TimestampMs(parse_ts(&s).ok_or_else(|| SqlError::invalid_text(format!("bad timestamp: {s}")))?),
+            SqlValue::Utf8(s) => SqlValue::TimestampMs(
+                parse_ts(&s)
+                    .ok_or_else(|| SqlError::invalid_text(format!("bad timestamp: {s}")))?,
+            ),
             _ => return Err(SqlError::datatype_mismatch("cast to timestamp")),
         },
         other => return Err(SqlError::not_supported(format!("cast to {other}"))),
@@ -525,7 +628,10 @@ pub fn parse_ts(s: &str) -> Option<i64> {
         }
         let hh: i64 = parts[0].parse().ok()?;
         let mm: i64 = parts[1].parse().ok()?;
-        let ss: f64 = parts.get(2).map(|x| x.parse().unwrap_or(0.0)).unwrap_or(0.0);
+        let ss: f64 = parts
+            .get(2)
+            .map(|x| x.parse().unwrap_or(0.0))
+            .unwrap_or(0.0);
         hh * 3_600_000 + mm * 60_000 + (ss * 1000.0) as i64
     };
     Some(days as i64 * 86_400_000 + ms)
@@ -534,7 +640,9 @@ pub fn parse_ts(s: &str) -> Option<i64> {
 /// sqlparser Value → SqlValue 字面量
 pub fn value_from_parser(v: PV) -> SqlValue {
     match v {
-        PV::Number(n, _) | PV::SingleQuotedString(n) | PV::DoubleQuotedString(n) => number_or_string(n),
+        PV::Number(n, _) | PV::SingleQuotedString(n) | PV::DoubleQuotedString(n) => {
+            number_or_string(n)
+        }
         PV::Boolean(b) => SqlValue::Bool(b),
         PV::Null => SqlValue::Null,
         PV::HexStringLiteral(h) => SqlValue::Bytes(

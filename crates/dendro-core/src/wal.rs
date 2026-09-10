@@ -6,8 +6,8 @@ use crate::format::hash::Hash;
 use crate::objstore::ObjStore;
 use bytes::Bytes;
 use parking_lot::{Condvar, Mutex};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 /// M-5：进程级 WAL flush PUT 延迟累计（微秒 / 次数）
 pub static FLUSH_LATENCY_US: AtomicU64 = AtomicU64::new(0);
@@ -137,7 +137,11 @@ pub fn decode_checkpoint(payload: &[u8]) -> Result<CheckpointRecord> {
     a.copy_from_slice(&payload[20..40]);
     let commit_addr = Hash::from_bytes(a);
     let seq_covered = u64::from_le_bytes(payload[40..48].try_into().unwrap());
-    Ok(CheckpointRecord { catalog_root, commit_addr, seq_covered })
+    Ok(CheckpointRecord {
+        catalog_root,
+        commit_addr,
+        seq_covered,
+    })
 }
 
 pub fn encode_frame(ty: FrameType, seq: u64, payload: &[u8]) -> Vec<u8> {
@@ -233,14 +237,14 @@ pub struct WalConfig {
 }
 
 struct WalShared {
-    buf: Vec<u8>,            // 当前段缓冲（帧序列）
+    buf: Vec<u8>, // 当前段缓冲（帧序列）
     frames: u64,
     min_seq: u64,
     max_seq: u64,
-    cur_seg: u64,            // 正在写的段号
-    flushed_seg: u64,        // 已成功上传的最高段
-    durable_seq: u64,        // 已 durable 的最高 seq
-    pending_frames: u64,     // 当前缓冲帧数（唤醒用）
+    cur_seg: u64,        // 正在写的段号
+    flushed_seg: u64,    // 已成功上传的最高段
+    durable_seq: u64,    // 已 durable 的最高 seq
+    pending_frames: u64, // 当前缓冲帧数（唤醒用）
     /// **写者毒化（P0-D 错误语义定案）**：任何 flush PUT 失败后置位。
     /// 置位后：append 一律拒绝（SQLSTATE 40003 completion_unknown），
     /// flush_loop 停止上传（确定失败的帧绝不持久化——错误 = 未提交）；
@@ -270,7 +274,13 @@ pub struct WalWriter {
 }
 
 impl WalWriter {
-    pub fn open(obj: Arc<dyn ObjStore>, branch: &str, epoch: u64, start_seg: u64, cfg: WalConfig) -> Arc<WalWriter> {
+    pub fn open(
+        obj: Arc<dyn ObjStore>,
+        branch: &str,
+        epoch: u64,
+        start_seg: u64,
+        cfg: WalConfig,
+    ) -> Arc<WalWriter> {
         let w = Arc::new(Self {
             obj,
             branch: branch.to_string(),
@@ -313,8 +323,6 @@ impl WalWriter {
         *w.handle.lock() = Some(h);
         w
     }
-
-
 
     /// 只读构造（读副本）：不占段号、不起 flush 线程（stop=true 且无 handle）。
     /// append 永不应到达此处——上游 fence_gate 已拒绝只读写；即使到达，
@@ -360,7 +368,13 @@ impl WalWriter {
 
     /// 追加一帧并按 durability 语义等待。返回 durable（或缓冲后）seq。
     /// 毒化后一律拒绝（P0-D：不得在结果未知的状态上叠加写）。
-    pub fn append(&self, ty: FrameType, seq: u64, payload: &[u8], durability: crate::engine::Durability) -> Result<()> {
+    pub fn append(
+        &self,
+        ty: FrameType,
+        seq: u64,
+        payload: &[u8],
+        durability: crate::engine::Durability,
+    ) -> Result<()> {
         if self.read_only {
             return Err(SqlError::new("25006", "read-only branch: cannot write"));
         }
@@ -465,9 +479,16 @@ impl WalWriter {
             g.buf = restored;
             g.frames += seg_frames;
             g.pending_frames += seg_frames;
-            g.min_seq = if g.min_seq == 0 { seg_min } else { seg_min.min(g.min_seq) };
+            g.min_seq = if g.min_seq == 0 {
+                seg_min
+            } else {
+                seg_min.min(g.min_seq)
+            };
             g.max_seq = g.max_seq.max(max_seq);
-            return Err(SqlError::new("40003", format!("wal put failed, writer poisoned; reopen required: {e}")));
+            return Err(SqlError::new(
+                "40003",
+                format!("wal put failed, writer poisoned; reopen required: {e}"),
+            ));
         }
         self.advance_durable(seg, max_seq);
         let mut g = self.shared.lock();
@@ -581,7 +602,10 @@ impl Drop for WalWriter {
 /// 找到分支 WAL 的最高已存在段号（指数探测+二分）
 pub fn probe_tail(obj: &Arc<dyn ObjStore>, branch: &str, epoch: u64, lo_seg: u64) -> u64 {
     let exists = |seg: u64| -> bool {
-        obj.head(&WalWriter::seg_path(branch, epoch, seg)).ok().flatten().is_some()
+        obj.head(&WalWriter::seg_path(branch, epoch, seg))
+            .ok()
+            .flatten()
+            .is_some()
     };
     if !exists(lo_seg) {
         return lo_seg.saturating_sub(1);
@@ -608,18 +632,24 @@ pub fn probe_tail(obj: &Arc<dyn ObjStore>, branch: &str, epoch: u64, lo_seg: u64
 }
 
 /// 读取并解码一个段
-pub fn read_segment(obj: &Arc<dyn ObjStore>, branch: &str, epoch: u64, seg: u64) -> Result<Vec<u8>> {
+pub fn read_segment(
+    obj: &Arc<dyn ObjStore>,
+    branch: &str,
+    epoch: u64,
+    seg: u64,
+) -> Result<Vec<u8>> {
     let path = WalWriter::seg_path(branch, epoch, seg);
-    let data = obj.get(&path).map_err(|e| SqlError::io(format!("wal read: {e}")))?;
+    let data = obj
+        .get(&path)
+        .map_err(|e| SqlError::io(format!("wal read: {e}")))?;
     Ok(data.to_vec())
 }
-
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::objstore::memory::MemoryObjStore;
     use crate::engine::Durability;
+    use crate::objstore::memory::MemoryObjStore;
 
     fn cfg() -> WalConfig {
         WalConfig {
@@ -634,7 +664,10 @@ mod tests {
     fn frame_roundtrip() {
         let rec = TxnRecord {
             table_id: 7,
-            ops: vec![(b"k1".to_vec(), Some(b"v1".to_vec())), (b"k2".to_vec(), None)],
+            ops: vec![
+                (b"k1".to_vec(), Some(b"v1".to_vec())),
+                (b"k2".to_vec(), None),
+            ],
         };
         let payload = encode_txn(std::slice::from_ref(&rec));
         let frame = encode_frame(FrameType::Txn, 42, &payload);
@@ -651,8 +684,17 @@ mod tests {
         let mem: Arc<dyn ObjStore> = Arc::new(MemoryObjStore::new());
         let w = WalWriter::open(mem.clone(), "main", 1, 1, cfg());
         for i in 0..10u64 {
-            let rec = TxnRecord { table_id: 1, ops: vec![(format!("k{i}").into_bytes(), Some(b"v".to_vec()))] };
-            w.append(FrameType::Txn, i + 1, &encode_txn(&[rec]), Durability::Group).unwrap();
+            let rec = TxnRecord {
+                table_id: 1,
+                ops: vec![(format!("k{i}").into_bytes(), Some(b"v".to_vec()))],
+            };
+            w.append(
+                FrameType::Txn,
+                i + 1,
+                &encode_txn(&[rec]),
+                Durability::Group,
+            )
+            .unwrap();
         }
         // 等 flush 周期
         std::thread::sleep(Duration::from_millis(80));
@@ -679,7 +721,11 @@ mod tests {
     fn probe_tail_finds_segments() {
         let mem: Arc<dyn ObjStore> = Arc::new(MemoryObjStore::new());
         for seg in [1u64, 2, 3] {
-            mem.put(&WalWriter::seg_path("main", 1, seg), Bytes::from_static(b"x")).unwrap();
+            mem.put(
+                &WalWriter::seg_path("main", 1, seg),
+                Bytes::from_static(b"x"),
+            )
+            .unwrap();
         }
         assert_eq!(probe_tail(&mem, "main", 1, 1), 3);
         assert_eq!(probe_tail(&mem, "main", 1, 4), 3); // lo 不存在

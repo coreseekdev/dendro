@@ -31,7 +31,15 @@ struct Accum {
 
 impl Accum {
     fn new() -> Self {
-        Self { count: 0, sum_f: 0.0, sum_i: 0, is_float: false, min: None, max: None, distinct: None }
+        Self {
+            count: 0,
+            sum_f: 0.0,
+            sum_i: 0,
+            is_float: false,
+            min: None,
+            max: None,
+            distinct: None,
+        }
     }
     fn push(&mut self, v: Option<SqlValue>, distinct: bool) -> Result<()> {
         match v {
@@ -45,7 +53,9 @@ impl Accum {
                     return Ok(());
                 }
                 if distinct {
-                    self.distinct.get_or_insert_with(std::collections::HashSet::new).insert(expr::to_text(val.clone()));
+                    self.distinct
+                        .get_or_insert_with(std::collections::HashSet::new)
+                        .insert(expr::to_text(val.clone()));
                 }
                 self.count += 1;
                 match &val {
@@ -82,7 +92,11 @@ impl Accum {
     fn finish(&self, func: &str, distinct: bool) -> SqlValue {
         match func {
             "count" => {
-                let n = if distinct { self.distinct.as_ref().map(|s| s.len() as u64).unwrap_or(0) } else { self.count };
+                let n = if distinct {
+                    self.distinct.as_ref().map(|s| s.len() as u64).unwrap_or(0)
+                } else {
+                    self.count
+                };
                 SqlValue::Int64(n as i64)
             }
             "sum" => {
@@ -99,7 +113,11 @@ impl Accum {
                 if self.count == 0 {
                     return SqlValue::Null;
                 }
-                let total = if self.is_float { self.sum_f } else { self.sum_i as f64 };
+                let total = if self.is_float {
+                    self.sum_f
+                } else {
+                    self.sum_i as f64
+                };
                 SqlValue::Float64(total / self.count as f64)
             }
             "min" => self.min.clone().unwrap_or(SqlValue::Null),
@@ -111,8 +129,8 @@ impl Accum {
 
 /// 聚合结果：每组 = (组键值 SqlValue, 聚合值 SqlValue)；顺序与 group_exprs/calls 对齐
 pub struct AggResult {
-    pub keys: Vec<Vec<SqlValue>>,   // 每组组键（group_exprs 顺序）
-    pub vals: Vec<Vec<SqlValue>>,   // 每组聚合值（calls 顺序）
+    pub keys: Vec<Vec<SqlValue>>, // 每组组键（group_exprs 顺序）
+    pub vals: Vec<Vec<SqlValue>>, // 每组聚合值（calls 顺序）
 }
 
 /// 执行分组聚合（HAVING 由调用方在拿到 keys/vals 后求值）
@@ -154,13 +172,23 @@ pub fn group_aggregate(
     for (hk, kv) in &order {
         let accums = &groups[hk];
         keys.push(kv.clone());
-        vals.push(accums.iter().zip(calls).map(|(a, c)| a.finish(&c.func, c.distinct)).collect());
+        vals.push(
+            accums
+                .iter()
+                .zip(calls)
+                .map(|(a, c)| a.finish(&c.func, c.distinct))
+                .collect(),
+        );
     }
     // 无 GROUP BY 的全局聚合对空输入仍产出**一行**（count(*)=0，PG 语义；
     // 第七轮 R7-1 伴生②：此前空输入返回 0 行）
     if order.is_empty() && group_exprs.is_empty() && !calls.is_empty() {
         let accums = vec![Accum::new(); calls.len()];
-        let row = accums.iter().zip(calls).map(|(a, c)| a.finish(&c.func, c.distinct)).collect();
+        let row = accums
+            .iter()
+            .zip(calls)
+            .map(|(a, c)| a.finish(&c.func, c.distinct))
+            .collect();
         keys.push(Vec::new());
         vals.push(row);
     }

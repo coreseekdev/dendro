@@ -30,14 +30,22 @@ pub struct ColumnDef {
 
 impl TableSchema {
     pub fn pk_types(&self) -> Vec<ColType> {
-        self.pk.iter().map(|&i| self.columns[i as usize].ty).collect()
+        self.pk
+            .iter()
+            .map(|&i| self.columns[i as usize].ty)
+            .collect()
     }
     pub fn col_index(&self, name: &str) -> Option<usize> {
         let low = name.to_ascii_lowercase();
-        self.columns.iter().position(|c| c.name.to_ascii_lowercase() == low)
+        self.columns
+            .iter()
+            .position(|c| c.name.to_ascii_lowercase() == low)
     }
     pub fn to_chunk(&self) -> Chunk {
-        Chunk { ty: ChunkType::Schema, data: serde_json::to_vec(self).unwrap() }
+        Chunk {
+            ty: ChunkType::Schema,
+            data: serde_json::to_vec(self).unwrap(),
+        }
     }
     pub fn addr_of(&self) -> Hash {
         self.to_chunk().addr()
@@ -48,7 +56,11 @@ impl TableSchema {
 pub fn row_key(schema: &TableSchema, pk_vals: &[SqlValue]) -> Result<Vec<u8>> {
     let want = schema.pk.len();
     if pk_vals.len() != want {
-        return Err(SqlError::internal(format!("pk arity {}/{}", pk_vals.len(), want)));
+        return Err(SqlError::internal(format!(
+            "pk arity {}/{}",
+            pk_vals.len(),
+            want
+        )));
     }
     Ok(encode_key(pk_vals))
 }
@@ -56,7 +68,11 @@ pub fn row_key(schema: &TableSchema, pk_vals: &[SqlValue]) -> Result<Vec<u8>> {
 /// 行 → 叶值字节（列顺序 = schema 列顺序）
 pub fn row_value(schema: &TableSchema, vals: &[SqlValue]) -> Result<Vec<u8>> {
     if vals.len() != schema.columns.len() {
-        return Err(SqlError::internal(format!("row arity {}/{}", vals.len(), schema.columns.len())));
+        return Err(SqlError::internal(format!(
+            "row arity {}/{}",
+            vals.len(),
+            schema.columns.len()
+        )));
     }
     Ok(encode_row(vals))
 }
@@ -66,7 +82,7 @@ pub fn row_value(schema: &TableSchema, vals: &[SqlValue]) -> Result<Vec<u8>> {
 pub struct TableEntry {
     pub id: u32,
     pub name: String,
-    pub schema_addr: String,   // schema chunk base32
+    pub schema_addr: String,        // schema chunk base32
     pub table_root: Option<String>, // 表 prolly map 根（None=空表）
     pub row_count: u64,
     /// 列存投影段列表（增量物化；末尾=最新；SPEC 05 §6 v2）
@@ -121,17 +137,27 @@ impl Versioned {
     }
 
     /// 读 catalog：表名 → TableEntry
-    pub fn catalog_entries(&self, catalog_root: Option<&Hash>) -> Result<Vec<(String, TableEntry)>> {
+    pub fn catalog_entries(
+        &self,
+        catalog_root: Option<&Hash>,
+    ) -> Result<Vec<(String, TableEntry)>> {
         let mut out = Vec::new();
         if let Some(r) = catalog_root {
             for (k, v) in crate::prolly::cursor::range_scan(self.store.clone(), r, None, None)? {
-                out.push((String::from_utf8_lossy(&k).to_string(), decode_table_entry(&v)?));
+                out.push((
+                    String::from_utf8_lossy(&k).to_string(),
+                    decode_table_entry(&v)?,
+                ));
             }
         }
         Ok(out)
     }
 
-    pub fn catalog_lookup(&self, catalog_root: Option<&Hash>, table: &str) -> Result<Option<TableEntry>> {
+    pub fn catalog_lookup(
+        &self,
+        catalog_root: Option<&Hash>,
+        table: &str,
+    ) -> Result<Option<TableEntry>> {
         if let Some(r) = catalog_root {
             let key = table.as_bytes().to_vec();
             if let Some(v) = crate::prolly::cursor::lookup(&self.store, r, &key)? {

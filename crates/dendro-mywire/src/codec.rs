@@ -207,7 +207,11 @@ pub struct WireIo<T: Read + Write> {
 
 impl<T: Read + Write> WireIo<T> {
     pub fn new(inner: T) -> Self {
-        Self { inner, seq: 0, out: Vec::with_capacity(4096) }
+        Self {
+            inner,
+            seq: 0,
+            out: Vec::with_capacity(4096),
+        }
     }
 
     /// 读一个逻辑包（跨帧自动拼接）。`Ok(None)` = 对端已关闭。
@@ -221,8 +225,7 @@ impl<T: Read + Write> WireIo<T> {
                 Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
                 Err(e) => return Err(ReadError::Io(e)),
             }
-            let len =
-                hdr[0] as usize | ((hdr[1] as usize) << 8) | ((hdr[2] as usize) << 16);
+            let len = hdr[0] as usize | ((hdr[1] as usize) << 8) | ((hdr[2] as usize) << 16);
             self.seq = hdr[3].wrapping_add(1); // 响应侧 seq 从「客户端帧 seq + 1」起
             if payload.len() + len > max_allowed_packet {
                 return Err(ReadError::TooLarge);
@@ -235,7 +238,10 @@ impl<T: Read + Write> WireIo<T> {
             }
             payload.extend_from_slice(&chunk);
             if len < MAX_FRAME_PAYLOAD {
-                return Ok(Some(Packet { seq: hdr[3], payload }));
+                return Ok(Some(Packet {
+                    seq: hdr[3],
+                    payload,
+                }));
             }
             // 该帧打满 → 后续还有同逻辑包的续帧
         }
@@ -324,7 +330,18 @@ mod tests {
 
     #[test]
     fn lenenc_int_roundtrip() {
-        for v in [0u64, 1, 250, 251, 252, 65535, 65536, 0xFF_FFFF, 0x100_0000, u64::MAX] {
+        for v in [
+            0u64,
+            1,
+            250,
+            251,
+            252,
+            65535,
+            65536,
+            0xFF_FFFF,
+            0x100_0000,
+            u64::MAX,
+        ] {
             let mut buf = Vec::new();
             write_lenenc_int(&mut buf, v);
             let mut r = Reader::new(&buf);
@@ -375,7 +392,11 @@ mod tests {
         let h2 = &bytes[4 + MAX_FRAME_PAYLOAD..8 + MAX_FRAME_PAYLOAD];
         assert_eq!(&h2[..3], &(tail_len as u32).to_le_bytes()[..3]);
         assert_eq!(h2[3], 1);
-        let reassembled = [&bytes[4..4 + MAX_FRAME_PAYLOAD], &bytes[8 + MAX_FRAME_PAYLOAD..]].concat();
+        let reassembled = [
+            &bytes[4..4 + MAX_FRAME_PAYLOAD],
+            &bytes[8 + MAX_FRAME_PAYLOAD..],
+        ]
+        .concat();
         assert_eq!(reassembled, payload);
     }
 
@@ -403,16 +424,16 @@ mod tests {
         raw.extend_from_slice(&[10, 0, 0, 0]);
         raw.extend_from_slice(&[0u8; 10]);
         let mut io = WireIo::new(io::Cursor::new(raw));
-        assert!(matches!(
-            io.read_packet(8),
-            Err(ReadError::TooLarge)
-        ));
+        assert!(matches!(io.read_packet(8), Err(ReadError::TooLarge)));
     }
 
     #[test]
     fn read_returns_closed_on_eof() {
         let mut io = WireIo::new(io::Cursor::new(Vec::new()));
-        assert!(matches!(io.read_packet(DEFAULT_MAX_ALLOWED_PACKET), Ok(None)));
+        assert!(matches!(
+            io.read_packet(DEFAULT_MAX_ALLOWED_PACKET),
+            Ok(None)
+        ));
     }
 
     #[test]

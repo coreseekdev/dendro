@@ -99,12 +99,18 @@ impl Default for DbOptions {
 
 impl DbOptions {
     pub fn memory() -> Self {
-        Self { store: StoreConfig::Memory, ..Default::default() }
+        Self {
+            store: StoreConfig::Memory,
+            ..Default::default()
+        }
     }
 }
 
 pub fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64
 }
 
 /// manifest 快照（原子换新）
@@ -220,7 +226,10 @@ impl Branch {
     /// 惰性续期。空闲流量下的保活由 flush_loop 回调承担（LeaseKeeper::renew_if_due）。
     pub(crate) fn fence_gate(&self) -> Result<()> {
         if self.read_only {
-            return Err(SqlError::new("25006", "read-only branch: cannot write (open without read_only to acquire a lease)"));
+            return Err(SqlError::new(
+                "25006",
+                "read-only branch: cannot write (open without read_only to acquire a lease)",
+            ));
         }
         if self.wal.poisoned() {
             // 毒化分支：快速失败且**不再续租**（第六轮委托点 b——否则 commit
@@ -254,7 +263,12 @@ pub struct Prepared {
 /// PreparedMeta/Output 语义见 spec/10。
 pub trait WireSession: Send {
     fn exec(&mut self, sql: &str) -> Result<Vec<Output>>;
-    fn prepare(&mut self, name: &str, sql: &str, hint: &[crate::types::ColType]) -> Result<PrepareMeta>;
+    fn prepare(
+        &mut self,
+        name: &str,
+        sql: &str,
+        hint: &[crate::types::ColType],
+    ) -> Result<PrepareMeta>;
     fn exec_prepared(&mut self, name: &str, params: &[SqlValue]) -> Result<Output>;
     fn close_prepared(&mut self, name: &str);
     /// ReadyForQuery 事务状态：b'I' 空闲 / b'T' 事务中 / b'E' 失败事务
@@ -267,7 +281,12 @@ impl WireSession for Session {
     fn exec(&mut self, sql: &str) -> Result<Vec<Output>> {
         Session::exec(self, sql)
     }
-    fn prepare(&mut self, name: &str, sql: &str, hint: &[crate::types::ColType]) -> Result<PrepareMeta> {
+    fn prepare(
+        &mut self,
+        name: &str,
+        sql: &str,
+        hint: &[crate::types::ColType],
+    ) -> Result<PrepareMeta> {
         Session::prepare(self, name, sql, hint)
     }
     fn exec_prepared(&mut self, name: &str, params: &[SqlValue]) -> Result<Output> {
@@ -427,7 +446,9 @@ impl Database {
         if opts.read_only {
             // 只读打开绝不创建任何对象：库不存在（无 manifest）→ 明确报错
             if manifest_store.load_latest().is_err() {
-                return Err(SqlError::io("read-only open: no database found at store root"));
+                return Err(SqlError::io(
+                    "read-only open: no database found at store root",
+                ));
             }
         } else if manifest_store.init(now_ms()).is_err() {
             // 已存在 → 恢复
@@ -524,7 +545,9 @@ impl Database {
     /// 每-名字打开互斥（创建/驱逐串行化；读快照路径不受影响）
     fn open_lock(&self, name: &str) -> Arc<Mutex<()>> {
         let mut g = self.open_locks.lock();
-        g.entry(name.to_string()).or_insert_with(|| Arc::new(Mutex::new(()))).clone()
+        g.entry(name.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
     }
 
     /// 读/建分支运行态（恢复路径也走这里：从 manifest 构造）。
@@ -552,14 +575,13 @@ impl Database {
     /// 需已持 open_lock(name)
     fn branch_locked(&self, name: &str) -> Result<Arc<Branch>> {
         let snap = self.manifest();
-        let head_info = snap
-            .manifest
-            .refs
-            .get(name)
-            .ok_or_else(|| SqlError::undefined_branch(format!("branch \"{name}\" does not exist")))?;
+        let head_info = snap.manifest.refs.get(name).ok_or_else(|| {
+            SqlError::undefined_branch(format!("branch \"{name}\" does not exist"))
+        })?;
         let commit = match &head_info.commit {
             Some(a) => {
-                let h = Hash::from_base32(a).ok_or_else(|| SqlError::internal("bad commit addr"))?;
+                let h =
+                    Hash::from_base32(a).ok_or_else(|| SqlError::internal("bad commit addr"))?;
                 let (_ty, data) = self.cas.get(&h)?;
                 Some(Commit::decode(&data)?)
             }
@@ -574,7 +596,11 @@ impl Database {
             let cfg = crate::wal::WalConfig::from(&self.opts);
             (e, None, cfg)
         } else {
-            let holder = format!("{}-{}", std::process::id(), self.session_seq.load(Ordering::Relaxed));
+            let holder = format!(
+                "{}-{}",
+                std::process::id(),
+                self.session_seq.load(Ordering::Relaxed)
+            );
             let lease = fence.acquire(name, &holder, self.opts.lease_ttl_ms, head_info.epoch)?;
             let e = lease.epoch;
             // 租约 keep 与 WAL flush 线程共享：flush_loop 每次醒来调用保活回调
@@ -583,7 +609,10 @@ impl Database {
                 branch: name.to_string(),
                 ttl_ms: self.opts.lease_ttl_ms,
                 fence: fence.clone(),
-                state: Mutex::new(LeaseState { lease, next_renew_ms: 0 }),
+                state: Mutex::new(LeaseState {
+                    lease,
+                    next_renew_ms: 0,
+                }),
             });
             let mut cfg = crate::wal::WalConfig::from(&self.opts);
             let k = keeper.clone();
@@ -641,16 +670,16 @@ impl Database {
     /// 创建分支（O(1)：源分支 checkpoint 后写一条 ref；零数据复制）
     pub fn create_branch(&self, name: &str, from: &str) -> Result<()> {
         if self.branch_exists(name) {
-            return Err(SqlError::duplicate_table(format!("branch \"{name}\" already exists")));
+            return Err(SqlError::duplicate_table(format!(
+                "branch \"{name}\" already exists"
+            )));
         }
         self.checkpoint_branch(from)?;
         let (src_commit, src_seg) = {
             let snap = self.manifest();
-            let h = snap
-                .manifest
-                .refs
-                .get(from)
-                .ok_or_else(|| SqlError::undefined_branch(format!("branch \"{from}\" does not exist")))?;
+            let h = snap.manifest.refs.get(from).ok_or_else(|| {
+                SqlError::undefined_branch(format!("branch \"{from}\" does not exist"))
+            })?;
             (h.commit.clone(), h.wal_seg)
         };
         self.update_manifest(|m| {
@@ -687,9 +716,19 @@ impl Database {
         self.checkpoint_branch(dst)?;
         let (sc, dc) = {
             let snap = self.manifest();
-            let s = snap.manifest.refs.get(src).and_then(|h| h.commit.as_ref()).and_then(|a| Hash::from_base32(a))
+            let s = snap
+                .manifest
+                .refs
+                .get(src)
+                .and_then(|h| h.commit.as_ref())
+                .and_then(|a| Hash::from_base32(a))
                 .ok_or_else(|| SqlError::internal("source branch has no checkpoint"))?;
-            let d = snap.manifest.refs.get(dst).and_then(|h| h.commit.as_ref()).and_then(|a| Hash::from_base32(a))
+            let d = snap
+                .manifest
+                .refs
+                .get(dst)
+                .and_then(|h| h.commit.as_ref())
+                .and_then(|a| Hash::from_base32(a))
                 .ok_or_else(|| SqlError::internal("target branch has no checkpoint"))?;
             (s, d)
         };
@@ -731,7 +770,6 @@ impl Database {
         Ok("MERGED".to_string())
     }
 
-
     pub(crate) fn load_commit(&self, addr: &Hash) -> Result<Commit> {
         let (_ty, data) = self.cas.get(addr)?;
         Commit::decode(&data)
@@ -744,7 +782,9 @@ impl Database {
         while x.height > y.height {
             x = self.parent_of(&x)?;
             guard += 1;
-            if guard > 100_000 { return Err(SqlError::internal("ancestor walk overflow")); }
+            if guard > 100_000 {
+                return Err(SqlError::internal("ancestor walk overflow"));
+            }
         }
         while y.height > x.height {
             y = self.parent_of(&y)?;
@@ -753,7 +793,9 @@ impl Database {
             x = self.parent_of(&x)?;
             y = self.parent_of(&y)?;
             guard += 1;
-            if guard > 100_000 { return Err(SqlError::internal("ancestor walk overflow")); }
+            if guard > 100_000 {
+                return Err(SqlError::internal("ancestor walk overflow"));
+            }
         }
         Ok(Some(x))
     }
@@ -797,16 +839,30 @@ impl Database {
         };
         let cchunk = commit.encode();
         let mut session: HashSet<Hash> = HashSet::new();
-        self.cas.put_batch(&[cchunk], &mut session).map_err(SqlError::from)?;
+        self.cas
+            .put_batch(&[cchunk], &mut session)
+            .map_err(SqlError::from)?;
         b.head.store(Arc::new(Some(commit.clone())));
         let seq = b.alloc_seq();
-        let ck = crate::wal::CheckpointRecord { catalog_root: root, commit_addr: commit.addr(), seq_covered: b.watermark.load(Ordering::Acquire) };
-        b.wal.append(crate::wal::FrameType::Checkpoint, seq, &crate::wal::encode_checkpoint(&ck), self.opts.durability)?;
+        let ck = crate::wal::CheckpointRecord {
+            catalog_root: root,
+            commit_addr: commit.addr(),
+            seq_covered: b.watermark.load(Ordering::Acquire),
+        };
+        b.wal.append(
+            crate::wal::FrameType::Checkpoint,
+            seq,
+            &crate::wal::encode_checkpoint(&ck),
+            self.opts.durability,
+        )?;
         let seg_now = b.wal.current_seg().saturating_sub(1);
         let covered = ck.seq_covered;
         let bname = branch.to_string();
         self.update_manifest(|m| {
-            let h = m.refs.get_mut(&bname).ok_or_else(|| SqlError::internal("branch vanished"))?;
+            let h = m
+                .refs
+                .get_mut(&bname)
+                .ok_or_else(|| SqlError::internal("branch vanished"))?;
             h.commit = Some(commit.addr().to_base32());
             h.wal_seg = seg_now.max(h.wal_seg);
             h.covered_seq = covered;
@@ -817,21 +873,20 @@ impl Database {
     }
 
     pub(crate) fn branch_exists(&self, name: &str) -> bool {
-        self.branches.read().contains_key(name)
-            || self.manifest().manifest.refs.contains_key(name)
+        self.branches.read().contains_key(name) || self.manifest().manifest.refs.contains_key(name)
     }
 
     /// manifest 乐观提交（重试内建）
-    pub(crate) fn update_manifest(
-        &self,
-        f: impl Fn(&mut Manifest) -> Result<bool>,
-    ) -> Result<()> {
+    pub(crate) fn update_manifest(&self, f: impl Fn(&mut Manifest) -> Result<bool>) -> Result<()> {
         // 只读库单一咽喉守卫（第七轮 R7-2）：此前只读副本可执行 DROP BRANCH
         // 等 manifest 写（CAS 在副本上成功 → 持久删除分支 + 墓碑化其对象）。
         // commit_tx / checkpoint 已由 fence_gate 各自拒绝；本函数覆盖其余
         // 全部 catalog 写（DROP/CREATE/MERGE/catalog_commit/…）。
         if self.opts.read_only {
-            return Err(SqlError::new("25006", "read-only database: cannot execute statements that modify the catalog"));
+            return Err(SqlError::new(
+                "25006",
+                "read-only database: cannot execute statements that modify the catalog",
+            ));
         }
         for _ in 0..64 {
             let (ver, m) = self.manifest_store.load_latest().map_err(SqlError::from)?;
@@ -846,10 +901,8 @@ impl Database {
             match self.manifest_store.commit(ver, m.clone()) {
                 Ok(_new_ver) => {
                     self.lat_manifest_cnt.fetch_add(1, Ordering::Relaxed);
-                    self.lat_manifest_sum_us.fetch_add(
-                        t_manifest.elapsed().as_micros() as u64,
-                        Ordering::Relaxed,
-                    );
+                    self.lat_manifest_sum_us
+                        .fetch_add(t_manifest.elapsed().as_micros() as u64, Ordering::Relaxed);
                     // 自发布：commit 的就是我们刚构造的 m（版本号 new_ver），
                     // 直接作为本进程快照，无需再 LIST 刷新（P1-F：每次发布省 1 LIST）
                     self.state.store(Arc::new(DbSnapshot { manifest: m }));
@@ -959,10 +1012,11 @@ impl Database {
                 for (tid, muts) in pending {
                     let slot = pend.entry(tid).or_default();
                     for (k, v) in muts {
-                        bytes += k.len() + match &v {
-                            crate::prolly::Mutation::Put(val) => val.len(),
-                            crate::prolly::Mutation::Delete => 0,
-                        };
+                        bytes += k.len()
+                            + match &v {
+                                crate::prolly::Mutation::Put(val) => val.len(),
+                                crate::prolly::Mutation::Delete => 0,
+                            };
                         slot.insert(k.clone(), v);
                     }
                 }
@@ -983,7 +1037,7 @@ impl Database {
         let catalog = crate::versioned::Versioned::new(self.store.clone());
         let mut changes: Vec<(String, Option<crate::versioned::TableEntry>)> = Vec::new();
         let mut gc_retired: Vec<String> = Vec::new(); // 本次替换的列存段（墓碑登记）
-        // pending 按表应用
+                                                      // pending 按表应用
         let _snap = self.manifest();
         for (tid, muts) in pending {
             // 找表名/当前 root
@@ -1033,17 +1087,24 @@ impl Database {
             message: "checkpoint".into(),
         };
         let cchunk = commit.encode();
-        self.cas.put_batch(&[cchunk], &mut session).map_err(SqlError::from)?;
+        self.cas
+            .put_batch(&[cchunk], &mut session)
+            .map_err(SqlError::from)?;
         b.head.store(Arc::new(Some(commit.clone())));
         // WAL CHECKPOINT 帧 + 立即 flush
-        let seq = crate::recovery::composite_ts(b.lease_epoch.load(Ordering::Acquire), b.alloc_seq());
+        let seq =
+            crate::recovery::composite_ts(b.lease_epoch.load(Ordering::Acquire), b.alloc_seq());
         let ck = crate::wal::CheckpointRecord {
             catalog_root: commit.root,
             commit_addr: commit.addr(),
             seq_covered: b.watermark.load(Ordering::Acquire),
         };
-        b.wal
-            .append(crate::wal::FrameType::Checkpoint, seq, &crate::wal::encode_checkpoint(&ck), Durability::Always)?;
+        b.wal.append(
+            crate::wal::FrameType::Checkpoint,
+            seq,
+            &crate::wal::encode_checkpoint(&ck),
+            Durability::Always,
+        )?;
         // manifest：commit + 当前已 flush 段 + covered_seq
         // GC 墓碑（与"停止引用"同一原子发布，GC 定案）：
         // ① 全量重建替换的列存段；② WAL 当前 epoch 前缀段（checkpoint 帧之前的
@@ -1073,7 +1134,10 @@ impl Database {
         let bname = b.name.clone();
         let epoch_for_head = cur_epoch;
         self.update_manifest(|m| {
-            let h = m.refs.get_mut(&bname).ok_or_else(|| SqlError::internal("branch vanished"))?;
+            let h = m
+                .refs
+                .get_mut(&bname)
+                .ok_or_else(|| SqlError::internal("branch vanished"))?;
             h.commit = Some(commit.addr().to_base32());
             h.wal_seg = seg_now.max(h.wal_seg);
             h.covered_seq = covered;
@@ -1081,7 +1145,10 @@ impl Database {
             h.wal_first_seg = seg_now.max(h.wal_first_seg);
             for p in &tombstone {
                 if !m.tombstones.iter().any(|t| t.path == *p) {
-                    m.tombstones.push(crate::objstore::manifest::Tombstone { path: p.clone(), at_ms: t_now });
+                    m.tombstones.push(crate::objstore::manifest::Tombstone {
+                        path: p.clone(),
+                        at_ms: t_now,
+                    });
                 }
             }
             Ok(true)
@@ -1120,12 +1187,7 @@ impl Database {
     pub fn shutdown(self: &Arc<Self>) {
         self.stopping.store(true, Ordering::SeqCst);
         self.stop_cp.store(true, Ordering::Relaxed);
-        let branches: Vec<Arc<Branch>> = self
-            .branches
-            .write()
-            .drain()
-            .map(|(_, b)| b)
-            .collect();
+        let branches: Vec<Arc<Branch>> = self.branches.write().drain().map(|(_, b)| b).collect();
         for b in branches {
             b.wal.close_graceful();
         }
@@ -1176,7 +1238,6 @@ impl Database {
         Ok(deleted)
     }
 
-
     fn start_checkpoint_thread(self: &Arc<Self>) {
         // **持 Weak**（第六轮发现）：线程持 Arc<Database> 自环 ⇒ Database 永不
         // Drop ⇒ 遗弃分支的 Branch/WalWriter/租约保活全部永生——GC 删除已删
@@ -1216,7 +1277,6 @@ impl Database {
             })
             .expect("spawn checkpoint thread");
     }
-
 }
 
 impl From<&DbOptions> for crate::wal::WalConfig {
@@ -1231,7 +1291,8 @@ impl From<&DbOptions> for crate::wal::WalConfig {
 }
 
 fn count_rows(store: &NodeStore, root: Option<&Hash>) -> u64 {
-    root.and_then(|r| crate::prolly::cursor::tree_count(store, r).ok()).unwrap_or(0)
+    root.and_then(|r| crate::prolly::cursor::tree_count(store, r).ok())
+        .unwrap_or(0)
 }
 
 /// 会话
@@ -1329,12 +1390,21 @@ pub(crate) fn commit_tx(db: &Database, sess_branch: &str, txn: &Txn) -> Result<u
             Mutation::Put(v) => Some(v.clone()),
             Mutation::Delete => None,
         };
-        recs.push(crate::wal::TxnRecord { table_id: tid, ops: vec![(key.clone(), val)] });
+        recs.push(crate::wal::TxnRecord {
+            table_id: tid,
+            ops: vec![(key.clone(), val)],
+        });
     }
     let t_flush = std::time::Instant::now();
-    b.wal.append(crate::wal::FrameType::Txn, ts, &crate::wal::encode_txn(&recs), db.opts.durability)?;
+    b.wal.append(
+        crate::wal::FrameType::Txn,
+        ts,
+        &crate::wal::encode_txn(&recs),
+        db.opts.durability,
+    )?;
     db.lat_commit_cnt.fetch_add(1, Ordering::Relaxed);
-    db.lat_commit_sum_us.fetch_add(t_flush.elapsed().as_micros() as u64, Ordering::Relaxed);
+    db.lat_commit_sum_us
+        .fetch_add(t_flush.elapsed().as_micros() as u64, Ordering::Relaxed);
     // Phase 3: 安装（durable 之后才产生可见状态）+ pending 登记（checkpoint 积压）
     crate::memtx::install(&b.mem, &[], txn, ts);
     let mut plen = 0usize;
@@ -1360,4 +1430,3 @@ fn iter_writes(txn: &Txn) -> impl Iterator<Item = (u32, &Vec<u8>, &Mutation)> {
 }
 
 // —— wire 层 API（真身）——
-

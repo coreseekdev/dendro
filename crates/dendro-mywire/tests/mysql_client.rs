@@ -29,7 +29,10 @@ fn opts(addr: SocketAddr, user: &str, pw: &str) -> mysql::Opts {
 }
 
 fn pw_cfg() -> MyConfig {
-    MyConfig { password: Some("pw".into()), ..Default::default() }
+    MyConfig {
+        password: Some("pw".into()),
+        ..Default::default()
+    }
 }
 
 #[test]
@@ -40,7 +43,8 @@ fn mysql_crate_connect_and_query() {
     let v: Option<i64> = conn.query_first("SELECT 1").expect("query");
     assert_eq!(v, Some(1));
     // 命令路径
-    conn.query_drop("INSERT INTO t VALUES (1),(2)").expect("command ok");
+    conn.query_drop("INSERT INTO t VALUES (1),(2)")
+        .expect("command ok");
     // 断连后服务端线程干净退出（不做断言，依赖 5s 超时兜底）
 }
 

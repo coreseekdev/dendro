@@ -19,7 +19,9 @@ pub fn recover_branches(obj: &Arc<dyn ObjStore>, manifest: &Manifest) -> Result<
     for (name, head) in &manifest.refs {
         if let Some(c) = &head.commit {
             let Some(h) = Hash::from_base32(c) else {
-                return Err(SqlError::internal(format!("branch {name}: bad commit addr")));
+                return Err(SqlError::internal(format!(
+                    "branch {name}: bad commit addr"
+                )));
             };
             let path = crate::objstore::cas::CasStore::chunk_path(&h);
             if obj.head(&path).ok().flatten().is_none() {

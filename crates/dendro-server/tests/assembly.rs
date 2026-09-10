@@ -61,7 +61,9 @@ fn start_server(data: &std::path::Path) -> Server {
             panic!("serve not ready in 10s");
         }
         if let Ok(mut s) = TcpStream::connect(("127.0.0.1", metrics)) {
-            if s.write_all(b"GET /readyz HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n").is_ok() {
+            if s.write_all(b"GET /readyz HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n")
+                .is_ok()
+            {
                 let mut resp = String::new();
                 if s.read_to_string(&mut resp).is_ok() && resp.starts_with("HTTP/1.1 200") {
                     break; // readyz 真 200 才视为装配完成（P12-4：判定与注释一致）
@@ -70,7 +72,13 @@ fn start_server(data: &std::path::Path) -> Server {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    Server { child, pg, mysql, kv, metrics }
+    Server {
+        child,
+        pg,
+        mysql,
+        kv,
+        metrics,
+    }
 }
 
 fn probe(port: u16, payload: &[u8]) -> Vec<u8> {
@@ -95,7 +103,11 @@ fn assembly_ports_speak_right_protocols() {
     let mut start = struct_pack(body.len() as u32 + 4);
     start.extend_from_slice(&body);
     let pg_reply = probe(srv.pg, &start);
-    assert_eq!(pg_reply[0], b'R', "PG 端口应回 AuthenticationOk（实际 {:?}——协议装反？）", pg_reply);
+    assert_eq!(
+        pg_reply[0], b'R',
+        "PG 端口应回 AuthenticationOk（实际 {:?}——协议装反？）",
+        pg_reply
+    );
 
     // MySQL 端口：连接即发握手（含 "dendro" 版本串）
     let my = probe(srv.mysql, b"");
@@ -107,11 +119,16 @@ fn assembly_ports_speak_right_protocols() {
 
     // KV 端口：RESP PING → +PONG
     let kv = probe(srv.kv, b"*1\r\n$4\r\nPING\r\n");
-    assert!(kv.starts_with(b"+PONG"), "KV 端口应回 +PONG（实际 {:?}）", kv);
+    assert!(
+        kv.starts_with(b"+PONG"),
+        "KV 端口应回 +PONG（实际 {:?}）",
+        kv
+    );
 
     // metrics：HTTP /readyz → 200
     let mut s = TcpStream::connect(("127.0.0.1", srv.metrics)).unwrap();
-    s.write_all(b"GET /readyz HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n").unwrap();
+    s.write_all(b"GET /readyz HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n")
+        .unwrap();
     let mut buf = String::new();
     s.read_to_string(&mut buf).unwrap();
     assert!(buf.starts_with("HTTP/1.1 200"), "readyz 应 200");
@@ -152,7 +169,9 @@ fn assembly_default_combo_three_ports() {
     let mut ready = false;
     while Instant::now() < deadline {
         if let Ok(mut s) = TcpStream::connect(("127.0.0.1", metrics)) {
-            if s.write_all(b"GET /readyz HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n").is_ok() {
+            if s.write_all(b"GET /readyz HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n")
+                .is_ok()
+            {
                 let mut resp = String::new();
                 if s.read_to_string(&mut resp).is_ok() && resp.starts_with("HTTP/1.1 200") {
                     ready = true;
@@ -169,9 +188,15 @@ fn assembly_default_combo_three_ports() {
     let mut start = struct_pack(body.len() as u32 + 4);
     start.extend_from_slice(&body);
     let pg_reply = probe(pg, &start);
-    assert!(!pg_reply.is_empty() && pg_reply[0] == b'R', "默认组合下 PG 端口应讲 PG 协议（实际 {pg_reply:?}）");
+    assert!(
+        !pg_reply.is_empty() && pg_reply[0] == b'R',
+        "默认组合下 PG 端口应讲 PG 协议（实际 {pg_reply:?}）"
+    );
     let my = probe(mysql, b"");
-    assert!(my.windows(6).any(|w| w == b"dendro"), "默认组合下 MySQL 端口应回握手");
+    assert!(
+        my.windows(6).any(|w| w == b"dendro"),
+        "默认组合下 MySQL 端口应回握手"
+    );
     let _ = child.kill();
     let _ = child.wait();
     let _ = std::fs::remove_dir_all(&data);

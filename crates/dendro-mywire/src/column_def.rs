@@ -121,7 +121,10 @@ mod tests {
 
     #[test]
     fn encodes_column_definition_41() {
-        let bytes = column_def_bytes(&ColumnMeta { name: "1".into(), ty: ColType::Int64 });
+        let bytes = column_def_bytes(&ColumnMeta {
+            name: "1".into(),
+            ty: ColType::Int64,
+        });
         let mut r = crate::codec::Reader::new(&bytes);
         assert_eq!(r.lenenc_bytes().unwrap(), b"def");
         assert_eq!(r.lenenc_bytes().unwrap(), SCHEMA.as_bytes());

@@ -60,8 +60,14 @@ mod tests {
     #[test]
     fn sha1_known_vectors() {
         // RFC 3174 / NIST 已知向量
-        assert_eq!(hex(&Sha1::digest(b"abc")), "a9993e364706816aba3e25717850c26c9cd0d89d");
-        assert_eq!(hex(&Sha1::digest(b"secret")), "e5e9fa1ba31ecd1ae84f75caaa474f3a663f05f4");
+        assert_eq!(
+            hex(&Sha1::digest(b"abc")),
+            "a9993e364706816aba3e25717850c26c9cd0d89d"
+        );
+        assert_eq!(
+            hex(&Sha1::digest(b"secret")),
+            "e5e9fa1ba31ecd1ae84f75caaa474f3a663f05f4"
+        );
     }
 
     #[test]

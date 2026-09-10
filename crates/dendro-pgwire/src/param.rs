@@ -137,7 +137,10 @@ fn value_to_text(v: &SqlValue) -> String {
         SqlValue::Int64(i) => i.to_string(),
         SqlValue::Float64(f) => dendro_core::types::format_f64(*f),
         SqlValue::Utf8(s) => s.clone(),
-        SqlValue::Bytes(b) => format!("\\x{}", b.iter().map(|x| format!("{x:02x}")).collect::<String>()),
+        SqlValue::Bytes(b) => format!(
+            "\\x{}",
+            b.iter().map(|x| format!("{x:02x}")).collect::<String>()
+        ),
         SqlValue::Date32(d) => dendro_core::types::format_date(*d),
         SqlValue::TimestampMs(ms) => dendro_core::types::format_ts_ms(*ms),
     }
@@ -159,16 +162,28 @@ mod tests {
 
     #[test]
     fn binary_bool_float() {
-        assert_eq!(decode_binary(ColType::Bool, &[1]).unwrap(), SqlValue::Bool(true));
-        assert_eq!(decode_binary(ColType::Bool, &[0]).unwrap(), SqlValue::Bool(false));
+        assert_eq!(
+            decode_binary(ColType::Bool, &[1]).unwrap(),
+            SqlValue::Bool(true)
+        );
+        assert_eq!(
+            decode_binary(ColType::Bool, &[0]).unwrap(),
+            SqlValue::Bool(false)
+        );
         let bits = 1.5f64.to_be_bytes();
-        assert_eq!(decode_binary(ColType::Float64, &bits).unwrap(), SqlValue::Float64(1.5));
+        assert_eq!(
+            decode_binary(ColType::Float64, &bits).unwrap(),
+            SqlValue::Float64(1.5)
+        );
     }
 
     #[test]
     fn binary_date_and_timestamp_pg_epoch() {
         // PG epoch 本身：2000-01-01 = days 0 / µs 0
-        assert_eq!(decode_binary(ColType::Date32, &0i32.to_be_bytes()).unwrap(), SqlValue::Date32(10_957));
+        assert_eq!(
+            decode_binary(ColType::Date32, &0i32.to_be_bytes()).unwrap(),
+            SqlValue::Date32(10_957)
+        );
         assert_eq!(
             decode_binary(ColType::TimestampMs, &0i64.to_be_bytes()).unwrap(),
             SqlValue::TimestampMs(946_684_800_000)
@@ -185,28 +200,55 @@ mod tests {
             0i32.to_be_bytes().to_vec()
         );
         assert_eq!(
-            encode_binary_value(ColType::TimestampMs, &SqlValue::TimestampMs(946_684_800_123)),
+            encode_binary_value(
+                ColType::TimestampMs,
+                &SqlValue::TimestampMs(946_684_800_123)
+            ),
             123_000i64.to_be_bytes().to_vec()
         );
     }
 
     #[test]
     fn text_param_decode() {
-        assert_eq!(decode_param(0, ColType::Int64, Some(b"9")).unwrap(), SqlValue::Int64(9));
-        assert_eq!(decode_param(0, ColType::Utf8, Some(b"hi")).unwrap(), SqlValue::Utf8("hi".into()));
-        assert_eq!(decode_param(0, ColType::Bool, Some(b"t")).unwrap(), SqlValue::Bool(true));
+        assert_eq!(
+            decode_param(0, ColType::Int64, Some(b"9")).unwrap(),
+            SqlValue::Int64(9)
+        );
+        assert_eq!(
+            decode_param(0, ColType::Utf8, Some(b"hi")).unwrap(),
+            SqlValue::Utf8("hi".into())
+        );
+        assert_eq!(
+            decode_param(0, ColType::Bool, Some(b"t")).unwrap(),
+            SqlValue::Bool(true)
+        );
         assert!(decode_param(0, ColType::Date32, Some(b"bad")).is_err());
-        assert_eq!(decode_param(0, ColType::Int32, None).unwrap(), SqlValue::Null);
+        assert_eq!(
+            decode_param(0, ColType::Int32, None).unwrap(),
+            SqlValue::Null
+        );
         assert!(decode_param(2, ColType::Int32, Some(b"1")).is_err()); // 未知 format
     }
 
     #[test]
     fn encode_cell_text_and_binary() {
-        assert_eq!(encode_cell(ColType::Int64, Some("1"), 0), Some(b"1".to_vec()));
-        assert_eq!(encode_cell(ColType::Int64, Some("1"), 1), Some(1i64.to_be_bytes().to_vec()));
+        assert_eq!(
+            encode_cell(ColType::Int64, Some("1"), 0),
+            Some(b"1".to_vec())
+        );
+        assert_eq!(
+            encode_cell(ColType::Int64, Some("1"), 1),
+            Some(1i64.to_be_bytes().to_vec())
+        );
         assert_eq!(encode_cell(ColType::Int64, None, 1), None);
-        assert_eq!(encode_cell(ColType::Utf8, Some("ab"), 1), Some(b"ab".to_vec()));
+        assert_eq!(
+            encode_cell(ColType::Utf8, Some("ab"), 1),
+            Some(b"ab".to_vec())
+        );
         // 兜底：坏文本回退原文
-        assert_eq!(encode_cell(ColType::Int64, Some("x!"), 1), Some(b"x!".to_vec()));
+        assert_eq!(
+            encode_cell(ColType::Int64, Some("x!"), 1),
+            Some(b"x!".to_vec())
+        );
     }
 }

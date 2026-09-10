@@ -56,10 +56,9 @@ fn conn_string(port: u16, user: &str, password: Option<&str>) -> String {
 #[tokio::test]
 async fn real_client_connect_simple_and_extended() {
     let port = spawn_server(PgConfig::default(), MockSession::new);
-    let (client, connection) =
-        tokio_postgres::connect(&conn_string(port, "postgres", None), NoTls)
-            .await
-            .expect("connect");
+    let (client, connection) = tokio_postgres::connect(&conn_string(port, "postgres", None), NoTls)
+        .await
+        .expect("connect");
     tokio::spawn(async move {
         let _ = connection.await;
     });
@@ -106,10 +105,9 @@ async fn real_client_param_echo_roundtrip() {
         m.ep_behavior = common::EpBehavior::EchoInt8Param;
         m
     });
-    let (client, connection) =
-        tokio_postgres::connect(&conn_string(port, "postgres", None), NoTls)
-            .await
-            .expect("connect");
+    let (client, connection) = tokio_postgres::connect(&conn_string(port, "postgres", None), NoTls)
+        .await
+        .expect("connect");
     tokio::spawn(async move {
         let _ = connection.await;
     });
@@ -131,30 +129,37 @@ async fn real_client_error_sqlstate_and_connection_reuse() {
         m.ep_error_if_contains = Some("missing".into());
         m
     });
-    let (client, connection) =
-        tokio_postgres::connect(&conn_string(port, "postgres", None), NoTls)
-            .await
-            .expect("connect");
+    let (client, connection) = tokio_postgres::connect(&conn_string(port, "postgres", None), NoTls)
+        .await
+        .expect("connect");
     tokio::spawn(async move {
         let _ = connection.await;
     });
 
     // ErrorResponse 的 SQLSTATE 是 42P01（SqlError.state 透传）
-    let err = client.query("SELECT * FROM missing", &[]).await.expect_err("should fail");
+    let err = client
+        .query("SELECT * FROM missing", &[])
+        .await
+        .expect_err("should fail");
     let db_err = err.as_db_error().expect("db error");
     assert_eq!(db_err.code().code(), "42P01");
     assert_eq!(db_err.message(), "relation \"missing\" does not exist");
     assert_eq!(db_err.severity(), "ERROR");
 
     // 连接存活（同一 client 继续可用）
-    let row = client.query_one("SELECT 1", &[]).await.expect("still alive");
+    let row = client
+        .query_one("SELECT 1", &[])
+        .await
+        .expect("still alive");
     assert_eq!(row.get::<_, i64>(0), 1);
 }
 
 #[tokio::test]
 async fn real_client_cleartext_password() {
     let port = spawn_server(
-        PgConfig { password: Some("sesame".into()) },
+        PgConfig {
+            password: Some("sesame".into()),
+        },
         MockSession::new,
     );
 

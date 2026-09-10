@@ -5,19 +5,19 @@
 //! 性能红线：热路径无 Rc/RefCell；共享仅限不可变 Arc；见 spec/00-overview.md §6。
 
 pub mod error;
-pub mod types;
 pub mod format;
 pub mod objstore;
-pub mod prolly;
-pub mod versioned;
 pub mod pipeline;
+pub mod prolly;
+pub mod types;
+pub mod versioned;
 pub mod wal;
 
-pub mod memtx;
-pub mod recovery;
 pub mod consensus;
 pub mod journal;
 pub mod kv;
+pub mod memtx;
+pub mod recovery;
 pub mod sql;
 
 pub mod engine; // 门面：Database/Session（wire 层唯一入口）

@@ -3,7 +3,7 @@
 //! 用法：`slt run <文件或目录>...`
 
 use dendro_core::{Database, DbOptions, Output};
-use sqllogictest::{DB, DBOutput, DefaultColumnType, Runner};
+use sqllogictest::{DBOutput, DefaultColumnType, Runner, DB};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -32,7 +32,9 @@ impl DB for SltDb {
                 Output::Rows(rs) => {
                     for r in rs.text_rows() {
                         rows_out.push(
-                            r.into_iter().map(|c| c.unwrap_or_else(|| "NULL".into())).collect(),
+                            r.into_iter()
+                                .map(|c| c.unwrap_or_else(|| "NULL".into()))
+                                .collect(),
                         );
                     }
                 }
@@ -45,7 +47,10 @@ impl DB for SltDb {
                 .first()
                 .map(|r| vec![DefaultColumnType::Text; r.len()])
                 .unwrap_or_default();
-            Ok(DBOutput::Rows { types, rows: rows_out })
+            Ok(DBOutput::Rows {
+                types,
+                rows: rows_out,
+            })
         }
     }
 
@@ -67,7 +72,9 @@ async fn run_files(paths: Vec<PathBuf>) -> (usize, usize, Vec<String>) {
         let mut runner = Runner::new(move || {
             let db3 = db2.clone();
             async move {
-                Ok(SltDb { sess: Mutex::new(db3.new_session()) })
+                Ok(SltDb {
+                    sess: Mutex::new(db3.new_session()),
+                })
             }
         });
         match runner.run_file_async(&p).await {

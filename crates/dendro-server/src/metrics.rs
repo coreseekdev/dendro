@@ -64,9 +64,9 @@ fn serve_conn(stream: TcpStream, db: &Arc<Database>) -> std::io::Result<()> {
             let ready = {
                 let branches = db.active_branches();
                 let now = now_ms();
-                branches.iter().all(|b| {
-                    b.read_only || b.lease.state.lock().lease.expires_at_ms > now
-                })
+                branches
+                    .iter()
+                    .all(|b| b.read_only || b.lease.state.lock().lease.expires_at_ms > now)
             };
             if stopping {
                 http(stream, 503, "shutting down\n")
@@ -114,22 +114,46 @@ fn render_metrics(db: &Arc<Database>) -> String {
     let mut branches = db.active_branches();
     branches.sort_by(|a, b| a.name.cmp(&b.name));
     // HELP/TYPE 每个指标族只出现一次（Prometheus 文本格式）
-    let _ = writeln!(out, "# HELP dendro_branch_pending_bytes un-checkpointed change bytes (scale-out signal)");
+    let _ = writeln!(
+        out,
+        "# HELP dendro_branch_pending_bytes un-checkpointed change bytes (scale-out signal)"
+    );
     let _ = writeln!(out, "# TYPE dendro_branch_pending_bytes gauge");
     let _ = writeln!(out, "# TYPE dendro_branch_watermark gauge");
     let _ = writeln!(out, "# TYPE dendro_branch_wal_durable_seq gauge");
     let _ = writeln!(out, "# HELP dendro_branch_poisoned writer poisoned by WAL upload failure (writes rejected until reopen)");
     let _ = writeln!(out, "# TYPE dendro_branch_poisoned gauge");
     let _ = writeln!(out, "# TYPE dendro_branch_lease_epoch gauge");
-    let _ = writeln!(out, "# HELP dendro_branch_lease_ttl_ms writer lease time-to-live");
+    let _ = writeln!(
+        out,
+        "# HELP dendro_branch_lease_ttl_ms writer lease time-to-live"
+    );
     let _ = writeln!(out, "# TYPE dendro_branch_lease_ttl_ms gauge");
-    let _ = writeln!(out, "# HELP dendro_branch_read_only branch is a read-only replica (no writer lease)");
+    let _ = writeln!(
+        out,
+        "# HELP dendro_branch_read_only branch is a read-only replica (no writer lease)"
+    );
     let _ = writeln!(out, "# TYPE dendro_branch_read_only gauge");
     // M-5：延迟指标
     for (name, cnt, sum) in [
-        ("dendro_txn_commit", db.lat_commit_cnt.load(std::sync::atomic::Ordering::Relaxed), db.lat_commit_sum_us.load(std::sync::atomic::Ordering::Relaxed)),
-        ("dendro_wal_flush", dendro_core::wal::FLUSH_LATENCY_CNT.load(std::sync::atomic::Ordering::Relaxed), dendro_core::wal::FLUSH_LATENCY_US.load(std::sync::atomic::Ordering::Relaxed)),
-        ("dendro_manifest_commit", db.lat_manifest_cnt.load(std::sync::atomic::Ordering::Relaxed), db.lat_manifest_sum_us.load(std::sync::atomic::Ordering::Relaxed)),
+        (
+            "dendro_txn_commit",
+            db.lat_commit_cnt.load(std::sync::atomic::Ordering::Relaxed),
+            db.lat_commit_sum_us
+                .load(std::sync::atomic::Ordering::Relaxed),
+        ),
+        (
+            "dendro_wal_flush",
+            dendro_core::wal::FLUSH_LATENCY_CNT.load(std::sync::atomic::Ordering::Relaxed),
+            dendro_core::wal::FLUSH_LATENCY_US.load(std::sync::atomic::Ordering::Relaxed),
+        ),
+        (
+            "dendro_manifest_commit",
+            db.lat_manifest_cnt
+                .load(std::sync::atomic::Ordering::Relaxed),
+            db.lat_manifest_sum_us
+                .load(std::sync::atomic::Ordering::Relaxed),
+        ),
     ] {
         let _ = writeln!(out, "# HELP {name}_us latency (count/sum_us/avg_us)");
         let _ = writeln!(out, "# TYPE {name}_us gauge");
@@ -139,7 +163,6 @@ fn render_metrics(db: &Arc<Database>) -> String {
             let avg = sum.checked_div(cnt).unwrap_or(0);
             let _ = writeln!(out, "{name}_avg_us {avg}");
         }
-
     }
     for b in branches {
         let name = &b.name;
@@ -151,17 +174,36 @@ fn render_metrics(db: &Arc<Database>) -> String {
             let st = b.lease.state.lock();
             (st.lease.epoch, st.lease.expires_at_ms - now)
         };
-        let _ = writeln!(out, "dendro_branch_pending_bytes{{branch=\"{name}\"}} {pending}");
-        let _ = writeln!(out, "dendro_branch_watermark{{branch=\"{name}\"}} {watermark}");
-        let _ = writeln!(out, "dendro_branch_wal_durable_seq{{branch=\"{name}\"}} {durable}");
-        let _ = writeln!(out, "dendro_branch_poisoned{{branch=\"{name}\"}} {}", if poisoned { 1 } else { 0 });
-        let _ = writeln!(out, "dendro_branch_lease_epoch{{branch=\"{name}\"}} {epoch}");
+        let _ = writeln!(
+            out,
+            "dendro_branch_pending_bytes{{branch=\"{name}\"}} {pending}"
+        );
+        let _ = writeln!(
+            out,
+            "dendro_branch_watermark{{branch=\"{name}\"}} {watermark}"
+        );
+        let _ = writeln!(
+            out,
+            "dendro_branch_wal_durable_seq{{branch=\"{name}\"}} {durable}"
+        );
+        let _ = writeln!(
+            out,
+            "dendro_branch_poisoned{{branch=\"{name}\"}} {}",
+            if poisoned { 1 } else { 0 }
+        );
+        let _ = writeln!(
+            out,
+            "dendro_branch_lease_epoch{{branch=\"{name}\"}} {epoch}"
+        );
         if b.read_only {
             // 只读分支无真实租约（占位 expires_at_ms=0）——输出 TTL 会是巨负数，
             // 污染告警面板；以 read_only 标记代替
             let _ = writeln!(out, "dendro_branch_read_only{{branch=\"{name}\"}} 1");
         } else {
-            let _ = writeln!(out, "dendro_branch_lease_ttl_ms{{branch=\"{name}\"}} {ttl_ms}");
+            let _ = writeln!(
+                out,
+                "dendro_branch_lease_ttl_ms{{branch=\"{name}\"}} {ttl_ms}"
+            );
         }
     }
     out

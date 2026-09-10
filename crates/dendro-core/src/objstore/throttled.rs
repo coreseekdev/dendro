@@ -17,7 +17,10 @@ pub struct LatencySpec {
 
 impl LatencySpec {
     pub fn none() -> Self {
-        Self { mean_ms: 0.0, jitter_pct: 0.0 }
+        Self {
+            mean_ms: 0.0,
+            jitter_pct: 0.0,
+        }
     }
 }
 
@@ -85,7 +88,10 @@ impl ObjStore for ThrottledObjStore {
         self.stats_gets.fetch_add(1, Ordering::Relaxed);
         let t = Instant::now();
         let r = self.inner.get(path);
-        self.stats_bytes_get.fetch_add(r.as_ref().map(|b| b.len()).unwrap_or(0) as u64, Ordering::Relaxed);
+        self.stats_bytes_get.fetch_add(
+            r.as_ref().map(|b| b.len()).unwrap_or(0) as u64,
+            Ordering::Relaxed,
+        );
         let _ = t.elapsed();
         r
     }
@@ -93,19 +99,24 @@ impl ObjStore for ThrottledObjStore {
         let _g = self.gate(&self.get_lat);
         self.stats_gets.fetch_add(1, Ordering::Relaxed);
         let r = self.inner.get_range(path, off, len);
-        self.stats_bytes_get.fetch_add(r.as_ref().map(|b| b.len()).unwrap_or(0) as u64, Ordering::Relaxed);
+        self.stats_bytes_get.fetch_add(
+            r.as_ref().map(|b| b.len()).unwrap_or(0) as u64,
+            Ordering::Relaxed,
+        );
         r
     }
     fn put(&self, path: &str, data: Bytes) -> ObjResult<()> {
         let _g = self.gate(&self.put_lat);
         self.stats_puts.fetch_add(1, Ordering::Relaxed);
-        self.stats_bytes_put.fetch_add(data.len() as u64, Ordering::Relaxed);
+        self.stats_bytes_put
+            .fetch_add(data.len() as u64, Ordering::Relaxed);
         self.inner.put(path, data)
     }
     fn put_if_absent(&self, path: &str, data: Bytes) -> ObjResult<()> {
         let _g = self.gate(&self.put_lat);
         self.stats_puts.fetch_add(1, Ordering::Relaxed);
-        self.stats_bytes_put.fetch_add(data.len() as u64, Ordering::Relaxed);
+        self.stats_bytes_put
+            .fetch_add(data.len() as u64, Ordering::Relaxed);
         self.inner.put_if_absent(path, data)
     }
     fn delete(&self, path: &str) -> ObjResult<()> {

@@ -14,12 +14,16 @@ use std::sync::Arc;
 fn q14_ap_path_reads_own_writes_and_frozen() {
     let db = Database::open(DbOptions::memory()).unwrap();
     // **接线列存**（R13-1：缺这行 = 空转测试）
-    db.set_columnar(Arc::new(CbfColumnar { row_group_rows: 1_048_576 }));
+    db.set_columnar(Arc::new(CbfColumnar {
+        row_group_rows: 1_048_576,
+    }));
     {
         let mut s = db.new_session();
-        s.exec("CREATE TABLE big (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+        s.exec("CREATE TABLE big (id BIGINT PRIMARY KEY, v TEXT)")
+            .unwrap();
         let values: Vec<String> = (1..=12_000).map(|i| format!("({i}, 'v{i}')")).collect();
-        s.exec(&format!("INSERT INTO big VALUES {}", values.join(", "))).unwrap();
+        s.exec(&format!("INSERT INTO big VALUES {}", values.join(", ")))
+            .unwrap();
         db.checkpoint_branch("main").unwrap(); // 物化进 CBF
     }
     // **断言 AP 门真的满足**：columnar 已装配 + col_rows ≥ 1 万
@@ -31,7 +35,11 @@ fn q14_ap_path_reads_own_writes_and_frozen() {
             .catalog_lookup(head.as_ref().as_ref().map(|c| c.root).as_ref(), "big")
             .unwrap()
             .expect("table big in catalog");
-        assert!(entry.col_rows >= 10_000, "col_rows={}，AP 门未达标", entry.col_rows);
+        assert!(
+            entry.col_rows >= 10_000,
+            "col_rows={}，AP 门未达标",
+            entry.col_rows
+        );
     }
     let mut s = db.new_session();
     s.exec("BEGIN").unwrap();
@@ -45,9 +53,21 @@ fn q14_ap_path_reads_own_writes_and_frozen() {
         }
     };
     // 读自己的写（AP 归并三层：CBF → memtx overlay → 会话事务写）
-    assert_eq!(q(&mut s, "SELECT count(*) FROM big"), "12000", "12000 - 1 删 + 1 插");
-    assert_eq!(q(&mut s, "SELECT v FROM big WHERE id = 20000"), "new", "事务内 INSERT 经 AP 可见");
-    assert_eq!(q(&mut s, "SELECT v FROM big WHERE id = 5"), "upd", "事务内 UPDATE 经 AP 归并");
+    assert_eq!(
+        q(&mut s, "SELECT count(*) FROM big"),
+        "12000",
+        "12000 - 1 删 + 1 插"
+    );
+    assert_eq!(
+        q(&mut s, "SELECT v FROM big WHERE id = 20000"),
+        "new",
+        "事务内 INSERT 经 AP 可见"
+    );
+    assert_eq!(
+        q(&mut s, "SELECT v FROM big WHERE id = 5"),
+        "upd",
+        "事务内 UPDATE 经 AP 归并"
+    );
     let n6 = match &s.exec("SELECT count(*) FROM big WHERE id = 6").unwrap()[0] {
         dendro_core::Output::Rows(rs) => rs.text_rows()[0][0].clone().unwrap(),
         _ => panic!(),
@@ -73,10 +93,22 @@ fn q14_ap_path_reads_own_writes_and_frozen() {
         s2.exec("INSERT INTO big VALUES (30000, 'z')").unwrap();
         db.checkpoint_branch("main").unwrap();
     }
-    assert_eq!(q(&mut s, "SELECT count(*) FROM big"), "12000", "冻结读被并发 checkpoint 翻转");
+    assert_eq!(
+        q(&mut s, "SELECT count(*) FROM big"),
+        "12000",
+        "冻结读被并发 checkpoint 翻转"
+    );
     s.exec("COMMIT").unwrap();
-    assert_eq!(q(&mut s, "SELECT count(*) FROM big"), "12001", "COMMIT 后新快照包含事务写入");
-    assert_eq!(q(&mut s, "SELECT v FROM big WHERE id = 30000"), "z", "并发提交的行 COMMIT 后可见");
+    assert_eq!(
+        q(&mut s, "SELECT count(*) FROM big"),
+        "12001",
+        "COMMIT 后新快照包含事务写入"
+    );
+    assert_eq!(
+        q(&mut s, "SELECT v FROM big WHERE id = 30000"),
+        "z",
+        "并发提交的行 COMMIT 后可见"
+    );
 }
 
 #[test]
@@ -88,9 +120,11 @@ fn limit_pushdown_stops_scan_early() {
     let db = Database::open(DbOptions::memory()).unwrap();
     {
         let mut s = db.new_session();
-        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
+            .unwrap();
         let values: Vec<String> = (1..=5000).map(|i| format!("({i}, 'v{i}')")).collect();
-        s.exec(&format!("INSERT INTO t VALUES {}", values.join(", "))).unwrap();
+        s.exec(&format!("INSERT INTO t VALUES {}", values.join(", ")))
+            .unwrap();
     }
     let mut s = db.new_session();
     let o = s.exec("SELECT id FROM t LIMIT 100").unwrap();
@@ -101,7 +135,10 @@ fn limit_pushdown_stops_scan_early() {
             // BTreeMap 键序 = 编码键序，前 100 个即 id 1..=100（大端序下
             // 1..=99 先于 100..，逐一校验首行与末行）
             assert_eq!(rows[0][0].as_deref(), Some("1"));
-            assert_eq!(rows[99][0].as_deref().and_then(|s| s.parse::<i64>().ok()), Some(100));
+            assert_eq!(
+                rows[99][0].as_deref().and_then(|s| s.parse::<i64>().ok()),
+                Some(100)
+            );
         }
         _ => panic!(),
     }
@@ -125,14 +162,19 @@ fn limit_with_where_does_not_pushdown() {
         let mut s = db.new_session();
         s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY)").unwrap();
         let values: Vec<String> = (1..=1000).map(|i| format!("({i})")).collect();
-        s.exec(&format!("INSERT INTO t VALUES {}", values.join(", "))).unwrap();
+        s.exec(&format!("INSERT INTO t VALUES {}", values.join(", ")))
+            .unwrap();
     }
     let mut s = db.new_session();
     let o = s.exec("SELECT id FROM t WHERE id >= 900 LIMIT 5").unwrap();
     match &o[0] {
         dendro_core::Output::Rows(rs) => {
             let rows = rs.text_rows();
-            assert_eq!(rows.len(), 5, "过滤后剩余 100 行，LIMIT 5 应返回 5 行（此前返回 0）");
+            assert_eq!(
+                rows.len(),
+                5,
+                "过滤后剩余 100 行，LIMIT 5 应返回 5 行（此前返回 0）"
+            );
         }
         _ => panic!(),
     }
@@ -144,14 +186,20 @@ fn limit_with_join_no_pushdown() {
     let db = Database::open(DbOptions::memory()).unwrap();
     {
         let mut s = db.new_session();
-        s.exec("CREATE TABLE a (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
-        s.exec("CREATE TABLE b (bid BIGINT PRIMARY KEY, aid BIGINT)").unwrap();
+        s.exec("CREATE TABLE a (id BIGINT PRIMARY KEY, v TEXT)")
+            .unwrap();
+        s.exec("CREATE TABLE b (bid BIGINT PRIMARY KEY, aid BIGINT)")
+            .unwrap();
         for i in 1..=100 {
-            s.exec(&format!("INSERT INTO a VALUES ({i}, 'v{i}')")).unwrap();
+            s.exec(&format!("INSERT INTO a VALUES ({i}, 'v{i}')"))
+                .unwrap();
             s.exec(&format!("INSERT INTO b VALUES ({i}, {i})")).unwrap();
         }
     }
-    let o = s_exec(&db, "SELECT a.id, a.v FROM a JOIN b ON a.id = b.bid LIMIT 5");
+    let o = s_exec(
+        &db,
+        "SELECT a.id, a.v FROM a JOIN b ON a.id = b.bid LIMIT 5",
+    );
     match &o[0] {
         dendro_core::Output::Rows(rs) => assert_eq!(rs.total_rows(), 5, "JOIN + LIMIT 应返回 5 行"),
         _ => panic!(),

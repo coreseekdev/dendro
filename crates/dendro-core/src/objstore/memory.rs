@@ -59,11 +59,9 @@ impl ObjStore for MemoryObjStore {
         Ok(())
     }
     fn head(&self, path: &str) -> ObjResult<Option<HeadInfo>> {
-        Ok(self
-            .m
-            .read()
-            .get(path)
-            .map(|b| HeadInfo { len: b.len() as u64 }))
+        Ok(self.m.read().get(path).map(|b| HeadInfo {
+            len: b.len() as u64,
+        }))
     }
     fn list_prefix(&self, prefix: &str) -> ObjResult<Vec<String>> {
         let m = self.m.read();

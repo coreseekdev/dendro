@@ -7,7 +7,7 @@ use std::sync::Arc;
 fn open_temp(tag: &str) -> Arc<Database> {
     let dir = std::env::temp_dir().join(format!("dendro-wire-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    
+
     Database::open(DbOptions {
         store: StoreConfig::LocalDir(dir),
         wal_flush_interval_ms: 5,
@@ -17,7 +17,10 @@ fn open_temp(tag: &str) -> Arc<Database> {
 }
 
 fn free_addr() -> std::net::SocketAddr {
-    std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap()
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
 }
 
 #[test]
@@ -31,10 +34,16 @@ fn pg_client_end_to_end() {
     // 等监听就绪
     std::thread::sleep(std::time::Duration::from_millis(100));
 
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     rt.block_on(async move {
         let (client, conn) = tokio_postgres::connect(
-            &format!("host=127.0.0.1 port={} user=dendro dbname=cambium", addr.port()),
+            &format!(
+                "host=127.0.0.1 port={} user=dendro dbname=cambium",
+                addr.port()
+            ),
             tokio_postgres::NoTls,
         )
         .await
@@ -43,13 +52,25 @@ fn pg_client_end_to_end() {
 
         // DDL
         client
-            .execute("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT, score DOUBLE)", &[])
+            .execute(
+                "CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT, score DOUBLE)",
+                &[],
+            )
             .await
             .unwrap();
         // DML（简单协议）
-        client.execute("INSERT INTO t VALUES (1, 'a', 1.5)", &[]).await.unwrap();
+        client
+            .execute("INSERT INTO t VALUES (1, 'a', 1.5)", &[])
+            .await
+            .unwrap();
         // 预编译（扩展协议）
-        client.execute("INSERT INTO t VALUES ($1, $2, $3)", &[&4i64, &"d", &4.25f64]).await.unwrap();
+        client
+            .execute(
+                "INSERT INTO t VALUES ($1, $2, $3)",
+                &[&4i64, &"d", &4.25f64],
+            )
+            .await
+            .unwrap();
         // 查询
         let rows = client
             .query("SELECT id, v, score FROM t ORDER BY id", &[])
@@ -65,17 +86,38 @@ fn pg_client_end_to_end() {
         assert_eq!((id, v, score), (1, "a", 1.5));
 
         // 分支 SQL
-        client.execute("CREATE BRANCH dev FROM main", &[]).await.unwrap();
+        client
+            .execute("CREATE BRANCH dev FROM main", &[])
+            .await
+            .unwrap();
         client.execute("USE BRANCH dev", &[]).await.unwrap();
-        client.execute("INSERT INTO t VALUES (7, 'dev-only', 0.5)", &[]).await.unwrap();
-        let n: i64 = client.query_one("SELECT count(*) FROM t", &[]).await.unwrap().get(0);
+        client
+            .execute("INSERT INTO t VALUES (7, 'dev-only', 0.5)", &[])
+            .await
+            .unwrap();
+        let n: i64 = client
+            .query_one("SELECT count(*) FROM t", &[])
+            .await
+            .unwrap()
+            .get(0);
         assert_eq!(n, 3);
         client.execute("USE BRANCH main", &[]).await.unwrap();
-        let n: i64 = client.query_one("SELECT count(*) FROM t", &[]).await.unwrap().get(0);
+        let n: i64 = client
+            .query_one("SELECT count(*) FROM t", &[])
+            .await
+            .unwrap()
+            .get(0);
         assert_eq!(n, 2);
         // 合并
-        client.execute("MERGE BRANCH dev INTO main", &[]).await.unwrap();
-        let n: i64 = client.query_one("SELECT count(*) FROM t", &[]).await.unwrap().get(0);
+        client
+            .execute("MERGE BRANCH dev INTO main", &[])
+            .await
+            .unwrap();
+        let n: i64 = client
+            .query_one("SELECT count(*) FROM t", &[])
+            .await
+            .unwrap()
+            .get(0);
         assert_eq!(n, 3);
 
         // 错误传播（未定义表）
@@ -94,7 +136,8 @@ fn mysql_client_end_to_end() {
     {
         let db2 = db.clone();
         std::thread::spawn(move || {
-            dendro_mywire::serve(&addr.to_string(), db2, dendro_mywire::MyConfig::default()).unwrap()
+            dendro_mywire::serve(&addr.to_string(), db2, dendro_mywire::MyConfig::default())
+                .unwrap()
         });
     }
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -103,8 +146,10 @@ fn mysql_client_end_to_end() {
     let opts = mysql::Opts::from_url(&url).unwrap();
     let mut conn = mysql::Conn::new(opts).unwrap();
 
-    conn.query_drop("CREATE TABLE m (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
-    conn.query_drop("INSERT INTO m VALUES (1, 'x'), (2, 'y')").unwrap();
+    conn.query_drop("CREATE TABLE m (id BIGINT PRIMARY KEY, v TEXT)")
+        .unwrap();
+    conn.query_drop("INSERT INTO m VALUES (1, 'x'), (2, 'y')")
+        .unwrap();
     let selected: Vec<(i64, String)> = {
         let result = conn.query("SELECT id, v FROM m ORDER BY id").unwrap();
         result
@@ -117,9 +162,6 @@ fn mysql_client_end_to_end() {
     };
     assert_eq!(selected, vec![(1, "x".into()), (2, "y".into())]);
     // 聚合
-    let cnt: i64 = conn
-        .query_first("SELECT count(*) FROM m")
-        .unwrap()
-        .unwrap();
+    let cnt: i64 = conn.query_first("SELECT count(*) FROM m").unwrap().unwrap();
     assert_eq!(cnt, 2);
 }

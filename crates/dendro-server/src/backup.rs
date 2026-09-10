@@ -61,7 +61,8 @@ fn copy_tree_rooted(
 ) -> Result<(usize, u64), ObjError> {
     let mut files = 0usize;
     let mut bytes = 0u64;
-    let rd = std::fs::read_dir(cur).map_err(|e| ObjError::Io(format!("read_dir {}: {e}", cur.display())))?;
+    let rd = std::fs::read_dir(cur)
+        .map_err(|e| ObjError::Io(format!("read_dir {}: {e}", cur.display())))?;
     for entry in rd {
         let entry = entry.map_err(|e| ObjError::Io(format!("readdir: {e}")))?;
         let p = entry.path();

@@ -70,8 +70,10 @@ pub(crate) fn exec_batch(db: &Database, sess: &mut Session, sql: &str) -> Result
     if sess.failed_txn {
         let up = sql.trim_start().to_ascii_uppercase();
         if !up.starts_with("ROLLBACK") && !up.starts_with("COMMIT") {
-            return Err(SqlError::new("25P02",
-                "current transaction is aborted, commands ignored until end of transaction block"));
+            return Err(SqlError::new(
+                "25P02",
+                "current transaction is aborted, commands ignored until end of transaction block",
+            ));
         }
     }
     let mut outs = Vec::new();
@@ -275,20 +277,30 @@ fn exec_branch_statement(db: &Database, sess: &mut Session, sql: &str) -> Result
     match kind {
         BranchKind::Use => {
             if sess.txn.is_some() {
-                return Err(SqlError::new("25001", "cannot switch branch inside a transaction"));
+                return Err(SqlError::new(
+                    "25001",
+                    "cannot switch branch inside a transaction",
+                ));
             }
             let name = parse_ident_after(sql, "USE BRANCH")?;
             // 确认存在
             db.branch(&name)?;
             sess.branch = name;
-            Ok(vec![Output::Command { tag: "USE".into(), affected: 0 }])
+            Ok(vec![Output::Command {
+                tag: "USE".into(),
+                affected: 0,
+            }])
         }
         BranchKind::Create => {
             // CREATE BRANCH [IF NOT EXISTS] name [FROM src]（SPEC 03 §5）
             let text = skip_keyword(sql, "CREATE BRANCH");
             let upper = text.trim_start().to_ascii_uppercase();
             let if_not_exists = upper.starts_with("IF NOT EXISTS");
-            let text = if if_not_exists { text.trim_start()[13..].to_string() } else { text };
+            let text = if if_not_exists {
+                text.trim_start()[13..].to_string()
+            } else {
+                text
+            };
             let (name, rest) = split_ident(&text);
             let src = match rest.trim_start().strip_prefix("FROM") {
                 Some(after) => split_ident(after).0,
@@ -296,17 +308,32 @@ fn exec_branch_statement(db: &Database, sess: &mut Session, sql: &str) -> Result
             };
             if db.branch_exists(&name) {
                 if if_not_exists {
-                    return Ok(vec![Output::Command { tag: "CREATE BRANCH".into(), affected: 0 }]);
+                    return Ok(vec![Output::Command {
+                        tag: "CREATE BRANCH".into(),
+                        affected: 0,
+                    }]);
                 }
-                return Err(SqlError::duplicate_table(format!("branch \"{name}\" already exists")));
+                return Err(SqlError::duplicate_table(format!(
+                    "branch \"{name}\" already exists"
+                )));
             }
             db.create_branch(&name, &src)?;
-            Ok(vec![Output::Command { tag: "CREATE BRANCH".into(), affected: 0 }])
+            Ok(vec![Output::Command {
+                tag: "CREATE BRANCH".into(),
+                affected: 0,
+            }])
         }
         BranchKind::Drop => {
             let text = skip_keyword(sql, "DROP BRANCH");
-            let if_exists = text.trim_start().to_ascii_uppercase().starts_with("IF EXISTS");
-            let text = if if_exists { text.trim_start()[9..].to_string() } else { text };
+            let if_exists = text
+                .trim_start()
+                .to_ascii_uppercase()
+                .starts_with("IF EXISTS");
+            let text = if if_exists {
+                text.trim_start()[9..].to_string()
+            } else {
+                text
+            };
             let (name, _) = split_ident(&text);
             if name == "main" {
                 return Err(SqlError::not_supported("cannot drop branch \"main\""));
@@ -314,9 +341,14 @@ fn exec_branch_statement(db: &Database, sess: &mut Session, sql: &str) -> Result
             let exists = db.manifest().manifest.refs.contains_key(&name);
             if !exists {
                 if if_exists {
-                    return Ok(vec![Output::Command { tag: "DROP BRANCH".into(), affected: 0 }]);
+                    return Ok(vec![Output::Command {
+                        tag: "DROP BRANCH".into(),
+                        affected: 0,
+                    }]);
                 }
-                return Err(SqlError::undefined_branch(format!("branch \"{name}\" does not exist")));
+                return Err(SqlError::undefined_branch(format!(
+                    "branch \"{name}\" does not exist"
+                )));
             }
             let b = db.branch(&name)?;
             b.wal.close();
@@ -326,18 +358,31 @@ fn exec_branch_statement(db: &Database, sess: &mut Session, sql: &str) -> Result
                 m.refs.remove(&name);
                 let now = crate::engine::now_ms();
                 // WAL：全部 epoch 的现存段（低频路径，允许 LIST）
-                let mut paths = db.obj.list_prefix(&format!("wal/{name}/")).unwrap_or_default();
-                paths.extend(db.obj.list_prefix(&format!("fence/{name}/")).unwrap_or_default());
+                let mut paths = db
+                    .obj
+                    .list_prefix(&format!("wal/{name}/"))
+                    .unwrap_or_default();
+                paths.extend(
+                    db.obj
+                        .list_prefix(&format!("fence/{name}/"))
+                        .unwrap_or_default(),
+                );
                 for p in paths {
                     if !m.tombstones.iter().any(|t| t.path == p) {
-                        m.tombstones.push(crate::objstore::manifest::Tombstone { path: p, at_ms: now });
+                        m.tombstones.push(crate::objstore::manifest::Tombstone {
+                            path: p,
+                            at_ms: now,
+                        });
                     }
                 }
                 Ok(true)
             })?;
             db.remove_branch_runtime(&name);
             db.gc_sweep().ok();
-            Ok(vec![Output::Command { tag: "DROP BRANCH".into(), affected: 0 }])
+            Ok(vec![Output::Command {
+                tag: "DROP BRANCH".into(),
+                affected: 0,
+            }])
         }
         BranchKind::Show => {
             let names: Vec<String> = db.manifest().manifest.refs.keys().cloned().collect();
@@ -366,12 +411,18 @@ fn exec_branch_statement(db: &Database, sess: &mut Session, sql: &str) -> Result
             };
             let (dst, _) = split_ident(after);
             let summary = db.merge_branches(&src, &dst)?;
-            Ok(vec![Output::Command { tag: format!("MERGE {summary}"), affected: 0 }])
+            Ok(vec![Output::Command {
+                tag: format!("MERGE {summary}"),
+                affected: 0,
+            }])
         }
         BranchKind::Checkpoint => {
             let name = sess.branch.clone();
             db.checkpoint_branch(&name)?;
-            Ok(vec![Output::Command { tag: "CHECKPOINT".into(), affected: 0 }])
+            Ok(vec![Output::Command {
+                tag: "CHECKPOINT".into(),
+                affected: 0,
+            }])
         }
         BranchKind::Reopen => {
             // REOPEN BRANCH [name]：缺省 = 当前分支
@@ -382,7 +433,10 @@ fn exec_branch_statement(db: &Database, sess: &mut Session, sql: &str) -> Result
                 .map(|t| t.to_string())
                 .unwrap_or_else(|| sess.branch.clone());
             db.reopen_branch(&name)?;
-            Ok(vec![Output::Command { tag: "REOPEN".into(), affected: 0 }])
+            Ok(vec![Output::Command {
+                tag: "REOPEN".into(),
+                affected: 0,
+            }])
         }
     }
     .inspect(|_outs| {
@@ -391,7 +445,11 @@ fn exec_branch_statement(db: &Database, sess: &mut Session, sql: &str) -> Result
 }
 
 fn skip_keyword(sql: &str, kw: &str) -> String {
-    let idx = sql.to_ascii_uppercase().find(kw).map(|i| i + kw.len()).unwrap_or(0);
+    let idx = sql
+        .to_ascii_uppercase()
+        .find(kw)
+        .map(|i| i + kw.len())
+        .unwrap_or(0);
     sql[idx..].to_string()
 }
 
@@ -420,9 +478,19 @@ fn split_ident(s: &str) -> (String, String) {
 }
 
 /// 统一结果集构造
-pub(crate) fn make_record_set(names: &[&str], tys: &[ColType], rows: Vec<Vec<SqlValue>>) -> RecordSet {
-    let columns: Vec<ColumnMeta> =
-        names.iter().zip(tys).map(|(n, t)| ColumnMeta { name: n.to_string(), ty: *t }).collect();
+pub(crate) fn make_record_set(
+    names: &[&str],
+    tys: &[ColType],
+    rows: Vec<Vec<SqlValue>>,
+) -> RecordSet {
+    let columns: Vec<ColumnMeta> = names
+        .iter()
+        .zip(tys)
+        .map(|(n, t)| ColumnMeta {
+            name: n.to_string(),
+            ty: *t,
+        })
+        .collect();
     scan::rows_to_record_set(&columns, rows)
 }
 
@@ -440,7 +508,11 @@ fn is_ddl(stmt: &Statement) -> bool {
 }
 
 /// 单语句执行；None = 无输出（如空事务语句内部处理）
-pub(crate) fn exec_statement(db: &Database, sess: &mut Session, stmt: Statement) -> Result<Option<Output>> {
+pub(crate) fn exec_statement(
+    db: &Database,
+    sess: &mut Session,
+    stmt: Statement,
+) -> Result<Option<Output>> {
     // Q-10（保守口径）：显式事务内拒绝 DDL——catalog 写不经事务写集，
     // 立即生效且 ROLLBACK 不可撤销（第十八轮 R18-2 实证可见性漂移）。
     // v2 事务化 catalog 后放开。
@@ -474,7 +546,10 @@ pub(crate) fn exec_statement(db: &Database, sess: &mut Session, stmt: Statement)
             txn.explicit = true;
             sess.txn = Some(txn);
             drop(_g);
-            Ok(Some(Output::Command { tag: "BEGIN".into(), affected: 0 }))
+            Ok(Some(Output::Command {
+                tag: "BEGIN".into(),
+                affected: 0,
+            }))
         }
         Statement::Commit { .. } => {
             // PG 语义：aborted 事务上的 COMMIT = 丢弃并回报 ROLLBACK
@@ -484,22 +559,34 @@ pub(crate) fn exec_statement(db: &Database, sess: &mut Session, stmt: Statement)
                     sess.unregister_snapshot(&t.snapshot);
                 }
                 sess.failed_txn = false;
-                return Ok(Some(Output::Command { tag: "ROLLBACK".into(), affected: 0 }));
+                return Ok(Some(Output::Command {
+                    tag: "ROLLBACK".into(),
+                    affected: 0,
+                }));
             }
-            let t = sess.txn.take().ok_or_else(|| SqlError::new("25P01", "no transaction"))?;
+            let t = sess
+                .txn
+                .take()
+                .ok_or_else(|| SqlError::new("25P01", "no transaction"))?;
             sess.unregister_snapshot(&t.snapshot); // COMMIT 必须注销（第十轮 R10-1：此前缺失 → 截断永久跳过/memtx 无界）
             if !t.writes.is_empty() {
                 commit_tx(db, &sess.branch, &t)?;
             }
             sess.failed_txn = false;
-            Ok(Some(Output::Command { tag: "COMMIT".into(), affected: 0 }))
+            Ok(Some(Output::Command {
+                tag: "COMMIT".into(),
+                affected: 0,
+            }))
         }
         Statement::Rollback { .. } => {
             if let Some(t) = sess.txn.take() {
                 sess.unregister_snapshot(&t.snapshot); // 第十轮 R10-1：此前缺失
             }
             sess.failed_txn = false;
-            Ok(Some(Output::Command { tag: "ROLLBACK".into(), affected: 0 }))
+            Ok(Some(Output::Command {
+                tag: "ROLLBACK".into(),
+                affected: 0,
+            }))
         }
         Statement::Query(q) => {
             if q.with.is_some() {
@@ -512,9 +599,12 @@ pub(crate) fn exec_statement(db: &Database, sess: &mut Session, stmt: Statement)
         Statement::Insert(insert) => ddl::exec_insert(db, sess, insert),
         Statement::Update(upd) => {
             let name = match &upd.table.relation {
-                sqlparser::ast::TableFactor::Table { name, .. } => {
-                    name.0.iter().map(|p| p.as_ident().map(|i| i.value.clone()).unwrap_or_default()).collect::<Vec<_>>().join(".")
-                }
+                sqlparser::ast::TableFactor::Table { name, .. } => name
+                    .0
+                    .iter()
+                    .map(|p| p.as_ident().map(|i| i.value.clone()).unwrap_or_default())
+                    .collect::<Vec<_>>()
+                    .join("."),
                 other => other.to_string(),
             };
             let assignments: Vec<(sqlparser::ast::Ident, sqlparser::ast::Expr)> = upd
@@ -541,41 +631,70 @@ pub(crate) fn exec_statement(db: &Database, sess: &mut Session, stmt: Statement)
         }
         Statement::Delete(delete) => ddl::exec_delete(db, sess, delete),
         Statement::CreateView(cv) => {
-            let name = cv.name.0.iter().map(|p| p.as_ident().map(|i| i.value.clone()).unwrap_or_default()).collect::<Vec<_>>().join(".");
+            let name = cv
+                .name
+                .0
+                .iter()
+                .map(|p| p.as_ident().map(|i| i.value.clone()).unwrap_or_default())
+                .collect::<Vec<_>>()
+                .join(".");
             if name.is_empty() {
                 return Err(SqlError::syntax("empty view name"));
             }
             let query_text = cv.query.to_string();
             db.update_manifest(|m| {
                 if m.views.contains_key(&name) && !cv.or_replace {
-                    return Err(SqlError::duplicate_table(format!("view \"{name}\" already exists")));
+                    return Err(SqlError::duplicate_table(format!(
+                        "view \"{name}\" already exists"
+                    )));
                 }
                 m.views.insert(name.clone(), query_text.clone());
                 Ok(true)
             })?;
-            Ok(Some(Output::Command { tag: "CREATE VIEW".into(), affected: 0 }))
+            Ok(Some(Output::Command {
+                tag: "CREATE VIEW".into(),
+                affected: 0,
+            }))
         }
-        Statement::Drop { object_type: sqlparser::ast::ObjectType::View, names, if_exists, .. } => {
+        Statement::Drop {
+            object_type: sqlparser::ast::ObjectType::View,
+            names,
+            if_exists,
+            ..
+        } => {
             for name_obj in &names {
-                let name = name_obj.0.iter().map(|p| p.as_ident().map(|i| i.value.clone()).unwrap_or_default()).collect::<Vec<_>>().join(".");
+                let name = name_obj
+                    .0
+                    .iter()
+                    .map(|p| p.as_ident().map(|i| i.value.clone()).unwrap_or_default())
+                    .collect::<Vec<_>>()
+                    .join(".");
                 let exists = db.manifest().manifest.views.contains_key(&name);
                 if !exists {
                     if if_exists {
                         continue;
                     }
-                    return Err(SqlError::undefined_table(format!("view \"{name}\" does not exist")));
+                    return Err(SqlError::undefined_table(format!(
+                        "view \"{name}\" does not exist"
+                    )));
                 }
                 db.update_manifest(|m| {
                     m.views.remove(&name);
                     Ok(true)
                 })?;
             }
-            Ok(Some(Output::Command { tag: "DROP VIEW".into(), affected: 0 }))
+            Ok(Some(Output::Command {
+                tag: "DROP VIEW".into(),
+                affected: 0,
+            }))
         }
         Statement::CreateTable(create) => ddl::exec_create_table(db, sess, create),
-        Statement::Drop { object_type: sqlparser::ast::ObjectType::Table, names, if_exists, .. } => {
-            ddl::drop_table_impl(db, sess, names, if_exists)
-        }
+        Statement::Drop {
+            object_type: sqlparser::ast::ObjectType::Table,
+            names,
+            if_exists,
+            ..
+        } => ddl::drop_table_impl(db, sess, names, if_exists),
         Statement::AlterTable(alt) => {
             if let [op] = alt.operations.as_slice() {
                 ddl::alter_table_impl(db, sess, alt.name.clone(), op.clone())
@@ -590,10 +709,15 @@ pub(crate) fn exec_statement(db: &Database, sess: &mut Session, stmt: Statement)
             Ok(Some(Output::Rows(make_record_set(
                 &["QUERY PLAN"],
                 &[ColType::Utf8],
-                vec![vec![SqlValue::Utf8("Seq Scan (v1: detailed plans pending)".into())]],
+                vec![vec![SqlValue::Utf8(
+                    "Seq Scan (v1: detailed plans pending)".into(),
+                )]],
             ))))
         }
-        Statement::Set(_) => Ok(Some(Output::Command { tag: "SET".into(), affected: 0 })),
+        Statement::Set(_) => Ok(Some(Output::Command {
+            tag: "SET".into(),
+            affected: 0,
+        })),
         Statement::ShowVariable { variable } => {
             let name = variable
                 .iter()
@@ -603,7 +727,9 @@ pub(crate) fn exec_statement(db: &Database, sess: &mut Session, stmt: Statement)
                 .to_ascii_lowercase();
             let v = match name.as_str() {
                 "server_version" => "17.2 (dendro 0.1)".to_string(),
-                "transaction_isolation" | "transaction isolation level" => "read committed".to_string(),
+                "transaction_isolation" | "transaction isolation level" => {
+                    "read committed".to_string()
+                }
                 "search_path" => "public".to_string(),
                 "databasename" | "database" => "cambium".to_string(),
                 "max_rows" => "0".to_string(),
@@ -619,17 +745,29 @@ pub(crate) fn exec_statement(db: &Database, sess: &mut Session, stmt: Statement)
             let b = db.branch(&sess.branch)?;
             let head = b.head.load_full();
             let catalog = crate::versioned::Versioned::new(db.store.clone());
-            let entries = catalog.catalog_entries(head.as_ref().as_ref().map(|c| c.root).as_ref())?;
+            let entries =
+                catalog.catalog_entries(head.as_ref().as_ref().map(|c| c.root).as_ref())?;
             let rows = entries
                 .into_iter()
                 .map(|(n, _)| vec![SqlValue::Utf8(n)])
                 .collect();
-            Ok(Some(Output::Rows(make_record_set(&["Tables_in_cambium"], &[ColType::Utf8], rows))))
+            Ok(Some(Output::Rows(make_record_set(
+                &["Tables_in_cambium"],
+                &[ColType::Utf8],
+                rows,
+            ))))
         }
-        Statement::ShowDatabases { .. } | Statement::ShowSchemas { .. } => Ok(Some(Output::Rows(
-            make_record_set(&["Name"], &[ColType::Utf8], vec![vec![SqlValue::Utf8("cambium".into())]]),
-        ))),
-        Statement::Flush { .. } => Ok(Some(Output::Command { tag: "OK".into(), affected: 0 })),
+        Statement::ShowDatabases { .. } | Statement::ShowSchemas { .. } => {
+            Ok(Some(Output::Rows(make_record_set(
+                &["Name"],
+                &[ColType::Utf8],
+                vec![vec![SqlValue::Utf8("cambium".into())]],
+            ))))
+        }
+        Statement::Flush { .. } => Ok(Some(Output::Command {
+            tag: "OK".into(),
+            affected: 0,
+        })),
         other => Err(SqlError::syntax(format!(
             "unsupported statement: {}",
             stmt_kind(&other)
@@ -639,7 +777,10 @@ pub(crate) fn exec_statement(db: &Database, sess: &mut Session, stmt: Statement)
 
 fn stmt_kind(s: &Statement) -> String {
     let full = s.to_string();
-    full.split_whitespace().take(3).collect::<Vec<_>>().join(" ")
+    full.split_whitespace()
+        .take(3)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 impl Session {
@@ -671,7 +812,9 @@ pub(crate) fn prepare(
     } else {
         let mut stmts = parse_batch(sql, sess.dialect)?;
         if stmts.len() != 1 {
-            return Err(SqlError::syntax("prepared statement must be a single statement"));
+            return Err(SqlError::syntax(
+                "prepared statement must be a single statement",
+            ));
         }
         let params = count_placeholders(&mut stmts[0]);
         (stmts.into_iter().next().unwrap(), params)
@@ -687,8 +830,19 @@ pub(crate) fn prepare(
     };
     // 结果列推断：SELECT 尝试执行 describe（用空结果路径）
     let result_columns = describe_result(db, sess, &stmt)?;
-    let meta = crate::engine::PrepareMeta { param_types, result_columns };
-    sess.prepared.insert(name.to_string(), Prepared { sql: branch_sql, stmt, param_types: meta.param_types.clone(), result_columns: meta.result_columns.clone() });
+    let meta = crate::engine::PrepareMeta {
+        param_types,
+        result_columns,
+    };
+    sess.prepared.insert(
+        name.to_string(),
+        Prepared {
+            sql: branch_sql,
+            stmt,
+            param_types: meta.param_types.clone(),
+            result_columns: meta.result_columns.clone(),
+        },
+    );
     Ok(meta)
 }
 
@@ -712,7 +866,11 @@ fn count_placeholders(stmt: &mut Statement) -> usize {
     let _ = visit_expressions_mut(stmt, |e: &mut Expr| {
         if let Expr::Value(vws) = e {
             if let PV::Placeholder(id) = &vws.value {
-                let n = id.trim_start_matches('$').trim_start_matches('?').parse::<usize>().unwrap_or(0);
+                let n = id
+                    .trim_start_matches('$')
+                    .trim_start_matches('?')
+                    .parse::<usize>()
+                    .unwrap_or(0);
                 max = max.max(n);
             }
         }
@@ -722,7 +880,12 @@ fn count_placeholders(stmt: &mut Statement) -> usize {
 }
 
 /// 按语句上下文推断 $n 的类型（真实 PG 的 unknown 参数解析行为）
-fn infer_param_types(db: &Database, sess: &Session, stmt: &Statement, n: usize) -> Option<Vec<ColType>> {
+fn infer_param_types(
+    db: &Database,
+    sess: &Session,
+    stmt: &Statement,
+    n: usize,
+) -> Option<Vec<ColType>> {
     use sqlparser::ast::Expr;
     let mut out: Vec<Option<ColType>> = vec![None; n];
 
@@ -732,9 +895,17 @@ fn infer_param_types(db: &Database, sess: &Session, stmt: &Statement, n: usize) 
         }
     };
     // 表达式侧：col <op> $n 或 $n <op> col
-    fn from_binary(e: &Expr, col_of: &dyn Fn(&str) -> Option<ColType>, set: &mut dyn FnMut(usize, ColType)) {
+    fn from_binary(
+        e: &Expr,
+        col_of: &dyn Fn(&str) -> Option<ColType>,
+        set: &mut dyn FnMut(usize, ColType),
+    ) {
         match e {
-            Expr::BinaryOp { left, op: sqlparser::ast::BinaryOperator::Or, right } => {
+            Expr::BinaryOp {
+                left,
+                op: sqlparser::ast::BinaryOperator::Or,
+                right,
+            } => {
                 from_binary(left, col_of, set);
                 from_binary(right, col_of, set);
             }
@@ -742,7 +913,11 @@ fn infer_param_types(db: &Database, sess: &Session, stmt: &Statement, n: usize) 
                 let ph = |x: &Expr| -> Option<usize> {
                     if let Expr::Value(vws) = x {
                         if let sqlparser::ast::Value::Placeholder(id) = &vws.value {
-                            return id.trim_start_matches('$').trim_start_matches('?').parse::<usize>().ok();
+                            return id
+                                .trim_start_matches('$')
+                                .trim_start_matches('?')
+                                .parse::<usize>()
+                                .ok();
                         }
                     }
                     None
@@ -769,13 +944,13 @@ fn infer_param_types(db: &Database, sess: &Session, stmt: &Statement, n: usize) 
     match stmt {
         Statement::Insert(ins) => {
             let name = match &ins.table {
-                sqlparser::ast::TableObject::TableName(n) => n
-                    .0
-                    .iter()
-                    .filter_map(|p| p.as_ident())
-                    .map(|i| i.value.clone())
-                    .collect::<Vec<_>>()
-                    .join("."),
+                sqlparser::ast::TableObject::TableName(n) => {
+                    n.0.iter()
+                        .filter_map(|p| p.as_ident())
+                        .map(|i| i.value.clone())
+                        .collect::<Vec<_>>()
+                        .join(".")
+                }
                 _ => return None,
             };
             let (schema, _) = scan::resolve_table(db, &sess.branch, &name).ok()?;
@@ -794,7 +969,11 @@ fn infer_param_types(db: &Database, sess: &Session, stmt: &Statement, n: usize) 
                         for (vi, item) in first.iter().enumerate() {
                             if let Expr::Value(vws) = item {
                                 if let sqlparser::ast::Value::Placeholder(id) = &vws.value {
-                                    if let Ok(i) = id.trim_start_matches('$').trim_start_matches('?').parse::<usize>() {
+                                    if let Ok(i) = id
+                                        .trim_start_matches('$')
+                                        .trim_start_matches('?')
+                                        .parse::<usize>()
+                                    {
                                         if let Some(&ci) = col_idx.get(vi) {
                                             set(i, schema.columns[ci].ty);
                                         }
@@ -821,7 +1000,12 @@ fn infer_param_types(db: &Database, sess: &Session, stmt: &Statement, n: usize) 
             let col_of = |c: &str| schema.col_index(c).map(|i| schema.columns[i].ty);
             for a in &upd.assignments {
                 if let sqlparser::ast::AssignmentTarget::ColumnName(col) = &a.target {
-                    let cname = col.0.last().and_then(|p| p.as_ident()).map(|i| i.value.clone()).unwrap_or_default();
+                    let cname = col
+                        .0
+                        .last()
+                        .and_then(|p| p.as_ident())
+                        .map(|i| i.value.clone())
+                        .unwrap_or_default();
                     from_binary(&a.value, &col_of, &mut set);
                     let _ = cname;
                 }
@@ -843,7 +1027,8 @@ fn infer_param_types(db: &Database, sess: &Session, stmt: &Statement, n: usize) 
                             .collect::<Vec<_>>()
                             .join(".");
                         if let Ok((schema, _)) = scan::resolve_table(db, &sess.branch, &full) {
-                            let col_of = |c: &str| schema.col_index(c).map(|i| schema.columns[i].ty);
+                            let col_of =
+                                |c: &str| schema.col_index(c).map(|i| schema.columns[i].ty);
                             if let Some(w) = &sel.selection {
                                 from_binary(w, &col_of, &mut set);
                             }
@@ -857,18 +1042,31 @@ fn infer_param_types(db: &Database, sess: &Session, stmt: &Statement, n: usize) 
     if out.iter().all(|o| o.is_none()) {
         None
     } else {
-        Some(out.into_iter().map(|o| o.unwrap_or(ColType::Utf8)).collect())
+        Some(
+            out.into_iter()
+                .map(|o| o.unwrap_or(ColType::Utf8))
+                .collect(),
+        )
     }
 }
 
-fn describe_result(_db: &Database, _sess: &mut Session, stmt: &Statement) -> Result<Vec<ColumnMeta>> {
+fn describe_result(
+    _db: &Database,
+    _sess: &mut Session,
+    stmt: &Statement,
+) -> Result<Vec<ColumnMeta>> {
     match stmt {
         Statement::Query(q) => scan::describe_query(_db, _sess, q.as_ref()),
         _ => Ok(vec![]),
     }
 }
 
-pub(crate) fn exec_prepared(db: &Database, sess: &mut Session, name: &str, params: &[SqlValue]) -> Result<Output> {
+pub(crate) fn exec_prepared(
+    db: &Database,
+    sess: &mut Session,
+    name: &str,
+    params: &[SqlValue],
+) -> Result<Output> {
     let p = sess
         .prepared
         .get(name)
@@ -877,17 +1075,27 @@ pub(crate) fn exec_prepared(db: &Database, sess: &mut Session, name: &str, param
     if params.len() != p.param_types.len() {
         return Err(SqlError::new(
             "08P01",
-            format!("bind parameter mismatch: {}/{}", params.len(), p.param_types.len()),
+            format!(
+                "bind parameter mismatch: {}/{}",
+                params.len(),
+                p.param_types.len()
+            ),
         ));
     }
     if branch_sql_kind(&p.sql).is_some() {
         let outs = exec_branch_statement(db, sess, &p.sql)?;
-        return outs.into_iter().next().ok_or_else(|| SqlError::internal("empty branch output"));
+        return outs
+            .into_iter()
+            .next()
+            .ok_or_else(|| SqlError::internal("empty branch output"));
     }
     let stmt = substitute_params(p.stmt, params)?;
     match exec_statement(db, sess, stmt)? {
         Some(o) => Ok(o),
-        None => Ok(Output::Command { tag: "OK".into(), affected: 0 }),
+        None => Ok(Output::Command {
+            tag: "OK".into(),
+            affected: 0,
+        }),
     }
 }
 
@@ -899,7 +1107,11 @@ fn substitute_params(mut stmt: Statement, params: &[SqlValue]) -> Result<Stateme
     let _ = visit_expressions_mut(&mut stmt, |e: &mut Expr| {
         if let Expr::Value(vws) = e {
             if let PV::Placeholder(id) = &vws.value {
-                let n = id.trim_start_matches('$').trim_start_matches('?').parse::<usize>().unwrap_or(1);
+                let n = id
+                    .trim_start_matches('$')
+                    .trim_start_matches('?')
+                    .parse::<usize>()
+                    .unwrap_or(1);
                 let v = params.get(n - 1).cloned().unwrap_or(SqlValue::Null);
                 let lit = expr::value_to_value_expr(&v);
                 vws.value = lit;
@@ -910,7 +1122,6 @@ fn substitute_params(mut stmt: Statement, params: &[SqlValue]) -> Result<Stateme
     });
     Ok(stmt)
 }
-
 
 // ---------------------------------------------------------------------------
 // 游标（Q-1b v1：INSENSITIVE / READ ONLY / 会话级——DECLARE 时物化结果集）
@@ -941,12 +1152,19 @@ fn cursor_sql_kind(sql: &str) -> Option<CursorStmt> {
     if toks.is_empty() {
         return None;
     }
-    if toks[0].eq_ignore_ascii_case("DECLARE") && toks.len() >= 4 && toks[2].eq_ignore_ascii_case("CURSOR") {
+    if toks[0].eq_ignore_ascii_case("DECLARE")
+        && toks.len() >= 4
+        && toks[2].eq_ignore_ascii_case("CURSOR")
+    {
         let name = toks[1].clone();
         // DECLARE name CURSOR FOR <query>（"FOR" 可选，PG 兼容）。
         // query 提取按 token 起始字节定位（第十/十八轮：splitn 逐字符切分
         // 在连续空白/多空格下错位）
-        let rest_start = if toks[3].eq_ignore_ascii_case("FOR") { 4 } else { 3 };
+        let rest_start = if toks[3].eq_ignore_ascii_case("FOR") {
+            4
+        } else {
+            3
+        };
         let query = locate_token_slice(sql, &toks, rest_start)
             .trim()
             .trim_end_matches(';')
@@ -967,7 +1185,11 @@ fn cursor_sql_kind(sql: &str) -> Option<CursorStmt> {
             n = None;
             i += 1;
         }
-        if toks.get(i).map(|t| t.eq_ignore_ascii_case("FROM")).unwrap_or(false) {
+        if toks
+            .get(i)
+            .map(|t| t.eq_ignore_ascii_case("FROM"))
+            .unwrap_or(false)
+        {
             i += 1;
         }
         let name = toks.get(i)?.clone();
@@ -1000,7 +1222,11 @@ pub(crate) fn exec_cursor_statement(
     match kind {
         CursorStmt::Declare(name, query) => {
             // 只接受查询（第十八轮 R18-4：先执行后报错会有 DML 副作用）
-            if !query.trim_start().to_ascii_uppercase().starts_with("SELECT") {
+            if !query
+                .trim_start()
+                .to_ascii_uppercase()
+                .starts_with("SELECT")
+            {
                 return Err(SqlError::not_supported(
                     "DECLARE CURSOR requires a SELECT query",
                 ));
@@ -1016,22 +1242,32 @@ pub(crate) fn exec_cursor_statement(
                 Some(rs) => {
                     // Q-1 上界护栏：游标数上限 255（PG 风格），防会话级
                     // 物化结果集无界累积
-                    if sess.cursors.len() >= 255 && !sess.cursors.contains_key(&name.to_ascii_lowercase()) {
+                    if sess.cursors.len() >= 255
+                        && !sess.cursors.contains_key(&name.to_ascii_lowercase())
+                    {
                         return Err(SqlError::new(
                             "53310",
                             "too many cursors (max 255 per session); close one first",
                         ));
                     }
                     sess.cursors.insert(name.to_ascii_lowercase(), (rs, 0));
-                    Ok(Some(vec![Output::Command { tag: "DECLARE CURSOR".into(), affected: 0 }]))
+                    Ok(Some(vec![Output::Command {
+                        tag: "DECLARE CURSOR".into(),
+                        affected: 0,
+                    }]))
                 }
-                None => Err(SqlError::not_supported("DECLARE CURSOR requires a query returning rows")),
+                None => Err(SqlError::not_supported(
+                    "DECLARE CURSOR requires a query returning rows",
+                )),
             }
         }
         CursorStmt::Fetch(name, count) => {
             let key = name.to_ascii_lowercase();
             let Some((rs, pos)) = sess.cursors.get_mut(&key) else {
-                return Err(SqlError::new("34000", format!("cursor \"{name}\" does not exist")));
+                return Err(SqlError::new(
+                    "34000",
+                    format!("cursor \"{name}\" does not exist"),
+                ));
             };
             let total = rs.total_rows();
             let take = count.unwrap_or(total);
@@ -1060,9 +1296,15 @@ pub(crate) fn exec_cursor_statement(
         CursorStmt::Close(name) => {
             let key = name.to_ascii_lowercase();
             if sess.cursors.remove(&key).is_none() {
-                return Err(SqlError::new("34000", format!("cursor \"{name}\" does not exist")));
+                return Err(SqlError::new(
+                    "34000",
+                    format!("cursor \"{name}\" does not exist"),
+                ));
             }
-            Ok(Some(vec![Output::Command { tag: "CLOSE CURSOR".into(), affected: 0 }]))
+            Ok(Some(vec![Output::Command {
+                tag: "CLOSE CURSOR".into(),
+                affected: 0,
+            }]))
         }
     }
 }

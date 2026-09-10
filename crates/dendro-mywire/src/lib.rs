@@ -99,7 +99,11 @@ pub fn serve_with(addr: &str, cfg: MyConfig, factory: SessionFactory) -> io::Res
 }
 
 /// 在给定 listener 上服务（装配前置 bind 用：端口冲突在打印 ready 前暴露）
-pub fn serve_listener(listener: std::net::TcpListener, cfg: MyConfig, factory: SessionFactory) -> io::Result<()> {
+pub fn serve_listener(
+    listener: std::net::TcpListener,
+    cfg: MyConfig,
+    factory: SessionFactory,
+) -> io::Result<()> {
     MyServer::bind_on(listener, cfg, factory)?.run()
 }
 
@@ -117,8 +121,16 @@ impl MyServer {
     }
 
     /// 在给定 listener 上构造（装配前置 bind 用）
-    pub fn bind_on(listener: std::net::TcpListener, cfg: MyConfig, factory: SessionFactory) -> io::Result<Self> {
-        Ok(Self { listener, cfg, factory })
+    pub fn bind_on(
+        listener: std::net::TcpListener,
+        cfg: MyConfig,
+        factory: SessionFactory,
+    ) -> io::Result<Self> {
+        Ok(Self {
+            listener,
+            cfg,
+            factory,
+        })
     }
 
     pub fn local_addr(&self) -> io::Result<std::net::SocketAddr> {

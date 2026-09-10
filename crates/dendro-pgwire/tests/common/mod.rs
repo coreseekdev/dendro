@@ -12,7 +12,7 @@ use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use dendro_core::engine::{PrepareMeta, WireSession};
 use dendro_core::error::SqlError;
-use dendro_core::types::{ColumnMeta, ColType, Output, RecordSet, SqlValue};
+use dendro_core::types::{ColType, ColumnMeta, Output, RecordSet, SqlValue};
 
 use dendro_pgwire::PgConfig;
 
@@ -99,13 +99,22 @@ pub fn rows_output_int8(name: &str, vals: &[i64], nulls: &[bool]) -> Output {
     let array: Int64Array = vals
         .iter()
         .enumerate()
-        .map(|(i, &v)| if nulls.get(i).copied().unwrap_or(false) { None } else { Some(v) })
+        .map(|(i, &v)| {
+            if nulls.get(i).copied().unwrap_or(false) {
+                None
+            } else {
+                Some(v)
+            }
+        })
         .collect();
     let schema = Arc::new(Schema::new(vec![Field::new(name, DataType::Int64, true)]));
     let batch =
         RecordBatch::try_new(schema, vec![Arc::new(array) as ArrayRef]).expect("batch build");
     Output::Rows(RecordSet {
-        columns: vec![ColumnMeta { name: name.to_string(), ty: ColType::Int64 }],
+        columns: vec![ColumnMeta {
+            name: name.to_string(),
+            ty: ColType::Int64,
+        }],
         batches: vec![batch],
     })
 }
@@ -162,14 +171,26 @@ impl WireSession for MockSession {
             let n = sql.split(';').filter(|s| !s.trim().is_empty()).count();
             Ok((0..n).map(|_| rows_output_int8("x", &[1], &[])).collect())
         } else if is_insert(sql) {
-            Ok(vec![Output::Command { tag: "INSERT 0 1".into(), affected: 1 }])
+            Ok(vec![Output::Command {
+                tag: "INSERT 0 1".into(),
+                affected: 1,
+            }])
         } else {
-            Ok(vec![Output::Command { tag: format!("MOCK {sql}"), affected: 0 }])
+            Ok(vec![Output::Command {
+                tag: format!("MOCK {sql}"),
+                affected: 0,
+            }])
         }
     }
 
-    fn prepare(&mut self, name: &str, sql: &str, hint: &[ColType]) -> Result<PrepareMeta, SqlError> {
-        self.prepare_log.push((name.to_string(), sql.to_string(), hint.to_vec()));
+    fn prepare(
+        &mut self,
+        name: &str,
+        sql: &str,
+        hint: &[ColType],
+    ) -> Result<PrepareMeta, SqlError> {
+        self.prepare_log
+            .push((name.to_string(), sql.to_string(), hint.to_vec()));
         if let Some(e) = &self.prepare_error {
             return Err(e.clone());
         }
@@ -180,15 +201,22 @@ impl WireSession for MockSession {
             param_types.push(ColType::Int64);
         }
         let result_columns = if is_select(sql) {
-            vec![ColumnMeta { name: "x".to_string(), ty: ColType::Int64 }]
+            vec![ColumnMeta {
+                name: "x".to_string(),
+                ty: ColType::Int64,
+            }]
         } else {
             vec![]
         };
-        Ok(PrepareMeta { param_types, result_columns })
+        Ok(PrepareMeta {
+            param_types,
+            result_columns,
+        })
     }
 
     fn exec_prepared(&mut self, name: &str, params: &[SqlValue]) -> Result<Output, SqlError> {
-        self.exec_prepared_log.push((name.to_string(), params.to_vec()));
+        self.exec_prepared_log
+            .push((name.to_string(), params.to_vec()));
         // portal 执行时只拿得到语句名，用 prepare_log 反查 SQL 做过滤
         let sql = self
             .prepare_log
@@ -215,7 +243,10 @@ impl WireSession for MockSession {
                 };
                 Ok(rows_output_int8("x", &[v], &[]))
             }
-            EpBehavior::Command(tag) => Ok(Output::Command { tag: tag.clone(), affected: 1 }),
+            EpBehavior::Command(tag) => Ok(Output::Command {
+                tag: tag.clone(),
+                affected: 1,
+            }),
         }
     }
 
@@ -336,7 +367,11 @@ pub fn parse_error(body: &[u8]) -> ErrFields {
             _ => {}
         }
     }
-    ErrFields { severity, code, message }
+    ErrFields {
+        severity,
+        code,
+        message,
+    }
 }
 
 /// 提取所有 ParameterStatus 到 (name, value) 列表
@@ -380,7 +415,13 @@ pub fn parse_row_description(body: &[u8]) -> Vec<RowDescField> {
         let format = i16_at(pos + 16);
         assert_eq!(attnum, 0);
         pos += 18;
-        out.push(RowDescField { name, type_oid, typlen, typmod, format });
+        out.push(RowDescField {
+            name,
+            type_oid,
+            typlen,
+            typmod,
+            format,
+        });
     }
     out
 }
@@ -404,7 +445,10 @@ pub fn parse_data_row(body: &[u8]) -> Vec<Option<Vec<u8>>> {
 }
 
 /// 用 UnixStream::pair 起一个连接处理线程（协议状态机黑盒驱动）
-pub fn spawn_conn(sess: Box<dyn WireSession>, cfg: PgConfig) -> (UnixStream, JoinHandle<io::Result<()>>) {
+pub fn spawn_conn(
+    sess: Box<dyn WireSession>,
+    cfg: PgConfig,
+) -> (UnixStream, JoinHandle<io::Result<()>>) {
     let (server, client) = UnixStream::pair().expect("unix pair");
     let handle = std::thread::spawn(move || dendro_pgwire::handle_connection(server, sess, cfg));
     (client, handle)

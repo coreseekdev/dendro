@@ -18,7 +18,10 @@ fn connect_ok(cfg: MyConfig) -> (MiniClient, std::thread::JoinHandle<std::io::Re
     let g = c.read_greeting();
     c.send_handshake(&g, "root", None, None);
     let (seq, ok) = c.expect_ok();
-    assert_eq!(seq, 2, "认证 OK 应为 seq 2（greeting 0 → 客户端 1 → 服务端 2）");
+    assert_eq!(
+        seq, 2,
+        "认证 OK 应为 seq 2（greeting 0 → 客户端 1 → 服务端 2）"
+    );
     assert_eq!(ok.affected, 0);
     assert_eq!(ok.status & AUTOCOMMIT, AUTOCOMMIT);
     (c, h)
@@ -35,7 +38,11 @@ fn handshake_greeting_and_ok() {
         assert_eq!(g.charset, 45); // utf8mb4_general_ci
         assert_eq!(g.status, AUTOCOMMIT);
         assert_eq!(g.scramble.len(), 20, "auth-plugin-data 共 20B（8 + 12）");
-        assert_eq!(g.capabilities & CLIENT_DEPRECATE_EOF, 0, "不宣告 DEPRECATE_EOF");
+        assert_eq!(
+            g.capabilities & CLIENT_DEPRECATE_EOF,
+            0,
+            "不宣告 DEPRECATE_EOF"
+        );
         assert_ne!(g.capabilities & CLIENT_PROTOCOL_41, 0);
         assert_ne!(g.capabilities & CLIENT_SECURE_CONNECTION, 0);
         assert_ne!(g.capabilities & CLIENT_PLUGIN_AUTH, 0);
@@ -79,7 +86,11 @@ fn auth_wrong_password_err_1045() {
     let g = c.read_greeting();
     c.send_handshake(&g, "app", Some("wrong"), None);
     let (_seq, code, state, msg) = c.expect_err();
-    assert_eq!((code, state.as_str()), (1045, "28000"), "ER_ACCESS_DENIED_ERROR");
+    assert_eq!(
+        (code, state.as_str()),
+        (1045, "28000"),
+        "ER_ACCESS_DENIED_ERROR"
+    );
     assert!(msg.contains("Access denied"), "got: {msg}");
     c.read_eof(); // 认证失败 → 服务端断开
     c.close();
@@ -123,7 +134,10 @@ fn com_query_command_ok_affected() {
     let (mut c, h) = connect_ok(default_cfg());
     c.cmd(COM_QUERY, b"INSERT INTO t VALUES (1),(2)");
     let (_seq, ok) = c.expect_ok();
-    assert_eq!(ok.affected, 2, "OK 包直接携带 affected 数值（tag 为 PG 口径）");
+    assert_eq!(
+        ok.affected, 2,
+        "OK 包直接携带 affected 数值（tag 为 PG 口径）"
+    );
     assert_eq!(ok.last_insert_id, 0);
     assert_eq!(ok.warnings, 0);
     assert_eq!(ok.info, "INSERT 0 2", "tag 作为 info 附带");
@@ -164,7 +178,11 @@ fn com_query_multi_results() {
     c.cmd(COM_QUERY, b"SELECT 1; SELECT 2");
     let rs1 = c.expect_result_set();
     assert_eq!(rs1.rows, vec![vec![Some("1".into())]]);
-    assert_eq!(rs1.final_status & MORE_RESULTS, MORE_RESULTS, "第一个结果集带 MORE_RESULTS_EXISTS");
+    assert_eq!(
+        rs1.final_status & MORE_RESULTS,
+        MORE_RESULTS,
+        "第一个结果集带 MORE_RESULTS_EXISTS"
+    );
     let rs2 = c.expect_result_set();
     assert_eq!(rs2.rows, vec![vec![Some("2".into())]]);
     assert_eq!(rs2.final_status & MORE_RESULTS, 0, "最后一个结果集不带");
@@ -238,7 +256,11 @@ fn com_stmt_prepare_err_1047() {
     let (mut c, h) = connect_ok(default_cfg());
     c.cmd(COM_STMT_PREPARE, b"SELECT 1");
     let (_seq, code, state, msg) = c.expect_err();
-    assert_eq!((code, state.as_str()), (1047, "08S01"), "ER_UNKNOWN_COM_ERROR");
+    assert_eq!(
+        (code, state.as_str()),
+        (1047, "08S01"),
+        "ER_UNKNOWN_COM_ERROR"
+    );
     assert!(msg.contains("useServerPrepStmts=false"), "got: {msg}");
     c.close();
     h.join().unwrap().unwrap();
@@ -264,7 +286,11 @@ fn oversized_packet_err_1153() {
     p.extend_from_slice(&[b'A'; 100]);
     c.write_frame(0, &p);
     let (_seq, code, state, _msg) = c.expect_err();
-    assert_eq!((code, state.as_str()), (1153, "08S01"), "ER_NET_PACKET_TOO_LARGE");
+    assert_eq!(
+        (code, state.as_str()),
+        (1153, "08S01"),
+        "ER_NET_PACKET_TOO_LARGE"
+    );
     c.read_eof();
     c.close();
     h.join().unwrap().unwrap();
@@ -317,5 +343,3 @@ fn handshake_ssl_request_rejected() {
     c.close();
     h.join().unwrap().unwrap();
 }
-
-

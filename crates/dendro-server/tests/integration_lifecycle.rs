@@ -9,7 +9,6 @@ fn open_local(dir: &std::path::Path) -> Arc<Database> {
     .unwrap()
 }
 
-
 #[test]
 fn lifecycle_backup_readonly_txn() {
     let dir = std::env::temp_dir().join(format!("dendro-lifecycle-{}", std::process::id()));
@@ -21,12 +20,14 @@ fn lifecycle_backup_readonly_txn() {
     {
         let db = open_local(&dir);
         let mut s = db.new_session();
-        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
+            .unwrap();
         s.exec("INSERT INTO t VALUES (1, 'a'), (2, 'b')").unwrap();
         s.exec("CREATE BRANCH dev FROM main").unwrap();
         s.exec("USE BRANCH dev").unwrap();
         s.exec("INSERT INTO t VALUES (3, 'c')").unwrap();
-        s.exec("CREATE VIEW v_cnt AS SELECT count(*) AS cnt FROM t").unwrap();
+        s.exec("CREATE VIEW v_cnt AS SELECT count(*) AS cnt FROM t")
+            .unwrap();
     }
 
     // Phase 2: 备份

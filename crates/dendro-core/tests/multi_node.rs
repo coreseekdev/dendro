@@ -22,7 +22,10 @@ fn opts(dir: &std::path::Path, ttl_ms: i64) -> DbOptions {
 }
 
 fn opts_ro(dir: &std::path::Path) -> DbOptions {
-    DbOptions { read_only: true, ..opts(dir, 800) }
+    DbOptions {
+        read_only: true,
+        ..opts(dir, 800)
+    }
 }
 
 fn fence_files(dir: &std::path::Path) -> usize {
@@ -42,7 +45,8 @@ fn read_only_open_does_not_pollute_epoch_sequence() {
     {
         let db = Database::open(opts(&dir, 800)).unwrap();
         let mut s = db.new_session();
-        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
+            .unwrap();
         s.exec("INSERT INTO t VALUES (1, 'a')").unwrap();
     }
     let before = fence_files(&dir);
@@ -58,7 +62,12 @@ fn read_only_open_does_not_pollute_epoch_sequence() {
             s.exec("SELECT count(*) FROM t").unwrap()
         };
         if let dendro_core::Output::Rows(rs) = &o[0] {
-            assert_eq!(rs.text_rows()[0][0].as_deref(), Some("1"), "RO 读可见（第 {} 次）", i + 1);
+            assert_eq!(
+                rs.text_rows()[0][0].as_deref(),
+                Some("1"),
+                "RO 读可见（第 {} 次）",
+                i + 1
+            );
         }
         // 写被拒：SQLSTATE 25006 read_only_sql_transaction
         let e = {
@@ -67,14 +76,21 @@ fn read_only_open_does_not_pollute_epoch_sequence() {
         };
         assert_eq!(e.state, "25006", "只读分支必须拒写");
         // checkpoint 等写路径同样被拒
-        assert!(ro.checkpoint_branch("main").is_err(), "只读分支拒绝 checkpoint");
+        assert!(
+            ro.checkpoint_branch("main").is_err(),
+            "只读分支拒绝 checkpoint"
+        );
         drop(ro);
     }
     assert_eq!(fence_files(&dir), 1, "只读打开不得产生租约对象");
 
     // 后续写者接管 epoch 仍连续（= 2，未被 RO 打开顶掉）
     let w2 = Database::open(opts(&dir, 800)).unwrap();
-    let e2 = w2.branch("main").unwrap().lease_epoch.load(std::sync::atomic::Ordering::Acquire);
+    let e2 = w2
+        .branch("main")
+        .unwrap()
+        .lease_epoch
+        .load(std::sync::atomic::Ordering::Acquire);
     assert_eq!(e2, 2, "epoch 序列不应被只读打开污染");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -100,10 +116,15 @@ fn multi_instance_takeover() {
 
     // ── 实例 A：建表 + 写 2 行（领取 epoch E1）──
     let a = Database::open(opts(&dir, 800)).unwrap();
-    let e_a = a.branch("main").unwrap().lease_epoch.load(std::sync::atomic::Ordering::Acquire);
+    let e_a = a
+        .branch("main")
+        .unwrap()
+        .lease_epoch
+        .load(std::sync::atomic::Ordering::Acquire);
     {
         let mut s = a.new_session();
-        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
+            .unwrap();
         s.exec("INSERT INTO t VALUES (1, 'a1')").unwrap();
         s.exec("INSERT INTO t VALUES (2, 'a2')").unwrap();
     }
@@ -112,7 +133,11 @@ fn multi_instance_takeover() {
     // ── 实例 B：A 掉线后打开 → 领取 E1+1 ──
     let t_open = Instant::now();
     let b = Database::open(opts(&dir, 800)).unwrap();
-    let e_b = b.branch("main").unwrap().lease_epoch.load(std::sync::atomic::Ordering::Acquire);
+    let e_b = b
+        .branch("main")
+        .unwrap()
+        .lease_epoch
+        .load(std::sync::atomic::Ordering::Acquire);
     assert_eq!(e_b, e_a + 1, "接管者 epoch 应为 E+1");
     println!("[takeover] B opened in {:?}", t_open.elapsed());
 
@@ -151,10 +176,18 @@ fn lease_takeover_epoch_monotonic() {
     let dir = std::env::temp_dir().join(format!("dendro-mn2-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let a = Database::open(opts(&dir, 600)).unwrap();
-    let e_a = a.branch("main").unwrap().lease_epoch.load(std::sync::atomic::Ordering::Acquire);
+    let e_a = a
+        .branch("main")
+        .unwrap()
+        .lease_epoch
+        .load(std::sync::atomic::Ordering::Acquire);
 
     let b = Database::open(opts(&dir, 600)).unwrap();
-    let e_b = b.branch("main").unwrap().lease_epoch.load(std::sync::atomic::Ordering::Acquire);
+    let e_b = b
+        .branch("main")
+        .unwrap()
+        .lease_epoch
+        .load(std::sync::atomic::Ordering::Acquire);
     assert!(e_b > e_a, "接管者 epoch 应更大");
     drop(b);
     drop(a);
@@ -167,30 +200,58 @@ struct FenceFailAfterStore {
     ok_left: std::sync::atomic::AtomicI32,
 }
 impl dendro_core::objstore::ObjStore for FenceFailAfterStore {
-    fn get(&self, p: &str) -> dendro_core::objstore::ObjResult<bytes::Bytes> { self.inner.get(p) }
-    fn get_range(&self, p: &str, o: u64, l: usize) -> dendro_core::objstore::ObjResult<bytes::Bytes> { self.inner.get_range(p, o, l) }
+    fn get(&self, p: &str) -> dendro_core::objstore::ObjResult<bytes::Bytes> {
+        self.inner.get(p)
+    }
+    fn get_range(
+        &self,
+        p: &str,
+        o: u64,
+        l: usize,
+    ) -> dendro_core::objstore::ObjResult<bytes::Bytes> {
+        self.inner.get_range(p, o, l)
+    }
     fn put(&self, p: &str, d: bytes::Bytes) -> dendro_core::objstore::ObjResult<()> {
         if p.starts_with("fence/") {
-            let prev = self.ok_left.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            let prev = self
+                .ok_left
+                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
             if prev <= 0 {
-                return Err(dendro_core::objstore::ObjError::Io("fence unavailable (partitioned)".into()));
+                return Err(dendro_core::objstore::ObjError::Io(
+                    "fence unavailable (partitioned)".into(),
+                ));
             }
         }
         self.inner.put(p, d)
     }
     fn put_if_absent(&self, p: &str, d: bytes::Bytes) -> dendro_core::objstore::ObjResult<()> {
         if p.starts_with("fence/") {
-            let prev = self.ok_left.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            let prev = self
+                .ok_left
+                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
             if prev <= 0 {
-                return Err(dendro_core::objstore::ObjError::Io("fence unavailable (partitioned)".into()));
+                return Err(dendro_core::objstore::ObjError::Io(
+                    "fence unavailable (partitioned)".into(),
+                ));
             }
         }
         self.inner.put_if_absent(p, d)
     }
-    fn delete(&self, p: &str) -> dendro_core::objstore::ObjResult<()> { self.inner.delete(p) }
-    fn head(&self, p: &str) -> dendro_core::objstore::ObjResult<Option<dendro_core::objstore::HeadInfo>> { self.inner.head(p) }
-    fn list_prefix(&self, p: &str) -> dendro_core::objstore::ObjResult<Vec<String>> { self.inner.list_prefix(p) }
-    fn copy(&self, f: &str, t: &str) -> dendro_core::objstore::ObjResult<()> { self.inner.copy(f, t) }
+    fn delete(&self, p: &str) -> dendro_core::objstore::ObjResult<()> {
+        self.inner.delete(p)
+    }
+    fn head(
+        &self,
+        p: &str,
+    ) -> dendro_core::objstore::ObjResult<Option<dendro_core::objstore::HeadInfo>> {
+        self.inner.head(p)
+    }
+    fn list_prefix(&self, p: &str) -> dendro_core::objstore::ObjResult<Vec<String>> {
+        self.inner.list_prefix(p)
+    }
+    fn copy(&self, f: &str, t: &str) -> dendro_core::objstore::ObjResult<()> {
+        self.inner.copy(f, t)
+    }
 }
 
 #[test]
@@ -219,7 +280,8 @@ fn fence_expired_writer_rejected() {
     let db = Database::open(opts).unwrap();
     {
         let mut s = db.new_session();
-        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
+            .unwrap();
         s.exec("INSERT INTO t VALUES (1, 'ok')").unwrap(); // TTL 内提交成功
     }
     // 超过 TTL：保活续期持续失败（分区）→ 租约过期
@@ -228,15 +290,25 @@ fn fence_expired_writer_rejected() {
         let mut s = db.new_session();
         s.exec("INSERT INTO t VALUES (2, 'rejected')").unwrap_err()
     };
-    assert_eq!(err.state, "40001", "过期租约的提交应被拒（serialization/fencing）");
-    assert!(err.message.contains("fencing"), "错误信息应说明 fencing 原因：{err}");
+    assert_eq!(
+        err.state, "40001",
+        "过期租约的提交应被拒（serialization/fencing）"
+    );
+    assert!(
+        err.message.contains("fencing"),
+        "错误信息应说明 fencing 原因：{err}"
+    );
 
     // 旧会话的读路径不受影响（拒写不拒读）
     {
         let mut s = db.new_session();
         let o = s.exec("SELECT count(*) FROM t").unwrap();
         if let dendro_core::Output::Rows(rs) = &o[0] {
-            assert_eq!(rs.text_rows()[0][0].as_deref(), Some("1"), "过期写者的行未提交");
+            assert_eq!(
+                rs.text_rows()[0][0].as_deref(),
+                Some("1"),
+                "过期写者的行未提交"
+            );
         }
     }
 }
@@ -250,18 +322,24 @@ fn fence_renew_keeps_healthy_writer_writing() {
     let db = Database::open(opts(&dir, 80)).unwrap();
     {
         let mut s = db.new_session();
-        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
+            .unwrap();
     }
     for i in 0..10 {
         std::thread::sleep(Duration::from_millis(30));
         let mut s = db.new_session();
-        s.exec(&format!("INSERT INTO t VALUES ({i}, 'alive')")).unwrap();
+        s.exec(&format!("INSERT INTO t VALUES ({i}, 'alive')"))
+            .unwrap();
     }
     {
         let mut s = db.new_session();
         let o = s.exec("SELECT count(*) FROM t").unwrap();
         if let dendro_core::Output::Rows(rs) = &o[0] {
-            assert_eq!(rs.text_rows()[0][0].as_deref(), Some("10"), "惰性续期下健康写者不被误拒");
+            assert_eq!(
+                rs.text_rows()[0][0].as_deref(),
+                Some("10"),
+                "惰性续期下健康写者不被误拒"
+            );
         }
     }
     let _ = std::fs::remove_dir_all(&dir);
@@ -300,8 +378,17 @@ fn reopen_branch_sql_recovers_poisoned_writer() {
         fail_wal: AtomicU32,
     }
     impl dendro_core::objstore::ObjStore for WalFailStore {
-        fn get(&self, p: &str) -> dendro_core::objstore::ObjResult<bytes::Bytes> { self.inner.get(p) }
-        fn get_range(&self, p: &str, o: u64, l: usize) -> dendro_core::objstore::ObjResult<bytes::Bytes> { self.inner.get_range(p, o, l) }
+        fn get(&self, p: &str) -> dendro_core::objstore::ObjResult<bytes::Bytes> {
+            self.inner.get(p)
+        }
+        fn get_range(
+            &self,
+            p: &str,
+            o: u64,
+            l: usize,
+        ) -> dendro_core::objstore::ObjResult<bytes::Bytes> {
+            self.inner.get_range(p, o, l)
+        }
         fn put(&self, p: &str, d: bytes::Bytes) -> dendro_core::objstore::ObjResult<()> {
             if p.starts_with("wal/") {
                 // CAS 消耗预算（fetch_sub 在 0 上会回绕为 u32::MAX 污染后续 put）
@@ -310,19 +397,39 @@ fn reopen_branch_sql_recovers_poisoned_writer() {
                     if cur == 0 {
                         break;
                     }
-                    match self.fail_wal.compare_exchange_weak(cur, cur - 1, Ordering::SeqCst, Ordering::SeqCst) {
-                        Ok(_) => return Err(dendro_core::objstore::ObjError::Io("wal down".into())),
+                    match self.fail_wal.compare_exchange_weak(
+                        cur,
+                        cur - 1,
+                        Ordering::SeqCst,
+                        Ordering::SeqCst,
+                    ) {
+                        Ok(_) => {
+                            return Err(dendro_core::objstore::ObjError::Io("wal down".into()))
+                        }
                         Err(x) => cur = x,
                     }
                 }
             }
             self.inner.put(p, d)
         }
-        fn put_if_absent(&self, p: &str, d: bytes::Bytes) -> dendro_core::objstore::ObjResult<()> { self.inner.put_if_absent(p, d) }
-        fn delete(&self, p: &str) -> dendro_core::objstore::ObjResult<()> { self.inner.delete(p) }
-        fn head(&self, p: &str) -> dendro_core::objstore::ObjResult<Option<dendro_core::objstore::HeadInfo>> { self.inner.head(p) }
-        fn list_prefix(&self, p: &str) -> dendro_core::objstore::ObjResult<Vec<String>> { self.inner.list_prefix(p) }
-        fn copy(&self, f: &str, t: &str) -> dendro_core::objstore::ObjResult<()> { self.inner.copy(f, t) }
+        fn put_if_absent(&self, p: &str, d: bytes::Bytes) -> dendro_core::objstore::ObjResult<()> {
+            self.inner.put_if_absent(p, d)
+        }
+        fn delete(&self, p: &str) -> dendro_core::objstore::ObjResult<()> {
+            self.inner.delete(p)
+        }
+        fn head(
+            &self,
+            p: &str,
+        ) -> dendro_core::objstore::ObjResult<Option<dendro_core::objstore::HeadInfo>> {
+            self.inner.head(p)
+        }
+        fn list_prefix(&self, p: &str) -> dendro_core::objstore::ObjResult<Vec<String>> {
+            self.inner.list_prefix(p)
+        }
+        fn copy(&self, f: &str, t: &str) -> dendro_core::objstore::ObjResult<()> {
+            self.inner.copy(f, t)
+        }
     }
     let store = std::sync::Arc::new(WalFailStore {
         inner: dendro_core::objstore::memory::MemoryObjStore::new(),
@@ -360,7 +467,11 @@ fn reopen_branch_sql_recovers_poisoned_writer() {
     let mut s = db.new_session();
     let o = s.exec("SELECT count(*) FROM t").unwrap();
     if let dendro_core::Output::Rows(rs) = &o[0] {
-        assert_eq!(rs.text_rows()[0][0].as_deref(), Some("2"), "reopen 后恢复写入");
+        assert_eq!(
+            rs.text_rows()[0][0].as_deref(),
+            Some("2"),
+            "reopen 后恢复写入"
+        );
     }
 }
 
@@ -392,7 +503,10 @@ fn lazy_open_and_drop_branch_gc() {
         let db = Database::open(opts(&dir, 300)).unwrap();
         let mut s = db.new_session();
         s.exec("DROP BRANCH b2").unwrap();
-        assert!(std::fs::read_dir(dir.join("fence").join("b2")).is_ok(), "窗口内 fence 对象仍在");
+        assert!(
+            std::fs::read_dir(dir.join("fence").join("b2")).is_ok(),
+            "窗口内 fence 对象仍在"
+        );
         std::thread::sleep(Duration::from_millis(350));
         let db = Database::open(DbOptions {
             store: StoreConfig::LocalDir(dir.clone()),
@@ -408,20 +522,34 @@ fn lazy_open_and_drop_branch_gc() {
         })
         .unwrap();
         {
-            let man = std::fs::read_dir(dir.join("manifest")).unwrap().flatten().map(|e| e.path()).max().unwrap();
+            let man = std::fs::read_dir(dir.join("manifest"))
+                .unwrap()
+                .flatten()
+                .map(|e| e.path())
+                .max()
+                .unwrap();
             let text = std::fs::read_to_string(&man).unwrap();
             let tombs: Vec<&str> = text.split("\"path\"").skip(1).collect();
             println!("[dbg] tombstones in {}: {:?}", man.display(), tombs.len());
-            println!("[dbg] b2 tombs: {}", tombs.iter().filter(|t| t.contains("b2")).count());
+            println!(
+                "[dbg] b2 tombs: {}",
+                tombs.iter().filter(|t| t.contains("b2")).count()
+            );
         }
         std::thread::sleep(Duration::from_millis(350));
         db.gc_sweep().unwrap(); // 幂等：open 时的 sweep 可能已回收
         assert!(
-            std::fs::read_dir(dir.join("fence").join("b2")).map(|d| d.count()).unwrap_or(0) == 0,
+            std::fs::read_dir(dir.join("fence").join("b2"))
+                .map(|d| d.count())
+                .unwrap_or(0)
+                == 0,
             "DROP 后 fence 对象应被回收（不再永久泄漏）"
         );
         assert!(
-            std::fs::read_dir(dir.join("wal").join("b2")).map(|d| d.count()).unwrap_or(0) == 0,
+            std::fs::read_dir(dir.join("wal").join("b2"))
+                .map(|d| d.count())
+                .unwrap_or(0)
+                == 0,
             "DROP 后 WAL 段应被回收"
         );
     }

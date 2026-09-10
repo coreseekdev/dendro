@@ -27,9 +27,14 @@ fn backup_restore_roundtrip() {
     let dst = tmpdir("dst");
     // 源库：两批写入（中间一次 checkpoint）
     {
-        let db = Database::open(DbOptions { store: dendro_core::StoreConfig::LocalDir(src.clone()), ..DbOptions::default() }).unwrap();
+        let db = Database::open(DbOptions {
+            store: dendro_core::StoreConfig::LocalDir(src.clone()),
+            ..DbOptions::default()
+        })
+        .unwrap();
         let mut s = db.new_session();
-        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
+            .unwrap();
         s.exec("INSERT INTO t VALUES (1, 'a'), (2, 'b')").unwrap();
         db.checkpoint_branch("main").unwrap();
         s.exec("INSERT INTO t VALUES (3, 'c')").unwrap();
@@ -39,14 +44,22 @@ fn backup_restore_roundtrip() {
     assert!(objects > 0 && bytes > 0);
 
     // 备份目录作为数据根打开：一致性点状态完整可读
-    let restored = Database::open(DbOptions { store: dendro_core::StoreConfig::LocalDir(dst.clone()), ..DbOptions::default() }).unwrap();
+    let restored = Database::open(DbOptions {
+        store: dendro_core::StoreConfig::LocalDir(dst.clone()),
+        ..DbOptions::default()
+    })
+    .unwrap();
     assert_eq!(count(&restored, "SELECT count(*) FROM t"), "3");
     assert_eq!(count(&restored, "SELECT max(id) FROM t"), "3");
 
     // 幂等：重复备份不在备份目录创建任何新文件（同路径跳过）
     let dst_files = |root: &std::path::Path| -> usize {
-        std::fs::read_dir(root.join("objects")).map(|d| d.count()).unwrap_or(0)
-            + std::fs::read_dir(root.join("manifest")).map(|d| d.count()).unwrap_or(0)
+        std::fs::read_dir(root.join("objects"))
+            .map(|d| d.count())
+            .unwrap_or(0)
+            + std::fs::read_dir(root.join("manifest"))
+                .map(|d| d.count())
+                .unwrap_or(0)
     };
     let before = dst_files(&dst);
     dendro_server::backup::backup_dir(&src, &dst).unwrap();
@@ -54,16 +67,36 @@ fn backup_restore_roundtrip() {
 
     // 源库继续写 → 新提交不在旧快照内（一致性点语义）；再次备份后可见
     {
-        let db = Database::open(DbOptions { store: dendro_core::StoreConfig::LocalDir(src.clone()), ..DbOptions::default() }).unwrap();
+        let db = Database::open(DbOptions {
+            store: dendro_core::StoreConfig::LocalDir(src.clone()),
+            ..DbOptions::default()
+        })
+        .unwrap();
         let mut s = db.new_session();
         s.exec("INSERT INTO t VALUES (4, 'd')").unwrap();
         db.checkpoint_branch("main").unwrap();
     }
-    let restored2 = Database::open(DbOptions { store: dendro_core::StoreConfig::LocalDir(dst.clone()), ..DbOptions::default() }).unwrap();
-    assert_eq!(count(&restored2, "SELECT count(*) FROM t"), "3", "旧快照不含后续提交");
+    let restored2 = Database::open(DbOptions {
+        store: dendro_core::StoreConfig::LocalDir(dst.clone()),
+        ..DbOptions::default()
+    })
+    .unwrap();
+    assert_eq!(
+        count(&restored2, "SELECT count(*) FROM t"),
+        "3",
+        "旧快照不含后续提交"
+    );
     dendro_server::backup::backup_dir(&src, &dst).unwrap();
-    let restored3 = Database::open(DbOptions { store: dendro_core::StoreConfig::LocalDir(dst.clone()), ..DbOptions::default() }).unwrap();
-    assert_eq!(count(&restored3, "SELECT count(*) FROM t"), "4", "再次备份后新提交进入快照");
+    let restored3 = Database::open(DbOptions {
+        store: dendro_core::StoreConfig::LocalDir(dst.clone()),
+        ..DbOptions::default()
+    })
+    .unwrap();
+    assert_eq!(
+        count(&restored3, "SELECT count(*) FROM t"),
+        "4",
+        "再次备份后新提交进入快照"
+    );
 
     let _ = std::fs::remove_dir_all(&src);
     let _ = std::fs::remove_dir_all(&dst);
@@ -87,7 +120,11 @@ fn backup_repairs_truncated_files() {
     let src = tmpdir("tr-src");
     let dst = tmpdir("tr-dst");
     {
-        let db = Database::open(DbOptions { store: dendro_core::StoreConfig::LocalDir(src.clone()), ..DbOptions::default() }).unwrap();
+        let db = Database::open(DbOptions {
+            store: dendro_core::StoreConfig::LocalDir(src.clone()),
+            ..DbOptions::default()
+        })
+        .unwrap();
         let mut s = db.new_session();
         s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY)").unwrap();
         s.exec("INSERT INTO t VALUES (1)").unwrap();
@@ -102,9 +139,17 @@ fn backup_repairs_truncated_files() {
     drop(f);
     // 重备：尺寸守卫检测到不符 → 重拷修复
     dendro_server::backup::backup_dir(&src, &dst).unwrap();
-    assert_eq!(std::fs::metadata(&m1).unwrap().len(), full_len, "截断文件必须被守卫修复");
+    assert_eq!(
+        std::fs::metadata(&m1).unwrap().len(),
+        full_len,
+        "截断文件必须被守卫修复"
+    );
     // 修复后恢复路径可打开
-    let restored = Database::open(DbOptions { store: dendro_core::StoreConfig::LocalDir(dst.clone()), ..DbOptions::default() }).unwrap();
+    let restored = Database::open(DbOptions {
+        store: dendro_core::StoreConfig::LocalDir(dst.clone()),
+        ..DbOptions::default()
+    })
+    .unwrap();
     assert_eq!(count(&restored, "SELECT count(*) FROM t"), "1");
     let _ = std::fs::remove_dir_all(&src);
     let _ = std::fs::remove_dir_all(&dst);

@@ -166,21 +166,28 @@ fn main() {
                 checkpoint_interval_s: 30,
                 lease_ttl_ms: 30_000,
                 read_only,
-            gc_retention_ms,
+                gc_retention_ms,
             };
-            let db = Database::open(opts).unwrap_or_else(|e| panic!("open {}: {e}", data.display()));
+            let db =
+                Database::open(opts).unwrap_or_else(|e| panic!("open {}: {e}", data.display()));
             db.set_columnar(Arc::new(dendro_columnar::integrate::CbfColumnar {
                 row_group_rows: 1_048_576,
             }));
-            
+
             eprintln!("dendro opened at {}", data.display());
             // **前置 bind**（第九轮 R9-4）：全部监听器先绑定成功才打印 ready
             // 并 spawn——此前 bind 在各自线程内发生，pg 端口冲突时照常打印
             // ready 且进程永不退出
             // **按名存取**（第十轮 R10-2：此前 FIFO Vec 与消费顺序错位，
             // 默认配置下 PG/MySQL 端口互换——进程级探针实锤）
-            let mut listeners = std::collections::HashMap::<&'static str, std::net::TcpListener>::new();
-            for (name, port) in [("metrics", metrics_port), ("pg", pg_port), ("mysql", mysql_port), ("kv", kv_port)] {
+            let mut listeners =
+                std::collections::HashMap::<&'static str, std::net::TcpListener>::new();
+            for (name, port) in [
+                ("metrics", metrics_port),
+                ("pg", pg_port),
+                ("mysql", mysql_port),
+                ("kv", kv_port),
+            ] {
                 if port == 0 {
                     continue;
                 }
@@ -199,7 +206,10 @@ fn main() {
                 Some(
                     std::thread::Builder::new()
                         .name("metrics-listener".into())
-                        .spawn(move || dendro_server::metrics::serve_listener(l, db_m).expect("metrics listener"))
+                        .spawn(move || {
+                            dendro_server::metrics::serve_listener(l, db_m)
+                                .expect("metrics listener")
+                        })
                         .unwrap(),
                 )
             } else {
@@ -211,7 +221,10 @@ fn main() {
                 Some(
                     std::thread::Builder::new()
                         .name("kv-resp-listener".into())
-                        .spawn(move || dendro_server::kv_resp::serve_listener(l, db_kv, "main").expect("kv listener"))
+                        .spawn(move || {
+                            dendro_server::kv_resp::serve_listener(l, db_kv, "main")
+                                .expect("kv listener")
+                        })
                         .unwrap(),
                 )
             } else {
@@ -219,7 +232,10 @@ fn main() {
             };
             let my_handle = if mysql_port > 0 {
                 let db_my = db.clone();
-                let cfg = dendro_mywire::MyConfig { password: password.clone(), ..Default::default() };
+                let cfg = dendro_mywire::MyConfig {
+                    password: password.clone(),
+                    ..Default::default()
+                };
                 let l = listeners.remove("mysql").unwrap();
                 Some(
                     std::thread::Builder::new()
@@ -245,7 +261,9 @@ fn main() {
                     std::thread::Builder::new()
                         .name("pg-listener".into())
                         .spawn(move || {
-                            let cfg = dendro_pgwire::PgConfig { password: password.clone() };
+                            let cfg = dendro_pgwire::PgConfig {
+                                password: password.clone(),
+                            };
                             dendro_pgwire::serve_listener(l, db_pg, cfg).expect("pg listener")
                         })
                         .unwrap(),
@@ -268,8 +286,7 @@ fn main() {
                         use signal_hook::consts::{SIGINT, SIGTERM};
                         // Signals::forever 只在首信号后返回一次即 exit(0)，
                         // 用 if-let 而非 loop/for（避免"永不循环"误报）
-                        if let Ok(mut sigs) =
-                            signal_hook::iterator::Signals::new([SIGTERM, SIGINT])
+                        if let Ok(mut sigs) = signal_hook::iterator::Signals::new([SIGTERM, SIGINT])
                         {
                             if sigs.forever().next().is_some() {
                                 eprintln!("dendro: signal received — graceful shutdown");
@@ -286,10 +303,18 @@ fn main() {
             // 任一监听器失败（bind 冲突等）都会使 join 返回 Err → 进程非零
             // 退出（第八轮 R8-6：此前 pg bind 失败时照常打印 ready 且永不退出）
             let mut handles: Vec<(&str, std::thread::JoinHandle<()>)> = Vec::new();
-            if let Some(h) = metrics_handle { handles.push(("metrics", h)); }
-            if let Some(h) = pg_handle { handles.push(("pg", h)); }
-            if let Some(h) = my_handle { handles.push(("mysql", h)); }
-            if let Some(h) = kv_handle { handles.push(("kv", h)); }
+            if let Some(h) = metrics_handle {
+                handles.push(("metrics", h));
+            }
+            if let Some(h) = pg_handle {
+                handles.push(("pg", h));
+            }
+            if let Some(h) = my_handle {
+                handles.push(("mysql", h));
+            }
+            if let Some(h) = kv_handle {
+                handles.push(("kv", h));
+            }
             for (name, h) in handles {
                 if h.join().is_err() {
                     eprintln!("dendro: listener '{name}' failed — exiting");
@@ -297,17 +322,18 @@ fn main() {
                 }
             }
         }
-        Cmd::Backup { data, out } => {
-            match dendro_server::backup::backup_dir(&data, &out) {
-                Ok((objects, bytes)) => {
-                    println!("backup complete: {objects} objects, {bytes} bytes -> {}", out.display());
-                }
-                Err(e) => {
-                    eprintln!("backup failed: {e}");
-                    std::process::exit(1);
-                }
+        Cmd::Backup { data, out } => match dendro_server::backup::backup_dir(&data, &out) {
+            Ok((objects, bytes)) => {
+                println!(
+                    "backup complete: {objects} objects, {bytes} bytes -> {}",
+                    out.display()
+                );
             }
-        }
+            Err(e) => {
+                eprintln!("backup failed: {e}");
+                std::process::exit(1);
+            }
+        },
         Cmd::BenchCompress { rows, out } => {
             // M-3 Q 曲线：多行数阶梯采样，JSON 各自落盘
             let mut sizes: Vec<usize> = vec![1_000, 10_000, rows];
@@ -321,7 +347,10 @@ fn main() {
                     Err(e) => eprintln!("  {n} rows failed: {e}"),
                 }
             }
-            println!("compression curves done → {}", out.parent().unwrap_or(&out).display());
+            println!(
+                "compression curves done → {}",
+                out.parent().unwrap_or(&out).display()
+            );
         }
         Cmd::Bench { out } => {
             dendro_server::bench::run_all(&out);

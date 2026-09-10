@@ -20,10 +20,12 @@ pub enum Mutation {
 
 /// 每 entry 的近似字节成本（分列统计与分裂依据）
 fn entry_bytes(k: &[u8], v: &EntryVal) -> usize {
-    k.len() + 12 + match v {
-        EntryVal::Item(b) => b.len(),
-        EntryVal::Child(_, _) => ADDR_LEN + 8,
-    }
+    k.len()
+        + 12
+        + match v {
+            EntryVal::Item(b) => b.len(),
+            EntryVal::Child(_, _) => ADDR_LEN + 8,
+        }
 }
 
 /// 树的条目总数（内部节点用累计计数）
@@ -42,7 +44,11 @@ pub struct Chunker<'a> {
 
 impl<'a> Chunker<'a> {
     pub fn new(store: &'a NodeStore, session: &'a mut HashSet<Hash>) -> Self {
-        Self { store, session, dirty: 0 }
+        Self {
+            store,
+            session,
+            dirty: 0,
+        }
     }
 
     fn put(&mut self, level: u8, entries: Vec<(Vec<u8>, EntryVal)>) -> Result<Node> {
@@ -53,7 +59,11 @@ impl<'a> Chunker<'a> {
     }
 
     /// 把有序 entries 按 splitter 切成节点，返回父层条目
-    fn chunk_level(&mut self, level: u8, entries: Vec<(Vec<u8>, EntryVal)>) -> Result<Vec<(Vec<u8>, EntryVal)>> {
+    fn chunk_level(
+        &mut self,
+        level: u8,
+        entries: Vec<(Vec<u8>, EntryVal)>,
+    ) -> Result<Vec<(Vec<u8>, EntryVal)>> {
         let splitter = KeySplitter::new(level);
         let mut out = Vec::new();
         let mut buf: Vec<(Vec<u8>, EntryVal)> = Vec::new();
@@ -84,8 +94,10 @@ impl<'a> Chunker<'a> {
         if items.is_empty() {
             return Ok(None);
         }
-        let mut level_entries: Vec<(Vec<u8>, EntryVal)> =
-            items.iter().map(|(k, v)| (k.clone(), EntryVal::Item(v.clone()))).collect();
+        let mut level_entries: Vec<(Vec<u8>, EntryVal)> = items
+            .iter()
+            .map(|(k, v)| (k.clone(), EntryVal::Item(v.clone())))
+            .collect();
         let mut level = 0u8;
         loop {
             let parent = self.chunk_level(level, std::mem::take(&mut level_entries))?;
@@ -105,7 +117,11 @@ impl<'a> Chunker<'a> {
 
     /// 增量应用变更（muts 任意顺序；同 key 取最后一条）。
     /// 返回新根；空树返回 None。
-    pub fn apply(&mut self, root: Option<&Hash>, muts: &[(Vec<u8>, Mutation)]) -> Result<Option<Hash>> {
+    pub fn apply(
+        &mut self,
+        root: Option<&Hash>,
+        muts: &[(Vec<u8>, Mutation)],
+    ) -> Result<Option<Hash>> {
         if muts.is_empty() {
             return Ok(root.copied());
         }
@@ -170,7 +186,12 @@ impl<'a> Chunker<'a> {
 
     /// 递归：应用变更到一个子树，返回替换该子树的 0/1/N 个新节点（N=分裂）。
     /// 未触及子树原地址复用（结构共享）。
-    fn apply_rec(&mut self, addr: &Hash, level: u8, muts: &[(Vec<u8>, Mutation)]) -> Result<Vec<Node>> {
+    fn apply_rec(
+        &mut self,
+        addr: &Hash,
+        level: u8,
+        muts: &[(Vec<u8>, Mutation)],
+    ) -> Result<Vec<Node>> {
         let node = self.store.get_node(addr)?;
         debug_assert_eq!(node.level(), level);
         if level == 0 {
@@ -204,7 +225,11 @@ impl<'a> Chunker<'a> {
                 _ => return Err(SqlError::internal("item at internal node")),
             };
             let start = if i == 0 { 0 } else { bounds[i - 1] };
-            let end = if i == n_children - 1 { muts.len() } else { bounds[i] };
+            let end = if i == n_children - 1 {
+                muts.len()
+            } else {
+                bounds[i]
+            };
             let sub = &muts[start..end];
             if sub.is_empty() {
                 new_entries.push((ck, EntryVal::Child(child_addr, child_count)));
@@ -227,7 +252,11 @@ impl<'a> Chunker<'a> {
     }
 
     /// 把父层条目 (…, Child(addr,…)) 反查为节点列表
-    fn materialize_entries(&mut self, _level: u8, parent_entries: &[(Vec<u8>, EntryVal)]) -> Result<Vec<Node>> {
+    fn materialize_entries(
+        &mut self,
+        _level: u8,
+        parent_entries: &[(Vec<u8>, EntryVal)],
+    ) -> Result<Vec<Node>> {
         let mut nodes = Vec::with_capacity(parent_entries.len());
         for (_, v) in parent_entries {
             if let EntryVal::Child(a, _) = v {
@@ -257,7 +286,9 @@ fn merge_leaf(node: &Node, muts: &[(Vec<u8>, Mutation)]) -> Result<Vec<(Vec<u8>,
     let mut ei = 0usize;
     let mut mi = 0usize;
     while ei < node.count() || mi < muts.len() {
-        if mi >= muts.len() || (ei < node.count() && node.key(ei).as_slice() < muts[mi].0.as_slice()) {
+        if mi >= muts.len()
+            || (ei < node.count() && node.key(ei).as_slice() < muts[mi].0.as_slice())
+        {
             out.push((node.key(ei), node.value(ei)));
             ei += 1;
         } else if ei >= node.count() || node.key(ei).as_slice() > muts[mi].0.as_slice() {
@@ -282,8 +313,8 @@ fn merge_leaf(node: &Node, muts: &[(Vec<u8>, Mutation)]) -> Result<Vec<(Vec<u8>,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::objstore::memory::MemoryObjStore;
     use crate::objstore::cas::CasStore;
+    use crate::objstore::memory::MemoryObjStore;
     use crate::prolly::cursor;
     use std::sync::Arc;
 
@@ -293,7 +324,14 @@ mod tests {
     }
 
     fn items(n: usize) -> Vec<(Vec<u8>, Vec<u8>)> {
-        (0..n).map(|i| (format!("k{:08}", i).into_bytes(), format!("v{i}").into_bytes())).collect()
+        (0..n)
+            .map(|i| {
+                (
+                    format!("k{:08}", i).into_bytes(),
+                    format!("v{i}").into_bytes(),
+                )
+            })
+            .collect()
     }
 
     #[test]
@@ -306,7 +344,8 @@ mod tests {
         let v = cursor::lookup(&s, &root, b"k00000042").unwrap().unwrap();
         assert_eq!(v, b"v42");
         assert!(cursor::lookup(&s, &root, b"nope").unwrap().is_none());
-        let rng = cursor::range_scan(s.clone(), &root, Some(b"k00000100"), Some(b"k00000200")).unwrap();
+        let rng =
+            cursor::range_scan(s.clone(), &root, Some(b"k00000100"), Some(b"k00000200")).unwrap();
         assert_eq!(rng.len(), 100);
         assert_eq!(rng[0].0, b"k00000100".to_vec());
         // 树高合理（5000 条目应为 2~3 层）
@@ -333,12 +372,21 @@ mod tests {
         // 结构共享：新写 chunk 数应远小于总节点数
         assert!(ck2.dirty < 40, "dirty {} too big", ck2.dirty);
         // 语义正确
-        assert_eq!(cursor::lookup(&s, &root2, b"k00000100").unwrap().unwrap(), b"updated");
-        assert_eq!(cursor::lookup(&s, &root2, b"k00009999").unwrap().unwrap(), b"new");
+        assert_eq!(
+            cursor::lookup(&s, &root2, b"k00000100").unwrap().unwrap(),
+            b"updated"
+        );
+        assert_eq!(
+            cursor::lookup(&s, &root2, b"k00009999").unwrap().unwrap(),
+            b"new"
+        );
         assert!(cursor::lookup(&s, &root2, b"k00000005").unwrap().is_none());
         assert_eq!(cursor::tree_count(&s, &root2).unwrap(), 3000);
         // 原树不变（不可变）
-        assert_eq!(cursor::lookup(&s, &root, b"k00000100").unwrap().unwrap(), b"v100");
+        assert_eq!(
+            cursor::lookup(&s, &root, b"k00000100").unwrap().unwrap(),
+            b"v100"
+        );
         // 旧树仍可读
         assert_eq!(cursor::tree_count(&s, &root).unwrap(), 3000);
     }
@@ -349,14 +397,21 @@ mod tests {
         let mut sess = HashSet::new();
         let mut ck = Chunker::new(&s, &mut sess);
         let root = ck.build(&items(50)).unwrap().unwrap();
-        let dels: Vec<(Vec<u8>, Mutation)> =
-            (0..50).map(|i| (format!("k{i:08}").into_bytes(), Mutation::Delete)).collect();
+        let dels: Vec<(Vec<u8>, Mutation)> = (0..50)
+            .map(|i| (format!("k{i:08}").into_bytes(), Mutation::Delete))
+            .collect();
         let mut ck2 = Chunker::new(&s, &mut sess);
         let root2 = ck2.apply(Some(&root), &dels).unwrap();
         assert!(root2.is_none(), "全删后应为空树");
         // 重建
         let mut ck3 = Chunker::new(&s, &mut sess);
-        let root3 = ck3.apply(root2.as_ref(), &[(b"a".to_vec(), Mutation::Put(b"1".to_vec()))]).unwrap().unwrap();
+        let root3 = ck3
+            .apply(
+                root2.as_ref(),
+                &[(b"a".to_vec(), Mutation::Put(b"1".to_vec()))],
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(cursor::tree_count(&s, &root3).unwrap(), 1);
     }
 
@@ -367,12 +422,24 @@ mod tests {
         let mut ck = Chunker::new(&s, &mut sess);
         let root = ck.build(&items(100)).unwrap().unwrap();
         // 追加 5000 个 key（有序追加场景）
-        let app: Vec<(Vec<u8>, Mutation)> =
-            (100..5100).map(|i| (format!("k{i:08}").into_bytes(), Mutation::Put(format!("v{i}").into_bytes()))).collect();
+        let app: Vec<(Vec<u8>, Mutation)> = (100..5100)
+            .map(|i| {
+                (
+                    format!("k{i:08}").into_bytes(),
+                    Mutation::Put(format!("v{i}").into_bytes()),
+                )
+            })
+            .collect();
         let mut ck2 = Chunker::new(&s, &mut sess);
         let root2 = ck2.apply(Some(&root), &app).unwrap().unwrap();
         assert_eq!(cursor::tree_count(&s, &root2).unwrap(), 5100);
-        assert_eq!(cursor::lookup(&s, &root2, b"k00005099").unwrap().unwrap(), b"v5099");
-        assert_eq!(cursor::lookup(&s, &root2, b"k00000099").unwrap().unwrap(), b"v99");
+        assert_eq!(
+            cursor::lookup(&s, &root2, b"k00005099").unwrap().unwrap(),
+            b"v5099"
+        );
+        assert_eq!(
+            cursor::lookup(&s, &root2, b"k00000099").unwrap().unwrap(),
+            b"v99"
+        );
     }
 }

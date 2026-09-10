@@ -72,7 +72,8 @@ impl ObjStore for LocalObjStore {
             return Ok(Bytes::new());
         }
         let len = (len as u64).min(flen - off) as usize;
-        f.seek(std::io::SeekFrom::Start(off)).map_err(|e| map_io(e, &p))?;
+        f.seek(std::io::SeekFrom::Start(off))
+            .map_err(|e| map_io(e, &p))?;
         let mut buf = vec![0u8; len];
         f.read_exact(&mut buf).map_err(|e| map_io(e, &p))?;
         Ok(Bytes::from(buf))
@@ -152,13 +153,20 @@ mod tests {
     fn roundtrip_and_conditional() {
         let dir = std::env::temp_dir().join(format!("dendro-test-{}", std::process::id()));
         let s = LocalObjStore::open(&dir).unwrap();
-        s.put("wal/00000000000000000001.wal", Bytes::from_static(b"abc")).unwrap();
-        assert_eq!(s.get("wal/00000000000000000001.wal").unwrap().as_ref(), b"abc");
+        s.put("wal/00000000000000000001.wal", Bytes::from_static(b"abc"))
+            .unwrap();
         assert_eq!(
-            s.get_range("wal/00000000000000000001.wal", 1, 2).unwrap().as_ref(),
+            s.get("wal/00000000000000000001.wal").unwrap().as_ref(),
+            b"abc"
+        );
+        assert_eq!(
+            s.get_range("wal/00000000000000000001.wal", 1, 2)
+                .unwrap()
+                .as_ref(),
             b"bc"
         );
-        s.put_if_absent("objects/ab/cd.chunk", Bytes::from_static(b"z")).unwrap();
+        s.put_if_absent("objects/ab/cd.chunk", Bytes::from_static(b"z"))
+            .unwrap();
         assert!(matches!(
             s.put_if_absent("objects/ab/cd.chunk", Bytes::from_static(b"z2")),
             Err(ObjError::Exists(_))

@@ -19,9 +19,9 @@
 //!   → watermark 推进
 //! ```
 
+use crate::error::SqlError;
 use raft::prelude::*;
 use raft::{Config, Storage};
-use crate::error::SqlError;
 
 /// 提交批次：一次事务的全部变更
 #[derive(Debug, Clone)]
@@ -37,7 +37,9 @@ pub struct JournalStorage {
 
 impl JournalStorage {
     pub fn new() -> Self {
-        Self { inner: raft::storage::MemStorage::default() }
+        Self {
+            inner: raft::storage::MemStorage::default(),
+        }
     }
 }
 
@@ -93,7 +95,9 @@ impl RaftJournal {
             skip_bcast_commit: true,
             ..Default::default()
         };
-        config.validate().map_err(|e| SqlError::internal(format!("raft config: {e}")))?;
+        config
+            .validate()
+            .map_err(|e| SqlError::internal(format!("raft config: {e}")))?;
 
         let storage = JournalStorage::new();
         let drain = slog::Discard;
@@ -102,7 +106,8 @@ impl RaftJournal {
             .map_err(|e| SqlError::internal(format!("raft node: {e}")))?;
 
         // 单节点：自己就是唯一 voter，发起选举成为 leader
-        node.campaign().map_err(|e| SqlError::internal(format!("raft campaign: {e}")))?;
+        node.campaign()
+            .map_err(|e| SqlError::internal(format!("raft campaign: {e}")))?;
         if node.has_ready() {
             let ready = node.ready();
             node.advance(ready);

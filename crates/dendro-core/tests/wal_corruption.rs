@@ -5,12 +5,11 @@
 //!
 //! 段格式见 SPEC 01 / wal.rs：24B 帧头（magic/ver/ty/seq/len/crc）+ payload + 32B 段尾。
 
-
+use bytes::Bytes;
 use dendro_core::objstore::memory::MemoryObjStore;
 use dendro_core::objstore::{ObjResult, ObjStore};
 use dendro_core::wal::{encode_frame, FrameIter, FrameType, HEADER_LEN};
 use dendro_core::{Database, DbOptions, StoreConfig};
-use bytes::Bytes;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -33,9 +32,11 @@ fn opts_store(store: StoreConfig) -> DbOptions {
 fn seed_db(dir: &std::path::Path) {
     let db = Database::open(opts_store(StoreConfig::LocalDir(dir.to_path_buf()))).unwrap();
     let mut s = db.new_session();
-    s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+    s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
+        .unwrap();
     for i in 0..3 {
-        s.exec(&format!("INSERT INTO t VALUES ({i}, 'v{i}')")).unwrap();
+        s.exec(&format!("INSERT INTO t VALUES ({i}, 'v{i}')"))
+            .unwrap();
     }
     drop(s);
     drop(db); // 模拟崩溃：段已落盘
@@ -53,7 +54,10 @@ fn corrupt_first_frame_len(dir: &std::path::Path) -> usize {
 
 fn find_first_segment(dir: &std::path::Path) -> std::path::PathBuf {
     let mut hit = None;
-    for e in std::fs::read_dir(dir.join("wal").join("main")).unwrap().flatten() {
+    for e in std::fs::read_dir(dir.join("wal").join("main"))
+        .unwrap()
+        .flatten()
+    {
         for f in std::fs::read_dir(e.path()).unwrap().flatten() {
             if f.path().extension().is_some_and(|x| x == "wal") {
                 hit = Some(f.path());
@@ -94,7 +98,10 @@ fn frame_iter_truncated_payload_is_error() {
     let frame = encode_frame(FrameType::Txn, 1, &payload);
     let cut = &frame[..frame.len() - 40];
     let mut it = FrameIter::new(cut);
-    assert!(matches!(it.next_frame(), Some(Err(_))), "截断 payload 应报错而非 panic/静默");
+    assert!(
+        matches!(it.next_frame(), Some(Err(_))),
+        "截断 payload 应报错而非 panic/静默"
+    );
 }
 
 #[test]
@@ -112,7 +119,10 @@ fn frame_iter_truncated_header_ends_cleanly() {
     let frame = encode_frame(FrameType::Txn, 1, b"xyz");
     let cut = &frame[..10]; // 帧头不完整（< 24B）
     let mut it = FrameIter::new(cut);
-    assert!(it.next_frame().is_none(), "半帧头视为段尾（torn write 容忍）");
+    assert!(
+        it.next_frame().is_none(),
+        "半帧头视为段尾（torn write 容忍）"
+    );
 }
 
 #[test]
@@ -196,8 +206,17 @@ impl ObjStore for FlakyPutStore {
             if cur == 0 {
                 break;
             }
-            match self.fail_puts_left.compare_exchange_weak(cur, cur - 1, Ordering::SeqCst, Ordering::SeqCst) {
-                Ok(_) => return Err(dendro_core::objstore::ObjError::Io("injected put failure".into())),
+            match self.fail_puts_left.compare_exchange_weak(
+                cur,
+                cur - 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => {
+                    return Err(dendro_core::objstore::ObjError::Io(
+                        "injected put failure".into(),
+                    ))
+                }
                 Err(x) => cur = x,
             }
         }
@@ -235,7 +254,8 @@ fn wal_failure_poisons_writer_until_reopen() {
     let db = Database::open(opts_store(StoreConfig::Obj(obj.clone()))).unwrap();
     {
         let mut s = db.new_session();
-        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
+            .unwrap();
         s.exec("INSERT INTO t VALUES (1, 'a')").unwrap(); // 段 1 正常落盘
     }
     obj.fail_puts_left.store(5_000, Ordering::SeqCst);
@@ -246,13 +266,20 @@ fn wal_failure_poisons_writer_until_reopen() {
             Err(e) => e,
         }
     };
-    assert_eq!(err.state, "40003", "WAL 失败应为 completion_unknown（毒化）：{err}");
+    assert_eq!(
+        err.state, "40003",
+        "WAL 失败应为 completion_unknown（毒化）：{err}"
+    );
     // 进程内：失败的提交无痕（P2' install-after-durable）
     {
         let mut s = db.new_session();
         let o = s.exec("SELECT count(*) FROM t").unwrap();
         if let dendro_core::Output::Rows(rs) = &o[0] {
-            assert_eq!(rs.text_rows()[0][0].as_deref(), Some("1"), "失败提交不得产生可见状态");
+            assert_eq!(
+                rs.text_rows()[0][0].as_deref(),
+                Some("1"),
+                "失败提交不得产生可见状态"
+            );
         }
     }
     // 毒化后：故障恢复也拒绝新提交——不得叠加在未知状态上
@@ -272,7 +299,11 @@ fn wal_failure_poisons_writer_until_reopen() {
         let mut s = db2.new_session();
         let o = s.exec("SELECT count(*) FROM t").unwrap();
         if let dendro_core::Output::Rows(rs) = &o[0] {
-            assert_eq!(rs.text_rows()[0][0].as_deref(), Some("1"), "失败事务重启后不得出现（无幽灵提交）");
+            assert_eq!(
+                rs.text_rows()[0][0].as_deref(),
+                Some("1"),
+                "失败事务重启后不得出现（无幽灵提交）"
+            );
         }
         s.exec("INSERT INTO t VALUES (3, 'c')").unwrap();
     }
@@ -281,7 +312,11 @@ fn wal_failure_poisons_writer_until_reopen() {
     let mut s = db3.new_session();
     let o = s.exec("SELECT count(*) FROM t").unwrap();
     if let dendro_core::Output::Rows(rs) = &o[0] {
-        assert_eq!(rs.text_rows()[0][0].as_deref(), Some("2"), "reopen 后恢复写入");
+        assert_eq!(
+            rs.text_rows()[0][0].as_deref(),
+            Some("2"),
+            "reopen 后恢复写入"
+        );
     }
 }
 
@@ -298,7 +333,8 @@ fn transient_flush_failure_self_heals_via_reopen() {
     let db = Database::open(opts_store(StoreConfig::Obj(obj.clone()))).unwrap();
     {
         let mut s = db.new_session();
-        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
+            .unwrap();
     }
     // 注入仅限 wal/ 前缀（keepalive 的 fence/ PUT 不消耗预算 → 确定性）
     obj.fail_puts_left.store(1, Ordering::SeqCst);
@@ -326,7 +362,11 @@ fn transient_flush_failure_self_heals_via_reopen() {
     s.exec("INSERT INTO t VALUES (1, 'a')").unwrap();
     let o = s.exec("SELECT count(*) FROM t").unwrap();
     if let dendro_core::Output::Rows(rs) = &o[0] {
-        assert_eq!(rs.text_rows()[0][0].as_deref(), Some("1"), "reopen 后恢复正常");
+        assert_eq!(
+            rs.text_rows()[0][0].as_deref(),
+            Some("1"),
+            "reopen 后恢复正常"
+        );
     }
 }
 
@@ -391,17 +431,31 @@ fn concurrent_flush_same_seg_never_overwrites() {
     };
     let w = WalWriter::open(obj, "t1", 1, 1, cfg);
     // 帧 1 NoWait：5ms 内由 flush_loop 取走缓冲，进入 400ms 慢 PUT
-    w.append(FrameType::Txn, 1, b"frame-one", dendro_core::Durability::NoWait).unwrap();
+    w.append(
+        FrameType::Txn,
+        1,
+        b"frame-one",
+        dendro_core::Durability::NoWait,
+    )
+    .unwrap();
     std::thread::sleep(Duration::from_millis(60)); // 确保 flush_loop 已进入慢 PUT
-    // 帧 2 Always：修复前会与在途 PUT 同段号并发；修复后在 flush_mu 上等待
+                                                   // 帧 2 Always：修复前会与在途 PUT 同段号并发；修复后在 flush_mu 上等待
     let t0 = std::time::Instant::now();
-    w.append(FrameType::Txn, 2, b"frame-two", dendro_core::Durability::Always).unwrap();
+    w.append(
+        FrameType::Txn,
+        2,
+        b"frame-two",
+        dendro_core::Durability::Always,
+    )
+    .unwrap();
     let elapsed = t0.elapsed();
     w.close();
 
     // 两帧都必须 durable 且分属不同段（同段覆盖 = 丢帧）
-    let s1 = dendro_core::wal::read_segment(&(slow.clone() as Arc<dyn ObjStore>), "t1", 1, 1).unwrap_or_default();
-    let s2 = dendro_core::wal::read_segment(&(slow.clone() as Arc<dyn ObjStore>), "t1", 1, 2).unwrap_or_default();
+    let s1 = dendro_core::wal::read_segment(&(slow.clone() as Arc<dyn ObjStore>), "t1", 1, 1)
+        .unwrap_or_default();
+    let s2 = dendro_core::wal::read_segment(&(slow.clone() as Arc<dyn ObjStore>), "t1", 1, 2)
+        .unwrap_or_default();
     let has = |seg: &[u8], pat: &[u8]| {
         seg.len() >= pat.len() && (0..=seg.len() - pat.len()).any(|i| &seg[i..i + pat.len()] == pat)
     };
@@ -427,7 +481,8 @@ fn checkpoint_failure_preserves_committed_data() {
     let db = Database::open(opts_store(StoreConfig::Obj(obj.clone()))).unwrap();
     {
         let mut s = db.new_session();
-        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
+            .unwrap();
         s.exec("INSERT INTO t VALUES (1, 'a')").unwrap(); // 已 ack（Group durable）
     }
     // 注入 cas/ 持续失败 → checkpoint 失败
@@ -443,7 +498,11 @@ fn checkpoint_failure_preserves_committed_data() {
     let mut s = db.new_session();
     let o = s.exec("SELECT count(*) FROM t").unwrap();
     if let dendro_core::Output::Rows(rs) = &o[0] {
-        assert_eq!(rs.text_rows()[0][0].as_deref(), Some("1"), "失败 checkpoint 不得丢已提交行");
+        assert_eq!(
+            rs.text_rows()[0][0].as_deref(),
+            Some("1"),
+            "失败 checkpoint 不得丢已提交行"
+        );
     }
     drop(s);
     // 故障恢复 → checkpoint 成功 → 重启后数据完整（归来的 pending 被物化）
@@ -475,7 +534,8 @@ fn close_graceful_flushes_no_wait_tail() {
     let db = Database::open(o).unwrap();
     {
         let mut s = db.new_session();
-        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
+            .unwrap();
         s.exec("INSERT INTO t VALUES (1, 'tail')").unwrap(); // NoWait 语义下假设缓冲未及上传
     }
     db.branch("main").unwrap().wal.close_graceful();
@@ -484,6 +544,10 @@ fn close_graceful_flushes_no_wait_tail() {
     let mut s = db2.new_session();
     let o = s.exec("SELECT count(*) FROM t").unwrap();
     if let dendro_core::Output::Rows(rs) = &o[0] {
-        assert_eq!(rs.text_rows()[0][0].as_deref(), Some("1"), "优雅关闭必须持久化 NoWait 缓冲尾");
+        assert_eq!(
+            rs.text_rows()[0][0].as_deref(),
+            Some("1"),
+            "优雅关闭必须持久化 NoWait 缓冲尾"
+        );
     }
 }

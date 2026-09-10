@@ -15,11 +15,19 @@ use crate::versioned::{ColumnDef, TableEntry, TableSchema};
 use sqlparser::ast::{ColumnDef as PColumnDef, Expr, Ident, Insert, ObjectName, TableConstraint};
 use std::collections::HashSet;
 
-pub(crate) fn exec_create_table(db: &Database, sess: &mut Session, create: sqlparser::ast::CreateTable) -> Result<Option<Output>> {
+pub(crate) fn exec_create_table(
+    db: &Database,
+    sess: &mut Session,
+    create: sqlparser::ast::CreateTable,
+) -> Result<Option<Output>> {
     let name = object_name(&create.name);
     let short = name.rsplit('.').next().unwrap_or(&name).to_string();
     let (cols, pk) = translate_columns(&create.columns, &create.constraints)?;
-    let schema = TableSchema { name: short.clone(), columns: cols, pk };
+    let schema = TableSchema {
+        name: short.clone(),
+        columns: cols,
+        pk,
+    };
     // 已存在检查
     {
         let (ver, _) = scan_catalog(db, sess)?;
@@ -28,9 +36,14 @@ pub(crate) fn exec_create_table(db: &Database, sess: &mut Session, create: sqlpa
     if let Ok((_, entry)) = scan::resolve_table(db, &sess.branch, &short) {
         let _ = entry;
         if create.if_not_exists {
-            return Ok(Some(Output::Command { tag: "CREATE TABLE".into(), affected: 0 }));
+            return Ok(Some(Output::Command {
+                tag: "CREATE TABLE".into(),
+                affected: 0,
+            }));
         }
-        return Err(SqlError::duplicate_table(format!("relation \"{short}\" already exists")));
+        return Err(SqlError::duplicate_table(format!(
+            "relation \"{short}\" already exists"
+        )));
     }
     // 目录变更：catalog 树
     let b = db.branch(&sess.branch)?;
@@ -58,8 +71,14 @@ pub(crate) fn exec_create_table(db: &Database, sess: &mut Session, create: sqlpa
         col_rows: 0,
     };
     // schema chunk 先写
-    db.cas.put_batch(&[schema.to_chunk()], &mut session_chunks).map_err(SqlError::from)?;
-    let new_catalog = catalog.apply_catalog(old_catalog.as_ref(), vec![(short.clone(), Some(entry))], &mut session_chunks)?;
+    db.cas
+        .put_batch(&[schema.to_chunk()], &mut session_chunks)
+        .map_err(SqlError::from)?;
+    let new_catalog = catalog.apply_catalog(
+        old_catalog.as_ref(),
+        vec![(short.clone(), Some(entry))],
+        &mut session_chunks,
+    )?;
     let commit = crate::versioned::commit::Commit {
         root: new_catalog.ok_or_else(|| SqlError::internal("empty catalog"))?,
         parents: head.iter().map(|c| c.addr()).collect(),
@@ -70,7 +89,9 @@ pub(crate) fn exec_create_table(db: &Database, sess: &mut Session, create: sqlpa
         message: format!("CREATE TABLE {short}"),
     };
     let cchunk = commit.encode();
-    db.cas.put_batch(&[cchunk], &mut session_chunks).map_err(SqlError::from)?;
+    db.cas
+        .put_batch(&[cchunk], &mut session_chunks)
+        .map_err(SqlError::from)?;
     b.head.store(std::sync::Arc::new(Some(commit.clone())));
     let seq = b.alloc_seq();
     let ck = crate::wal::CheckpointRecord {
@@ -78,19 +99,30 @@ pub(crate) fn exec_create_table(db: &Database, sess: &mut Session, create: sqlpa
         commit_addr: commit.addr(),
         seq_covered: b.watermark.load(std::sync::atomic::Ordering::Acquire),
     };
-    b.wal.append(crate::wal::FrameType::Checkpoint, seq, &crate::wal::encode_checkpoint(&ck), db.opts.durability)?;
+    b.wal.append(
+        crate::wal::FrameType::Checkpoint,
+        seq,
+        &crate::wal::encode_checkpoint(&ck),
+        db.opts.durability,
+    )?;
     let seg_now = b.wal.current_seg().saturating_sub(1);
     let covered = ck.seq_covered;
     let bname = sess.branch.clone();
     db.update_manifest(|m| {
-        let h = m.refs.get_mut(&bname).ok_or_else(|| SqlError::internal("branch vanished"))?;
+        let h = m
+            .refs
+            .get_mut(&bname)
+            .ok_or_else(|| SqlError::internal("branch vanished"))?;
         h.commit = Some(commit.addr().to_base32());
         h.wal_seg = seg_now.max(h.wal_seg);
         h.covered_seq = covered;
         h.epoch = b.lease_epoch.load(std::sync::atomic::Ordering::Acquire);
         Ok(true)
     })?;
-    Ok(Some(Output::Command { tag: "CREATE TABLE".into(), affected: 0 }))
+    Ok(Some(Output::Command {
+        tag: "CREATE TABLE".into(),
+        affected: 0,
+    }))
 }
 
 fn scan_catalog(db: &Database, sess: &Session) -> Result<(u64, ())> {
@@ -101,14 +133,20 @@ fn scan_catalog(db: &Database, sess: &Session) -> Result<(u64, ())> {
 }
 
 fn object_name(n: &ObjectName) -> String {
-    n.0
-        .iter()
-        .map(|p| p.as_ident().map(|i| i.value.clone()).unwrap_or_else(|| p.to_string()))
+    n.0.iter()
+        .map(|p| {
+            p.as_ident()
+                .map(|i| i.value.clone())
+                .unwrap_or_else(|| p.to_string())
+        })
         .collect::<Vec<_>>()
         .join(".")
 }
 
-fn translate_columns(cols: &[PColumnDef], constraints: &[TableConstraint]) -> Result<(Vec<ColumnDef>, Vec<u16>)> {
+fn translate_columns(
+    cols: &[PColumnDef],
+    constraints: &[TableConstraint],
+) -> Result<(Vec<ColumnDef>, Vec<u16>)> {
     let mut out = Vec::new();
     let mut pk: Vec<u16> = Vec::new();
     for c in cols {
@@ -121,13 +159,19 @@ fn translate_columns(cols: &[PColumnDef], constraints: &[TableConstraint]) -> Re
                 sqlparser::ast::ColumnOption::NotNull => nullable = false,
                 sqlparser::ast::ColumnOption::PrimaryKey(_) => inline_pk = true,
                 sqlparser::ast::ColumnOption::Unique(_) => {
-                    return Err(SqlError::not_supported("UNIQUE constraint (v1: primary key only)"))
+                    return Err(SqlError::not_supported(
+                        "UNIQUE constraint (v1: primary key only)",
+                    ))
                 }
                 sqlparser::ast::ColumnOption::Default(_) => { /* 接受但 v1 忽略 */ }
                 _ => {}
             }
         }
-        out.push(ColumnDef { name: c.name.value.clone(), ty, nullable });
+        out.push(ColumnDef {
+            name: c.name.value.clone(),
+            ty,
+            nullable,
+        });
         if inline_pk {
             pk.push((out.len() - 1) as u16);
             out.last_mut().unwrap().nullable = false;
@@ -149,7 +193,9 @@ fn translate_columns(cols: &[PColumnDef], constraints: &[TableConstraint]) -> Re
                 out[idx].nullable = false;
             }
         } else if matches!(con, TableConstraint::Unique(_)) {
-            return Err(SqlError::not_supported("UNIQUE constraint (v1: primary key only)"));
+            return Err(SqlError::not_supported(
+                "UNIQUE constraint (v1: primary key only)",
+            ));
         }
     }
     Ok((out, pk))
@@ -172,7 +218,8 @@ pub(crate) fn catalog_commit(
     let mut schema_chunks: Vec<crate::objstore::cas::Chunk> = Vec::new();
     for (_, e) in &changes {
         if let Some(e) = e {
-            let h = Hash::from_base32(&e.schema_addr).ok_or_else(|| SqlError::internal("bad schema addr"))?;
+            let h = Hash::from_base32(&e.schema_addr)
+                .ok_or_else(|| SqlError::internal("bad schema addr"))?;
             if !db.cas.has(&h) {
                 // schema chunk 缺失（新表/改表）：由调用方提前放入 —— 这里从 catalog 反查无需写
             }
@@ -190,7 +237,9 @@ pub(crate) fn catalog_commit(
         message: message.into(),
     };
     let cchunk = commit.encode();
-    db.cas.put_batch(&[cchunk], &mut session_chunks).map_err(SqlError::from)?;
+    db.cas
+        .put_batch(&[cchunk], &mut session_chunks)
+        .map_err(SqlError::from)?;
     b.head.store(std::sync::Arc::new(Some(commit.clone())));
     let seq = b.alloc_seq();
     let ck = crate::wal::CheckpointRecord {
@@ -198,12 +247,20 @@ pub(crate) fn catalog_commit(
         commit_addr: commit.addr(),
         seq_covered: b.watermark.load(std::sync::atomic::Ordering::Acquire),
     };
-    b.wal.append(crate::wal::FrameType::Checkpoint, seq, &crate::wal::encode_checkpoint(&ck), db.opts.durability)?;
+    b.wal.append(
+        crate::wal::FrameType::Checkpoint,
+        seq,
+        &crate::wal::encode_checkpoint(&ck),
+        db.opts.durability,
+    )?;
     let seg_now = b.wal.current_seg().saturating_sub(1);
     let covered = ck.seq_covered;
     let bname = sess.branch.clone();
     db.update_manifest(|m| {
-        let h = m.refs.get_mut(&bname).ok_or_else(|| SqlError::internal("branch vanished"))?;
+        let h = m
+            .refs
+            .get_mut(&bname)
+            .ok_or_else(|| SqlError::internal("branch vanished"))?;
         h.commit = Some(commit.addr().to_base32());
         h.wal_seg = seg_now.max(h.wal_seg);
         h.covered_seq = covered;
@@ -237,10 +294,16 @@ pub(crate) fn drop_table_impl(
         }
     }
     if changes.is_empty() {
-        return Ok(Some(Output::Command { tag: "DROP TABLE".into(), affected: 0 }));
+        return Ok(Some(Output::Command {
+            tag: "DROP TABLE".into(),
+            affected: 0,
+        }));
     }
     catalog_commit(db, sess, changes, "DROP TABLE")?;
-    Ok(Some(Output::Command { tag: "DROP TABLE".into(), affected: 0 }))
+    Ok(Some(Output::Command {
+        tag: "DROP TABLE".into(),
+        affected: 0,
+    }))
 }
 
 pub(crate) fn alter_table_impl(
@@ -262,9 +325,20 @@ pub(crate) fn alter_table_impl(
             db.cas
                 .put_batch(&[schema.to_chunk()], &mut HashSet::new())
                 .map_err(SqlError::from)?;
-            let ne = TableEntry { schema_addr: schema.addr_of().to_base32(), ..entry };
-            catalog_commit(db, sess, vec![(short.clone(), Some(ne))], "ALTER TABLE ADD COLUMN")?;
-            Ok(Some(Output::Command { tag: "ALTER TABLE".into(), affected: 0 }))
+            let ne = TableEntry {
+                schema_addr: schema.addr_of().to_base32(),
+                ..entry
+            };
+            catalog_commit(
+                db,
+                sess,
+                vec![(short.clone(), Some(ne))],
+                "ALTER TABLE ADD COLUMN",
+            )?;
+            Ok(Some(Output::Command {
+                tag: "ALTER TABLE".into(),
+                affected: 0,
+            }))
         }
         other => Err(SqlError::not_supported(format!("ALTER TABLE: {other}"))),
     }
@@ -298,7 +372,10 @@ pub(crate) fn truncate_impl(
         sess.txn = Some(txn);
     }
     catalog_commit(db, sess, changes, "TRUNCATE")?;
-    Ok(Some(Output::Command { tag: "TRUNCATE TABLE".into(), affected: 0 }))
+    Ok(Some(Output::Command {
+        tag: "TRUNCATE TABLE".into(),
+        affected: 0,
+    }))
 }
 
 fn schema_of(db: &Database, _sess: &Session, entry: &TableEntry) -> Result<TableSchema> {
@@ -311,7 +388,11 @@ fn entry_pk(schema: &TableSchema, row: &[SqlValue]) -> Vec<SqlValue> {
 }
 
 /// INSERT INTO t [(cols)] VALUES (...), (...) | DEFAULT VALUES
-pub(crate) fn exec_insert(db: &Database, sess: &mut Session, insert: Insert) -> Result<Option<Output>> {
+pub(crate) fn exec_insert(
+    db: &Database,
+    sess: &mut Session,
+    insert: Insert,
+) -> Result<Option<Output>> {
     let table = match &insert.table {
         sqlparser::ast::TableObject::TableName(n) => object_name(n),
         other => return Err(SqlError::not_supported(format!("INSERT target: {other}"))),
@@ -319,9 +400,13 @@ pub(crate) fn exec_insert(db: &Database, sess: &mut Session, insert: Insert) -> 
     let short = table.rsplit('.').next().unwrap_or(&table).to_string();
     let (schema, entry) = scan::resolve_table(db, &sess.branch, &short)?;
     if schema.pk.is_empty() {
-        return Err(SqlError::not_supported(format!("table \"{short}\" has no primary key")));
+        return Err(SqlError::not_supported(format!(
+            "table \"{short}\" has no primary key"
+        )));
     }
-    let source = insert.source.ok_or_else(|| SqlError::syntax("INSERT requires source"))?;
+    let source = insert
+        .source
+        .ok_or_else(|| SqlError::syntax("INSERT requires source"))?;
     let snapshot = sess.implicit_snapshot(db)?;
     let mut txn = sess.txn.take().unwrap_or_else(|| Txn::new(snapshot));
     let mut count = 0u64;
@@ -337,24 +422,37 @@ pub(crate) fn exec_insert(db: &Database, sess: &mut Session, insert: Insert) -> 
                     .columns
                     .iter()
                     .map(|i| {
-                        let name = i.0.first().and_then(|p| p.as_ident()).map(|x| x.value.clone())
-                            .ok_or_else(|| SqlError::undefined_column(i.to_string()))?;
-                        schema.col_index(&name).ok_or_else(|| SqlError::undefined_column(name))
+                        let name =
+                            i.0.first()
+                                .and_then(|p| p.as_ident())
+                                .map(|x| x.value.clone())
+                                .ok_or_else(|| SqlError::undefined_column(i.to_string()))?;
+                        schema
+                            .col_index(&name)
+                            .ok_or_else(|| SqlError::undefined_column(name))
                     })
                     .collect::<Result<Vec<_>>>()?
             };
             for vr in value_rows {
                 if vr.len() != col_idx.len() {
-                    return Err(SqlError::syntax(format!("insert arity {}/{}", vr.len(), col_idx.len())));
+                    return Err(SqlError::syntax(format!(
+                        "insert arity {}/{}",
+                        vr.len(),
+                        col_idx.len()
+                    )));
                 }
                 let mut row = vec![SqlValue::Null; schema.columns.len()];
                 for (v, &ci) in vr.iter().zip(&col_idx) {
                     row[ci] = expr::eval(v, &[], &|_| None)?;
                 }
-                let pk_vals: Vec<SqlValue> = schema.pk.iter().map(|&i| row[i as usize].clone()).collect();
+                let pk_vals: Vec<SqlValue> =
+                    schema.pk.iter().map(|&i| row[i as usize].clone()).collect();
                 let key = encode_key(&pk_vals);
                 if !seen_keys.insert(key.clone()) {
-                    return Err(SqlError::duplicate_key("duplicate key value violates primary key constraint (key in same INSERT)".to_string()));
+                    return Err(SqlError::duplicate_key(
+                        "duplicate key value violates primary key constraint (key in same INSERT)"
+                            .to_string(),
+                    ));
                 }
                 insert_row(db, sess, &schema, entry.id, &mut txn, row)?;
                 count += 1;
@@ -370,9 +468,14 @@ pub(crate) fn exec_insert(db: &Database, sess: &mut Session, insert: Insert) -> 
                     .columns
                     .iter()
                     .map(|i| {
-                        let name = i.0.first().and_then(|p| p.as_ident()).map(|x| x.value.clone())
-                            .ok_or_else(|| SqlError::undefined_column(i.to_string()))?;
-                        schema.col_index(&name).ok_or_else(|| SqlError::undefined_column(name))
+                        let name =
+                            i.0.first()
+                                .and_then(|p| p.as_ident())
+                                .map(|x| x.value.clone())
+                                .ok_or_else(|| SqlError::undefined_column(i.to_string()))?;
+                        schema
+                            .col_index(&name)
+                            .ok_or_else(|| SqlError::undefined_column(name))
                     })
                     .collect::<Result<Vec<_>>>()?
             };
@@ -392,7 +495,10 @@ pub(crate) fn exec_insert(db: &Database, sess: &mut Session, insert: Insert) -> 
     } else {
         sess.txn = Some(txn);
     }
-    Ok(Some(Output::Command { tag: format!("INSERT 0 {count}"), affected: count }))
+    Ok(Some(Output::Command {
+        tag: format!("INSERT 0 {count}"),
+        affected: count,
+    }))
 }
 
 fn insert_row(
@@ -428,7 +534,11 @@ fn insert_row(
         txn.writes.get(&(table_id, key.clone())),
         Some(crate::prolly::Mutation::Delete)
     );
-    let exists_mem = if txn_deleted { false } else { tm.get(&key, txn.snapshot).is_some() };
+    let exists_mem = if txn_deleted {
+        false
+    } else {
+        tm.get(&key, txn.snapshot).is_some()
+    };
     let exists_tree = if tombstoned || txn_deleted {
         false
     } else {
@@ -438,7 +548,9 @@ fn insert_row(
         }
     };
     if exists_mem || exists_tree {
-        return Err(SqlError::duplicate_key("duplicate key value violates primary key constraint".to_string()));
+        return Err(SqlError::duplicate_key(
+            "duplicate key value violates primary key constraint".to_string(),
+        ));
     }
     let val = encode_row(&row);
     txn.put(table_id, key, val);
@@ -458,7 +570,11 @@ fn entry_root(db: &Database, sess: &Session, table_id: u32) -> Result<Option<Has
     Ok(None)
 }
 
-pub(crate) fn exec_delete(db: &Database, sess: &mut Session, delete: sqlparser::ast::Delete) -> Result<Option<Output>> {
+pub(crate) fn exec_delete(
+    db: &Database,
+    sess: &mut Session,
+    delete: sqlparser::ast::Delete,
+) -> Result<Option<Output>> {
     let twjs: &Vec<sqlparser::ast::TableWithJoins> = match &delete.from {
         sqlparser::ast::FromTable::WithFromKeyword(v) => v,
         sqlparser::ast::FromTable::WithoutKeyword(v) => v,
@@ -476,7 +592,10 @@ pub(crate) fn exec_delete(db: &Database, sess: &mut Session, delete: sqlparser::
     // 找目标行：全扫 + WHERE（v1；pk 等值优化同 SELECT）
     let tv = table_scan_pub(db, sess, &short, snapshot)?;
     let cols: std::collections::HashMap<String, usize> = std::collections::HashMap::from_iter(
-        tv.names.iter().enumerate().map(|(i, n)| (n.to_ascii_lowercase(), i)),
+        tv.names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.to_ascii_lowercase(), i)),
     );
     let colfn = |n: &str| cols.get(&n.to_ascii_lowercase()).copied();
     let mut txn = sess.txn.take().unwrap_or_else(|| Txn::new(snapshot));
@@ -497,7 +616,10 @@ pub(crate) fn exec_delete(db: &Database, sess: &mut Session, delete: sqlparser::
     } else {
         sess.txn = Some(txn);
     }
-    Ok(Some(Output::Command { tag: format!("DELETE {count}"), affected: count }))
+    Ok(Some(Output::Command {
+        tag: format!("DELETE {count}"),
+        affected: count,
+    }))
 }
 
 /// 暴露给 ddl 的表扫描（复用 scan 内部实现）
@@ -516,7 +638,10 @@ pub(crate) fn update_impl(
     let snapshot = sess.implicit_snapshot(db)?;
     let tv = scan::table_scan_by_name(db, sess, &short, snapshot)?;
     let cols: std::collections::HashMap<String, usize> = std::collections::HashMap::from_iter(
-        tv.names.iter().enumerate().map(|(i, n)| (n.to_ascii_lowercase(), i)),
+        tv.names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.to_ascii_lowercase(), i)),
     );
     let colfn = |n: &str| cols.get(&n.to_ascii_lowercase()).copied();
     let mut txn = sess.txn.take().unwrap_or_else(|| Txn::new(snapshot));
@@ -535,7 +660,11 @@ pub(crate) fn update_impl(
             new_row[ci] = expr::eval(e, row, &colfn)?;
         }
         let old_pk: Vec<SqlValue> = schema.pk.iter().map(|&i| row[i as usize].clone()).collect();
-        let new_pk: Vec<SqlValue> = schema.pk.iter().map(|&i| new_row[i as usize].clone()).collect();
+        let new_pk: Vec<SqlValue> = schema
+            .pk
+            .iter()
+            .map(|&i| new_row[i as usize].clone())
+            .collect();
         if encode_key(&old_pk) != encode_key(&new_pk) {
             return Err(SqlError::not_supported("UPDATE of primary key columns"));
         }
@@ -547,13 +676,22 @@ pub(crate) fn update_impl(
     } else {
         sess.txn = Some(txn);
     }
-    Ok(Some(Output::Command { tag: format!("UPDATE {count}"), affected: count }))
+    Ok(Some(Output::Command {
+        tag: format!("UPDATE {count}"),
+        affected: count,
+    }))
 }
 
 /// 列元数据辅助（prepare describe 用）
 #[allow(dead_code)]
 pub(crate) fn colmeta(names: &[String], ty: ColType) -> Vec<ColumnMeta> {
-    names.iter().map(|n| ColumnMeta { name: n.clone(), ty }).collect()
+    names
+        .iter()
+        .map(|n| ColumnMeta {
+            name: n.clone(),
+            ty,
+        })
+        .collect()
 }
 
 #[allow(dead_code)]

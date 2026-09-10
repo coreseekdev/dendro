@@ -93,9 +93,16 @@ pub(crate) fn handle_message<T: io::Read + io::Write>(
     }
 
     match msg {
-        FeMessage::Parse { name, sql, param_oids } => {
+        FeMessage::Parse {
+            name,
+            sql,
+            param_oids,
+        } => {
             // 参数类型 hint：只认 SPEC 06 §2.3 的 OID，未知宽松跳过
-            let hint: Vec<ColType> = param_oids.iter().filter_map(|o| oid_to_col_type(*o)).collect();
+            let hint: Vec<ColType> = param_oids
+                .iter()
+                .filter_map(|o| oid_to_col_type(*o))
+                .collect();
             match sess.prepare(&name, &sql, &hint) {
                 Ok(meta) => {
                     // UNNAMED 语句重复 Parse 覆盖旧的（SPEC 10 §2）；具名同理
@@ -108,11 +115,19 @@ pub(crate) fn handle_message<T: io::Read + io::Write>(
                 }
             }
         }
-        FeMessage::Bind { portal, stmt, param_formats, params, result_formats } => {
+        FeMessage::Bind {
+            portal,
+            stmt,
+            param_formats,
+            params,
+            result_formats,
+        } => {
             let types = st.prepared.get(&stmt).map(|m| m.param_types.clone());
             let Some(types) = types else {
                 st.in_error = true;
-                pg.send(&error::error_response(&ExtendedState::unknown_statement(&stmt)));
+                pg.send(&error::error_response(&ExtendedState::unknown_statement(
+                    &stmt,
+                )));
                 return Ok(Flow::Continue);
             };
             // 参数格式：0=text / 1=binary；未指定列按 hint 类型（缺省 text）
@@ -138,7 +153,14 @@ pub(crate) fn handle_message<T: io::Read + io::Write>(
                     pg.send(&error::error_response(&e));
                 }
                 None => {
-                    st.portals.insert(portal, Portal { stmt, params: vals, result_formats });
+                    st.portals.insert(
+                        portal,
+                        Portal {
+                            stmt,
+                            params: vals,
+                            result_formats,
+                        },
+                    );
                     pg.send(&BeMessage::BindComplete);
                 }
             }
@@ -155,7 +177,9 @@ pub(crate) fn handle_message<T: io::Read + io::Write>(
                 None => {
                     // SPEC 10 §2：Describe 未知名 → 26000
                     st.in_error = true;
-                    pg.send(&error::error_response(&ExtendedState::unknown_statement(&name)));
+                    pg.send(&error::error_response(&ExtendedState::unknown_statement(
+                        &name,
+                    )));
                 }
             },
             b'P' => {
@@ -170,7 +194,9 @@ pub(crate) fn handle_message<T: io::Read + io::Write>(
                     }
                     None => {
                         st.in_error = true;
-                        pg.send(&error::error_response(&ExtendedState::unknown_portal(&name)));
+                        pg.send(&error::error_response(&ExtendedState::unknown_portal(
+                            &name,
+                        )));
                     }
                 }
             }
@@ -182,11 +208,16 @@ pub(crate) fn handle_message<T: io::Read + io::Write>(
                 )));
             }
         },
-        FeMessage::Execute { portal, max_rows: _ } => {
+        FeMessage::Execute {
+            portal,
+            max_rows: _,
+        } => {
             // v1 忽略 max_rows 分片：全量执行 + CommandComplete（SPEC 10 §2）
             let Some(p) = st.portals.get(&portal) else {
                 st.in_error = true;
-                pg.send(&error::error_response(&ExtendedState::unknown_portal(&portal)));
+                pg.send(&error::error_response(&ExtendedState::unknown_portal(
+                    &portal,
+                )));
                 return Ok(Flow::Continue);
             };
             let stmt: &str = &p.stmt;

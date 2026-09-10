@@ -13,8 +13,8 @@ use super::{HeadInfo, ObjError, ObjResult, ObjStore};
 use bytes::Bytes;
 use futures::TryStreamExt;
 use object_store::{
-    path::Path as OsPath, GetOptions, ObjectStore as OsObjectStore, ObjectStoreExt, PutMode, PutOptions,
-    PutPayload, RetryConfig,
+    path::Path as OsPath, GetOptions, ObjectStore as OsObjectStore, ObjectStoreExt, PutMode,
+    PutOptions, PutPayload, RetryConfig,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -63,7 +63,11 @@ impl S3ObjStore {
             .enable_all()
             .build()
             .map_err(|e| ObjError::Io(format!("s3 runtime: {e}")))?;
-        Ok(Self { inner, rt, stats: S3Stats::default() })
+        Ok(Self {
+            inner,
+            rt,
+            stats: S3Stats::default(),
+        })
     }
 
     pub fn stats(&self) -> &S3Stats {
@@ -81,9 +85,11 @@ impl S3ObjStore {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        format!("{nanos:x}-{:x}", std::process::id() as u128 ^ rand_hash(nanos as u64) as u128)
+        format!(
+            "{nanos:x}-{:x}",
+            std::process::id() as u128 ^ rand_hash(nanos as u64) as u128
+        )
     }
-
 }
 
 fn rand_hash(seed: u64) -> u64 {
@@ -123,16 +129,14 @@ impl ObjStore for S3ObjStore {
     fn get(&self, path: &str) -> ObjResult<Bytes> {
         self.stats.gets.fetch_add(1, Ordering::Relaxed);
         let p = self.os_path(path);
-        let r = self.rt.block_on(async {
-            self.inner
-                .get(&p)
-                .await?
-                .bytes()
-                .await
-        });
+        let r = self
+            .rt
+            .block_on(async { self.inner.get(&p).await?.bytes().await });
         match r {
             Ok(b) => {
-                self.stats.bytes_get.fetch_add(b.len() as u64, Ordering::Relaxed);
+                self.stats
+                    .bytes_get
+                    .fetch_add(b.len() as u64, Ordering::Relaxed);
                 Ok(b)
             }
             Err(object_store::Error::NotFound { .. }) => Err(ObjError::NotFound(path.into())),
@@ -144,10 +148,14 @@ impl ObjStore for S3ObjStore {
         self.stats.ranges.fetch_add(1, Ordering::Relaxed);
         let p = self.os_path(path);
         let opts = GetOptions::new().with_range(Some(off..off + len as u64));
-        let r = self.rt.block_on(async { self.inner.get_opts(&p, opts).await?.bytes().await });
+        let r = self
+            .rt
+            .block_on(async { self.inner.get_opts(&p, opts).await?.bytes().await });
         match r {
             Ok(b) => {
-                self.stats.bytes_get.fetch_add(b.len() as u64, Ordering::Relaxed);
+                self.stats
+                    .bytes_get
+                    .fetch_add(b.len() as u64, Ordering::Relaxed);
                 Ok(b)
             }
             Err(object_store::Error::NotFound { .. }) => Err(ObjError::NotFound(path.into())),
@@ -159,7 +167,9 @@ impl ObjStore for S3ObjStore {
         self.stats.puts.fetch_add(1, Ordering::Relaxed);
         let p = self.os_path(path);
         let n = data.len();
-        let r = self.rt.block_on(async { self.inner.put(&p, PutPayload::from(data)).await });
+        let r = self
+            .rt
+            .block_on(async { self.inner.put(&p, PutPayload::from(data)).await });
         match r {
             Ok(_) => {
                 self.stats.bytes_put.fetch_add(n as u64, Ordering::Relaxed);

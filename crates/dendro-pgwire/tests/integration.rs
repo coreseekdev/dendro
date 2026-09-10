@@ -50,7 +50,10 @@ fn startup_trust_full_sequence() {
     assert_eq!(get("is_superuser").as_deref(), Some("on"));
 
     // BackendKeyData：pid>0，secret 任意 u32
-    let k = msgs.iter().find(|(t, _)| *t == b'K').expect("BackendKeyData");
+    let k = msgs
+        .iter()
+        .find(|(t, _)| *t == b'K')
+        .expect("BackendKeyData");
     let pid = i32::from_be_bytes(k.1[0..4].try_into().unwrap());
     let secret = u32::from_be_bytes(k.1[4..8].try_into().unwrap());
     assert!(pid > 0);
@@ -112,7 +115,8 @@ fn startup_cancel_request_closes_without_response() {
 #[test]
 fn startup_unsupported_protocol_28000() {
     let (mut s, _h) = spawn_conn(Box::new(MockSession::new()), PgConfig::default());
-    s.write_all(&startup_bytes(2 << 16, &[("user", "x")])).unwrap();
+    s.write_all(&startup_bytes(2 << 16, &[("user", "x")]))
+        .unwrap();
     // 服务端发 FATAL 28000 后断连（没有 ReadyForQuery）
     let (t, body) = read_msg(&mut s).unwrap().unwrap();
     assert_eq!(t, b'E');
@@ -134,9 +138,14 @@ fn startup_missing_user_defaults_to_dendro() {
 
 #[test]
 fn auth_cleartext_ok() {
-    let (mut s, _h) =
-        spawn_conn(Box::new(MockSession::new()), PgConfig { password: Some("sesame".into()) });
-    s.write_all(&startup_bytes(PROTO_3_0, &[("user", "alice")])).unwrap();
+    let (mut s, _h) = spawn_conn(
+        Box::new(MockSession::new()),
+        PgConfig {
+            password: Some("sesame".into()),
+        },
+    );
+    s.write_all(&startup_bytes(PROTO_3_0, &[("user", "alice")]))
+        .unwrap();
     // 第一条是 cleartext 请求
     let (t, body) = read_msg(&mut s).unwrap().unwrap();
     assert_eq!(t, b'R');
@@ -150,9 +159,14 @@ fn auth_cleartext_ok() {
 
 #[test]
 fn auth_cleartext_wrong_password_28p01() {
-    let (mut s, _h) =
-        spawn_conn(Box::new(MockSession::new()), PgConfig { password: Some("sesame".into()) });
-    s.write_all(&startup_bytes(PROTO_3_0, &[("user", "alice")])).unwrap();
+    let (mut s, _h) = spawn_conn(
+        Box::new(MockSession::new()),
+        PgConfig {
+            password: Some("sesame".into()),
+        },
+    );
+    s.write_all(&startup_bytes(PROTO_3_0, &[("user", "alice")]))
+        .unwrap();
     let _req = read_msg(&mut s).unwrap().unwrap();
     s.write_all(&msg_bytes(b'p', &cstr("wrong"))).unwrap();
     let msgs = read_until(&mut s, b'E').unwrap();
@@ -228,7 +242,8 @@ fn simple_query_multi_statement_each_gets_output() {
     let sess = Box::new(MockSession::new());
     let (mut s, _h) = spawn_conn(sess, PgConfig::default());
     handshake(&mut s, &[]).unwrap();
-    s.write_all(&msg_bytes(b'Q', &cstr("SELECT 1; SELECT 1"))).unwrap();
+    s.write_all(&msg_bytes(b'Q', &cstr("SELECT 1; SELECT 1")))
+        .unwrap();
     let msgs = read_until(&mut s, b'Z').unwrap();
     // 两组 (T D C)
     let ts: Vec<_> = msgs.iter().filter(|(t, _)| *t == b'T').collect();
@@ -243,7 +258,8 @@ fn simple_query_command_tag_passthrough() {
     let sess = Box::new(MockSession::new());
     let (mut s, _h) = spawn_conn(sess, PgConfig::default());
     handshake(&mut s, &[]).unwrap();
-    s.write_all(&msg_bytes(b'Q', &cstr("CREATE TABLE t (a int)"))).unwrap();
+    s.write_all(&msg_bytes(b'Q', &cstr("CREATE TABLE t (a int)")))
+        .unwrap();
     let msgs = read_until(&mut s, b'Z').unwrap();
     // 无 RowDescription / DataRow
     assert!(msgs.iter().all(|(t, _)| *t != b'T' && *t != b'D'));
@@ -257,7 +273,8 @@ fn simple_query_insert_tag() {
     let sess = Box::new(MockSession::new());
     let (mut s, _h) = spawn_conn(sess, PgConfig::default());
     handshake(&mut s, &[]).unwrap();
-    s.write_all(&msg_bytes(b'Q', &cstr("INSERT INTO t VALUES (1)"))).unwrap();
+    s.write_all(&msg_bytes(b'Q', &cstr("INSERT INTO t VALUES (1)")))
+        .unwrap();
     let msgs = read_until(&mut s, b'Z').unwrap();
     assert_eq!(&msgs[0].1, &b"INSERT 0 1\0");
 }
@@ -284,7 +301,8 @@ fn simple_query_error_keeps_connection_alive() {
     let (mut s, _h) = spawn_conn(Box::new(mock), PgConfig::default());
     handshake(&mut s, &[]).unwrap();
 
-    s.write_all(&msg_bytes(b'Q', &cstr("SELECT * FROM missing"))).unwrap();
+    s.write_all(&msg_bytes(b'Q', &cstr("SELECT * FROM missing")))
+        .unwrap();
     let msgs = read_until(&mut s, b'Z').unwrap();
     assert_eq!(msgs[0].0, b'E');
     let e = parse_error(&msgs[0].1);
@@ -341,7 +359,14 @@ fn extended_full_flow_text_param() {
     put_i32(&mut body, 20);
     raw.extend(msg_bytes(b'P', &body));
     // Describe 'S' "stmt"
-    raw.extend(msg_bytes(b'D', &b"S".iter().chain(cstr("stmt").iter()).copied().collect::<Vec<u8>>()));
+    raw.extend(msg_bytes(
+        b'D',
+        &b"S"
+            .iter()
+            .chain(cstr("stmt").iter())
+            .copied()
+            .collect::<Vec<u8>>(),
+    ));
     // Bind(portal="p", stmt, formats=[0], params=["7"], result=[])
     let mut body = cstr("p");
     body.extend(cstr("stmt"));
@@ -353,7 +378,14 @@ fn extended_full_flow_text_param() {
     put_i16(&mut body, 0);
     raw.extend(msg_bytes(b'B', &body));
     // Describe 'P' "p"
-    raw.extend(msg_bytes(b'D', &b"P".iter().chain(cstr("p").iter()).copied().collect::<Vec<u8>>()));
+    raw.extend(msg_bytes(
+        b'D',
+        &b"P"
+            .iter()
+            .chain(cstr("p").iter())
+            .copied()
+            .collect::<Vec<u8>>(),
+    ));
     // Execute("p", 0)
     let mut body = cstr("p");
     put_i32(&mut body, 0);
@@ -433,7 +465,14 @@ fn extended_binary_param_and_result() {
     put_i16(&mut body, 1);
     raw.extend(msg_bytes(b'B', &body));
     // Describe 'P'（应反映 binary format=1）
-    raw.extend(msg_bytes(b'D', &b"P".iter().chain(cstr("").iter()).copied().collect::<Vec<u8>>()));
+    raw.extend(msg_bytes(
+        b'D',
+        &b"P"
+            .iter()
+            .chain(cstr("").iter())
+            .copied()
+            .collect::<Vec<u8>>(),
+    ));
     // Execute
     let mut body = cstr("");
     put_i32(&mut body, 0);
@@ -559,8 +598,15 @@ fn extended_describe_unknown_statement_26000() {
     let sess = Box::new(MockSession::new());
     let (mut s, _h) = spawn_conn(sess, PgConfig::default());
     handshake(&mut s, &[]).unwrap();
-    s.write_all(&msg_bytes(b'D', &b"S".iter().chain(cstr("nope").iter()).copied().collect::<Vec<u8>>()))
-        .unwrap();
+    s.write_all(&msg_bytes(
+        b'D',
+        &b"S"
+            .iter()
+            .chain(cstr("nope").iter())
+            .copied()
+            .collect::<Vec<u8>>(),
+    ))
+    .unwrap();
     s.write_all(&msg_bytes(b'S', &[])).unwrap();
     let msgs = read_until(&mut s, b'Z').unwrap();
     assert_eq!(msgs[0].0, b'E');
@@ -572,8 +618,15 @@ fn extended_describe_unknown_portal_26000() {
     let sess = Box::new(MockSession::new());
     let (mut s, _h) = spawn_conn(sess, PgConfig::default());
     handshake(&mut s, &[]).unwrap();
-    s.write_all(&msg_bytes(b'D', &b"P".iter().chain(cstr("nope").iter()).copied().collect::<Vec<u8>>()))
-        .unwrap();
+    s.write_all(&msg_bytes(
+        b'D',
+        &b"P"
+            .iter()
+            .chain(cstr("nope").iter())
+            .copied()
+            .collect::<Vec<u8>>(),
+    ))
+    .unwrap();
     s.write_all(&msg_bytes(b'S', &[])).unwrap();
     let msgs = read_until(&mut s, b'Z').unwrap();
     assert_eq!(parse_error(&msgs[0].1).code, "26000");
@@ -619,7 +672,14 @@ fn extended_named_statement_close_removes_it() {
     body.extend(cstr("SELECT 1"));
     put_i16(&mut body, 0);
     raw.extend(msg_bytes(b'P', &body));
-    raw.extend(msg_bytes(b'C', &b"S".iter().chain(cstr("st1").iter()).copied().collect::<Vec<u8>>()));
+    raw.extend(msg_bytes(
+        b'C',
+        &b"S"
+            .iter()
+            .chain(cstr("st1").iter())
+            .copied()
+            .collect::<Vec<u8>>(),
+    ));
     raw.extend(msg_bytes(b'S', &[]));
     s.write_all(&raw).unwrap();
     let msgs = read_until(&mut s, b'Z').unwrap();
@@ -627,8 +687,15 @@ fn extended_named_statement_close_removes_it() {
     assert_eq!(msgs[1].0, b'3'); // CloseComplete
 
     // Close 后 Describe → 26000
-    s.write_all(&msg_bytes(b'D', &b"S".iter().chain(cstr("st1").iter()).copied().collect::<Vec<u8>>()))
-        .unwrap();
+    s.write_all(&msg_bytes(
+        b'D',
+        &b"S"
+            .iter()
+            .chain(cstr("st1").iter())
+            .copied()
+            .collect::<Vec<u8>>(),
+    ))
+    .unwrap();
     s.write_all(&msg_bytes(b'S', &[])).unwrap();
     let msgs = read_until(&mut s, b'Z').unwrap();
     assert_eq!(parse_error(&msgs[0].1).code, "26000");
@@ -702,7 +769,8 @@ fn utf8_sql_and_multibyte_result() {
     let sess = Box::new(MockSession::new());
     let (mut s, _h) = spawn_conn(sess, PgConfig::default());
     handshake(&mut s, &[]).unwrap();
-    s.write_all(&msg_bytes(b'Q', &cstr("SELECT '数据库'"))).unwrap();
+    s.write_all(&msg_bytes(b'Q', &cstr("SELECT '数据库'")))
+        .unwrap();
     let msgs = read_until(&mut s, b'Z').unwrap();
     // MockSession 固定返回 int8 "1"，只验证 UTF-8 SQL 不炸、流程完整
     assert_eq!(msgs[0].0, b'T');

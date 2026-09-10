@@ -64,7 +64,11 @@ impl CasStore {
 
     /// 批量写入：批内去重 + 命中缓存跳过 + 并行上传（std::thread::scope）。
     /// 返回实际上传的 chunk 数。
-    pub fn put_batch(&self, chunks: &[Chunk], session_cache: &mut std::collections::HashSet<Hash>) -> ObjResult<usize> {
+    pub fn put_batch(
+        &self,
+        chunks: &[Chunk],
+        session_cache: &mut std::collections::HashSet<Hash>,
+    ) -> ObjResult<usize> {
         let mut jobs: Vec<(&Chunk, Hash)> = Vec::with_capacity(chunks.len());
         let mut seen = std::collections::HashSet::new();
         for c in chunks {
@@ -108,7 +112,9 @@ impl CasStore {
         // 引用缺失 chunk 的 manifest（回归：
         // wal_corruption::checkpoint_failure_preserves_committed_data）。
         // 逐组 join 后此处必为最终状态。
-        if let Some(e) = err.lock().unwrap().take() { return Err(e) }
+        if let Some(e) = err.lock().unwrap().take() {
+            return Err(e);
+        }
         for (_, h) in &jobs {
             session_cache.insert(*h);
         }

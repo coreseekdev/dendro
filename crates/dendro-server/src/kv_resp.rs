@@ -106,7 +106,7 @@ fn enc_array(arr: &[Vec<u8>]) -> Vec<u8> {
 #[derive(Default)]
 struct ConnState {
     in_multi: bool,
-    queued: Vec<(Vec<u8>, Vec<u8>)>,   // SET 排队
+    queued: Vec<(Vec<u8>, Vec<u8>)>, // SET 排队
     queued_dels: Vec<Vec<u8>>,
 }
 
@@ -117,7 +117,11 @@ pub fn serve(addr: &str, db: Arc<Database>, default_branch: &str) -> std::io::Re
 }
 
 /// 在给定 listener 上服务（装配前置 bind 用）
-pub fn serve_listener(listener: TcpListener, db: Arc<Database>, default_branch: &str) -> std::io::Result<()> {
+pub fn serve_listener(
+    listener: TcpListener,
+    db: Arc<Database>,
+    default_branch: &str,
+) -> std::io::Result<()> {
     let addr = listener.local_addr()?;
     tracing::info!(%addr, "dendro kv-resp: listening");
     for conn in listener.incoming() {
@@ -141,8 +145,7 @@ fn serve_conn(
     db: Arc<Database>,
     default_branch: &str,
 ) -> std::io::Result<()> {
-    let mut kv = Kv::open(&db, default_branch)
-        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    let mut kv = Kv::open(&db, default_branch).map_err(|e| std::io::Error::other(e.to_string()))?;
     let mut st = ConnState::default();
     let mut r = BufReader::new(stream.try_clone()?);
     loop {
@@ -155,11 +158,14 @@ fn serve_conn(
         };
         let msg = msg?;
         let args: Vec<Vec<u8>> = match msg {
-            Resp::Array(a) => a.into_iter().filter_map(|x| match x {
-                Resp::Bulk(b) => Some(b),
-                Resp::Simple(s) => Some(s.into_bytes()),
-                _ => None,
-            }).collect(),
+            Resp::Array(a) => a
+                .into_iter()
+                .filter_map(|x| match x {
+                    Resp::Bulk(b) => Some(b),
+                    Resp::Simple(s) => Some(s.into_bytes()),
+                    _ => None,
+                })
+                .collect(),
             Resp::Bulk(b) => vec![b],
             _ => continue,
         };
@@ -179,7 +185,8 @@ fn serve_conn(
                     Ok(())
                 } else {
                     let from = kv.branch().to_string();
-                    db.create_branch(&name, &from).and_then(|_| kv.use_branch(&name))
+                    db.create_branch(&name, &from)
+                        .and_then(|_| kv.use_branch(&name))
                 };
                 match res {
                     Ok(()) => enc_simple("OK"),
@@ -187,7 +194,12 @@ fn serve_conn(
                 }
             }
             ("BRANCHES", 1) => enc_array(
-                &db.manifest().manifest.refs.keys().map(|k| k.clone().into_bytes()).collect::<Vec<_>>(),
+                &db.manifest()
+                    .manifest
+                    .refs
+                    .keys()
+                    .map(|k| k.clone().into_bytes())
+                    .collect::<Vec<_>>(),
             ),
             ("GET", 2) => match kv.get(&args[1]) {
                 Ok(Some(v)) => enc_bulk(&v),

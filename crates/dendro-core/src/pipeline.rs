@@ -27,7 +27,12 @@ pub trait Adjudicator: Send + Sync {
 /// 单节点实现 = WAL writer append；分布式实现 = Quorum Log append
 pub trait Journal: Send + Sync {
     /// 追加事务帧并按 durability 等级等待
-    fn append(&self, ts: u64, records: &[TxnRecord], durability: crate::engine::Durability) -> Result<()>;
+    fn append(
+        &self,
+        ts: u64,
+        records: &[TxnRecord],
+        durability: crate::engine::Durability,
+    ) -> Result<()>;
     /// 写者是否已毒化（P0-D 错误语义）
     fn is_poisoned(&self) -> bool;
 }
@@ -53,8 +58,18 @@ pub struct WalJournal {
 }
 
 impl Journal for WalJournal {
-    fn append(&self, ts: u64, records: &[TxnRecord], durability: crate::engine::Durability) -> Result<()> {
-        self.writer.append(crate::wal::FrameType::Txn, ts, &crate::wal::encode_txn(records), durability)
+    fn append(
+        &self,
+        ts: u64,
+        records: &[TxnRecord],
+        durability: crate::engine::Durability,
+    ) -> Result<()> {
+        self.writer.append(
+            crate::wal::FrameType::Txn,
+            ts,
+            &crate::wal::encode_txn(records),
+            durability,
+        )
     }
     fn is_poisoned(&self) -> bool {
         self.writer.poisoned()

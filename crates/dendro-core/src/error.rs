@@ -10,7 +10,10 @@ pub struct SqlError {
 
 impl SqlError {
     pub fn new(state: &'static str, message: impl Into<String>) -> Self {
-        Self { state, message: message.into() }
+        Self {
+            state,
+            message: message.into(),
+        }
     }
     pub fn syntax(msg: impl Into<String>) -> Self {
         Self::new("42601", msg)

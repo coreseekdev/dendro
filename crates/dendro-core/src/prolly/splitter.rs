@@ -28,7 +28,9 @@ pub struct KeySplitter {
 
 impl KeySplitter {
     pub fn new(level: u8) -> Self {
-        Self { salt: salt_for_level(level) }
+        Self {
+            salt: salt_for_level(level),
+        }
     }
 
     /// 追加本条目后，当前缓冲是否应在此条目后切分。
@@ -69,7 +71,10 @@ mod tests {
     fn deterministic() {
         let s = KeySplitter::new(0);
         // 同一 (size, key) 判定稳定
-        assert_eq!(s.crossed_boundary(1968, 2000, b"abc"), s.crossed_boundary(1968, 2000, b"abc"));
+        assert_eq!(
+            s.crossed_boundary(1968, 2000, b"abc"),
+            s.crossed_boundary(1968, 2000, b"abc")
+        );
         assert!(!s.crossed_boundary(68, 100, b"abc"));
         assert!(s.crossed_boundary(MAX_CHUNK + 1, MAX_CHUNK + 2, b"abc"));
     }

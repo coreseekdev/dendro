@@ -107,7 +107,10 @@ pub fn merge_map(
     // 基于 left 应用合并变更
     let mut ck = Chunker::new(store, session);
     let new_root = ck.apply(left.as_ref(), &merged)?;
-    Ok(MergeOutcome::Merged { root: new_root.unwrap(), commit: Hash::from_bytes([0u8; 20]) })
+    Ok(MergeOutcome::Merged {
+        root: new_root.unwrap(),
+        commit: Hash::from_bytes([0u8; 20]),
+    })
 }
 
 fn push_change(out: &mut Vec<(Vec<u8>, Mutation)>, key: &[u8], new: &Option<Vec<u8>>) {
@@ -144,7 +147,13 @@ pub fn write_merge_commit(
     let chunk = c.encode();
     store
         .cas()
-        .put_batch(&[Chunk { ty: ChunkType::Commit, data: chunk.data.clone() }], session)
+        .put_batch(
+            &[Chunk {
+                ty: ChunkType::Commit,
+                data: chunk.data.clone(),
+            }],
+            session,
+        )
         .map_err(SqlError::from)?;
     Ok(chunk.addr())
 }
@@ -215,12 +224,10 @@ pub fn merge_catalog(
             (Some(le), Some(re)) => {
                 if le.schema_addr == re.schema_addr {
                     // 行级下推：三方合并表树
-                    let broot = b
-                        .and_then(|be| be.table_root.as_ref().and_then(|s| Hash::from_base32(s)));
-                    let lroot =
-                        le.table_root.as_ref().and_then(|s| Hash::from_base32(s));
-                    let rroot =
-                        re.table_root.as_ref().and_then(|s| Hash::from_base32(s));
+                    let broot =
+                        b.and_then(|be| be.table_root.as_ref().and_then(|s| Hash::from_base32(s)));
+                    let lroot = le.table_root.as_ref().and_then(|s| Hash::from_base32(s));
+                    let rroot = re.table_root.as_ref().and_then(|s| Hash::from_base32(s));
                     match merge_map(store, broot, lroot, rroot, session)? {
                         MergeOutcome::NoOp | MergeOutcome::FastForward(_) => {
                             // 无行级变更或快进：行根取非 base 一侧
@@ -245,15 +252,19 @@ pub fn merge_catalog(
                         MergeOutcome::Merged { root, .. } => {
                             let mut e = le.clone();
                             e.table_root = Some(root.to_base32());
-                            e.row_count = crate::prolly::cursor::tree_count(store, &root)
-                                .unwrap_or(0);
+                            e.row_count =
+                                crate::prolly::cursor::tree_count(store, &root).unwrap_or(0);
                             entries.push((name.clone(), e));
                         }
                         MergeOutcome::Conflicts(cs) => {
                             conflicts.push(format!(
                                 "table {name}: {} conflicting keys ({})",
                                 cs.len(),
-                                cs.iter().take(3).map(|c| c.key.clone()).collect::<Vec<_>>().join(",")
+                                cs.iter()
+                                    .take(3)
+                                    .map(|c| c.key.clone())
+                                    .collect::<Vec<_>>()
+                                    .join(",")
                             ));
                         }
                     }
@@ -263,11 +274,15 @@ pub fn merge_catalog(
             }
             (None, Some(re)) => {
                 // 左删右改 → 冲突
-                conflicts.push(format!("table {name}: deleted on one branch, modified on other"));
+                conflicts.push(format!(
+                    "table {name}: deleted on one branch, modified on other"
+                ));
                 let _ = re;
             }
             (Some(le), None) => {
-                conflicts.push(format!("table {name}: deleted on one branch, modified on other"));
+                conflicts.push(format!(
+                    "table {name}: deleted on one branch, modified on other"
+                ));
                 let _ = le;
             }
             (None, None) => unreachable!(),
@@ -279,8 +294,8 @@ pub fn merge_catalog(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::objstore::memory::MemoryObjStore;
     use crate::objstore::cas::CasStore;
+    use crate::objstore::memory::MemoryObjStore;
     use crate::prolly::cursor;
 
     fn store() -> Arc<NodeStore> {
@@ -288,7 +303,11 @@ mod tests {
         Arc::new(NodeStore::new(Arc::new(CasStore::new(mem)), 1024))
     }
 
-    fn build(store: &Arc<NodeStore>, session: &mut HashSet<Hash>, kvs: Vec<(Vec<u8>, Vec<u8>)>) -> Option<Hash> {
+    fn build(
+        store: &Arc<NodeStore>,
+        session: &mut HashSet<Hash>,
+        kvs: Vec<(Vec<u8>, Vec<u8>)>,
+    ) -> Option<Hash> {
         let mut ck = Chunker::new(store, session);
         ck.build(&kvs).unwrap()
     }
@@ -302,7 +321,13 @@ mod tests {
         let s = store();
         let mut sess = HashSet::new();
         // base: k0..k99
-        let base = build(&s, &mut sess, (0..100).map(|i| (k(i), format!("v{i}").into_bytes())).collect());
+        let base = build(
+            &s,
+            &mut sess,
+            (0..100)
+                .map(|i| (k(i), format!("v{i}").into_bytes()))
+                .collect(),
+        );
         // left: 改 k10，删 k20，加 k200
         let left = {
             let mut ck = Chunker::new(&s, &mut sess);
@@ -333,11 +358,23 @@ mod tests {
         let out = merge_map(&s, base, left, right, &mut sess).unwrap();
         match out {
             MergeOutcome::Merged { root, .. } => {
-                assert_eq!(cursor::lookup(&s, &root, &k(10)).unwrap().unwrap(), b"left10");
+                assert_eq!(
+                    cursor::lookup(&s, &root, &k(10)).unwrap().unwrap(),
+                    b"left10"
+                );
                 assert!(cursor::lookup(&s, &root, &k(20)).unwrap().is_none());
-                assert_eq!(cursor::lookup(&s, &root, &k(30)).unwrap().unwrap(), b"right30");
-                assert_eq!(cursor::lookup(&s, &root, &k(200)).unwrap().unwrap(), b"left200");
-                assert_eq!(cursor::lookup(&s, &root, &k(300)).unwrap().unwrap(), b"right300");
+                assert_eq!(
+                    cursor::lookup(&s, &root, &k(30)).unwrap().unwrap(),
+                    b"right30"
+                );
+                assert_eq!(
+                    cursor::lookup(&s, &root, &k(200)).unwrap().unwrap(),
+                    b"left200"
+                );
+                assert_eq!(
+                    cursor::lookup(&s, &root, &k(300)).unwrap().unwrap(),
+                    b"right300"
+                );
                 assert_eq!(cursor::tree_count(&s, &root).unwrap(), 101);
             }
             _ => panic!("expected merged"),
@@ -345,11 +382,13 @@ mod tests {
         // 冲突：两边改同一 key 不同值
         let l2 = {
             let mut ck = Chunker::new(&s, &mut sess);
-            ck.apply(base.as_ref(), &[(k(50), Mutation::Put(b"L".to_vec()))]).unwrap()
+            ck.apply(base.as_ref(), &[(k(50), Mutation::Put(b"L".to_vec()))])
+                .unwrap()
         };
         let r2 = {
             let mut ck = Chunker::new(&s, &mut sess);
-            ck.apply(base.as_ref(), &[(k(50), Mutation::Put(b"R".to_vec()))]).unwrap()
+            ck.apply(base.as_ref(), &[(k(50), Mutation::Put(b"R".to_vec()))])
+                .unwrap()
         };
         match merge_map(&s, base, l2, r2, &mut sess).unwrap() {
             MergeOutcome::Conflicts(cs) => {
@@ -362,39 +401,60 @@ mod tests {
         // 收敛：两边改同 key 同值 → 无冲突（left 额外改 k10 使两树不同）
         let l3 = {
             let mut ck = Chunker::new(&s, &mut sess);
-            ck.apply(base.as_ref(), &[(k(51), Mutation::Put(b"SAME".to_vec())), (k(10), Mutation::Put(b"only-left".to_vec()))]).unwrap()
+            ck.apply(
+                base.as_ref(),
+                &[
+                    (k(51), Mutation::Put(b"SAME".to_vec())),
+                    (k(10), Mutation::Put(b"only-left".to_vec())),
+                ],
+            )
+            .unwrap()
         };
         let r3 = {
             let mut ck = Chunker::new(&s, &mut sess);
-            ck.apply(base.as_ref(), &[(k(51), Mutation::Put(b"SAME".to_vec()))]).unwrap()
+            ck.apply(base.as_ref(), &[(k(51), Mutation::Put(b"SAME".to_vec()))])
+                .unwrap()
         };
         match merge_map(&s, base, l3, r3, &mut sess).unwrap() {
             MergeOutcome::Merged { root, .. } => {
                 assert_eq!(cursor::lookup(&s, &root, &k(51)).unwrap().unwrap(), b"SAME");
-                assert_eq!(cursor::lookup(&s, &root, &k(10)).unwrap().unwrap(), b"only-left");
+                assert_eq!(
+                    cursor::lookup(&s, &root, &k(10)).unwrap().unwrap(),
+                    b"only-left"
+                );
             }
             other => panic!("expected merged, got {other:?}"),
         }
         // 两树完全相同（同改同值且无其他差异）：内容寻址 ⇒ NoOp
         let l4 = {
             let mut ck = Chunker::new(&s, &mut sess);
-            ck.apply(base.as_ref(), &[(k(52), Mutation::Put(b"S".to_vec()))]).unwrap()
+            ck.apply(base.as_ref(), &[(k(52), Mutation::Put(b"S".to_vec()))])
+                .unwrap()
         };
         let r4 = {
             let mut ck = Chunker::new(&s, &mut sess);
-            ck.apply(base.as_ref(), &[(k(52), Mutation::Put(b"S".to_vec()))]).unwrap()
+            ck.apply(base.as_ref(), &[(k(52), Mutation::Put(b"S".to_vec()))])
+                .unwrap()
         };
-        assert!(matches!(merge_map(&s, base, l4, r4, &mut sess).unwrap(), MergeOutcome::NoOp));
+        assert!(matches!(
+            merge_map(&s, base, l4, r4, &mut sess).unwrap(),
+            MergeOutcome::NoOp
+        ));
     }
 
     #[test]
     fn fast_forward_and_noop() {
         let s = store();
         let mut sess = HashSet::new();
-        let base = build(&s, &mut sess, (0..10).map(|i| (k(i), b"x".to_vec())).collect());
+        let base = build(
+            &s,
+            &mut sess,
+            (0..10).map(|i| (k(i), b"x".to_vec())).collect(),
+        );
         let right = {
             let mut ck = Chunker::new(&s, &mut sess);
-            ck.apply(base.as_ref(), &[(k(99), Mutation::Put(b"y".to_vec()))]).unwrap()
+            ck.apply(base.as_ref(), &[(k(99), Mutation::Put(b"y".to_vec()))])
+                .unwrap()
         };
         match merge_map(&s, base, base, right, &mut sess).unwrap() {
             MergeOutcome::FastForward(f) => assert_eq!(f, right.unwrap()),

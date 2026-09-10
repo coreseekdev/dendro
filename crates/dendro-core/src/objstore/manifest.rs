@@ -164,7 +164,9 @@ impl ManifestStore {
             }
         }
         vers.sort_unstable();
-        let top = vers.pop().ok_or_else(|| ObjError::NotFound("manifest/".into()))?;
+        let top = vers
+            .pop()
+            .ok_or_else(|| ObjError::NotFound("manifest/".into()))?;
         let m = self.read_version(top)?;
         Ok((top, m))
     }
@@ -215,7 +217,10 @@ impl ManifestStore {
 
 fn rand_u64() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let n = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64;
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as u64;
     let mut x = n.wrapping_mul(0x9E37_79B9_7F4A_7C15);
     x ^= x >> 30;
     x.wrapping_mul(0xBF58_476D_1CE4_E5B9)
@@ -238,7 +243,13 @@ mod tests {
         let (s, _obj) = store();
         let (v0, mut m) = s.load_latest().unwrap();
         assert_eq!(v0, 1);
-        m.refs.insert("agent42".into(), BranchHead { wal_seg: 3, ..Default::default() });
+        m.refs.insert(
+            "agent42".into(),
+            BranchHead {
+                wal_seg: 3,
+                ..Default::default()
+            },
+        );
         let v1 = s.commit(v0, m.clone()).unwrap();
         assert_eq!(v1, 2);
         // 过期提交冲突
@@ -253,12 +264,20 @@ mod tests {
         let (s, obj) = store();
         let mut m = s.load_latest().unwrap().1;
         m.format_version = 2;
-        obj.put(&ManifestStore::path(2), serde_json::to_vec(&m).unwrap().into()).unwrap();
+        obj.put(
+            &ManifestStore::path(2),
+            serde_json::to_vec(&m).unwrap().into(),
+        )
+        .unwrap();
         let err = s.load_latest().expect_err("format_version=2 应被拒绝");
         assert!(err.to_string().contains("format_version 2"), "{err}");
         // 当前版本（1）仍可读：放回合法 manifest/2
         m.format_version = 1;
-        obj.put(&ManifestStore::path(2), serde_json::to_vec(&m).unwrap().into()).unwrap();
+        obj.put(
+            &ManifestStore::path(2),
+            serde_json::to_vec(&m).unwrap().into(),
+        )
+        .unwrap();
         assert_eq!(s.load_latest().unwrap().0, 2);
     }
 
@@ -271,8 +290,16 @@ mod tests {
         let (s, obj) = store();
         let mut m = s.load_latest().unwrap().1;
         for _ in 0..9 {
-            m.refs.insert("b".into(), BranchHead { wal_seg: m.version, ..Default::default() });
-            m = s.read_version(s.commit(m.version, m.clone()).unwrap()).unwrap();
+            m.refs.insert(
+                "b".into(),
+                BranchHead {
+                    wal_seg: m.version,
+                    ..Default::default()
+                },
+            );
+            m = s
+                .read_version(s.commit(m.version, m.clone()).unwrap())
+                .unwrap();
         }
         assert_eq!(s.load_latest().unwrap().0, 10);
         // 模拟 GC：删除 2..=9（保留 1 与 10）→ 版本号空间出现空洞

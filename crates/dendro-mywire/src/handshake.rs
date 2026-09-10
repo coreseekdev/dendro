@@ -58,12 +58,16 @@ pub fn parse_handshake_response(p: &[u8]) -> Result<HandshakeResponse41, Handsha
     let username = r.nul_terminated().map_err(|_| HandshakeError::Truncated)?;
     // auth response：lenenc（PLUGIN_AUTH_LENENC）> 1B 长度前缀（SECURE_CONNECTION）> NUL 串（老式）
     let auth_response = if capabilities & CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA != 0 {
-        r.lenenc_bytes().map_err(|_| HandshakeError::Truncated)?.to_vec()
+        r.lenenc_bytes()
+            .map_err(|_| HandshakeError::Truncated)?
+            .to_vec()
     } else if capabilities & CLIENT_SECURE_CONNECTION != 0 {
         let n = r.u8().map_err(|_| HandshakeError::Truncated)? as usize;
         r.take(n).map_err(|_| HandshakeError::Truncated)?.to_vec()
     } else {
-        r.nul_terminated().map_err(|_| HandshakeError::Truncated)?.to_vec()
+        r.nul_terminated()
+            .map_err(|_| HandshakeError::Truncated)?
+            .to_vec()
     };
     // [database NUL]：仅当客户端置 CLIENT_CONNECT_WITH_DB 时才存在
     let database = if capabilities & crate::codec::CLIENT_CONNECT_WITH_DB != 0 {
@@ -149,9 +153,10 @@ pub fn handshake<T: Read + Write>(io: &mut WireIo<T>, cfg: &MyConfig) -> io::Res
         Ok(hs) => hs,
         Err(e) => {
             let (code, msg) = match e {
-                HandshakeError::SslRequest => {
-                    (1043, "TLS not supported by dendro (v1): retry without ssl-mode=REQUIRED")
-                }
+                HandshakeError::SslRequest => (
+                    1043,
+                    "TLS not supported by dendro (v1): retry without ssl-mode=REQUIRED",
+                ),
                 HandshakeError::OldClient => (1043, "old pre-4.1 clients not supported"),
                 HandshakeError::Truncated => (1043, "malformed handshake response"),
             };

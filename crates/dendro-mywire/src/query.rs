@@ -191,7 +191,10 @@ fn write_sysvar_row<T: Read + Write>(
     let mut buf = Vec::with_capacity(4);
     write_lenenc_int(&mut buf, 1);
     io.write_packet(&buf)?;
-    io.write_packet(&column_def_bytes(&ColumnMeta { name: name.into(), ty }))?;
+    io.write_packet(&column_def_bytes(&ColumnMeta {
+        name: name.into(),
+        ty,
+    }))?;
     io.write_packet(&eof_packet(status(sess, false)))?;
     let mut row = Vec::with_capacity(value.len() + 9);
     write_lenenc_str(&mut row, value.as_bytes());
@@ -211,7 +214,11 @@ fn field_list<T: Read + Write>(
     let table = match r.nul_terminated() {
         Ok(t) => String::from_utf8_lossy(t).into_owned(),
         Err(_) => {
-            io.write_packet(&err_packet(1047, "08S01", "malformed COM_FIELD_LIST payload"))?;
+            io.write_packet(&err_packet(
+                1047,
+                "08S01",
+                "malformed COM_FIELD_LIST payload",
+            ))?;
             return Ok(());
         }
     };
@@ -241,7 +248,11 @@ fn statistics_text() -> String {
     static START: OnceLock<Instant> = OnceLock::new();
     let uptime = START.get_or_init(Instant::now).elapsed().as_secs();
     let q = QUESTIONS.load(Ordering::Relaxed);
-    let qps = if uptime == 0 { q as f64 } else { q as f64 / uptime as f64 };
+    let qps = if uptime == 0 {
+        q as f64
+    } else {
+        q as f64 / uptime as f64
+    };
     format!(
         "Uptime\t{}\tThreads\t1\tQuestions\t{}\tSlow queries\t0\tOpens\t0\t\
          Flush tables\t1\tOpen tables\t0\tQueries per second avg\t{qps:.3}",
@@ -271,7 +282,7 @@ pub fn map_state(state: &str) -> (u16, &'static str) {
         // code 用 ER_UNKNOWN_ERROR，但 sql_state 原样携带 40003——客户端
         // 可据此区分"结果未知"与普通错误（语义见 SPEC 02 §3.5）
         "40003" => (1105, "40003"),
-        _ => (1105, "HY000"),       // ER_UNKNOWN_ERROR（XX000 等）
+        _ => (1105, "HY000"), // ER_UNKNOWN_ERROR（XX000 等）
     }
 }
 
@@ -289,7 +300,11 @@ mod tests {
     fn state_mapping_covers_core_errors() {
         // SPEC 06 §3：表不存在 → 1146 / 42S02
         assert_eq!(map_state("42P01"), (1146, "42S02"));
-        assert_eq!(map_state("40003"), (1105, "40003"), "completion_unknown 的 sql_state 必须透传");
+        assert_eq!(
+            map_state("40003"),
+            (1105, "40003"),
+            "completion_unknown 的 sql_state 必须透传"
+        );
         assert_eq!(map_state("42601"), (1064, "42000"));
         assert_eq!(map_state("23505"), (1062, "23000"));
         assert_eq!(map_state("3D000"), (1049, "42000"));

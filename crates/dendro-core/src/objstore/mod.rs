@@ -5,8 +5,8 @@ pub mod cas;
 pub mod fence;
 pub mod local;
 pub mod manifest;
-pub mod s3;
 pub mod memory;
+pub mod s3;
 pub mod throttled;
 
 use bytes::Bytes;
@@ -93,7 +93,10 @@ pub fn validate_path(p: &str) -> ObjResult<()> {
         if seg.is_empty() || seg == ".." {
             return Err(ObjError::Io(format!("bad path segment in {p}")));
         }
-        if !seg.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.')) {
+        if !seg
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
+        {
             return Err(ObjError::Io(format!("bad char in path {p}")));
         }
     }

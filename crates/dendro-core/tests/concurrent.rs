@@ -28,7 +28,8 @@ fn concurrent_same_key_exactly_one_winner() {
     let db = open_mem();
     {
         let mut s = db.new_session();
-        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
+            .unwrap();
         s.exec("INSERT INTO t VALUES (1, 'init')").unwrap();
     }
     const N: usize = 8;
@@ -44,9 +45,10 @@ fn concurrent_same_key_exactly_one_winner() {
             handles.push(scope.spawn(move || {
                 let mut s = db.new_session();
                 s.exec("BEGIN").unwrap();
-                s.exec(&format!("UPDATE t SET v = 'w{i}' WHERE id = 1")).unwrap();
+                s.exec(&format!("UPDATE t SET v = 'w{i}' WHERE id = 1"))
+                    .unwrap();
                 barrier.wait(); // 同快照全体就绪 → **线程内并发提交**（P13-5：
-                // 此前 COMMIT 由主线程 join 后串行发出，"并发提交"表述过强）
+                                // 此前 COMMIT 由主线程 join 后串行发出，"并发提交"表述过强）
                 match s.exec("COMMIT") {
                     Ok(_) => Ok(format!("w{i}")),
                     Err(e) => {
@@ -56,16 +58,17 @@ fn concurrent_same_key_exactly_one_winner() {
                 }
             }));
         }
-        let results: Vec<Result<String, String>> = handles
-            .into_iter()
-            .map(|h| h.join().unwrap())
-            .collect();
+        let results: Vec<Result<String, String>> =
+            handles.into_iter().map(|h| h.join().unwrap()).collect();
         let winners: Vec<&String> = results.iter().filter_map(|r| r.as_ref().ok()).collect();
         assert_eq!(winners.len(), 1, "恰好一个赢家（实际 {winners:?}）");
         let losers = results.iter().filter(|r| r.is_err()).count();
         assert_eq!(losers, N - 1);
         // 赢家的值持久
-        assert_eq!(rows(&db, "SELECT v FROM t WHERE id = 1")[0][0], winners[0].as_str());
+        assert_eq!(
+            rows(&db, "SELECT v FROM t WHERE id = 1")[0][0],
+            winners[0].as_str()
+        );
     });
     assert_eq!(rows(&db, "SELECT count(*) FROM t")[0][0], "1");
 }
@@ -75,7 +78,8 @@ fn concurrent_different_keys_all_succeed() {
     let db = open_mem();
     {
         let mut s = db.new_session();
-        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
+            .unwrap();
     }
     const N: usize = 8;
     std::thread::scope(|scope| {
@@ -83,11 +87,16 @@ fn concurrent_different_keys_all_succeed() {
             let db = db.clone();
             scope.spawn(move || {
                 let mut s = db.new_session();
-                s.exec(&format!("INSERT INTO t VALUES ({i}, 'v{i}')")).unwrap();
+                s.exec(&format!("INSERT INTO t VALUES ({i}, 'v{i}')"))
+                    .unwrap();
             });
         }
     });
-    assert_eq!(rows(&db, "SELECT count(*) FROM t")[0][0], "8", "异键并发全部成功");
+    assert_eq!(
+        rows(&db, "SELECT count(*) FROM t")[0][0],
+        "8",
+        "异键并发全部成功"
+    );
 }
 
 #[test]
@@ -98,7 +107,8 @@ fn concurrent_same_key_autocommit_40001_or_success() {
     let db = open_mem();
     {
         let mut s = db.new_session();
-        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
+            .unwrap();
         s.exec("INSERT INTO t VALUES (1, 'init')").unwrap();
     }
     std::thread::scope(|scope| {

@@ -4,7 +4,7 @@
 use super::node::{validate, Node};
 use crate::error::Result;
 use crate::format::hash::Hash;
-use crate::objstore::cas::{Chunk, ChunkType, CasStore};
+use crate::objstore::cas::{CasStore, Chunk, ChunkType};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -28,11 +28,18 @@ impl NodeStore {
         &self.cas
     }
 
-    pub fn put_node(&self, node: Node, session_cache: &mut std::collections::HashSet<Hash>) -> Result<Hash> {
+    pub fn put_node(
+        &self,
+        node: Node,
+        session_cache: &mut std::collections::HashSet<Hash>,
+    ) -> Result<Hash> {
         let h = node.addr();
         if !session_cache.contains(&h) {
             let ty = ChunkType::Node;
-            let chunk = Chunk { ty, data: node.data().to_vec() };
+            let chunk = Chunk {
+                ty,
+                data: node.data().to_vec(),
+            };
             debug_assert_eq!(chunk.addr(), h);
             self.cas.put_batch(&[chunk], session_cache)?;
         }

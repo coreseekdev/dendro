@@ -32,7 +32,9 @@ fn parse_bool(s: &str) -> Result<bool, SqlError> {
     match s.to_ascii_lowercase().as_str() {
         "t" | "true" | "y" | "yes" | "on" | "1" => Ok(true),
         "f" | "false" | "n" | "no" | "off" | "0" => Ok(false),
-        _ => Err(SqlError::invalid_text(format!("invalid input syntax for type boolean: \"{s}\""))),
+        _ => Err(SqlError::invalid_text(format!(
+            "invalid input syntax for type boolean: \"{s}\""
+        ))),
     }
 }
 
@@ -67,7 +69,9 @@ fn parse_bytea(s: &str) -> Result<Vec<u8>, SqlError> {
 pub(crate) fn parse_date(s: &str) -> Result<i32, SqlError> {
     let parts: Vec<&str> = s.split('-').collect();
     if parts.len() != 3 {
-        return Err(SqlError::invalid_text(format!("invalid date syntax: \"{s}\"")));
+        return Err(SqlError::invalid_text(format!(
+            "invalid date syntax: \"{s}\""
+        )));
     }
     let y: i64 = parts[0]
         .parse()
@@ -79,11 +83,12 @@ pub(crate) fn parse_date(s: &str) -> Result<i32, SqlError> {
         .parse()
         .map_err(|_| SqlError::invalid_text(format!("invalid date syntax: \"{s}\"")))?;
     if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
-        return Err(SqlError::invalid_text(format!("date field out of range: \"{s}\"")));
+        return Err(SqlError::invalid_text(format!(
+            "date field out of range: \"{s}\""
+        )));
     }
     let days = days_from_civil(y, m, d);
-    i32::try_from(days)
-        .map_err(|_| SqlError::invalid_text(format!("date out of range: \"{s}\"")))
+    i32::try_from(days).map_err(|_| SqlError::invalid_text(format!("date out of range: \"{s}\"")))
 }
 
 /// `YYYY-MM-DD[ T]HH:MM[:SS[.frac]]` → 自 Unix epoch 的毫秒
@@ -152,19 +157,40 @@ mod tests {
 
     #[test]
     fn parse_int_float_bool() {
-        assert_eq!(parse_text(ColType::Int64, " 42 ").unwrap(), SqlValue::Int64(42));
-        assert_eq!(parse_text(ColType::Int32, "-7").unwrap(), SqlValue::Int32(-7));
+        assert_eq!(
+            parse_text(ColType::Int64, " 42 ").unwrap(),
+            SqlValue::Int64(42)
+        );
+        assert_eq!(
+            parse_text(ColType::Int32, "-7").unwrap(),
+            SqlValue::Int32(-7)
+        );
         assert!(parse_text(ColType::Int32, "9x").is_err());
-        assert_eq!(parse_text(ColType::Float64, "1.25e2").unwrap(), SqlValue::Float64(125.0));
-        assert_eq!(parse_text(ColType::Bool, "TRUE").unwrap(), SqlValue::Bool(true));
-        assert_eq!(parse_text(ColType::Bool, "f").unwrap(), SqlValue::Bool(false));
+        assert_eq!(
+            parse_text(ColType::Float64, "1.25e2").unwrap(),
+            SqlValue::Float64(125.0)
+        );
+        assert_eq!(
+            parse_text(ColType::Bool, "TRUE").unwrap(),
+            SqlValue::Bool(true)
+        );
+        assert_eq!(
+            parse_text(ColType::Bool, "f").unwrap(),
+            SqlValue::Bool(false)
+        );
         assert!(parse_text(ColType::Bool, "maybe").is_err());
-        assert_eq!(parse_text(ColType::Utf8, " hi ").unwrap(), SqlValue::Utf8(" hi ".into()));
+        assert_eq!(
+            parse_text(ColType::Utf8, " hi ").unwrap(),
+            SqlValue::Utf8(" hi ".into())
+        );
     }
 
     #[test]
     fn parse_bytea_hex() {
-        assert_eq!(parse_text(ColType::Bytes, "\\x00ff10").unwrap(), SqlValue::Bytes(vec![0, 255, 16]));
+        assert_eq!(
+            parse_text(ColType::Bytes, "\\x00ff10").unwrap(),
+            SqlValue::Bytes(vec![0, 255, 16])
+        );
         assert!(parse_text(ColType::Bytes, "\\x0f0").is_err());
         assert_eq!(
             parse_text(ColType::Bytes, "plain").unwrap(),
@@ -188,7 +214,10 @@ mod tests {
         assert_eq!(parse_timestamp("1970-01-01 00:00:00").unwrap(), 0);
         assert_eq!(parse_timestamp("1970-01-01").unwrap(), 0);
         assert_eq!(parse_timestamp("1970-01-01T00:00:01.5").unwrap(), 1_500);
-        assert_eq!(parse_timestamp("2000-01-01 00:00:00").unwrap(), 946_684_800_000);
+        assert_eq!(
+            parse_timestamp("2000-01-01 00:00:00").unwrap(),
+            946_684_800_000
+        );
         assert_eq!(
             parse_timestamp("2024-01-02 03:04:05.123+00").unwrap(),
             (parse_date("2024-01-02").unwrap() as i64) * 86_400_000

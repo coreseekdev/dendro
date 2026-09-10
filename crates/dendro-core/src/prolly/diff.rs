@@ -22,7 +22,11 @@ pub fn diff(store: Arc<NodeStore>, a: Option<&Hash>, b: Option<&Hash>) -> Result
             let mut out = Vec::new();
             let mut it = super::cursor::TreeIter::new(store, rb)?;
             while let Some((k, v)) = it.next_item()? {
-                out.push(Change { key: k, old: None, new: Some(v) });
+                out.push(Change {
+                    key: k,
+                    old: None,
+                    new: Some(v),
+                });
             }
             Ok(out)
         }
@@ -30,7 +34,11 @@ pub fn diff(store: Arc<NodeStore>, a: Option<&Hash>, b: Option<&Hash>) -> Result
             let mut out = Vec::new();
             let mut it = super::cursor::TreeIter::new(store, ra)?;
             while let Some((k, v)) = it.next_item()? {
-                out.push(Change { key: k, old: Some(v), new: None });
+                out.push(Change {
+                    key: k,
+                    old: Some(v),
+                    new: None,
+                });
             }
             Ok(out)
         }
@@ -56,16 +64,28 @@ fn diff_nodes(store: &Arc<NodeStore>, a: &Hash, b: &Hash, out: &mut Vec<Change>)
             while ia < na.count() || ib < nb.count() {
                 if ib >= nb.count() || (ia < na.count() && na.key(ia) < nb.key(ib)) {
                     // 仅 a 有：整棵删除
-                    let child = match na.value(ia) { EntryVal::Child(c, _) => c, _ => unreachable!() };
+                    let child = match na.value(ia) {
+                        EntryVal::Child(c, _) => c,
+                        _ => unreachable!(),
+                    };
                     emit_subtree(store, &child, None, out)?;
                     ia += 1;
                 } else if ia >= na.count() || na.key(ia) > nb.key(ib) {
-                    let child = match nb.value(ib) { EntryVal::Child(c, _) => c, _ => unreachable!() };
+                    let child = match nb.value(ib) {
+                        EntryVal::Child(c, _) => c,
+                        _ => unreachable!(),
+                    };
                     emit_subtree(store, &child, Some(true), out)?;
                     ib += 1;
                 } else {
-                    let ca = match na.value(ia) { EntryVal::Child(c, _) => c, _ => unreachable!() };
-                    let cb = match nb.value(ib) { EntryVal::Child(c, _) => c, _ => unreachable!() };
+                    let ca = match na.value(ia) {
+                        EntryVal::Child(c, _) => c,
+                        _ => unreachable!(),
+                    };
+                    let cb = match nb.value(ib) {
+                        EntryVal::Child(c, _) => c,
+                        _ => unreachable!(),
+                    };
                     if ca != cb {
                         diff_nodes(store, &ca, &cb, out)?;
                     }
@@ -79,16 +99,28 @@ fn diff_nodes(store: &Arc<NodeStore>, a: &Hash, b: &Hash, out: &mut Vec<Change>)
             let mut ib = 0usize;
             while ia < na.count() || ib < nb.count() {
                 if ib >= nb.count() || (ia < na.count() && na.key(ia) < nb.key(ib)) {
-                    out.push(Change { key: na.key(ia), old: Some(leaf_val(&na, ia)), new: None });
+                    out.push(Change {
+                        key: na.key(ia),
+                        old: Some(leaf_val(&na, ia)),
+                        new: None,
+                    });
                     ia += 1;
                 } else if ia >= na.count() || na.key(ia) > nb.key(ib) {
-                    out.push(Change { key: nb.key(ib), old: None, new: Some(leaf_val(&nb, ib)) });
+                    out.push(Change {
+                        key: nb.key(ib),
+                        old: None,
+                        new: Some(leaf_val(&nb, ib)),
+                    });
                     ib += 1;
                 } else {
                     let va = leaf_val(&na, ia);
                     let vb = leaf_val(&nb, ib);
                     if va != vb {
-                        out.push(Change { key: na.key(ia), old: Some(va), new: Some(vb) });
+                        out.push(Change {
+                            key: na.key(ia),
+                            old: Some(va),
+                            new: Some(vb),
+                        });
                     }
                     ia += 1;
                     ib += 1;
@@ -107,7 +139,13 @@ fn diff_nodes(store: &Arc<NodeStore>, a: &Hash, b: &Hash, out: &mut Vec<Change>)
 }
 
 /// na 是单节点（更低层），nb 是高层子树：枚举 nb 全部叶条目，与 na 逐条对比
-fn diff_shallow(store: &Arc<NodeStore>, deep: &super::node::Node, _di: usize, shallow: &super::node::Node, out: &mut Vec<Change>) -> Result<()> {
+fn diff_shallow(
+    store: &Arc<NodeStore>,
+    deep: &super::node::Node,
+    _di: usize,
+    shallow: &super::node::Node,
+    out: &mut Vec<Change>,
+) -> Result<()> {
     // 把 shallow 单节点当作一棵树与 deep 子树做 diff：等价于
     // diff(shallow_entries, deep_entries) —— 借助迭代器归并
     let mut deep_items: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
@@ -121,19 +159,36 @@ fn diff_shallow(store: &Arc<NodeStore>, deep: &super::node::Node, _di: usize, sh
 }
 
 /// 展开整棵子树的叶条目；side=Some(true) 表示只存在于 b（新增），None 表示只存在于 a（删除）
-fn emit_subtree(store: &Arc<NodeStore>, addr: &Hash, new_side: Option<bool>, out: &mut Vec<Change>) -> Result<()> {
+fn emit_subtree(
+    store: &Arc<NodeStore>,
+    addr: &Hash,
+    new_side: Option<bool>,
+    out: &mut Vec<Change>,
+) -> Result<()> {
     let mut items = Vec::new();
     collect_items(store, &store.get_node(addr)?, &mut items)?;
     for (k, v) in items {
         match new_side {
-            Some(true) => out.push(Change { key: k, old: None, new: Some(v) }),
-            Some(false) | None => out.push(Change { key: k, old: Some(v), new: None }),
+            Some(true) => out.push(Change {
+                key: k,
+                old: None,
+                new: Some(v),
+            }),
+            Some(false) | None => out.push(Change {
+                key: k,
+                old: Some(v),
+                new: None,
+            }),
         }
     }
     Ok(())
 }
 
-pub fn collect_items(store: &Arc<NodeStore>, node: &super::node::Node, out: &mut Vec<(Vec<u8>, Vec<u8>)>) -> Result<()> {
+pub fn collect_items(
+    store: &Arc<NodeStore>,
+    node: &super::node::Node,
+    out: &mut Vec<(Vec<u8>, Vec<u8>)>,
+) -> Result<()> {
     if node.level() == 0 {
         for i in 0..node.count() {
             out.push((node.key(i), leaf_val(node, i)));
@@ -161,14 +216,26 @@ fn merge_item_lists(a: Vec<(Vec<u8>, Vec<u8>)>, b: Vec<(Vec<u8>, Vec<u8>)>, out:
     let mut ib = 0usize;
     while ia < a.len() || ib < b.len() {
         if ib >= b.len() || (ia < a.len() && a[ia].0 < b[ib].0) {
-            out.push(Change { key: a[ia].0.clone(), old: Some(a[ia].1.clone()), new: None });
+            out.push(Change {
+                key: a[ia].0.clone(),
+                old: Some(a[ia].1.clone()),
+                new: None,
+            });
             ia += 1;
         } else if ia >= a.len() || a[ia].0 > b[ib].0 {
-            out.push(Change { key: b[ib].0.clone(), old: None, new: Some(b[ib].1.clone()) });
+            out.push(Change {
+                key: b[ib].0.clone(),
+                old: None,
+                new: Some(b[ib].1.clone()),
+            });
             ib += 1;
         } else {
             if a[ia].1 != b[ib].1 {
-                out.push(Change { key: a[ia].0.clone(), old: Some(a[ia].1.clone()), new: Some(b[ib].1.clone()) });
+                out.push(Change {
+                    key: a[ia].0.clone(),
+                    old: Some(a[ia].1.clone()),
+                    new: Some(b[ib].1.clone()),
+                });
             }
             ia += 1;
             ib += 1;

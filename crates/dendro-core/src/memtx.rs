@@ -41,7 +41,11 @@ pub struct TableMem {
 impl Default for TableMem {
     fn default() -> Self {
         Self {
-            shards: (0..NSHARD).map(|_| Shard { map: RwLock::new(HashMap::new()) }).collect(),
+            shards: (0..NSHARD)
+                .map(|_| Shard {
+                    map: RwLock::new(HashMap::new()),
+                })
+                .collect(),
         }
     }
 }
@@ -133,7 +137,10 @@ impl TableMem {
     }
 
     pub fn row_count_visible(&self, snapshot: u64) -> usize {
-        self.snapshot_rows(snapshot).values().filter(|v| v.is_some()).count()
+        self.snapshot_rows(snapshot)
+            .values()
+            .filter(|v| v.is_some())
+            .count()
     }
 }
 
@@ -152,7 +159,9 @@ impl BranchMem {
             }
         }
         let mut g = self.tables.write();
-        g.entry(table_id).or_insert_with(|| Arc::new(TableMem::default())).clone()
+        g.entry(table_id)
+            .or_insert_with(|| Arc::new(TableMem::default()))
+            .clone()
     }
 
     pub fn remove_table(&self, table_id: u32) {
@@ -179,13 +188,20 @@ pub struct Txn {
 
 impl Txn {
     pub fn new(snapshot: u64) -> Self {
-        Self { snapshot, writes: BTreeMap::new(), explicit: false, head_root: None }
+        Self {
+            snapshot,
+            writes: BTreeMap::new(),
+            explicit: false,
+            head_root: None,
+        }
     }
     pub fn put(&mut self, table_id: u32, key: Vec<u8>, val: Vec<u8>) {
-        self.writes.insert((table_id, key), crate::prolly::Mutation::Put(val));
+        self.writes
+            .insert((table_id, key), crate::prolly::Mutation::Put(val));
     }
     pub fn delete(&mut self, table_id: u32, key: Vec<u8>) {
-        self.writes.insert((table_id, key), crate::prolly::Mutation::Delete);
+        self.writes
+            .insert((table_id, key), crate::prolly::Mutation::Delete);
     }
     /// 同 key 后写覆盖前写：读取时写集优先
     pub fn local_get(&self, table_id: u32, key: &[u8]) -> Option<Option<Arc<Vec<u8>>>> {
@@ -240,7 +256,9 @@ pub fn install(
             .map(|(_, t)| t.clone())
             .unwrap_or_else(|| mem.table(*table_id));
         match m {
-            crate::prolly::Mutation::Put(v) => tm.install(key.clone(), commit_seq, Some(Arc::new(v.clone()))),
+            crate::prolly::Mutation::Put(v) => {
+                tm.install(key.clone(), commit_seq, Some(Arc::new(v.clone())))
+            }
             crate::prolly::Mutation::Delete => tm.install(key.clone(), commit_seq, None),
         }
     }
@@ -276,7 +294,11 @@ mod tests {
     fn shard_distribution() {
         let t = TableMem::default();
         for i in 0..1000u32 {
-            t.install(format!("k{i}").into_bytes(), 1, Some(Arc::new(b"x".to_vec())));
+            t.install(
+                format!("k{i}").into_bytes(),
+                1,
+                Some(Arc::new(b"x".to_vec())),
+            );
         }
         assert_eq!(t.row_count_visible(1), 1000);
     }

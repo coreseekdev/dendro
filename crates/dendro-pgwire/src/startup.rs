@@ -110,7 +110,11 @@ pub fn handshake<T: io::Read + io::Write>(
                 });
                 pg.send(&BeMessage::ReadyForQuery(b'I'));
                 pg.flush()?;
-                return Ok(Some(StartupParams { protocol, user, params }));
+                return Ok(Some(StartupParams {
+                    protocol,
+                    user,
+                    params,
+                }));
             }
         }
     }

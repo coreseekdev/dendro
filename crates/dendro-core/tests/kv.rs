@@ -79,13 +79,23 @@ fn kv_persistence() {
         .unwrap();
         let mut kv = Kv::open(&db, "main").unwrap();
         kv.put("durable", "yes").unwrap();
-        eprintln!("[w] lease_epoch={}", db.branch("main").unwrap().lease_epoch.load(std::sync::atomic::Ordering::Acquire));
+        eprintln!(
+            "[w] lease_epoch={}",
+            db.branch("main")
+                .unwrap()
+                .lease_epoch
+                .load(std::sync::atomic::Ordering::Acquire)
+        );
         fn walk(p: &std::path::Path, d: usize) {
-            if d > 3 { return; }
+            if d > 3 {
+                return;
+            }
             for e in std::fs::read_dir(p).unwrap().flatten() {
                 let ep = e.path();
                 eprintln!("[w] {}", ep.display());
-                if ep.is_dir() { walk(&ep, d + 1); }
+                if ep.is_dir() {
+                    walk(&ep, d + 1);
+                }
             }
         }
         walk(&dir.join("wal"), 0);
@@ -98,13 +108,33 @@ fn kv_persistence() {
     })
     .unwrap();
     let kv = Kv::open(&db, "main").unwrap();
-    eprintln!("[r] lease_epoch={}", db.branch("main").unwrap().lease_epoch.load(std::sync::atomic::Ordering::Acquire));
-    eprintln!("[r] watermark={}", db.branch("main").unwrap().watermark.load(std::sync::atomic::Ordering::Acquire));
+    eprintln!(
+        "[r] lease_epoch={}",
+        db.branch("main")
+            .unwrap()
+            .lease_epoch
+            .load(std::sync::atomic::Ordering::Acquire)
+    );
+    eprintln!(
+        "[r] watermark={}",
+        db.branch("main")
+            .unwrap()
+            .watermark
+            .load(std::sync::atomic::Ordering::Acquire)
+    );
     let snap = db.manifest();
     for (n, h) in &snap.manifest.refs {
-        eprintln!("[re] {n}: wal_seg={} epoch={} covered={} commit={}", h.wal_seg, h.epoch, h.covered_seq, h.commit.as_deref().unwrap_or("-"));
+        eprintln!(
+            "[re] {n}: wal_seg={} epoch={} covered={} commit={}",
+            h.wal_seg,
+            h.epoch,
+            h.covered_seq,
+            h.commit.as_deref().unwrap_or("-")
+        );
     }
-    let entry = dendro_core::sql::scan::resolve_table(&db, "main", "__kv").unwrap().1;
+    let entry = dendro_core::sql::scan::resolve_table(&db, "main", "__kv")
+        .unwrap()
+        .1;
     eprintln!("[re] __kv id={} root={:?}", entry.id, entry.table_root);
     assert_eq!(kv.get("durable").unwrap().as_deref(), Some(&b"yes"[..]));
     let _ = std::fs::remove_dir_all(&dir);

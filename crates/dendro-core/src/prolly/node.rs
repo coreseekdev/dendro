@@ -10,7 +10,7 @@
 //! ```
 //! 解析零拷贝：`Node` 持有 Arc<[u8]>，访问器即时解码。
 
-use crate::error::{SqlError, Result};
+use crate::error::{Result, SqlError};
 use crate::format::hash::Hash;
 use std::sync::Arc;
 
@@ -58,7 +58,9 @@ impl Node {
             }
         }
         let n_keys: usize = key_bytes.len();
-        let mut out = Vec::with_capacity(5 + n * 6 + n_keys + n * 4 + val_bytes.len() + n * 4 + addr_slots.len() * 4 + 4);
+        let mut out = Vec::with_capacity(
+            5 + n * 6 + n_keys + n * 4 + val_bytes.len() + n * 4 + addr_slots.len() * 4 + 4,
+        );
         out.push(level);
         out.extend_from_slice(&(n as u32).to_le_bytes());
         out.extend_from_slice(&key_lens);
@@ -224,13 +226,21 @@ impl Node {
     }
 
     pub fn entries(&self) -> Vec<(Vec<u8>, EntryVal)> {
-        (0..self.count()).map(|i| (self.key(i), self.value(i))).collect()
+        (0..self.count())
+            .map(|i| (self.key(i), self.value(i)))
+            .collect()
     }
 }
 
 impl std::fmt::Debug for Node {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Node(level={}, count={}, addr={})", self.level(), self.count(), self.addr())
+        write!(
+            f,
+            "Node(level={}, count={}, addr={})",
+            self.level(),
+            self.count(),
+            self.addr()
+        )
     }
 }
 

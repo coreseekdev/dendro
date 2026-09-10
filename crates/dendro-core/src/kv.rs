@@ -30,8 +30,16 @@ pub(crate) fn kv_schema() -> TableSchema {
     TableSchema {
         name: KV_TABLE.into(),
         columns: vec![
-            ColumnDef { name: "k".into(), ty: ColType::Bytes, nullable: false },
-            ColumnDef { name: "v".into(), ty: ColType::Bytes, nullable: true },
+            ColumnDef {
+                name: "k".into(),
+                ty: ColType::Bytes,
+                nullable: false,
+            },
+            ColumnDef {
+                name: "v".into(),
+                ty: ColType::Bytes,
+                nullable: true,
+            },
         ],
         pk: vec![0],
     }
@@ -57,7 +65,12 @@ pub struct Kv {
 impl Kv {
     /// 打开某分支上的 KV 视图；`__kv` 表不存在时自动创建（catalog 提交）。
     pub fn open(db: &Arc<Database>, branch: &str) -> Result<Kv> {
-        let mut kv = Kv { db: db.clone(), branch: branch.to_string(), table_id: 0, txn: None };
+        let mut kv = Kv {
+            db: db.clone(),
+            branch: branch.to_string(),
+            table_id: 0,
+            txn: None,
+        };
         kv.ensure_table()?;
         Ok(kv)
     }
@@ -67,7 +80,10 @@ impl Kv {
         if self.txn.is_some() {
             // 第十一轮收口（R9-6）：事务内切分支此前静默丢弃事务且不注销
             // 活跃快照（截断永久跳过 + memtx 无界）——与 SQL 侧 Q-11 同口径
-            return Err(SqlError::new("25001", "cannot switch branch inside a transaction"));
+            return Err(SqlError::new(
+                "25001",
+                "cannot switch branch inside a transaction",
+            ));
         }
         self.db.branch(name)?;
         self.branch = name.to_string();
@@ -130,11 +146,7 @@ impl Kv {
             let row = decode_row(&v)?;
             return Ok(row.get(1).and_then(val_bytes));
         }
-        if let Some(root) = entry
-            .table_root
-            .as_ref()
-            .and_then(|s| Hash::from_base32(s))
-        {
+        if let Some(root) = entry.table_root.as_ref().and_then(|s| Hash::from_base32(s)) {
             if let Some(v) = crate::prolly::cursor::lookup(self.db.node_store(), &root, &k)? {
                 let row = decode_row(&v)?;
                 return Ok(row.get(1).and_then(val_bytes));
@@ -154,11 +166,7 @@ impl Kv {
         let entry = self.kv_entry()?;
         let mut out: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
         // 1) 树侧（已物化，键序）
-        if let Some(root) = entry
-            .table_root
-            .as_ref()
-            .and_then(|s| Hash::from_base32(s))
-        {
+        if let Some(root) = entry.table_root.as_ref().and_then(|s| Hash::from_base32(s)) {
             let mut it = TreeIter::new(self.db.node_store().clone(), &root)?;
             if let Some(s) = start {
                 it.seek(s)?;
@@ -311,7 +319,11 @@ impl Kv {
         let snap = b.snapshot();
         // 接入活跃快照注册表 + 冻结根（第十轮 R10-4：此前 KV 显式事务
         // 游离于 R7-3/R9-1 两套机制之外——读不冻结、写照拒）
-        b.active_snaps.lock().entry(snap).and_modify(|c| *c += 1).or_insert(1);
+        b.active_snaps
+            .lock()
+            .entry(snap)
+            .and_modify(|c| *c += 1)
+            .or_insert(1);
         let mut t = Txn::new(snap);
         t.head_root = b.head.load_full().as_ref().as_ref().map(|c| c.root);
         t.explicit = true;
@@ -359,9 +371,11 @@ impl Kv {
         let catalog = crate::versioned::Versioned::new(db.store.clone());
         let short = KV_TABLE.rsplit(['.', '@']).next().unwrap_or(KV_TABLE);
         match frozen {
-            Some(r) => catalog
-                .catalog_lookup(Some(&r), short)?
-                .ok_or_else(|| crate::error::SqlError::undefined_table(format!("relation \"{KV_TABLE}\" does not exist"))),
+            Some(r) => catalog.catalog_lookup(Some(&r), short)?.ok_or_else(|| {
+                crate::error::SqlError::undefined_table(format!(
+                    "relation \"{KV_TABLE}\" does not exist"
+                ))
+            }),
             None => {
                 let (_, entry) = super::sql::scan::resolve_table(&db, &self.branch, KV_TABLE)?;
                 Ok(entry)
@@ -423,8 +437,14 @@ fn create_kv_table(db: &Arc<Database>, branch: &str) -> Result<u32> {
         col_deletes: Vec::new(),
         col_rows: 0,
     };
-    db.cas.put_batch(&[schema.to_chunk()], &mut session_chunks).map_err(SqlError::from)?;
-    let new_catalog = catalog.apply_catalog(old_catalog.as_ref(), vec![(KV_TABLE.into(), Some(entry))], &mut session_chunks)?;
+    db.cas
+        .put_batch(&[schema.to_chunk()], &mut session_chunks)
+        .map_err(SqlError::from)?;
+    let new_catalog = catalog.apply_catalog(
+        old_catalog.as_ref(),
+        vec![(KV_TABLE.into(), Some(entry))],
+        &mut session_chunks,
+    )?;
     let commit = crate::versioned::Commit {
         root: new_catalog.ok_or_else(|| SqlError::internal("empty catalog"))?,
         parents: head.iter().map(|c| c.addr()).collect(),
@@ -435,7 +455,9 @@ fn create_kv_table(db: &Arc<Database>, branch: &str) -> Result<u32> {
         message: "ensure __kv".into(),
     };
     let cchunk = commit.encode();
-    db.cas.put_batch(&[cchunk], &mut session_chunks).map_err(SqlError::from)?;
+    db.cas
+        .put_batch(&[cchunk], &mut session_chunks)
+        .map_err(SqlError::from)?;
     b.head.store(Arc::new(Some(commit.clone())));
     let seq = b.alloc_seq();
     let ck = crate::wal::CheckpointRecord {
@@ -453,7 +475,10 @@ fn create_kv_table(db: &Arc<Database>, branch: &str) -> Result<u32> {
     let covered = ck.seq_covered;
     let bname = branch.to_string();
     db.update_manifest(|m| {
-        let h = m.refs.get_mut(&bname).ok_or_else(|| SqlError::internal("branch vanished"))?;
+        let h = m
+            .refs
+            .get_mut(&bname)
+            .ok_or_else(|| SqlError::internal("branch vanished"))?;
         h.commit = Some(commit.addr().to_base32());
         h.wal_seg = seg_now.max(h.wal_seg);
         h.covered_seq = covered;
@@ -471,7 +496,6 @@ impl Drop for Kv {
     }
 }
 
-
 #[cfg(test)]
 mod dbg_tests {
     use super::*;
@@ -484,12 +508,22 @@ mod dbg_tests {
         let mut kv = Kv::open(&db, "main").unwrap();
         eprintln!("[dbg] table_id={}", kv.table_id);
         kv.put("a", "1").unwrap();
-        eprintln!("[dbg] watermark={}", db.branch("main").unwrap().watermark.load(std::sync::atomic::Ordering::Acquire));
+        eprintln!(
+            "[dbg] watermark={}",
+            db.branch("main")
+                .unwrap()
+                .watermark
+                .load(std::sync::atomic::Ordering::Acquire)
+        );
         let entry = kv.kv_entry().unwrap();
         eprintln!("[dbg] entry.id={} root={:?}", entry.id, entry.table_root);
         let b = db.branch("main").unwrap();
         let over = b.mem.table(entry.id).snapshot_rows(10);
-        eprintln!("[dbg] overlay keys={:?} vals={:?}", over.keys().map(|k| k.to_vec()).collect::<Vec<_>>(), over.values().cloned().collect::<Vec<_>>());
+        eprintln!(
+            "[dbg] overlay keys={:?} vals={:?}",
+            over.keys().map(|k| k.to_vec()).collect::<Vec<_>>(),
+            over.values().cloned().collect::<Vec<_>>()
+        );
         let got = kv.get("a").unwrap();
         eprintln!("[dbg] get(a)={got:?}");
     }

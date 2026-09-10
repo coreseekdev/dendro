@@ -23,7 +23,10 @@ fn s2_aborted_transaction_rejects_statements_until_rollback() {
     // 后续语句被拒（25P02），而非照常执行
     let e2 = s.exec("INSERT INTO t VALUES (2)").unwrap_err();
     assert_eq!(e2.state, "25P02", "失败事务内的语句应被拒绝");
-    assert_eq!(e2.message, "current transaction is aborted, commands ignored until end of transaction block");
+    assert_eq!(
+        e2.message,
+        "current transaction is aborted, commands ignored until end of transaction block"
+    );
     // SELECT 也被拒（PG 语义：aborted 块内一切非回滚语句）
     let e3 = s.exec("SELECT count(*) FROM t").unwrap_err();
     assert_eq!(e3.state, "25P02");
@@ -48,13 +51,19 @@ fn s2_commit_in_aborted_transaction_discards_writes() {
     s.exec("INSERT INTO missing_table VALUES (9)").unwrap_err(); // 后半截失败
     let o = s.exec("COMMIT").unwrap();
     match &o[0] {
-        dendro_core::Output::Command { tag, .. } => assert_eq!(tag, "ROLLBACK", "aborted 块 COMMIT 应回报 ROLLBACK"),
+        dendro_core::Output::Command { tag, .. } => {
+            assert_eq!(tag, "ROLLBACK", "aborted 块 COMMIT 应回报 ROLLBACK")
+        }
         other => panic!("expected Command, got {other:?}"),
     }
     // 半截写集（id=2）必须被丢弃
     let o = s.exec("SELECT count(*) FROM t").unwrap();
     if let dendro_core::Output::Rows(rs) = &o[0] {
-        assert_eq!(rs.text_rows()[0][0].as_deref(), Some("1"), "aborted 事务的写集必须整体丢弃");
+        assert_eq!(
+            rs.text_rows()[0][0].as_deref(),
+            Some("1"),
+            "aborted 事务的写集必须整体丢弃"
+        );
     }
 }
 
@@ -80,11 +89,18 @@ fn s4_integer_overflow_reports_22003_not_wraparound() {
     // 升宽 Int64：int4 上界 +1 精确（不截断回绕为负数）
     let o = s.exec("SELECT 2147483647 + 1 FROM t").unwrap();
     if let dendro_core::Output::Rows(rs) = &o[0] {
-        assert_eq!(rs.text_rows()[0][0].as_deref(), Some("2147483648"), "整数算术升宽 Int64");
+        assert_eq!(
+            rs.text_rows()[0][0].as_deref(),
+            Some("2147483648"),
+            "整数算术升宽 Int64"
+        );
     }
     // i64 溢出 → 22003 out of range
     let e = s.exec("SELECT 9223372036854775807 + 1 FROM t").unwrap_err();
-    assert_eq!(e.state, "22003", "i64 溢出应为 out of range 而非回绕/internal");
+    assert_eq!(
+        e.state, "22003",
+        "i64 溢出应为 out of range 而非回绕/internal"
+    );
 }
 
 #[test]
@@ -170,7 +186,8 @@ fn r8_1_explicit_txn_reads_own_writes() {
     // 后被删行复活。显式事务必须读自己的写。
     let db = Database::open(DbOptions::memory()).unwrap();
     let mut s = db.new_session();
-    s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+    s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
+        .unwrap();
     s.exec("INSERT INTO t VALUES (1, 'a')").unwrap();
     s.exec("BEGIN").unwrap();
     s.exec("INSERT INTO t VALUES (2, 'b')").unwrap();
@@ -185,12 +202,24 @@ fn r8_1_explicit_txn_reads_own_writes() {
             _ => panic!(),
         }
     };
-    assert_eq!(q(&mut s, "SELECT count(*) FROM t")[0][0], "2", "事务内读自己的 INSERT");
-    assert_eq!(q(&mut s, "SELECT v FROM t WHERE id = 2")[0][0], "b", "事务内新行可点查");
+    assert_eq!(
+        q(&mut s, "SELECT count(*) FROM t")[0][0],
+        "2",
+        "事务内读自己的 INSERT"
+    );
+    assert_eq!(
+        q(&mut s, "SELECT v FROM t WHERE id = 2")[0][0],
+        "b",
+        "事务内新行可点查"
+    );
     // 读自己的 DELETE：行消失，且 UPDATE 空转（匹配 0 行）而非报错/复活
     s.exec("DELETE FROM t WHERE id = 1").unwrap();
     assert_eq!(q(&mut s, "SELECT count(*) FROM t")[0][0], "1");
-    assert_eq!(q(&mut s, "SELECT id FROM t WHERE id = 1").len(), 0, "事务内被删行不可见");
+    assert_eq!(
+        q(&mut s, "SELECT id FROM t WHERE id = 1").len(),
+        0,
+        "事务内被删行不可见"
+    );
     s.exec("UPDATE t SET v = 'x' WHERE id = 1").unwrap(); // 匹配 0 行，不报错
     assert_eq!(q(&mut s, "SELECT count(*) FROM t")[0][0], "1");
     // 读自己的 UPDATE
@@ -212,7 +241,8 @@ fn q9_txn_spanning_checkpoint_rejected_not_silent() {
     let db = Database::open(DbOptions::memory()).unwrap();
     {
         let mut s = db.new_session();
-        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
+            .unwrap();
         s.exec("INSERT INTO t VALUES (1, 'a')").unwrap();
         db.checkpoint_branch("main").unwrap();
     }
@@ -232,11 +262,14 @@ fn q9_txn_spanning_checkpoint_rejected_not_silent() {
     assert_eq!(e.state, "40001", "{e}");
     // 重试（新事务）获得完整视图：对方的更新在，我的更新按新视图生效
     s.exec("BEGIN").unwrap();
-    s.exec("UPDATE t SET v = 'mine-retry' WHERE id = 1").unwrap();
+    s.exec("UPDATE t SET v = 'mine-retry' WHERE id = 1")
+        .unwrap();
     s.exec("COMMIT").unwrap();
     let mut s2 = db.new_session();
     match &s2.exec("SELECT v FROM t WHERE id = 1").unwrap()[0] {
-        dendro_core::Output::Rows(rs) => assert_eq!(rs.text_rows()[0][0].as_deref(), Some("mine-retry")),
+        dendro_core::Output::Rows(rs) => {
+            assert_eq!(rs.text_rows()[0][0].as_deref(), Some("mine-retry"))
+        }
         _ => panic!(),
     }
 }
@@ -264,7 +297,8 @@ fn r9_1_frozen_reads_survive_checkpoint() {
     let db = Database::open(DbOptions::memory()).unwrap();
     {
         let mut s = db.new_session();
-        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
+            .unwrap();
         s.exec("INSERT INTO t VALUES (1, 'a')").unwrap();
     }
     let mut s = db.new_session();
@@ -306,7 +340,12 @@ fn r9_2_checkpoint_and_branch_ddl_rejected_inside_txn() {
     let mut s = db.new_session();
     s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY)").unwrap();
     // PG aborted 语义：事务内首个错误后 25P02 接管——逐事务验证每条语句
-    for sql in ["CHECKPOINT", "CREATE BRANCH bx FROM main", "DROP BRANCH bx", "MERGE BRANCH bx INTO main"] {
+    for sql in [
+        "CHECKPOINT",
+        "CREATE BRANCH bx FROM main",
+        "DROP BRANCH bx",
+        "MERGE BRANCH bx INTO main",
+    ] {
         s.exec("BEGIN").unwrap();
         let e = match s.exec(sql) {
             Ok(_) => panic!("事务内不应允许：{sql}"),
@@ -340,7 +379,10 @@ fn r10_show_branches_allowed_and_snapshot_lifecycle() {
     // COMMIT 注销
     s.exec("COMMIT").unwrap();
     let b = db.branch("main").unwrap();
-    assert!(b.active_snaps.lock().is_empty(), "COMMIT 后必须注销（此前永久跳过截断）");
+    assert!(
+        b.active_snaps.lock().is_empty(),
+        "COMMIT 后必须注销（此前永久跳过截断）"
+    );
 
     // 引用计数：同一 watermark 两个事务，先结束者不摘除后者的保护
     let mut s1 = db.new_session();
@@ -362,17 +404,19 @@ fn r10_show_branches_allowed_and_snapshot_lifecycle() {
     assert!(b.active_snaps.lock().is_empty(), "全部结束后注册表清空");
 }
 
-
 #[test]
 fn q1b_cursor_declare_fetch_close() {
     // Q-1b：游标 v1（INSENSITIVE/READ ONLY/会话级）
     let db = Database::open(DbOptions::memory()).unwrap();
     let mut s = db.new_session();
-    s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+    s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
+        .unwrap();
     for i in 1..=5 {
-        s.exec(&format!("INSERT INTO t VALUES ({i}, 'v{i}')")).unwrap();
+        s.exec(&format!("INSERT INTO t VALUES ({i}, 'v{i}')"))
+            .unwrap();
     }
-    s.exec("DECLARE c CURSOR FOR SELECT id, v FROM t ORDER BY id").unwrap();
+    s.exec("DECLARE c CURSOR FOR SELECT id, v FROM t ORDER BY id")
+        .unwrap();
     // 分批 FETCH：3 + 2
     let o = s.exec("FETCH 3 FROM c").unwrap();
     match &o[0] {
@@ -421,7 +465,8 @@ fn q1b_cursor_is_insensitive_snapshot() {
     let mut s = db.new_session();
     s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY)").unwrap();
     s.exec("INSERT INTO t VALUES (1)").unwrap();
-    s.exec("DECLARE c CURSOR FOR SELECT count(*) FROM t").unwrap();
+    s.exec("DECLARE c CURSOR FOR SELECT count(*) FROM t")
+        .unwrap();
     {
         let mut s2 = db.new_session();
         s2.exec("INSERT INTO t VALUES (2)").unwrap();
@@ -429,7 +474,11 @@ fn q1b_cursor_is_insensitive_snapshot() {
     }
     // FETCH 时计数仍为 DECLARE 时点（物化）
     match &s.exec("FETCH 1 FROM c").unwrap()[0] {
-        dendro_core::Output::Rows(rs) => assert_eq!(rs.text_rows()[0][0].as_deref(), Some("1"), "INSENSITIVE 游标不得看见 DECLARE 后的新行"),
+        dendro_core::Output::Rows(rs) => assert_eq!(
+            rs.text_rows()[0][0].as_deref(),
+            Some("1"),
+            "INSENSITIVE 游标不得看见 DECLARE 后的新行"
+        ),
         _ => panic!(),
     }
 }
@@ -441,7 +490,8 @@ fn r18_3_declare_with_multiple_spaces() {
     let mut s = db.new_session();
     s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY)").unwrap();
     s.exec("INSERT INTO t VALUES (1)").unwrap();
-    s.exec("DECLARE   c   CURSOR FOR   SELECT count(*) FROM t").unwrap();
+    s.exec("DECLARE   c   CURSOR FOR   SELECT count(*) FROM t")
+        .unwrap();
     let o = s.exec("FETCH 1 FROM c").unwrap();
     match &o[0] {
         dendro_core::Output::Rows(rs) => assert_eq!(rs.text_rows()[0][0].as_deref(), Some("1")),
@@ -456,10 +506,15 @@ fn q10_ddl_inside_explicit_txn_rejected() {
     let db = Database::open(DbOptions::memory()).unwrap();
     // PG aborted 语义：事务内首个错误后 25P02 接管——逐事务验证每条 DDL
     let mut n = 0;
-    for sql in ["CREATE TABLE x (id BIGINT PRIMARY KEY)", "DROP TABLE t", "ALTER TABLE t ADD COLUMN w TEXT"] {
+    for sql in [
+        "CREATE TABLE x (id BIGINT PRIMARY KEY)",
+        "DROP TABLE t",
+        "ALTER TABLE t ADD COLUMN w TEXT",
+    ] {
         n += 1;
         let mut s = db.new_session();
-        s.exec(&format!("CREATE TABLE keep{n} (id BIGINT PRIMARY KEY)")).unwrap();
+        s.exec(&format!("CREATE TABLE keep{n} (id BIGINT PRIMARY KEY)"))
+            .unwrap();
         s.exec("BEGIN").unwrap();
         let e = match s.exec(sql) {
             Ok(_) => panic!("事务内不应允许：{sql}"),
@@ -510,7 +565,8 @@ fn q1_cursor_count_limit_255() {
     s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY)").unwrap();
     s.exec("INSERT INTO t VALUES (1)").unwrap();
     for i in 0..255 {
-        s.exec(&format!("DECLARE c{i} CURSOR FOR SELECT id FROM t")).unwrap();
+        s.exec(&format!("DECLARE c{i} CURSOR FOR SELECT id FROM t"))
+            .unwrap();
     }
     let e = match s.exec("DECLARE c255 CURSOR FOR SELECT id FROM t") {
         Ok(_) => panic!("第 256 个游标应被拒"),
@@ -527,7 +583,8 @@ fn q16_in_txn_duplicate_insert_rejected() {
     // Q-16：显式事务内同一键两次 INSERT → 23505（此前静默覆盖）
     let db = Database::open(DbOptions::memory()).unwrap();
     let mut s = db.new_session();
-    s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+    s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
+        .unwrap();
     s.exec("BEGIN").unwrap();
     s.exec("INSERT INTO t VALUES (1, 'first')").unwrap();
     let e = match s.exec("INSERT INTO t VALUES (1, 'second')") {
@@ -538,7 +595,11 @@ fn q16_in_txn_duplicate_insert_rejected() {
     // aborted 后 ROLLBACK
     s.exec("ROLLBACK").unwrap();
     match &s.exec("SELECT count(*) FROM t").unwrap()[0] {
-        dendro_core::Output::Rows(rs) => assert_eq!(rs.text_rows()[0][0].as_deref(), Some("0"), "事务回滚后无数据"),
+        dendro_core::Output::Rows(rs) => assert_eq!(
+            rs.text_rows()[0][0].as_deref(),
+            Some("0"),
+            "事务回滚后无数据"
+        ),
         _ => panic!(),
     }
 }
@@ -548,7 +609,8 @@ fn optimizer_constant_where_short_circuit() {
     // Q-1 优化器：常量 WHERE 短路
     let db = Database::open(DbOptions::memory()).unwrap();
     let mut s = db.new_session();
-    s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+    s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
+        .unwrap();
     s.exec("INSERT INTO t VALUES (1, 'a')").unwrap();
 
     // WHERE false → 空（不扫表）
@@ -599,7 +661,8 @@ fn q16_delete_then_insert_allowed() {
     // 第二十一轮 R21-2：DELETE 后同事务重插同键必须允许（PG 语义）
     let db = Database::open(DbOptions::memory()).unwrap();
     let mut s = db.new_session();
-    s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+    s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
+        .unwrap();
     s.exec("INSERT INTO t VALUES (1, 'a')").unwrap();
     s.exec("BEGIN").unwrap();
     s.exec("DELETE FROM t WHERE id = 1").unwrap();
@@ -607,7 +670,11 @@ fn q16_delete_then_insert_allowed() {
     s.exec("INSERT INTO t VALUES (1, 'reborn')").unwrap();
     s.exec("COMMIT").unwrap();
     match &s.exec("SELECT v FROM t WHERE id = 1").unwrap()[0] {
-        dendro_core::Output::Rows(rs) => assert_eq!(rs.text_rows()[0][0].as_deref(), Some("reborn"), "DELETE 后重插应生效"),
+        dendro_core::Output::Rows(rs) => assert_eq!(
+            rs.text_rows()[0][0].as_deref(),
+            Some("reborn"),
+            "DELETE 后重插应生效"
+        ),
         _ => panic!(),
     }
 }
@@ -616,10 +683,12 @@ fn q16_delete_then_insert_allowed() {
 fn views_create_select_drop() {
     let db = Database::open(DbOptions::memory()).unwrap();
     let mut s = db.new_session();
-    s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+    s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
+        .unwrap();
     s.exec("INSERT INTO t VALUES (1, 'a'), (2, 'b')").unwrap();
 
-    s.exec("CREATE VIEW v_active AS SELECT id, v FROM t WHERE id > 0").unwrap();
+    s.exec("CREATE VIEW v_active AS SELECT id, v FROM t WHERE id > 0")
+        .unwrap();
     let o = s.exec("SELECT * FROM v_active").unwrap();
     match &o[0] {
         dendro_core::Output::Rows(rs) => assert_eq!(rs.total_rows(), 2, "视图应返回全部行"),
@@ -654,7 +723,8 @@ fn views_persist_across_restart() {
         })
         .unwrap();
         let mut s = db.new_session();
-        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
+            .unwrap();
         s.exec("INSERT INTO t VALUES (1, 'a')").unwrap();
         s.exec("CREATE VIEW my_view AS SELECT * FROM t").unwrap();
     }
@@ -680,9 +750,11 @@ fn r21_distinct_explicit_rejection() {
     // 第二十一轮 R21-17：SELECT DISTINCT 投影静默忽略 = 语义黑洞，改为 0A000
     let db = Database::open(DbOptions::memory()).unwrap();
     let mut s = db.new_session();
-    s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+    s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
+        .unwrap();
     for i in 1..=10 {
-        s.exec(&format!("INSERT INTO t VALUES ({}, 'v{}')", i, i % 3)).unwrap();
+        s.exec(&format!("INSERT INTO t VALUES ({}, 'v{}')", i, i % 3))
+            .unwrap();
     }
     let e = match s.exec("SELECT DISTINCT v FROM t") {
         Ok(_) => panic!("SELECT DISTINCT 应显式拒绝"),

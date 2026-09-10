@@ -98,7 +98,9 @@ impl ColType {
             ColType::Utf8 => DataType::Utf8,
             ColType::Bytes => DataType::Binary,
             ColType::Date32 => DataType::Date32,
-            ColType::TimestampMs => DataType::Timestamp(arrow::datatypes::TimeUnit::Millisecond, None),
+            ColType::TimestampMs => {
+                DataType::Timestamp(arrow::datatypes::TimeUnit::Millisecond, None)
+            }
         }
     }
     pub fn from_parse(s: &str) -> Option<ColType> {
@@ -107,8 +109,11 @@ impl ColType {
             "smallint" | "int2" | "int" | "int4" | "integer" | "signed" => ColType::Int32,
             "bigint" | "int8" | "bigserial" | "serial8" => ColType::Int64,
             "real" | "float4" => ColType::Float64,
-            "double" | "float8" | "double precision" | "float" | "decimal" | "numeric" => ColType::Float64,
-            "text" | "varchar" | "varchar2" | "char" | "bpchar" | "character varying" | "string" => ColType::Utf8,
+            "double" | "float8" | "double precision" | "float" | "decimal" | "numeric" => {
+                ColType::Float64
+            }
+            "text" | "varchar" | "varchar2" | "char" | "bpchar" | "character varying"
+            | "string" => ColType::Utf8,
             "bytea" | "blob" | "binary" | "varbinary" => ColType::Bytes,
             "date" => ColType::Date32,
             "timestamp" | "timestamp without time zone" | "datetime" => ColType::TimestampMs,
@@ -128,7 +133,10 @@ pub struct ColumnMeta {
 #[derive(Debug)]
 pub enum Output {
     /// DDL/DML：tag 形如 "INSERT 0 3" / "CREATE TABLE"
-    Command { tag: String, affected: u64 },
+    Command {
+        tag: String,
+        affected: u64,
+    },
     Rows(RecordSet),
 }
 
@@ -141,7 +149,10 @@ pub struct RecordSet {
 
 impl RecordSet {
     pub fn empty(columns: Vec<ColumnMeta>) -> Self {
-        Self { columns, batches: vec![] }
+        Self {
+            columns,
+            batches: vec![],
+        }
     }
     /// 迭代为文本行（协议 text 格式），None=列内 NULL
     pub fn text_rows(&self) -> Vec<Vec<Option<String>>> {
@@ -163,7 +174,10 @@ impl RecordSet {
     }
     /// 迭代为类型化行（协议 binary 编码用）；列型按 self.columns（描述口径）
     pub fn typed_rows(&self) -> Vec<Vec<Option<SqlValue>>> {
-        use arrow::array::{Array, Date32Array, Float64Array, Int32Array, Int64Array, StringArray, BinaryArray, BooleanArray, TimestampMillisecondArray};
+        use arrow::array::{
+            Array, BinaryArray, BooleanArray, Date32Array, Float64Array, Int32Array, Int64Array,
+            StringArray, TimestampMillisecondArray,
+        };
         let mut rows = Vec::new();
         for batch in &self.batches {
             for r in 0..batch.num_rows() {
@@ -175,14 +189,38 @@ impl RecordSet {
                         continue;
                     }
                     let v = match col.data_type() {
-                        DataType::Boolean => col.as_any().downcast_ref::<BooleanArray>().map(|a| SqlValue::Bool(a.value(r))),
-                        DataType::Int32 => col.as_any().downcast_ref::<Int32Array>().map(|a| SqlValue::Int32(a.value(r))),
-                        DataType::Int64 => col.as_any().downcast_ref::<Int64Array>().map(|a| SqlValue::Int64(a.value(r))),
-                        DataType::Float64 => col.as_any().downcast_ref::<Float64Array>().map(|a| SqlValue::Float64(a.value(r))),
-                        DataType::Utf8 => col.as_any().downcast_ref::<StringArray>().map(|a| SqlValue::Utf8(a.value(r).to_string())),
-                        DataType::Binary => col.as_any().downcast_ref::<BinaryArray>().map(|a| SqlValue::Bytes(a.value(r).to_vec())),
-                        DataType::Date32 => col.as_any().downcast_ref::<Date32Array>().map(|a| SqlValue::Date32(a.value(r))),
-                        DataType::Timestamp(arrow::datatypes::TimeUnit::Millisecond, _) => col.as_any().downcast_ref::<TimestampMillisecondArray>().map(|a| SqlValue::TimestampMs(a.value(r))),
+                        DataType::Boolean => col
+                            .as_any()
+                            .downcast_ref::<BooleanArray>()
+                            .map(|a| SqlValue::Bool(a.value(r))),
+                        DataType::Int32 => col
+                            .as_any()
+                            .downcast_ref::<Int32Array>()
+                            .map(|a| SqlValue::Int32(a.value(r))),
+                        DataType::Int64 => col
+                            .as_any()
+                            .downcast_ref::<Int64Array>()
+                            .map(|a| SqlValue::Int64(a.value(r))),
+                        DataType::Float64 => col
+                            .as_any()
+                            .downcast_ref::<Float64Array>()
+                            .map(|a| SqlValue::Float64(a.value(r))),
+                        DataType::Utf8 => col
+                            .as_any()
+                            .downcast_ref::<StringArray>()
+                            .map(|a| SqlValue::Utf8(a.value(r).to_string())),
+                        DataType::Binary => col
+                            .as_any()
+                            .downcast_ref::<BinaryArray>()
+                            .map(|a| SqlValue::Bytes(a.value(r).to_vec())),
+                        DataType::Date32 => col
+                            .as_any()
+                            .downcast_ref::<Date32Array>()
+                            .map(|a| SqlValue::Date32(a.value(r))),
+                        DataType::Timestamp(arrow::datatypes::TimeUnit::Millisecond, _) => col
+                            .as_any()
+                            .downcast_ref::<TimestampMillisecondArray>()
+                            .map(|a| SqlValue::TimestampMs(a.value(r))),
                         _ => None,
                     };
                     // 按描述列型收敛（i32→i64 等宽化）
@@ -208,7 +246,10 @@ pub fn coerce_to(v: SqlValue, ty: ColType) -> SqlValue {
 }
 
 fn cell_to_text(col: &arrow::array::ArrayRef, row: usize) -> Option<String> {
-    use arrow::array::{Array, Date32Array, Float64Array, Int32Array, Int64Array, StringArray, BinaryArray, BooleanArray, TimestampMillisecondArray};
+    use arrow::array::{
+        Array, BinaryArray, BooleanArray, Date32Array, Float64Array, Int32Array, Int64Array,
+        StringArray, TimestampMillisecondArray,
+    };
     if col.is_null(row) {
         return None;
     }
@@ -235,7 +276,13 @@ fn cell_to_text(col: &arrow::array::ArrayRef, row: usize) -> Option<String> {
         }
         DataType::Binary => {
             let a = col.as_any().downcast_ref::<BinaryArray>()?;
-            format!("\\x{}", a.value(row).iter().map(|b| format!("{b:02x}")).collect::<String>())
+            format!(
+                "\\x{}",
+                a.value(row)
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>()
+            )
         }
         DataType::Date32 => {
             let a = col.as_any().downcast_ref::<Date32Array>()?;

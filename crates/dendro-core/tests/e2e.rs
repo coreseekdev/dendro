@@ -12,14 +12,22 @@ fn rows(outs: &[dendro_core::Output]) -> Vec<Vec<String>> {
     for o in outs {
         if let dendro_core::types::Output::Rows(rs) = o {
             for r in rs.text_rows() {
-                out.push(r.into_iter().map(|c| c.unwrap_or_else(|| "NULL".into())).collect());
+                out.push(
+                    r.into_iter()
+                        .map(|c| c.unwrap_or_else(|| "NULL".into()))
+                        .collect(),
+                );
             }
         }
     }
     out
 }
 
-fn exec(_db: &std::sync::Arc<Database>, s: &mut dendro_core::Session, sql: &str) -> Vec<Vec<String>> {
+fn exec(
+    _db: &std::sync::Arc<Database>,
+    s: &mut dendro_core::Session,
+    sql: &str,
+) -> Vec<Vec<String>> {
     let outs = s.exec(sql).unwrap();
     rows(&outs)
 }
@@ -28,8 +36,16 @@ fn exec(_db: &std::sync::Arc<Database>, s: &mut dendro_core::Session, sql: &str)
 fn smoke_create_insert_select() {
     let db = open_mem();
     let mut s = db.new_session();
-    exec(&db, &mut s, "CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT NOT NULL, score DOUBLE)");
-    exec(&db, &mut s, "INSERT INTO t VALUES (1, 'a', 1.5), (2, 'b', 2.5), (3, 'c', 3.5)");
+    exec(
+        &db,
+        &mut s,
+        "CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT NOT NULL, score DOUBLE)",
+    );
+    exec(
+        &db,
+        &mut s,
+        "INSERT INTO t VALUES (1, 'a', 1.5), (2, 'b', 2.5), (3, 'c', 3.5)",
+    );
     let r = exec(&db, &mut s, "SELECT id, v, score FROM t ORDER BY id");
     let expect: Vec<Row> = vec![
         vec!["1".into(), "a".into(), "1.5".into()],
@@ -39,10 +55,14 @@ fn smoke_create_insert_select() {
     assert_eq!(r, expect);
     // 过滤 + 表达式
     let r = exec(&db, &mut s, "SELECT v FROM t WHERE score > 2 ORDER BY v");
-        let expect: Vec<Row> = vec![vec!["b".into()], vec!["c".into()]];
+    let expect: Vec<Row> = vec![vec!["b".into()], vec!["c".into()]];
     assert_eq!(r, expect);
     // 聚合
-    let r = exec(&db, &mut s, "SELECT count(*), sum(score), avg(score) FROM t");
+    let r = exec(
+        &db,
+        &mut s,
+        "SELECT count(*), sum(score), avg(score) FROM t",
+    );
     assert_eq!(r[0][0], "3");
     // UPDATE / DELETE
     exec(&db, &mut s, "UPDATE t SET score = 9.5 WHERE id = 1");
@@ -58,7 +78,11 @@ fn smoke_create_insert_select() {
 fn smoke_branch_and_merge() {
     let db = open_mem();
     let mut s = db.new_session();
-    exec(&db, &mut s, "CREATE TABLE kv (k BIGINT PRIMARY KEY, val TEXT)");
+    exec(
+        &db,
+        &mut s,
+        "CREATE TABLE kv (k BIGINT PRIMARY KEY, val TEXT)",
+    );
     exec(&db, &mut s, "INSERT INTO kv VALUES (1, 'base')");
     // 分支
     exec(&db, &mut s, "CREATE BRANCH agent42 FROM main");
@@ -93,9 +117,14 @@ fn smoke_durability_and_recovery() {
         })
         .unwrap();
         let mut s = db.new_session();
-        exec(&db, &mut s, "CREATE TABLE d (id BIGINT PRIMARY KEY, tag TEXT)");
+        exec(
+            &db,
+            &mut s,
+            "CREATE TABLE d (id BIGINT PRIMARY KEY, tag TEXT)",
+        );
         for i in 0..100 {
-            s.exec(&format!("INSERT INTO d VALUES ({i}, 'v{i}')")).unwrap();
+            s.exec(&format!("INSERT INTO d VALUES ({i}, 'v{i}')"))
+                .unwrap();
         }
         // 显式 checkpoint 落树
         exec(&db, &mut s, "CHECKPOINT");
@@ -121,9 +150,15 @@ fn smoke_durability_and_recovery() {
 fn smoke_prepared() {
     let db = open_mem();
     let mut s = db.new_session();
-    exec(&db, &mut s, "CREATE TABLE p (id BIGINT PRIMARY KEY, v TEXT)");
+    exec(
+        &db,
+        &mut s,
+        "CREATE TABLE p (id BIGINT PRIMARY KEY, v TEXT)",
+    );
     exec(&db, &mut s, "INSERT INTO p VALUES (1, 'x'), (2, 'y')");
-    let meta = s.prepare("q", "SELECT v FROM p WHERE id = $1", &[]).unwrap();
+    let meta = s
+        .prepare("q", "SELECT v FROM p WHERE id = $1", &[])
+        .unwrap();
     assert_eq!(meta.param_types.len(), 1);
     let out = s.exec_prepared("q", &[SqlValue::Int64(2)]).unwrap();
     let rs = match out {

@@ -12,7 +12,7 @@
 
 use bytes::{BufMut, BytesMut};
 use std::collections::HashMap;
-use std::io::{self, Read, BufReader, Write};
+use std::io::{self, BufReader, Read, Write};
 
 /// protocol 3.0（196608 = 3 << 16 | 0）
 pub const PROTOCOL_3_0: i32 = 196_608;
@@ -31,7 +31,10 @@ const MAX_MESSAGE_LENGTH: usize = 1 << 30;
 
 /// 协议违规/坏包 IO 错误（InvalidInput）
 pub(crate) fn protocol_error(msg: impl Into<String>) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidInput, format!("protocol error: {}", msg.into()))
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!("protocol error: {}", msg.into()),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -82,7 +85,11 @@ pub enum FeMessage {
     /// 'Q' 简单查询
     Query(String),
     /// 'P' Parse
-    Parse { name: String, sql: String, param_oids: Vec<u32> },
+    Parse {
+        name: String,
+        sql: String,
+        param_oids: Vec<u32>,
+    },
     /// 'B' Bind
     Bind {
         portal: String,
@@ -183,8 +190,14 @@ pub struct RowField {
 pub enum BeMessage {
     AuthenticationOk,
     AuthenticationCleartextPassword,
-    BackendKeyData { pid: i32, secret: u32 },
-    ParameterStatus { name: &'static str, value: &'static str },
+    BackendKeyData {
+        pid: i32,
+        secret: u32,
+    },
+    ParameterStatus {
+        name: &'static str,
+        value: &'static str,
+    },
     /// ReadyForQuery，参数为事务状态字节 I/T/E
     ReadyForQuery(u8),
     ParseComplete,
@@ -197,7 +210,11 @@ pub enum BeMessage {
     RowDescription(Vec<RowField>),
     NoData,
     ParameterDescription(Vec<u32>),
-    ErrorResponse { severity: &'static str, code: &'static str, message: String },
+    ErrorResponse {
+        severity: &'static str,
+        code: &'static str,
+        message: String,
+    },
 }
 
 /// 在 buf 上写一个带长度前缀的消息 body（len 含自身 4 字节）
@@ -307,7 +324,11 @@ pub fn write_be_message(buf: &mut BytesMut, msg: &BeMessage) {
                 }
             });
         }
-        BeMessage::ErrorResponse { severity, code, message } => {
+        BeMessage::ErrorResponse {
+            severity,
+            code,
+            message,
+        } => {
             buf.put_u8(b'E');
             write_body(buf, |b| {
                 b.put_u8(b'S');
@@ -372,7 +393,9 @@ impl<T: Read + Write> PgStream<T> {
         self.read_exact(&mut lenb[1..])?;
         let len = i32::from_be_bytes(lenb) as usize;
         if !(8..=MAX_STARTUP_PACKET_LENGTH).contains(&len) {
-            return Err(protocol_error(format!("invalid startup packet length {len}")));
+            return Err(protocol_error(format!(
+                "invalid startup packet length {len}"
+            )));
         }
         let mut body = vec![0u8; len - 4];
         self.read_exact(&mut body)?;
@@ -393,7 +416,10 @@ impl<T: Read + Write> PgStream<T> {
                 }
             }
             c if (c >> 16) == RESERVED_MAJOR => {
-                return Err(protocol_error(format!("unrecognized request code {}", (c & 0xffff) as u16)));
+                return Err(protocol_error(format!(
+                    "unrecognized request code {}",
+                    (c & 0xffff) as u16
+                )));
             }
             protocol => StartupPacket::Startup {
                 protocol,
@@ -430,7 +456,11 @@ impl<T: Read + Write> PgStream<T> {
                 for _ in 0..n {
                     param_oids.push(rd.u32("param oid")?);
                 }
-                FeMessage::Parse { name, sql, param_oids }
+                FeMessage::Parse {
+                    name,
+                    sql,
+                    param_oids,
+                }
             }
             b'B' => {
                 let portal = rd.cstr("portal name")?;
@@ -455,7 +485,13 @@ impl<T: Read + Write> PgStream<T> {
                 for _ in 0..nr {
                     result_formats.push(rd.i16("result format")?);
                 }
-                FeMessage::Bind { portal, stmt, param_formats, params, result_formats }
+                FeMessage::Bind {
+                    portal,
+                    stmt,
+                    param_formats,
+                    params,
+                    result_formats,
+                }
             }
             b'D' => {
                 let kind = rd.u8("describe kind")?;
@@ -544,13 +580,17 @@ mod tests {
     #[test]
     fn startup_ssl_request() {
         // 80877103 = 0x04D2162F
-        let pkt = read_one_startup(&[0, 0, 0, 8, 4, 210, 22, 47]).unwrap().unwrap();
+        let pkt = read_one_startup(&[0, 0, 0, 8, 4, 210, 22, 47])
+            .unwrap()
+            .unwrap();
         assert_eq!(pkt, StartupPacket::SslRequest);
     }
 
     #[test]
     fn startup_gssenc_request() {
-        let pkt = read_one_startup(&[0, 0, 0, 8, 4, 210, 22, 48]).unwrap().unwrap();
+        let pkt = read_one_startup(&[0, 0, 0, 8, 4, 210, 22, 48])
+            .unwrap()
+            .unwrap();
         assert_eq!(pkt, StartupPacket::GssEncRequest);
     }
 
@@ -561,7 +601,13 @@ mod tests {
         b.extend_from_slice(&42i32.to_be_bytes());
         b.extend_from_slice(&7777i32.to_be_bytes());
         let pkt = read_one_startup(&b).unwrap().unwrap();
-        assert_eq!(pkt, StartupPacket::CancelRequest { pid: 42, secret: 7777 });
+        assert_eq!(
+            pkt,
+            StartupPacket::CancelRequest {
+                pid: 42,
+                secret: 7777
+            }
+        );
     }
 
     #[test]
@@ -702,16 +748,46 @@ mod tests {
         raw.extend_from_slice(&msg_bytes(b'd', &[1, 2, 3]));
 
         let mut pg = PgStream::new(TestStream::new(raw));
-        assert_eq!(pg.read_message().unwrap(), Some(FeMessage::Describe { kind: b'S', name: String::new() }));
-        assert_eq!(pg.read_message().unwrap(), Some(FeMessage::Describe { kind: b'P', name: "p1".into() }));
+        assert_eq!(
+            pg.read_message().unwrap(),
+            Some(FeMessage::Describe {
+                kind: b'S',
+                name: String::new()
+            })
+        );
+        assert_eq!(
+            pg.read_message().unwrap(),
+            Some(FeMessage::Describe {
+                kind: b'P',
+                name: "p1".into()
+            })
+        );
         assert!(pg.read_message().is_err()); // Execute 缺 max_rows
-        assert_eq!(pg.read_message().unwrap(), Some(FeMessage::Execute { portal: String::new(), max_rows: 0 }));
-        assert_eq!(pg.read_message().unwrap(), Some(FeMessage::Close { kind: b'S', name: "s1".into() }));
+        assert_eq!(
+            pg.read_message().unwrap(),
+            Some(FeMessage::Execute {
+                portal: String::new(),
+                max_rows: 0
+            })
+        );
+        assert_eq!(
+            pg.read_message().unwrap(),
+            Some(FeMessage::Close {
+                kind: b'S',
+                name: "s1".into()
+            })
+        );
         assert_eq!(pg.read_message().unwrap(), Some(FeMessage::Flush));
         assert_eq!(pg.read_message().unwrap(), Some(FeMessage::Sync));
         assert_eq!(pg.read_message().unwrap(), Some(FeMessage::Terminate));
-        assert_eq!(pg.read_message().unwrap(), Some(FeMessage::PasswordMessage("secret".into())));
-        assert_eq!(pg.read_message().unwrap(), Some(FeMessage::Copy { tag: b'd' }));
+        assert_eq!(
+            pg.read_message().unwrap(),
+            Some(FeMessage::PasswordMessage("secret".into()))
+        );
+        assert_eq!(
+            pg.read_message().unwrap(),
+            Some(FeMessage::Copy { tag: b'd' })
+        );
         assert!(pg.read_message().unwrap().is_none());
     }
 
@@ -757,7 +833,10 @@ mod tests {
     #[test]
     fn be_data_row_bytes() {
         let mut buf = BytesMut::new();
-        write_be_message(&mut buf, &BeMessage::DataRow(vec![Some(b"1".to_vec()), None]));
+        write_be_message(
+            &mut buf,
+            &BeMessage::DataRow(vec![Some(b"1".to_vec()), None]),
+        );
         // len=15: ncol(2) + len(4)+val(1) + null(4) + len 前缀自身(4)
         assert_eq!(
             &buf[..],
@@ -795,14 +874,14 @@ mod tests {
             &buf[..],
             &[
                 b'T', 0, 0, 0, 26, // len
-                0, 1,   // 字段数
+                0, 1, // 字段数
                 b'x', 0, // name
                 0, 0, 0, 0, // table oid
-                0, 0,   // attnum
+                0, 0, // attnum
                 0, 0, 0, 20, // type oid (int8)
-                0, 8,   // typlen
+                0, 8, // typlen
                 0xFF, 0xFF, 0xFF, 0xFF, // typmod = -1
-                0, 0,   // format
+                0, 0, // format
             ]
         );
     }
@@ -846,7 +925,13 @@ mod tests {
     #[test]
     fn be_backend_key_data_bytes() {
         let mut buf = BytesMut::new();
-        write_be_message(&mut buf, &BeMessage::BackendKeyData { pid: 7, secret: 0xDEADBEEF });
+        write_be_message(
+            &mut buf,
+            &BeMessage::BackendKeyData {
+                pid: 7,
+                secret: 0xDEADBEEF,
+            },
+        );
         assert_eq!(
             &buf[..],
             &[b'K', 0, 0, 0, 12, 0, 0, 0, 7, 0xDE, 0xAD, 0xBE, 0xEF]

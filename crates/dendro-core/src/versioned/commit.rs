@@ -37,7 +37,10 @@ impl Commit {
         put_str(&mut d, &self.branch);
         put_str(&mut d, &self.author);
         put_str(&mut d, &self.message);
-        Chunk { ty: ChunkType::Commit, data: d }
+        Chunk {
+            ty: ChunkType::Commit,
+            data: d,
+        }
     }
 
     pub fn decode(data: &[u8]) -> Result<Commit> {
@@ -75,7 +78,15 @@ impl Commit {
         let (author, r) = get_str(r)?;
         let (message, r) = get_str(r)?;
         let _ = r;
-        Ok(Commit { root: Hash::from_bytes(root), parents, height, ts_ms, branch, author, message })
+        Ok(Commit {
+            root: Hash::from_bytes(root),
+            parents,
+            height,
+            ts_ms,
+            branch,
+            author,
+            message,
+        })
     }
 
     pub fn addr(&self) -> Hash {
@@ -97,7 +108,8 @@ fn get_str(r: &[u8]) -> Result<(String, &[u8])> {
         return Err(SqlError::internal("commit str truncated"));
     }
     Ok((
-        String::from_utf8(r[4..4 + n].to_vec()).map_err(|_| SqlError::internal("commit str utf8"))?,
+        String::from_utf8(r[4..4 + n].to_vec())
+            .map_err(|_| SqlError::internal("commit str utf8"))?,
         &r[4 + n..],
     ))
 }

@@ -10,7 +10,7 @@
 
 use std::io;
 
-use dendro_core::types::{ColumnMeta, ColType, Output, RecordSet};
+use dendro_core::types::{ColType, ColumnMeta, Output, RecordSet};
 
 use crate::codec::{BeMessage, PgStream, RowField};
 use crate::error;

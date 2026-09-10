@@ -35,7 +35,11 @@ fn rows(db: &Arc<Database>, sql: &str) -> Vec<Vec<String>> {
             dendro_core::Output::Rows(rs) => Some(
                 rs.text_rows()
                     .iter()
-                    .map(|r| r.iter().map(|c| c.clone().unwrap_or_default()).collect::<Vec<String>>())
+                    .map(|r| {
+                        r.iter()
+                            .map(|c| c.clone().unwrap_or_default())
+                            .collect::<Vec<String>>()
+                    })
                     .collect::<Vec<Vec<String>>>(),
             ),
             _ => None,
@@ -49,19 +53,27 @@ fn gc_columnar_segments_after_retention_window() {
     let mem = Arc::new(MemoryObjStore::new());
     let obj: Arc<dyn ObjStore> = mem.clone();
     let db = Database::open(opts(obj.clone(), 300)).unwrap();
-    db.set_columnar(Arc::new(CbfColumnar { row_group_rows: 1_048_576 }));
+    db.set_columnar(Arc::new(CbfColumnar {
+        row_group_rows: 1_048_576,
+    }));
     {
         let mut s = db.new_session();
-        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
+            .unwrap();
     }
     // 9 次 checkpoint（各 1 行增量）→ 第 9 次触发全量重建，替换前 8 个段
     for i in 0..9 {
         let mut s = db.new_session();
-        s.exec(&format!("INSERT INTO t VALUES ({i}, 'v{i}')")).unwrap();
+        s.exec(&format!("INSERT INTO t VALUES ({i}, 'v{i}')"))
+            .unwrap();
         db.checkpoint_branch("main").unwrap();
     }
     let col_objs = obj.list_prefix("col/").unwrap();
-    assert!(col_objs.len() >= 9, "至少 8 旧段 + 1 新段（实际 {}）", col_objs.len());
+    assert!(
+        col_objs.len() >= 9,
+        "至少 8 旧段 + 1 新段（实际 {}）",
+        col_objs.len()
+    );
     let before = col_objs.len();
 
     // 墓碑已登记但窗口（300ms）未过：旧段必须原样存在（P0-3 崩溃窗口保证）
@@ -90,31 +102,49 @@ fn gc_wal_epochs_prefix_and_recovery() {
     {
         let db = Database::open(opts(obj.clone(), 300)).unwrap();
         let mut s = db.new_session();
-        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)").unwrap();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
+            .unwrap();
         s.exec("INSERT INTO t VALUES (1, 'a')").unwrap();
         db.checkpoint_branch("main").unwrap();
     } // drop = 崩溃模拟
-    assert!(!obj.list_prefix(&wal_of(1)).unwrap().is_empty(), "epoch1 段应存在");
+    assert!(
+        !obj.list_prefix(&wal_of(1)).unwrap().is_empty(),
+        "epoch1 段应存在"
+    );
 
     // 写者 B（epoch 2）：首个 checkpoint 后，旧 epoch 目录全部 covered → 登记墓碑
     {
         let db = Database::open(opts(obj.clone(), 300)).unwrap();
-        let e = db.branch("main").unwrap().lease_epoch.load(std::sync::atomic::Ordering::Acquire);
+        let e = db
+            .branch("main")
+            .unwrap()
+            .lease_epoch
+            .load(std::sync::atomic::Ordering::Acquire);
         assert_eq!(e, 2);
         let mut s = db.new_session();
         s.exec("INSERT INTO t VALUES (2, 'b')").unwrap();
         db.checkpoint_branch("main").unwrap(); // 登记旧 epoch 墓碑
-        // 窗口内不删
+                                               // 窗口内不删
         db.gc_sweep().unwrap();
-        assert!(!obj.list_prefix(&wal_of(1)).unwrap().is_empty(), "窗口内旧 epoch 段不得删除");
+        assert!(
+            !obj.list_prefix(&wal_of(1)).unwrap().is_empty(),
+            "窗口内旧 epoch 段不得删除"
+        );
         s.exec("INSERT INTO t VALUES (3, 'c')").unwrap();
     } // B 未 checkpoint 的 txn3 在 WAL 段中 durable（Group）
     std::thread::sleep(Duration::from_millis(350));
 
     // C 打开：open pass 删除到期墓碑；恢复必须跳过已删的 epoch1 目录且不丢 B 的数据
     let c = Database::open(opts(obj.clone(), 300)).unwrap();
-    assert!(obj.list_prefix(&wal_of(1)).unwrap().is_empty(), "窗口后旧 epoch 目录应被回收");
-    assert_eq!(rows(&c, "SELECT count(*) FROM t")[0][0], "3", "GC 后恢复数据完整");
+    assert!(
+        obj.list_prefix(&wal_of(1)).unwrap().is_empty(),
+        "窗口后旧 epoch 目录应被回收"
+    );
+    assert_eq!(
+        rows(&c, "SELECT count(*) FROM t")[0][0],
+        "3",
+        "GC 后恢复数据完整"
+    );
     assert_eq!(rows(&c, "SELECT max(id) FROM t")[0][0], "3");
 
     // 当前 epoch 前缀段：INSERT 4（Group → 独立段1），checkpoint（ck 帧 → 段2）
@@ -124,7 +154,11 @@ fn gc_wal_epochs_prefix_and_recovery() {
         s.exec("INSERT INTO t VALUES (4, 'd')").unwrap();
         c.checkpoint_branch("main").unwrap();
     }
-    let e3 = c.branch("main").unwrap().lease_epoch.load(std::sync::atomic::Ordering::Acquire);
+    let e3 = c
+        .branch("main")
+        .unwrap()
+        .lease_epoch
+        .load(std::sync::atomic::Ordering::Acquire);
     let seg1_path = format!("wal/main/e{e3:020}/00000000000000000001.wal");
     assert!(obj.get(&seg1_path).is_ok(), "前缀段1 此时应存在");
     std::thread::sleep(Duration::from_millis(350));
@@ -134,7 +168,11 @@ fn gc_wal_epochs_prefix_and_recovery() {
     drop(c);
     // 前缀空洞后的恢复：replay 从 wal_first_seg=2 起探测，数据必须完整
     let d = Database::open(opts(obj.clone(), 300)).unwrap();
-    assert_eq!(rows(&d, "SELECT count(*), max(id) FROM t")[0][0], "4", "前缀回收后恢复完整");
+    assert_eq!(
+        rows(&d, "SELECT count(*), max(id) FROM t")[0][0],
+        "4",
+        "前缀回收后恢复完整"
+    );
 }
 
 #[test]
@@ -155,8 +193,14 @@ fn gc_manifest_versions_keep_recent() {
     }
     let count = |obj: &Arc<dyn ObjStore>| obj.list_prefix("manifest/").unwrap().len();
     let total = count(&obj);
-    assert!(total <= 17, "manifest 版本应被持续回收至 ≤17（实际 {total}）");
-    assert!(obj.get("manifest/00000000000000000001.json").is_err(), "最老版本应已删除");
+    assert!(
+        total <= 17,
+        "manifest 版本应被持续回收至 ≤17（实际 {total}）"
+    );
+    assert!(
+        obj.get("manifest/00000000000000000001.json").is_err(),
+        "最老版本应已删除"
+    );
     // 最新版本可读、数据完整
     assert_eq!(rows(&db, "SELECT count(*) FROM t")[0][0], "25");
 }

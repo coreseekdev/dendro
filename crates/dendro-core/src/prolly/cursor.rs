@@ -19,11 +19,19 @@ pub struct TreeIter {
 impl TreeIter {
     pub fn new(store: Arc<NodeStore>, root: &Hash) -> Result<Self> {
         let (path, exhausted) = build_path(&store, root, None)?;
-        Ok(Self { store, path, finished: exhausted })
+        Ok(Self {
+            store,
+            path,
+            finished: exhausted,
+        })
     }
 
     pub fn empty() -> Self {
-        Self { store: empty_store(), path: vec![], finished: true }
+        Self {
+            store: empty_store(),
+            path: vec![],
+            finished: true,
+        }
     }
 
     /// 定位到第一个 >= key 的条目
@@ -101,7 +109,11 @@ fn empty_store() -> Arc<NodeStore> {
 }
 
 /// 从根构建到叶的路径；返回 (path, 是否已越过所有条目)
-fn build_path(store: &NodeStore, root: &Hash, key_ge: Option<&[u8]>) -> Result<(Vec<(Node, usize)>, bool)> {
+fn build_path(
+    store: &NodeStore,
+    root: &Hash,
+    key_ge: Option<&[u8]>,
+) -> Result<(Vec<(Node, usize)>, bool)> {
     let mut path = Vec::new();
     let mut addr = *root;
     loop {

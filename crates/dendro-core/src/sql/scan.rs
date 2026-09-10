@@ -8,8 +8,8 @@ use crate::error::{Result, SqlError};
 use crate::format::row::decode_row;
 use crate::types::{ColType, ColumnMeta, Output, RecordSet, SqlValue};
 use sqlparser::ast::{
-    Expr, FunctionArg, FunctionArgExpr, GroupByExpr, JoinOperator, ObjectName, OrderByExpr,
-    Query, Select, SelectItem, SetExpr, TableFactor, Value as PV,
+    Expr, FunctionArg, FunctionArgExpr, GroupByExpr, JoinOperator, ObjectName, OrderByExpr, Query,
+    Select, SelectItem, SetExpr, TableFactor, Value as PV,
 };
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -21,26 +21,55 @@ pub struct TableView {
     pub rows: Vec<Vec<SqlValue>>,
 }
 
-pub(crate) fn exec_query(db: &Database, sess: &mut Session, q: Query, snapshot: u64) -> Result<Output> {
+pub(crate) fn exec_query(
+    db: &Database,
+    sess: &mut Session,
+    q: Query,
+    snapshot: u64,
+) -> Result<Output> {
     let view = eval_query(db, sess, &q, snapshot)?;
     let colmeta: Vec<ColumnMeta> = view
         .names
         .iter()
-        .zip(view.rows.first().map(|r| r.as_slice()).unwrap_or(&[]).iter().map(infer_type).collect::<Vec<_>>().into_iter().chain(std::iter::repeat(ColType::Utf8)))
+        .zip(
+            view.rows
+                .first()
+                .map(|r| r.as_slice())
+                .unwrap_or(&[])
+                .iter()
+                .map(infer_type)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .chain(std::iter::repeat(ColType::Utf8)),
+        )
         .take(view.names.len())
-        .map(|(n, t)| ColumnMeta { name: n.clone(), ty: t })
+        .map(|(n, t)| ColumnMeta {
+            name: n.clone(),
+            ty: t,
+        })
         .collect();
     // 列型按数据推断（空表回退 Utf8）
     let colmeta = fix_colmeta(view.rows.first(), &view.names, colmeta);
-    Ok(Output::Rows(RecordSet { columns: colmeta, batches: rows_to_batches(&view.names, &view.rows)? }))
+    Ok(Output::Rows(RecordSet {
+        columns: colmeta,
+        batches: rows_to_batches(&view.names, &view.rows)?,
+    }))
 }
 
-fn fix_colmeta(first_row: Option<&Vec<SqlValue>>, names: &[String], meta: Vec<ColumnMeta>) -> Vec<ColumnMeta> {
+fn fix_colmeta(
+    first_row: Option<&Vec<SqlValue>>,
+    names: &[String],
+    meta: Vec<ColumnMeta>,
+) -> Vec<ColumnMeta> {
     if let Some(r) = first_row {
-        meta.iter().zip(r.iter()).enumerate().map(|(i, (m, v))| ColumnMeta {
-            name: names[i].clone(),
-            ty: if v.is_null() { m.ty } else { infer_type(v) },
-        }).collect()
+        meta.iter()
+            .zip(r.iter())
+            .enumerate()
+            .map(|(i, (m, v))| ColumnMeta {
+                name: names[i].clone(),
+                ty: if v.is_null() { m.ty } else { infer_type(v) },
+            })
+            .collect()
     } else {
         meta
     }
@@ -61,11 +90,21 @@ fn infer_type(v: &SqlValue) -> ColType {
 }
 
 /// 全查询求值（不含输出构造）
-pub(crate) fn eval_query(db: &Database, sess: &mut Session, q: &Query, snapshot: u64) -> Result<TableView> {
+pub(crate) fn eval_query(
+    db: &Database,
+    sess: &mut Session,
+    q: &Query,
+    snapshot: u64,
+) -> Result<TableView> {
     let set_expr = q.body.as_ref();
     let select = match set_expr {
         SetExpr::Select(s) => s.as_ref(),
-        other => return Err(SqlError::not_supported(format!("set op: {}", short_str(other)))),
+        other => {
+            return Err(SqlError::not_supported(format!(
+                "set op: {}",
+                short_str(other)
+            )))
+        }
     };
     // DISTINCT 投影显式拒绝（第二十一轮 R21-17：静默忽略 = 语义黑洞）
     if select.distinct.is_some() {
@@ -108,10 +147,13 @@ pub(crate) fn eval_query(db: &Database, sess: &mut Session, q: &Query, snapshot:
         if !has_column_ref(w) {
             match expr::eval(w, &[], &|_| None) {
                 Ok(SqlValue::Bool(false)) | Ok(SqlValue::Null) => {
-                    return Ok(TableView { names: tv.names.clone(), rows: vec![] });
+                    return Ok(TableView {
+                        names: tv.names.clone(),
+                        rows: vec![],
+                    });
                 }
                 Ok(SqlValue::Bool(true)) => return Ok(tv), // 恒真：免过滤
-                _ => {} // 非布尔：走正常过滤（行级报错）
+                _ => {}                                    // 非布尔：走正常过滤（行级报错）
             }
         }
         let cols = col_lookup(&tv.names);
@@ -143,7 +185,8 @@ pub(crate) fn eval_query(db: &Database, sess: &mut Session, q: &Query, snapshot:
         let mut kept: Vec<usize> = Vec::new();
         for i in 0..res.keys.len() {
             if let Some(h) = &select.having {
-                let hv = agg::eval_having(h, &calls, &res.vals[i], &group_exprs, &res.keys[i], &cols)?;
+                let hv =
+                    agg::eval_having(h, &calls, &res.vals[i], &group_exprs, &res.keys[i], &cols)?;
                 if hv != SqlValue::Bool(true) {
                     continue;
                 }
@@ -164,15 +207,18 @@ pub(crate) fn eval_query(db: &Database, sess: &mut Session, q: &Query, snapshot:
                     Some(e) => {
                         if let Some(ci) = calls.iter().position(|c| c.display == e.to_string()) {
                             row.push(res.vals[i][ci].clone());
-                        } else if let Some(gi) = group_exprs.iter().position(|g| g.to_string() == e.to_string()) {
+                        } else if let Some(gi) = group_exprs
+                            .iter()
+                            .position(|g| g.to_string() == e.to_string())
+                        {
                             row.push(res.keys[i][gi].clone());
                         } else {
-                            return Err(SqlError::syntax("column must appear in GROUP BY or aggregation"));
+                            return Err(SqlError::syntax(
+                                "column must appear in GROUP BY or aggregation",
+                            ));
                         }
                     }
-                    None => {
-                        return Err(SqlError::not_supported("SELECT * with GROUP BY"))
-                    }
+                    None => return Err(SqlError::not_supported("SELECT * with GROUP BY")),
                 }
             }
             rows_out.push(row);
@@ -191,7 +237,12 @@ pub(crate) fn eval_query(db: &Database, sess: &mut Session, q: &Query, snapshot:
     };
     if !order_exprs.is_empty() {
         let has_input = out_rows.len() == tv.rows.len();
-        apply_order(&mut out_rows, &out_names, order_exprs, if has_input { Some(&tv) } else { None })?;
+        apply_order(
+            &mut out_rows,
+            &out_names,
+            order_exprs,
+            if has_input { Some(&tv) } else { None },
+        )?;
     }
     // OFFSET/LIMIT（0.62: limit_clause）
     if let Some(lc) = &q.limit_clause {
@@ -209,14 +260,21 @@ pub(crate) fn eval_query(db: &Database, sess: &mut Session, q: &Query, snapshot:
             other => return Err(SqlError::not_supported(format!("LIMIT form: {other}"))),
         }
     }
-    Ok(TableView { names: out_names, rows: out_rows })
+    Ok(TableView {
+        names: out_names,
+        rows: out_rows,
+    })
 }
 
 fn short_str(s: &impl std::fmt::Display) -> String {
     s.to_string().chars().take(40).collect()
 }
 
-pub(crate) fn describe_query(db: &Database, sess: &mut Session, q: &Query) -> Result<Vec<ColumnMeta>> {
+pub(crate) fn describe_query(
+    db: &Database,
+    sess: &mut Session,
+    q: &Query,
+) -> Result<Vec<ColumnMeta>> {
     // 优先静态推断（schema/聚合规则）；失败回退空跑 LIMIT 0
     if let Some(meta) = describe_static(db, sess, q) {
         return Ok(meta);
@@ -236,10 +294,23 @@ pub(crate) fn describe_query(db: &Database, sess: &mut Session, q: &Query) -> Re
         vec![]
     } else {
         (0..view.names.len())
-            .map(|i| view.rows.first().map(|r| infer_type(&r[i])).unwrap_or(ColType::Utf8))
+            .map(|i| {
+                view.rows
+                    .first()
+                    .map(|r| infer_type(&r[i]))
+                    .unwrap_or(ColType::Utf8)
+            })
             .collect()
     };
-    Ok(view.names.iter().zip(tys).map(|(n, t)| ColumnMeta { name: n.clone(), ty: t }).collect())
+    Ok(view
+        .names
+        .iter()
+        .zip(tys)
+        .map(|(n, t)| ColumnMeta {
+            name: n.clone(),
+            ty: t,
+        })
+        .collect())
 }
 
 /// 静态列型：单表 SELECT 的 schema 直查 + 聚合函数规则
@@ -270,7 +341,11 @@ fn describe_static(db: &Database, sess: &mut Session, q: &Query) -> Option<Vec<C
                     .enumerate()
                     .map(|(i, n)| ColumnMeta {
                         name: n.clone(),
-                        ty: v.rows.first().map(|r| infer_type(&r[i])).unwrap_or(ColType::Utf8),
+                        ty: v
+                            .rows
+                            .first()
+                            .map(|r| infer_type(&r[i]))
+                            .unwrap_or(ColType::Utf8),
                     })
                     .collect()
             });
@@ -283,14 +358,18 @@ fn describe_static(db: &Database, sess: &mut Session, q: &Query) -> Option<Vec<C
         match name {
             "count" => ColType::Int64,
             "avg" => ColType::Float64,
-            "sum" => arg.and_then(|e| match e {
-                Expr::Identifier(id) => col_ty(&id.value),
-                _ => None,
-            }).unwrap_or(ColType::Int64),
-            _ => arg.and_then(|e| match e {
-                Expr::Identifier(id) => col_ty(&id.value),
-                _ => None,
-            }).unwrap_or(ColType::Utf8),
+            "sum" => arg
+                .and_then(|e| match e {
+                    Expr::Identifier(id) => col_ty(&id.value),
+                    _ => None,
+                })
+                .unwrap_or(ColType::Int64),
+            _ => arg
+                .and_then(|e| match e {
+                    Expr::Identifier(id) => col_ty(&id.value),
+                    _ => None,
+                })
+                .unwrap_or(ColType::Utf8),
         }
     };
     let mut out = Vec::new();
@@ -298,13 +377,19 @@ fn describe_static(db: &Database, sess: &mut Session, q: &Query) -> Option<Vec<C
         match item {
             SelectItem::Wildcard(_) => {
                 for c in &schema.columns {
-                    out.push(ColumnMeta { name: c.name.clone(), ty: c.ty });
+                    out.push(ColumnMeta {
+                        name: c.name.clone(),
+                        ty: c.ty,
+                    });
                 }
             }
             SelectItem::QualifiedWildcard(_, _) => return None,
             SelectItem::ExprWithAlias { expr, alias } => {
                 let ty = col_ty(&alias.value).unwrap_or_else(|| expr_ty(expr, &col_ty, &agg_ty));
-                out.push(ColumnMeta { name: alias.value.clone(), ty });
+                out.push(ColumnMeta {
+                    name: alias.value.clone(),
+                    ty,
+                });
             }
             SelectItem::UnnamedExpr(e) => {
                 let name = match e {
@@ -327,7 +412,11 @@ fn subquery_of(tf: &TableFactor) -> Option<&Query> {
     }
 }
 
-fn expr_ty(e: &Expr, col_ty: &dyn Fn(&str) -> Option<ColType>, agg: &dyn Fn(&str, Option<&Expr>) -> ColType) -> ColType {
+fn expr_ty(
+    e: &Expr,
+    col_ty: &dyn Fn(&str) -> Option<ColType>,
+    agg: &dyn Fn(&str, Option<&Expr>) -> ColType,
+) -> ColType {
     match e {
         Expr::Identifier(id) => col_ty(&id.value).unwrap_or(ColType::Utf8),
         Expr::CompoundIdentifier(parts) => parts
@@ -344,13 +433,18 @@ fn expr_ty(e: &Expr, col_ty: &dyn Fn(&str) -> Option<ColType>, agg: &dyn Fn(&str
                 agg(&n, arg)
             } else if matches!(n.as_str(), "length" | "char_length") {
                 ColType::Int32
-            } else if matches!(n.as_str(), "round" | "floor" | "ceil" | "sqrt" | "pow" | "avg") {
+            } else if matches!(
+                n.as_str(),
+                "round" | "floor" | "ceil" | "sqrt" | "pow" | "avg"
+            ) {
                 ColType::Float64
             } else {
                 ColType::Utf8
             }
         }
-        Expr::Cast { data_type, .. } => ColType::from_parse(&data_type.to_string()).unwrap_or(ColType::Utf8),
+        Expr::Cast { data_type, .. } => {
+            ColType::from_parse(&data_type.to_string()).unwrap_or(ColType::Utf8)
+        }
         Expr::BinaryOp { .. } => {
             // 数值运算 → 保守 Float64；比较 → bool
             ColType::Float64
@@ -388,8 +482,6 @@ fn eval_from(
     snapshot: u64,
     pushdown_limit: Option<usize>,
 ) -> Result<TableView> {
-
-
     let twj = select
         .from
         .first()
@@ -416,7 +508,9 @@ fn eval_from(
                     sqlparser::ast::JoinConstraint::Using(_) => {
                         return Err(SqlError::not_supported("USING"))
                     }
-                    sqlparser::ast::JoinConstraint::None => return Err(SqlError::syntax("join requires ON")),
+                    sqlparser::ast::JoinConstraint::None => {
+                        return Err(SqlError::syntax("join requires ON"))
+                    }
                 };
                 tv = hash_join(tv, right, l)?;
             }
@@ -435,7 +529,12 @@ fn eval_from(
 }
 
 /// 按表名扫描（ddl 的 DELETE/UPDATE 复用）
-pub(crate) fn table_scan_by_name(db: &Database, sess: &mut Session, name: &str, snapshot: u64) -> Result<TableView> {
+pub(crate) fn table_scan_by_name(
+    db: &Database,
+    sess: &mut Session,
+    name: &str,
+    snapshot: u64,
+) -> Result<TableView> {
     let tf = TableFactor::Table {
         name: ObjectName::from(vec![sqlparser::ast::Ident::new(name)]),
         alias: None,
@@ -476,12 +575,20 @@ fn table_scan_opt(
         ));
     }
     if let TableFactor::Table { name, .. } = tf {
-        let vname = name.0.iter().filter_map(|p| p.as_ident()).map(|i| i.value.to_ascii_lowercase()).collect::<Vec<_>>().join(".");
+        let vname = name
+            .0
+            .iter()
+            .filter_map(|p| p.as_ident())
+            .map(|i| i.value.to_ascii_lowercase())
+            .collect::<Vec<_>>()
+            .join(".");
         if let Some(query_text) = db.manifest().manifest.views.get(&vname) {
             let query_text = query_text.clone();
             let stmts = crate::sql::parse_batch(&query_text, sess.dialect)?;
             if stmts.len() == 1 {
-                if let sqlparser::ast::Statement::Query(sub_query) = stmts.into_iter().next().unwrap() {
+                if let sqlparser::ast::Statement::Query(sub_query) =
+                    stmts.into_iter().next().unwrap()
+                {
                     VIEW_DEPTH.with(|d| d.set(cur_depth + 1));
                     let result = eval_query(db, sess, sub_query.as_ref(), snapshot);
                     VIEW_DEPTH.with(|d| d.set(cur_depth));
@@ -521,7 +628,9 @@ fn try_ap_scan(
             .join("."),
         _ => return Ok(None),
     };
-    let Some(ap) = db.columnar() else { return Ok(None) };
+    let Some(ap) = db.columnar() else {
+        return Ok(None);
+    };
     let short_name = name.rsplit('.').next().unwrap_or(&name).to_string();
     // 显式事务：以 BEGIN 冻结的 catalog 根解析（Q-14——此前 AP 路径用当前
     // head，事务内树的可见性与行路径不一致）
@@ -533,7 +642,9 @@ fn try_ap_scan(
         Some(r) => resolve_table_at(db, Some(&r), &short_name),
         None => resolve_table(db, &sess.branch, &short_name),
     };
-    let Ok((schema, entry)) = resolved else { return Ok(None) };
+    let Ok((schema, entry)) = resolved else {
+        return Ok(None);
+    };
     if entry.col_segments.is_empty() || entry.col_rows < 10_000 {
         return Ok(None);
     }
@@ -573,7 +684,12 @@ fn try_ap_scan(
                 continue;
             }
         }
-        let batches = ap.scan(db.obj_store(), &schema, std::slice::from_ref(seg), &pk_range)?;
+        let batches = ap.scan(
+            db.obj_store(),
+            &schema,
+            std::slice::from_ref(seg),
+            &pk_range,
+        )?;
         for b in &batches {
             for mut r in rows_from_batches(b, &schema)? {
                 if pkc >= r.len() {
@@ -686,14 +802,13 @@ fn extract_pk_range(sel: &Expr, pk: &str) -> Option<(Option<u64>, Option<u64>)> 
     }
     let mut lo: Option<u64> = None;
     let mut hi: Option<u64> = None;
-    fn walk(
-        e: &Expr,
-        pk: &str,
-        lo: &mut Option<u64>,
-        hi: &mut Option<u64>,
-    ) {
+    fn walk(e: &Expr, pk: &str, lo: &mut Option<u64>, hi: &mut Option<u64>) {
         match e {
-            Expr::BinaryOp { left, op: sqlparser::ast::BinaryOperator::And, right } => {
+            Expr::BinaryOp {
+                left,
+                op: sqlparser::ast::BinaryOperator::And,
+                right,
+            } => {
                 walk(left, pk, lo, hi);
                 walk(right, pk, lo, hi);
             }
@@ -737,10 +852,9 @@ fn extract_pk_range(sel: &Expr, pk: &str) -> Option<(Option<u64>, Option<u64>)> 
                                     *hi = Some(dv);
                                 }
                             }
-                            "lt"
-                                if hi.is_none_or(|h| dv.saturating_sub(1) < h) => {
-                                    *hi = Some(dv.saturating_sub(1));
-                                }
+                            "lt" if hi.is_none_or(|h| dv.saturating_sub(1) < h) => {
+                                *hi = Some(dv.saturating_sub(1));
+                            }
                             _ => {}
                         }
                     }
@@ -762,7 +876,10 @@ fn rows_from_batches(
     batch: &arrow::record_batch::RecordBatch,
     schema: &crate::versioned::TableSchema,
 ) -> Result<Vec<Vec<SqlValue>>> {
-    use arrow::array::{Array, Date32Array, Float64Array, Int32Array, Int64Array, StringArray, BinaryArray, BooleanArray, TimestampMillisecondArray};
+    use arrow::array::{
+        Array, BinaryArray, BooleanArray, Date32Array, Float64Array, Int32Array, Int64Array,
+        StringArray, TimestampMillisecondArray,
+    };
     let mut rows = Vec::with_capacity(batch.num_rows());
     for r in 0..batch.num_rows() {
         let mut row = Vec::with_capacity(batch.num_columns());
@@ -773,14 +890,41 @@ fn rows_from_batches(
                 continue;
             }
             let v = match col.data_type() {
-                arrow::datatypes::DataType::Boolean => col.as_any().downcast_ref::<BooleanArray>().map(|a| SqlValue::Bool(a.value(r))),
-                arrow::datatypes::DataType::Int32 => col.as_any().downcast_ref::<Int32Array>().map(|a| SqlValue::Int32(a.value(r))),
-                arrow::datatypes::DataType::Int64 => col.as_any().downcast_ref::<Int64Array>().map(|a| SqlValue::Int64(a.value(r))),
-                arrow::datatypes::DataType::Float64 => col.as_any().downcast_ref::<Float64Array>().map(|a| SqlValue::Float64(a.value(r))),
-                arrow::datatypes::DataType::Utf8 => col.as_any().downcast_ref::<StringArray>().map(|a| SqlValue::Utf8(a.value(r).to_string())),
-                arrow::datatypes::DataType::Binary => col.as_any().downcast_ref::<BinaryArray>().map(|a| SqlValue::Bytes(a.value(r).to_vec())),
-                arrow::datatypes::DataType::Date32 => col.as_any().downcast_ref::<Date32Array>().map(|a| SqlValue::Date32(a.value(r))),
-                arrow::datatypes::DataType::Timestamp(arrow::datatypes::TimeUnit::Millisecond, _) => col.as_any().downcast_ref::<TimestampMillisecondArray>().map(|a| SqlValue::TimestampMs(a.value(r))),
+                arrow::datatypes::DataType::Boolean => col
+                    .as_any()
+                    .downcast_ref::<BooleanArray>()
+                    .map(|a| SqlValue::Bool(a.value(r))),
+                arrow::datatypes::DataType::Int32 => col
+                    .as_any()
+                    .downcast_ref::<Int32Array>()
+                    .map(|a| SqlValue::Int32(a.value(r))),
+                arrow::datatypes::DataType::Int64 => col
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .map(|a| SqlValue::Int64(a.value(r))),
+                arrow::datatypes::DataType::Float64 => col
+                    .as_any()
+                    .downcast_ref::<Float64Array>()
+                    .map(|a| SqlValue::Float64(a.value(r))),
+                arrow::datatypes::DataType::Utf8 => col
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .map(|a| SqlValue::Utf8(a.value(r).to_string())),
+                arrow::datatypes::DataType::Binary => col
+                    .as_any()
+                    .downcast_ref::<BinaryArray>()
+                    .map(|a| SqlValue::Bytes(a.value(r).to_vec())),
+                arrow::datatypes::DataType::Date32 => col
+                    .as_any()
+                    .downcast_ref::<Date32Array>()
+                    .map(|a| SqlValue::Date32(a.value(r))),
+                arrow::datatypes::DataType::Timestamp(
+                    arrow::datatypes::TimeUnit::Millisecond,
+                    _,
+                ) => col
+                    .as_any()
+                    .downcast_ref::<TimestampMillisecondArray>()
+                    .map(|a| SqlValue::TimestampMs(a.value(r))),
                 _ => None,
             };
             row.push(v.unwrap_or(SqlValue::Null));
@@ -811,10 +955,26 @@ fn try_pk_pushdown(
         _ => return Ok(None),
     };
     let low = name.to_ascii_lowercase();
-    if matches!(low.as_str(), "cambium.branches" | "branches" | "information_schema.tables" | "pg_catalog.pg_tables" | "pg_tables" | "information_schema.columns" | "pg_catalog.pg_columns" | "pg_columns" | "pg_catalog.pg_settings" | "pg_settings" | "cambium.commit_log" | "commit_log") {
+    if matches!(
+        low.as_str(),
+        "cambium.branches"
+            | "branches"
+            | "information_schema.tables"
+            | "pg_catalog.pg_tables"
+            | "pg_tables"
+            | "information_schema.columns"
+            | "pg_catalog.pg_columns"
+            | "pg_columns"
+            | "pg_catalog.pg_settings"
+            | "pg_settings"
+            | "cambium.commit_log"
+            | "commit_log"
+    ) {
         return Ok(None);
     }
-    let Some(sel) = selection else { return Ok(None) };
+    let Some(sel) = selection else {
+        return Ok(None);
+    };
     // 单列主键 + 顶层 Eq/IN 形态才走直查
     // （显式事务：以 BEGIN 冻结的 catalog 根解析，R7-3）
     let frozen = match &sess.txn {
@@ -822,7 +982,11 @@ fn try_pk_pushdown(
         _ => None,
     };
     let (schema, entry) = match frozen {
-        Some(r) => resolve_table_at(db, Some(&r), name.rsplit(['.', '@']).next().unwrap_or(&name))?,
+        Some(r) => resolve_table_at(
+            db,
+            Some(&r),
+            name.rsplit(['.', '@']).next().unwrap_or(&name),
+        )?,
         None => match resolve_table(db, &sess.branch, &name) {
             Ok(v) => v,
             Err(_) => return Ok(None),
@@ -833,9 +997,11 @@ fn try_pk_pushdown(
     }
     let pk_name = schema.columns[schema.pk[0] as usize].name.clone();
     let ok = match sel {
-        Expr::BinaryOp { left, op: sqlparser::ast::BinaryOperator::Eq, right } => {
-            is_col_vs_value(left, right, &pk_name) || is_col_vs_value(right, left, &pk_name)
-        }
+        Expr::BinaryOp {
+            left,
+            op: sqlparser::ast::BinaryOperator::Eq,
+            right,
+        } => is_col_vs_value(left, right, &pk_name) || is_col_vs_value(right, left, &pk_name),
         Expr::InList { expr, .. } => match expr.as_ref() {
             Expr::Identifier(id) => id.value.eq_ignore_ascii_case(&pk_name),
             _ => false,
@@ -865,14 +1031,26 @@ fn build_point_view(
     use sqlparser::ast::{BinaryOperator, Expr};
     let pk_name = schema.columns[schema.pk[0] as usize].name.clone();
     let keys: Vec<SqlValue> = match selection {
-        Expr::BinaryOp { left, op: BinaryOperator::Eq, right } => {
-            let v: &Expr = if is_col_vs_value(left, right, &pk_name) { right.as_ref() } else { left.as_ref() };
+        Expr::BinaryOp {
+            left,
+            op: BinaryOperator::Eq,
+            right,
+        } => {
+            let v: &Expr = if is_col_vs_value(left, right, &pk_name) {
+                right.as_ref()
+            } else {
+                left.as_ref()
+            };
             match v {
                 Expr::Value(vws) => vec![super::expr::value_from_parser(vws.value.clone())],
                 _ => vec![],
             }
         }
-        Expr::InList { expr, list, negated } if !*negated => {
+        Expr::InList {
+            expr,
+            list,
+            negated,
+        } if !*negated => {
             let _ = expr;
             list.iter()
                 .filter_map(|e| match e {
@@ -940,7 +1118,11 @@ fn table_scan(
             let full = name
                 .0
                 .iter()
-                .map(|p| p.as_ident().map(|i| i.value.clone()).unwrap_or_else(|| p.to_string()))
+                .map(|p| {
+                    p.as_ident()
+                        .map(|i| i.value.clone())
+                        .unwrap_or_else(|| p.to_string())
+                })
                 .collect::<Vec<_>>()
                 .join(".");
             let low = full.to_ascii_lowercase();
@@ -953,7 +1135,10 @@ fn table_scan(
                     return pseudo_columns(db, sess)
                 }
                 "pg_catalog.pg_settings" | "pg_settings" => {
-                    return Ok(TableView { names: vec!["name".into(), "setting".into()], rows: vec![] })
+                    return Ok(TableView {
+                        names: vec!["name".into(), "setting".into()],
+                        rows: vec![],
+                    })
                 }
                 "cambium.commit_log" | "commit_log" => {
                     // commit_log('branch') 不带参数时用当前分支
@@ -967,7 +1152,11 @@ fn table_scan(
                 _ => None,
             };
             let (schema, entry) = match frozen {
-                Some(r) => resolve_table_at(db, Some(&r), full.rsplit(['.', '@']).next().unwrap_or(&full))?,
+                Some(r) => resolve_table_at(
+                    db,
+                    Some(&r),
+                    full.rsplit(['.', '@']).next().unwrap_or(&full),
+                )?,
                 None => resolve_table(db, &sess.branch, &full)?,
             };
             let b = db.branch(&sess.branch)?;
@@ -978,14 +1167,22 @@ fn table_scan(
                 .and_then(|s| crate::format::hash::Hash::from_base32(s));
             let overlay = b.mem.table(entry.id).snapshot_rows(snapshot);
             if std::env::var("DENDRO_SCAN_DEBUG").is_ok() {
-                eprintln!("[scan] table={full} root={root:?} overlay={overlay:?} schema={:?}", schema.columns.iter().map(|c| (c.name.clone(), c.ty)).collect::<Vec<_>>());
+                eprintln!(
+                    "[scan] table={full} root={root:?} overlay={overlay:?} schema={:?}",
+                    schema
+                        .columns
+                        .iter()
+                        .map(|c| (c.name.clone(), c.ty))
+                        .collect::<Vec<_>>()
+                );
             }
             // 可见性归并（**单一抽象**，第七轮评审建议）：树 → checkpointed
             // overlay → 会话显式事务自身写，三层按序覆盖。
             // ⚠ 此处曾是键序双指针归并（`<=` vs `<` 之差产生过 R7-1 P0：
             // checkpoint 后 UPDATE 双行/DELETE 复活）——收敛为 map 覆盖语义
             // 后，键序错误在结构上无处可写。
-            let mut visible: std::collections::BTreeMap<Vec<u8>, Arc<Vec<u8>>> = std::collections::BTreeMap::new();
+            let mut visible: std::collections::BTreeMap<Vec<u8>, Arc<Vec<u8>>> =
+                std::collections::BTreeMap::new();
             // ① 树（checkpoint 物化态）
             if let Some(r) = &root {
                 let mut it = crate::prolly::cursor::TreeIter::new(db.store.clone(), r)?;
@@ -1026,7 +1223,12 @@ fn table_scan(
             }
             // Q-1 LIMIT 下推：无 ORDER BY 时解码在 cap 行后停止
             // （BTreeMap 键序确定，前 cap 行即 LIMIT/OFFSET 语义的正确前缀）
-            let mut rows = Vec::with_capacity(pushdown_limit.unwrap_or(visible.len()).min(visible.len()).max(64));
+            let mut rows = Vec::with_capacity(
+                pushdown_limit
+                    .unwrap_or(visible.len())
+                    .min(visible.len())
+                    .max(64),
+            );
             for (i, v) in visible.values().enumerate() {
                 if let Some(cap) = pushdown_limit {
                     if i >= cap {
@@ -1042,7 +1244,10 @@ fn table_scan(
             let view = eval_query(db, sess, subquery.as_ref(), snapshot)?;
             Ok(view)
         }
-        other => Err(SqlError::not_supported(format!("FROM: {}", short_str(other)))),
+        other => Err(SqlError::not_supported(format!(
+            "FROM: {}",
+            short_str(other)
+        ))),
     }
 }
 
@@ -1055,7 +1260,11 @@ pub fn resolve_table(
     let short_name = name.rsplit(['.', '@']).next().unwrap_or(name);
     let branch = db.branch(branch_name)?;
     let head = branch.head.load_full();
-    resolve_table_at(db, head.as_ref().as_ref().map(|c| c.root).as_ref(), short_name)
+    resolve_table_at(
+        db,
+        head.as_ref().as_ref().map(|c| c.root).as_ref(),
+        short_name,
+    )
 }
 
 /// 以**给定 catalog 根**解析（显式事务冻结读，第七轮 R7-3：事务内树的
@@ -1068,12 +1277,16 @@ fn resolve_table_at(
     let catalog = crate::versioned::Versioned::new(db.store.clone());
     let found = catalog
         .catalog_lookup(root, short_name)?
-        .map(|e| -> Result<(crate::versioned::TableSchema, crate::versioned::TableEntry)> {
-            let schema = catalog.load_schema(&e.schema_addr)?;
-            Ok((schema, e))
-        })
+        .map(
+            |e| -> Result<(crate::versioned::TableSchema, crate::versioned::TableEntry)> {
+                let schema = catalog.load_schema(&e.schema_addr)?;
+                Ok((schema, e))
+            },
+        )
         .transpose()?;
-    found.ok_or_else(|| SqlError::undefined_table(format!("relation \"{short_name}\" does not exist")))
+    found.ok_or_else(|| {
+        SqlError::undefined_table(format!("relation \"{short_name}\" does not exist"))
+    })
 }
 
 fn row_from_bytes(schema: &crate::versioned::TableSchema, bytes: &[u8]) -> Result<Vec<SqlValue>> {
@@ -1099,7 +1312,11 @@ fn hash_join(l: TableView, r: TableView, on: &Expr) -> Result<TableView> {
                 return None;
             }
             // 类型 tag + 文本：防 Int64(1) 与 Utf8("1") 碰撞
-            k.push(format!("{}\u{0}{}", v.type_name(), expr::to_text(v.clone())));
+            k.push(format!(
+                "{}\u{0}{}",
+                v.type_name(),
+                expr::to_text(v.clone())
+            ));
         }
         Some(k)
     };
@@ -1132,7 +1349,11 @@ fn hash_join_left(l: TableView, r: TableView, on: &Expr) -> Result<TableView> {
     names.extend(r.names.clone());
     let mut hm: HashMap<Vec<String>, Vec<&Vec<SqlValue>>> = HashMap::new();
     for rr in &r.rows {
-        let key: Vec<String> = eqs.ridx.iter().map(|&i| expr::to_text(rr[i].clone())).collect();
+        let key: Vec<String> = eqs
+            .ridx
+            .iter()
+            .map(|&i| expr::to_text(rr[i].clone()))
+            .collect();
         if key.iter().any(|k| k == "\x00NULL") {
             continue;
         }
@@ -1141,7 +1362,11 @@ fn hash_join_left(l: TableView, r: TableView, on: &Expr) -> Result<TableView> {
     let null_right = vec![SqlValue::Null; r.names.len()];
     let mut rows = Vec::new();
     for lr in &l.rows {
-        let key: Vec<String> = eqs.lidx.iter().map(|&i| expr::to_text(lr[i].clone())).collect();
+        let key: Vec<String> = eqs
+            .lidx
+            .iter()
+            .map(|&i| expr::to_text(lr[i].clone()))
+            .collect();
         let matched = if key.iter().any(|k| k == "\x00NULL") {
             None
         } else {
@@ -1174,14 +1399,28 @@ struct EquiIdx {
 fn extract_equi(e: &Expr, ln: &[String], rn: &[String]) -> Result<EquiIdx> {
     let mut lidx = Vec::new();
     let mut ridx = Vec::new();
-    fn walk(e: &Expr, ln: &[String], rn: &[String], li: &mut Vec<usize>, ri: &mut Vec<usize>) -> Result<bool> {
+    fn walk(
+        e: &Expr,
+        ln: &[String],
+        rn: &[String],
+        li: &mut Vec<usize>,
+        ri: &mut Vec<usize>,
+    ) -> Result<bool> {
         match e {
-            Expr::BinaryOp { left, op: sqlparser::ast::BinaryOperator::And, right } => {
+            Expr::BinaryOp {
+                left,
+                op: sqlparser::ast::BinaryOperator::And,
+                right,
+            } => {
                 walk(left, ln, rn, li, ri)?;
                 walk(right, ln, rn, li, ri)?;
                 Ok(true)
             }
-            Expr::BinaryOp { left, op: sqlparser::ast::BinaryOperator::Eq, right } => {
+            Expr::BinaryOp {
+                left,
+                op: sqlparser::ast::BinaryOperator::Eq,
+                right,
+            } => {
                 // 两边各解析出一列：一属左表一属右表
                 let le = col_pos(left, ln);
                 let re = col_pos(right, rn);
@@ -1203,7 +1442,9 @@ fn extract_equi(e: &Expr, ln: &[String], rn: &[String]) -> Result<EquiIdx> {
         }
     }
     if !walk(e, ln, rn, &mut lidx, &mut ridx)? {
-        return Err(SqlError::not_supported("JOIN ON: only equi-conditions supported"));
+        return Err(SqlError::not_supported(
+            "JOIN ON: only equi-conditions supported",
+        ));
     }
     if lidx.is_empty() {
         return Err(SqlError::not_supported("JOIN ON: no equi-condition found"));
@@ -1280,10 +1521,16 @@ fn projection_names(p: &[SelectItem], tv: &[String], calls: &[AggCall]) -> Resul
     let mut names = Vec::new();
     for item in p {
         match item {
-            SelectItem::Wildcard(_) | SelectItem::ExprWithAliases { .. } => names.extend(tv.iter().cloned()),
+            SelectItem::Wildcard(_) | SelectItem::ExprWithAliases { .. } => {
+                names.extend(tv.iter().cloned())
+            }
             SelectItem::QualifiedWildcard(prefix, _) => {
                 let pre = prefix.to_string().to_ascii_lowercase();
-                names.extend(tv.iter().filter(|n| n.to_ascii_lowercase().starts_with(&pre)).cloned());
+                names.extend(
+                    tv.iter()
+                        .filter(|n| n.to_ascii_lowercase().starts_with(&pre))
+                        .cloned(),
+                );
             }
             SelectItem::ExprWithAlias { alias, .. } => names.push(alias.value.clone()),
             SelectItem::UnnamedExpr(e) => {
@@ -1324,14 +1571,23 @@ pub fn has_column_ref(e: &sqlparser::ast::Expr) -> bool {
         Expr::Nested(inner) => has_column_ref(inner),
         Expr::Function(f) => fn_args(f).iter().any(|a| match a {
             FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) => has_column_ref(e),
-            FunctionArg::Named { arg: FunctionArgExpr::Expr(e), .. } => has_column_ref(e),
+            FunctionArg::Named {
+                arg: FunctionArgExpr::Expr(e),
+                ..
+            } => has_column_ref(e),
             _ => false,
         }),
         Expr::Cast { expr, .. } => has_column_ref(expr),
-        Expr::IsTrue(e) | Expr::IsFalse(e) | Expr::IsNotTrue(e) | Expr::IsNotFalse(e)
-        | Expr::IsNull(e) | Expr::IsNotNull(e) => has_column_ref(e),
+        Expr::IsTrue(e)
+        | Expr::IsFalse(e)
+        | Expr::IsNotTrue(e)
+        | Expr::IsNotFalse(e)
+        | Expr::IsNull(e)
+        | Expr::IsNotNull(e) => has_column_ref(e),
         Expr::InList { expr, list, .. } => has_column_ref(expr) || list.iter().any(has_column_ref),
-        Expr::Between { expr, low, high, .. } => has_column_ref(expr) || has_column_ref(low) || has_column_ref(high),
+        Expr::Between {
+            expr, low, high, ..
+        } => has_column_ref(expr) || has_column_ref(low) || has_column_ref(high),
         _ => false,
     }
 }
@@ -1346,7 +1602,10 @@ pub(crate) fn fn_args(f: &sqlparser::ast::Function) -> &[FunctionArg] {
 pub(crate) fn fn_distinct(f: &sqlparser::ast::Function) -> bool {
     match &f.args {
         sqlparser::ast::FunctionArguments::List(l) => {
-            matches!(l.duplicate_treatment, Some(sqlparser::ast::DuplicateTreatment::Distinct))
+            matches!(
+                l.duplicate_treatment,
+                Some(sqlparser::ast::DuplicateTreatment::Distinct)
+            )
         }
         _ => false,
     }
@@ -1386,8 +1645,12 @@ fn collect_agg_calls(
                 let n = f.name.to_string().to_ascii_lowercase();
                 if matches!(n.as_str(), "count" | "sum" | "avg" | "min" | "max") {
                     let (arg_expr, distinct, is_star) = match fn_args(f).first() {
-                        Some(FunctionArg::Unnamed(FunctionArgExpr::Expr(e))) => (Some(e.clone()), fn_distinct(f), false),
-                        Some(FunctionArg::Unnamed(FunctionArgExpr::Wildcard)) => (None, false, true),
+                        Some(FunctionArg::Unnamed(FunctionArgExpr::Expr(e))) => {
+                            (Some(e.clone()), fn_distinct(f), false)
+                        }
+                        Some(FunctionArg::Unnamed(FunctionArgExpr::Wildcard)) => {
+                            (None, false, true)
+                        }
                         _ => (None, false, false),
                     };
                     let display = e.to_string();
@@ -1456,19 +1719,29 @@ fn apply_order(
                                 let in_row = &tv.rows[ri];
                                 match ic.get(&low) {
                                     Some(&j) => in_row[j].clone(),
-                                    None => expr::eval(&o.expr, in_row, &|n| ic.get(&n.to_ascii_lowercase()).copied())?,
+                                    None => expr::eval(&o.expr, in_row, &|n| {
+                                        ic.get(&n.to_ascii_lowercase()).copied()
+                                    })?,
                                 }
                             }
-                            _ => expr::eval(&o.expr, row, &|n| cols.get(&n.to_ascii_lowercase()).copied())?,
+                            _ => expr::eval(&o.expr, row, &|n| {
+                                cols.get(&n.to_ascii_lowercase()).copied()
+                            })?,
                         },
                     }
                 }
                 Expr::Value(vws) => {
                     if let PV::Number(n, _) = &vws.value {
-                        let idx: usize = n.parse().map_err(|_| SqlError::syntax("bad ORDER BY ordinal"))?;
-                        row.get(idx - 1).cloned().ok_or_else(|| SqlError::syntax("ORDER BY out of range"))?
+                        let idx: usize = n
+                            .parse()
+                            .map_err(|_| SqlError::syntax("bad ORDER BY ordinal"))?;
+                        row.get(idx - 1)
+                            .cloned()
+                            .ok_or_else(|| SqlError::syntax("ORDER BY out of range"))?
                     } else {
-                        expr::eval(&o.expr, row, &|n| cols.get(&n.to_ascii_lowercase()).copied())?
+                        expr::eval(&o.expr, row, &|n| {
+                            cols.get(&n.to_ascii_lowercase()).copied()
+                        })?
                     }
                 }
                 e => {
@@ -1476,7 +1749,9 @@ fn apply_order(
                         let in_row = &tv.rows[ri];
                         match expr::eval(e, in_row, &|n| ic.get(&n.to_ascii_lowercase()).copied()) {
                             Ok(v) => v,
-                            Err(_) => expr::eval(e, row, &|n| cols.get(&n.to_ascii_lowercase()).copied())?,
+                            Err(_) => {
+                                expr::eval(e, row, &|n| cols.get(&n.to_ascii_lowercase()).copied())?
+                            }
                         }
                     } else {
                         expr::eval(e, row, &|n| cols.get(&n.to_ascii_lowercase()).copied())?
@@ -1501,7 +1776,11 @@ fn apply_order(
             } else {
                 expr::cmp_values(x, y).unwrap_or(Ordering::Equal)
             };
-            let ord = if o.options.asc.unwrap_or(true) { ord } else { ord.reverse() };
+            let ord = if o.options.asc.unwrap_or(true) {
+                ord
+            } else {
+                ord.reverse()
+            };
             if ord != Ordering::Equal {
                 return ord;
             }
@@ -1545,7 +1824,12 @@ fn pseudo_tables(db: &Database) -> Result<TableView> {
 }
 
 fn pseudo_columns(db: &Database, sess: &mut Session) -> Result<TableView> {
-    let names = vec!["table_schema".into(), "table_name".into(), "column_name".into(), "data_type".into()];
+    let names = vec![
+        "table_schema".into(),
+        "table_name".into(),
+        "column_name".into(),
+        "data_type".into(),
+    ];
     let mut rows = Vec::new();
     let b = db.branch("main")?;
     let head = b.head.load_full();
@@ -1565,7 +1849,12 @@ fn pseudo_columns(db: &Database, sess: &mut Session) -> Result<TableView> {
 }
 
 fn pseudo_commit_log(db: &Database, sess: &mut Session) -> Result<TableView> {
-    let names = vec!["commit".into(), "height".into(), "ts_ms".into(), "message".into()];
+    let names = vec![
+        "commit".into(),
+        "height".into(),
+        "ts_ms".into(),
+        "message".into(),
+    ];
     let mut rows = Vec::new();
     let b = db.branch(&sess.branch)?;
     let mut cur = b.head.load_full();
@@ -1590,33 +1879,50 @@ fn pseudo_commit_log(db: &Database, sess: &mut Session) -> Result<TableView> {
 // ---------- 输出 ----------
 
 /// 行 → Arrow 批（8192 行/批）
-pub fn rows_to_batches(names: &[String], rows: &[Vec<SqlValue>]) -> Result<Vec<arrow::record_batch::RecordBatch>> {
+pub fn rows_to_batches(
+    names: &[String],
+    rows: &[Vec<SqlValue>],
+) -> Result<Vec<arrow::record_batch::RecordBatch>> {
     let columns: Vec<ColumnMeta> = names
         .iter()
         .enumerate()
         .map(|(i, n)| ColumnMeta {
             name: n.clone(),
-            ty: rows.first().map(|r| infer_type(&r[i])).unwrap_or(ColType::Utf8),
+            ty: rows
+                .first()
+                .map(|r| infer_type(&r[i]))
+                .unwrap_or(ColType::Utf8),
         })
         .collect();
     Ok(rows_to_batches_typed(&columns, rows))
 }
 
-pub fn rows_to_batches_typed(columns: &[ColumnMeta], rows: &[Vec<SqlValue>]) -> Vec<arrow::record_batch::RecordBatch> {
+pub fn rows_to_batches_typed(
+    columns: &[ColumnMeta],
+    rows: &[Vec<SqlValue>],
+) -> Vec<arrow::record_batch::RecordBatch> {
     // 列型：描述口径优先；否则按该列首个非空值推断（首行可能是 NULL，导致整列值丢失）
     let mut col_types: Vec<ColType> = Vec::with_capacity(columns.len());
     for (ci, col) in columns.iter().enumerate() {
-        let first_non_null = rows.iter().find_map(|r| r.get(ci).filter(|v| !v.is_null()).cloned());
+        let first_non_null = rows
+            .iter()
+            .find_map(|r| r.get(ci).filter(|v| !v.is_null()).cloned());
         col_types.push(match first_non_null {
             Some(v) => infer_type(&v),
             None => col.ty,
         });
     }
-    use arrow::array::{ArrayRef, BooleanArray, Date32Array, Float64Array, Int32Array, Int64Array, StringArray, BinaryArray, TimestampMillisecondArray};
+    use arrow::array::{
+        ArrayRef, BinaryArray, BooleanArray, Date32Array, Float64Array, Int32Array, Int64Array,
+        StringArray, TimestampMillisecondArray,
+    };
     use arrow::datatypes::{Field, Schema};
     use std::sync::Arc;
     let _schema = Arc::new(Schema::new(
-        columns.iter().map(|c| Field::new(c.name.clone(), c.ty.arrow(), true)).collect::<Vec<_>>(),
+        columns
+            .iter()
+            .map(|c| Field::new(c.name.clone(), c.ty.arrow(), true))
+            .collect::<Vec<_>>(),
     ));
     let mut batches = Vec::new();
     for chunk in rows.chunks(8192) {
@@ -1627,25 +1933,129 @@ pub fn rows_to_batches_typed(columns: &[ColumnMeta], rows: &[Vec<SqlValue>]) -> 
                 let mut vs: Vec<Option<SqlValue>> = Vec::with_capacity(chunk.len());
                 for r in chunk {
                     // 按稳定列型收敛（Int32→Int64 宽化；类型不符置 NULL 不崩）
-                    vs.push(r.get(ci).cloned().map(|v| crate::types::coerce_to(v, col_types[ci])));
+                    vs.push(
+                        r.get(ci)
+                            .cloned()
+                            .map(|v| crate::types::coerce_to(v, col_types[ci])),
+                    );
                 }
                 match col_types[ci] {
-                    ColType::Bool => Arc::new(BooleanArray::from(vs.iter().map(|v| v.as_ref().and_then(|x| if let SqlValue::Bool(b) = x { Some(*b) } else { None })).collect::<Vec<_>>())),
-                    ColType::Int32 => Arc::new(Int32Array::from(vs.iter().map(|v| v.as_ref().and_then(|x| if let SqlValue::Int32(i) = x { Some(*i) } else { None })).collect::<Vec<_>>())),
-                    ColType::Int64 => Arc::new(Int64Array::from(vs.iter().map(|v| v.as_ref().and_then(|x| if let SqlValue::Int64(i) = x { Some(*i) } else if let SqlValue::Int32(i) = x { Some(*i as i64) } else { None })).collect::<Vec<_>>())),
-                    ColType::Float64 => Arc::new(Float64Array::from(vs.iter().map(|v| v.as_ref().and_then(|x| if let SqlValue::Float64(f) = x { Some(*f) } else { None })).collect::<Vec<_>>())),
-                    ColType::Utf8 => Arc::new(StringArray::from(vs.iter().map(|v| v.as_ref().and_then(|x| if let SqlValue::Utf8(s) = x { Some(s.as_str()) } else { None })).collect::<Vec<_>>())),
-                    ColType::Bytes => Arc::new(BinaryArray::from(vs.iter().map(|v| v.as_ref().and_then(|x| if let SqlValue::Bytes(b) = x { Some(b.as_slice()) } else { None })).collect::<Vec<_>>())),
-                    ColType::Date32 => Arc::new(Date32Array::from(vs.iter().map(|v| v.as_ref().and_then(|x| if let SqlValue::Date32(d) = x { Some(*d) } else { None })).collect::<Vec<_>>())),
-                    ColType::TimestampMs => Arc::new(TimestampMillisecondArray::from(vs.iter().map(|v| v.as_ref().and_then(|x| if let SqlValue::TimestampMs(t) = x { Some(*t) } else { None })).collect::<Vec<_>>())),
+                    ColType::Bool => Arc::new(BooleanArray::from(
+                        vs.iter()
+                            .map(|v| {
+                                v.as_ref().and_then(|x| {
+                                    if let SqlValue::Bool(b) = x {
+                                        Some(*b)
+                                    } else {
+                                        None
+                                    }
+                                })
+                            })
+                            .collect::<Vec<_>>(),
+                    )),
+                    ColType::Int32 => Arc::new(Int32Array::from(
+                        vs.iter()
+                            .map(|v| {
+                                v.as_ref().and_then(|x| {
+                                    if let SqlValue::Int32(i) = x {
+                                        Some(*i)
+                                    } else {
+                                        None
+                                    }
+                                })
+                            })
+                            .collect::<Vec<_>>(),
+                    )),
+                    ColType::Int64 => Arc::new(Int64Array::from(
+                        vs.iter()
+                            .map(|v| {
+                                v.as_ref().and_then(|x| {
+                                    if let SqlValue::Int64(i) = x {
+                                        Some(*i)
+                                    } else if let SqlValue::Int32(i) = x {
+                                        Some(*i as i64)
+                                    } else {
+                                        None
+                                    }
+                                })
+                            })
+                            .collect::<Vec<_>>(),
+                    )),
+                    ColType::Float64 => Arc::new(Float64Array::from(
+                        vs.iter()
+                            .map(|v| {
+                                v.as_ref().and_then(|x| {
+                                    if let SqlValue::Float64(f) = x {
+                                        Some(*f)
+                                    } else {
+                                        None
+                                    }
+                                })
+                            })
+                            .collect::<Vec<_>>(),
+                    )),
+                    ColType::Utf8 => Arc::new(StringArray::from(
+                        vs.iter()
+                            .map(|v| {
+                                v.as_ref().and_then(|x| {
+                                    if let SqlValue::Utf8(s) = x {
+                                        Some(s.as_str())
+                                    } else {
+                                        None
+                                    }
+                                })
+                            })
+                            .collect::<Vec<_>>(),
+                    )),
+                    ColType::Bytes => Arc::new(BinaryArray::from(
+                        vs.iter()
+                            .map(|v| {
+                                v.as_ref().and_then(|x| {
+                                    if let SqlValue::Bytes(b) = x {
+                                        Some(b.as_slice())
+                                    } else {
+                                        None
+                                    }
+                                })
+                            })
+                            .collect::<Vec<_>>(),
+                    )),
+                    ColType::Date32 => Arc::new(Date32Array::from(
+                        vs.iter()
+                            .map(|v| {
+                                v.as_ref().and_then(|x| {
+                                    if let SqlValue::Date32(d) = x {
+                                        Some(*d)
+                                    } else {
+                                        None
+                                    }
+                                })
+                            })
+                            .collect::<Vec<_>>(),
+                    )),
+                    ColType::TimestampMs => Arc::new(TimestampMillisecondArray::from(
+                        vs.iter()
+                            .map(|v| {
+                                v.as_ref().and_then(|x| {
+                                    if let SqlValue::TimestampMs(t) = x {
+                                        Some(*t)
+                                    } else {
+                                        None
+                                    }
+                                })
+                            })
+                            .collect::<Vec<_>>(),
+                    )),
                 }
             })
             .collect();
         // 以稳定列型重建 schema
         let real_schema = Arc::new(Schema::new(
-            columns.iter().enumerate().map(|(i, c)| {
-                Field::new(c.name.clone(), col_types[i].arrow(), true)
-            }).collect::<Vec<_>>(),
+            columns
+                .iter()
+                .enumerate()
+                .map(|(i, c)| Field::new(c.name.clone(), col_types[i].arrow(), true))
+                .collect::<Vec<_>>(),
         ));
         let batch = arrow::record_batch::RecordBatch::try_new(real_schema, cols)
             .expect("record batch build");

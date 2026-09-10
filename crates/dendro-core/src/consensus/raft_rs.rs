@@ -11,7 +11,7 @@
 //!   4. 收集 committed entries → 返回给调用方
 //! ```
 
-use super::{CommittedBatch, ConsensusEntry, ConsensusNode, ConsensusLogStore};
+use super::{CommittedBatch, ConsensusEntry, ConsensusLogStore, ConsensusNode};
 use crate::error::{Result, SqlError};
 use raft::prelude::*;
 use raft::{Config, RawNode, Storage};
@@ -57,10 +57,11 @@ impl Storage for TieredStorageAdapter {
         _max_size: impl Into<Option<u64>>,
         _ctx: raft::GetEntriesContext,
     ) -> raft::Result<Vec<Entry>> {
-        let entries = self
-            .log_store
-            .read(low, high)
-            .map_err(|e| raft::Error::Store(raft::StorageError::Other(Box::new(std::io::Error::other(e)))))?;
+        let entries = self.log_store.read(low, high).map_err(|e| {
+            raft::Error::Store(raft::StorageError::Other(Box::new(std::io::Error::other(
+                e,
+            ))))
+        })?;
         Ok(entries
             .into_iter()
             .map(|e| raft::eraftpb::Entry {
@@ -92,15 +93,14 @@ impl Storage for TieredStorageAdapter {
             .map_err(|_| raft::Error::Store(raft::StorageError::Compacted))
     }
     fn snapshot(&self, _request_index: u64, _to: u64) -> raft::Result<Snapshot> {
-        Err(raft::Error::Store(raft::StorageError::SnapshotTemporarilyUnavailable))
+        Err(raft::Error::Store(
+            raft::StorageError::SnapshotTemporarilyUnavailable,
+        ))
     }
 }
 
 impl RaftRsNode {
-    pub fn new(
-        node_id: u64,
-        log_store: Arc<dyn ConsensusLogStore>,
-    ) -> Result<Self> {
+    pub fn new(node_id: u64, log_store: Arc<dyn ConsensusLogStore>) -> Result<Self> {
         let config = Config {
             id: node_id,
             election_tick: 20,
@@ -111,7 +111,9 @@ impl RaftRsNode {
             skip_bcast_commit: true,
             ..Default::default()
         };
-        config.validate().map_err(|e| SqlError::internal(format!("raft config: {e}")))?;
+        config
+            .validate()
+            .map_err(|e| SqlError::internal(format!("raft config: {e}")))?;
 
         let adapter = TieredStorageAdapter::new(log_store, node_id);
         let drain = slog::Discard;
@@ -121,10 +123,14 @@ impl RaftRsNode {
 
         // 单节点：发起选举成为 leader
         if node_id != 0 {
-            node.campaign().map_err(|e| SqlError::internal(format!("raft campaign: {e}")))?;
+            node.campaign()
+                .map_err(|e| SqlError::internal(format!("raft campaign: {e}")))?;
         }
 
-        Ok(Self { node, pending_committed: Vec::new() })
+        Ok(Self {
+            node,
+            pending_committed: Vec::new(),
+        })
     }
 }
 
@@ -183,7 +189,11 @@ impl ConsensusNode for RaftRsNode {
         if self.node.raft.state == raft::StateRole::Leader {
             Some(self.node.raft.r.id)
         } else {
-            if self.node.raft.r.leader_id == raft::INVALID_ID { None } else { Some(self.node.raft.r.leader_id) }
+            if self.node.raft.r.leader_id == raft::INVALID_ID {
+                None
+            } else {
+                Some(self.node.raft.r.leader_id)
+            }
         }
     }
 

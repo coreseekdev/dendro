@@ -42,12 +42,15 @@ impl MiniClient {
         cfg: MyConfig,
     ) -> (MiniClient, std::thread::JoinHandle<std::io::Result<()>>) {
         let (server_side, client_side) = UnixStream::pair().unwrap();
-        let handle = std::thread::spawn(move || {
-            dendro_mywire::handle_connection(server_side, sess, cfg)
-        });
+        let handle =
+            std::thread::spawn(move || dendro_mywire::handle_connection(server_side, sess, cfg));
         let stream = client_side;
-        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-        stream.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         (MiniClient { stream }, handle)
     }
 
@@ -57,7 +60,9 @@ impl MiniClient {
         self.stream.read_exact(&mut hdr).expect("read frame header");
         let len = hdr[0] as usize | ((hdr[1] as usize) << 8) | ((hdr[2] as usize) << 16);
         let mut payload = vec![0u8; len];
-        self.stream.read_exact(&mut payload).expect("read frame payload");
+        self.stream
+            .read_exact(&mut payload)
+            .expect("read frame payload");
         (hdr[3], payload)
     }
 
@@ -69,11 +74,7 @@ impl MiniClient {
         let mut b = [0u8; 1];
         match self.stream.read(&mut b) {
             Ok(0) => {}
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    ErrorKind::ConnectionReset | ErrorKind::BrokenPipe
-                ) => {}
+            Err(e) if matches!(e.kind(), ErrorKind::ConnectionReset | ErrorKind::BrokenPipe) => {}
             Err(e) => panic!("expected connection close, got io error: {e}"),
             Ok(n) => panic!("expected connection close, got {n} byte(s)"),
         }
@@ -147,7 +148,15 @@ impl MiniClient {
         let nul = p[i..].iter().position(|&b| b == 0).unwrap();
         let plugin = String::from_utf8_lossy(&p[i..i + nul]).into_owned();
         let capabilities = (caps_lo as u32) | ((caps_hi as u32) << 16);
-        Greeting { version, conn_id, scramble, plugin, capabilities, charset, status }
+        Greeting {
+            version,
+            conn_id,
+            scramble,
+            plugin,
+            capabilities,
+            charset,
+            status,
+        }
     }
 
     /// 发送 HandshakeResponse41（SECURE_CONNECTION 1B 长度前缀形态 + PLUGIN_AUTH）
@@ -189,7 +198,13 @@ impl MiniClient {
     /// 认证/命令后的 OK 包 → (seq, OkPacket)
     pub fn expect_ok(&mut self) -> (u8, OkPacket) {
         let (seq, p) = self.read_frame();
-        assert_eq!(p[0], OK, "expected OK packet, got {:02x?} ({})", p[0], String::from_utf8_lossy(&p));
+        assert_eq!(
+            p[0],
+            OK,
+            "expected OK packet, got {:02x?} ({})",
+            p[0],
+            String::from_utf8_lossy(&p)
+        );
         let mut i = 1;
         let affected = read_lenenc(&p, &mut i);
         let last_insert_id = read_lenenc(&p, &mut i);
@@ -203,7 +218,16 @@ impl MiniClient {
         } else {
             String::new()
         };
-        (seq, OkPacket { affected, last_insert_id, status, warnings, info })
+        (
+            seq,
+            OkPacket {
+                affected,
+                last_insert_id,
+                status,
+                warnings,
+                info,
+            },
+        )
     }
 
     /// ERR 包 → (seq, code, sqlstate, message)
@@ -221,7 +245,11 @@ impl MiniClient {
     pub fn expect_eof(&mut self) -> (u8, u16, u16) {
         let (seq, p) = self.read_frame();
         assert_eq!(p[0], EOF, "expected EOF packet, got {:02x?}", p);
-        (seq, u16::from_le_bytes(p[1..3].try_into().unwrap()), u16::from_le_bytes(p[3..5].try_into().unwrap()))
+        (
+            seq,
+            u16::from_le_bytes(p[1..3].try_into().unwrap()),
+            u16::from_le_bytes(p[3..5].try_into().unwrap()),
+        )
     }
 
     /// 读完整 text 结果集：column_count → coldef×N → EOF → 行×M → EOF
@@ -240,7 +268,13 @@ impl MiniClient {
             let (_s, p) = self.read_frame();
             if p[0] == EOF {
                 let status = u16::from_le_bytes(p[3..5].try_into().unwrap());
-                return ResultSet { first_seq, column_count, columns, rows, final_status: status };
+                return ResultSet {
+                    first_seq,
+                    column_count,
+                    columns,
+                    rows,
+                    final_status: status,
+                };
             }
             let mut r = 0usize;
             let mut row = Vec::new();
@@ -249,7 +283,9 @@ impl MiniClient {
                     row.push(None);
                     r += 1;
                 } else {
-                    row.push(Some(String::from_utf8_lossy(read_bytes(&p, &mut r)).into_owned()));
+                    row.push(Some(
+                        String::from_utf8_lossy(read_bytes(&p, &mut r)).into_owned(),
+                    ));
                 }
             }
             rows.push(row);
@@ -298,9 +334,21 @@ fn read_lenenc(p: &[u8], i: &mut usize) -> u64 {
     let first = p[*i];
     *i += 1;
     match first {
-        0xFC => { let v = u16::from_le_bytes(p[*i..*i + 2].try_into().unwrap()) as u64; *i += 2; v }
-        0xFD => { let v = (p[*i] as u64) | ((p[*i + 1] as u64) << 8) | ((p[*i + 2] as u64) << 16); *i += 3; v }
-        0xFE => { let v = u64::from_le_bytes(p[*i..*i + 8].try_into().unwrap()); *i += 8; v }
+        0xFC => {
+            let v = u16::from_le_bytes(p[*i..*i + 2].try_into().unwrap()) as u64;
+            *i += 2;
+            v
+        }
+        0xFD => {
+            let v = (p[*i] as u64) | ((p[*i + 1] as u64) << 8) | ((p[*i + 2] as u64) << 16);
+            *i += 3;
+            v
+        }
+        0xFE => {
+            let v = u64::from_le_bytes(p[*i..*i + 8].try_into().unwrap());
+            *i += 8;
+            v
+        }
         v => v as u64,
     }
 }
@@ -327,7 +375,12 @@ fn parse_column_def(p: &[u8]) -> Column {
     let column_length = u32::from_le_bytes(p[r..r + 4].try_into().unwrap());
     r += 4;
     let type_code = p[r];
-    Column { name: String::from_utf8_lossy(name).into_owned(), charset, column_length, type_code }
+    Column {
+        name: String::from_utf8_lossy(name).into_owned(),
+        charset,
+        column_length,
+        type_code,
+    }
 }
 
 // ——————————————————————————— MockSession ———————————————————————————
@@ -347,7 +400,10 @@ fn int64_set(name: &str, vals: &[i64]) -> RecordSet {
     )
     .unwrap();
     RecordSet {
-        columns: vec![ColumnMeta { name: name.into(), ty: ColType::Int64 }],
+        columns: vec![ColumnMeta {
+            name: name.into(),
+            ty: ColType::Int64,
+        }],
         batches: vec![batch],
     }
 }
@@ -362,7 +418,10 @@ fn utf8_null_set(name: &str) -> RecordSet {
     )
     .unwrap();
     RecordSet {
-        columns: vec![ColumnMeta { name: name.into(), ty: ColType::Utf8 }],
+        columns: vec![ColumnMeta {
+            name: name.into(),
+            ty: ColType::Utf8,
+        }],
         batches: vec![batch],
     }
 }
@@ -370,8 +429,14 @@ fn utf8_null_set(name: &str) -> RecordSet {
 fn users_meta() -> RecordSet {
     RecordSet {
         columns: vec![
-            ColumnMeta { name: "id".into(), ty: ColType::Int64 },
-            ColumnMeta { name: "name".into(), ty: ColType::Utf8 },
+            ColumnMeta {
+                name: "id".into(),
+                ty: ColType::Int64,
+            },
+            ColumnMeta {
+                name: "name".into(),
+                ty: ColType::Utf8,
+            },
         ],
         batches: vec![],
     }
@@ -396,11 +461,17 @@ impl WireSession for MockSession {
                 if t == "users" {
                     Ok(vec![Output::Rows(users_meta())])
                 } else {
-                    Err(SqlError::undefined_table(format!("table 'cambium.{t}' doesn't exist")))
+                    Err(SqlError::undefined_table(format!(
+                        "table 'cambium.{t}' doesn't exist"
+                    )))
                 }
             }
-            "BOOM" => Err(SqlError::undefined_table("table 'cambium.boom' doesn't exist")),
-            other => Err(SqlError::syntax(format!("mock session: unexpected sql '{other}'"))),
+            "BOOM" => Err(SqlError::undefined_table(
+                "table 'cambium.boom' doesn't exist",
+            )),
+            other => Err(SqlError::syntax(format!(
+                "mock session: unexpected sql '{other}'"
+            ))),
         }
     }
 
@@ -413,8 +484,14 @@ impl WireSession for MockSession {
         Err(SqlError::not_supported("mock session: prepare unsupported"))
     }
 
-    fn exec_prepared(&mut self, _name: &str, _params: &[dendro_core::types::SqlValue]) -> Result<Output> {
-        Err(SqlError::not_supported("mock session: exec_prepared unsupported"))
+    fn exec_prepared(
+        &mut self,
+        _name: &str,
+        _params: &[dendro_core::types::SqlValue],
+    ) -> Result<Output> {
+        Err(SqlError::not_supported(
+            "mock session: exec_prepared unsupported",
+        ))
     }
 
     fn close_prepared(&mut self, _name: &str) {}
@@ -427,7 +504,6 @@ impl WireSession for MockSession {
 use std::sync::Arc;
 
 /// MockSession 工厂（serve_with 用）
-pub fn mock_factory(
-) -> dendro_mywire::SessionFactory {
+pub fn mock_factory() -> dendro_mywire::SessionFactory {
     Arc::new(|| -> Box<dyn WireSession> { Box::new(MockSession) })
 }

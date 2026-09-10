@@ -146,7 +146,11 @@ impl PgSync {
                 b'Z' => break, // ReadyForQuery
                 other => {
                     if std::env::var("DENDRO_PGW_DEBUG").is_ok() {
-                        eprintln!("[pg] tag={:?} body={:?}", other, String::from_utf8_lossy(&body));
+                        eprintln!(
+                            "[pg] tag={:?} body={:?}",
+                            other,
+                            String::from_utf8_lossy(&body)
+                        );
                     }
                 }
             }
@@ -155,7 +159,8 @@ impl PgSync {
     }
 
     fn count_t(&mut self) -> i64 {
-        self.query_count("SELECT count(*) FROM t").expect("no DataRow for count")
+        self.query_count("SELECT count(*) FROM t")
+            .expect("no DataRow for count")
     }
 }
 
