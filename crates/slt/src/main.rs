@@ -58,7 +58,11 @@ async fn run_files(paths: Vec<PathBuf>) -> (usize, usize, Vec<String>) {
     let mut failures = Vec::new();
     for p in paths {
         // 每个文件独立内存库（slt 语料自建表）
-        let db = Database::open(DbOptions::memory()).unwrap();
+        let db = Database::open(DbOptions {
+            checkpoint_interval_s: 0, // Q-17：禁用自动 checkpoint（避免不确定的截断时序）
+            ..DbOptions::memory()
+        })
+        .unwrap();
         let db2 = db.clone();
         let mut runner = Runner::new(move || {
             let db3 = db2.clone();
