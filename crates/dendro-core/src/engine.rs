@@ -222,7 +222,12 @@ impl LeaseKeeper {
                 }
             }
             Err(e) => {
-                tracing::warn!(branch = %self.branch, error = %e, "fence renew failed; retry on next commit/keepalive");
+                // 失败也推进节拍（审计 R4-F3）：否则重试率 = flush 频率
+                // （事件驱动后 = 提交频率），存储降级时告警日志刷屏 + 放大
+                // 故障面。ttl/3 退避与成功路径一致。
+                let mut st = self.state.lock();
+                st.next_renew_ms = st.next_renew_ms.max(now + self.ttl_ms / 3);
+                tracing::warn!(branch = %self.branch, error = %e, "fence renew failed; retry after ttl/3");
             }
         }
     }

@@ -327,8 +327,10 @@ impl WalWriter {
                     // 续刷；空闲则挂在条件变量上（enqueue/stop/durable 推进
                     // 都会 notify），flush_interval 仅作保活节拍上限——
                     // 租约续期回调靠它周期执行（见 tick_once）。
+                    // ⚠ 毒化时帧永久滞留缓冲（pending_frames > 0 恒真），
+                    // 必须一并挂起——否则 100% CPU 热旋到 reopen（审计 R4-F1）。
                     let mut g = w.shared.lock();
-                    if g.pending_frames > 0 {
+                    if !g.poisoned && g.pending_frames > 0 {
                         drop(g);
                         continue;
                     }
@@ -436,7 +438,6 @@ impl WalWriter {
         let _size = frame.len();
         let full;
         {
-
             let mut g = self.shared.lock();
             if g.buf.is_empty() {
                 g.min_seq = seq;

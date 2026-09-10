@@ -678,3 +678,47 @@ fn segment_retirement_bounded_by_covered_frontier() {
     assert_eq!(w2.retire_bound(composite_ts(epoch, 100)), 0);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn poisoned_writer_flush_thread_does_not_hot_spin() {
+    // 审计 R4-F1 回归：毒化后帧永久滞留缓冲（pending_frames > 0 恒真），
+    // 事件驱动刷盘线程若不挂起即 100% CPU 热旋到 reopen。断言：毒化后的
+    // 300ms 闲置窗口内进程 CPU 时间增量 < 100ms（热旋 ≈ 300ms；挂起 ≈ 0）。
+    let obj = Arc::new(FlakyPutStore {
+        inner: MemoryObjStore::new(),
+        fail_puts_left: AtomicU32::new(0),
+        fail_prefix: String::new(),
+    });
+    let db = Database::open(opts_store(StoreConfig::Obj(obj.clone()))).unwrap();
+    {
+        let mut s = db.new_session();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY)").unwrap();
+    }
+    obj.fail_puts_left.store(u32::MAX, Ordering::SeqCst);
+    {
+        let mut s = db.new_session();
+        let e = s.exec("INSERT INTO t VALUES (1)").unwrap_err();
+        assert_eq!(e.state, "40003", "{e}");
+    }
+    // 停止注入但**不 reopen**：写者仍毒化（挂起路径），无任何提交活动
+    obj.fail_puts_left.store(0, Ordering::SeqCst);
+    let cpu = || -> u64 {
+        let stat = std::fs::read_to_string("/proc/self/stat").unwrap();
+        let after = stat.rsplit(')').next().unwrap().trim_start();
+        let f: Vec<&str> = after.split_whitespace().collect();
+        // after 去掉 comm 后：state 是字段 3 ⇒ utime/stime 是第 12/13 个（0-based）
+        let utime: u64 = f[11].parse().unwrap();
+        let stime: u64 = f[12].parse().unwrap();
+        utime + stime
+    };
+    let c0 = cpu();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let c1 = cpu();
+    // 时钟 tick 通常 100Hz：300ms 窗口内热旋 ≈ 30 tick；挂起 ≈ 0-3 tick
+    assert!(
+        c1.saturating_sub(c0) < 10,
+        "毒化写者刷盘线程热旋：300ms 窗口消耗 {} tick",
+        c1 - c0
+    );
+}
