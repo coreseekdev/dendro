@@ -50,6 +50,9 @@ impl std::fmt::Debug for StoreConfig {
 #[derive(Debug)]
 pub struct DbOptions {
     pub store: StoreConfig,
+    /// WAL 空闲保活节拍上限（P2-6b 事件驱动后**不再是延迟旋钮**）：
+    /// 需 durable 的帧即刻唤醒刷盘（延迟 ≈ PUT），空闲时以此间隔 tick
+    /// （租约续期/兜底上传）
     pub wal_flush_interval_ms: u64,
     pub wal_segment_bytes: u64,
     pub durability: Durability,
@@ -1441,6 +1444,7 @@ pub(crate) fn commit_tx(db: &Database, sess_branch: &str, txn: &Txn) -> Result<u
             crate::wal::FrameType::Txn,
             ts,
             &crate::wal::encode_txn(&recs),
+            db.opts.durability != Durability::NoWait,
         )?;
         let keys: std::collections::BTreeSet<(u32, Vec<u8>)> =
             txn.writes.keys().map(|(t, k)| (*t, k.clone())).collect();

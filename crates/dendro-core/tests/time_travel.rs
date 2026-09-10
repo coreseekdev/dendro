@@ -57,6 +57,9 @@ fn setup_history(db: &Arc<Database>) -> (String, i64) {
     s.exec("CHECKPOINT").unwrap();
     let h_c1 = commit_at(db, "main", 0); // HEAD = c1 提交
     let between = now_ms(); // ≥ c1 提交的 ts，< c2 提交的 ts
+                            // 事件驱动刷盘后提交耗时 µs 级：ts_ms 只有毫秒粒度，必须显式隔出
+                            // 时间差，否则 c2 与 between 同毫秒（c2.ts ≤ between → 解析到 c2）
+    std::thread::sleep(std::time::Duration::from_millis(5));
     s.exec("UPDATE t SET v = 'c2' WHERE id = 1").unwrap();
     s.exec("CHECKPOINT").unwrap();
     let _h_c2 = commit_at(db, "main", 0);

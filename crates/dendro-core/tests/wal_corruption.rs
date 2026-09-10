@@ -654,7 +654,7 @@ fn segment_retirement_bounded_by_covered_frontier() {
     let w = WalWriter::open(obj, "retire", epoch, 1, cfg);
     // 帧 seq 1..=10 入队并刷盘 → 段 1 的 max_seq = 10
     for seq in 1..=10u64 {
-        w.enqueue_only(FrameType::Txn, seq, b"x").unwrap();
+        w.enqueue_only(FrameType::Txn, seq, b"x", false).unwrap();
     }
     w.flush_now().unwrap();
     // 全部覆盖（watermark = ts(10)）→ 段 1 可退休

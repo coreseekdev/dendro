@@ -59,8 +59,10 @@ append 帧 → seq 申请      │→ MPMC 队列 ─→ 聚帧器(当前段缓�
 ```
 
 - `durability` 三档（会话/服务器可配）：
-  - `no_wait`：帧入队即返回（最快，崩溃丢窗口内事务）
-  - `group`（默认）：等待所在段 durable —— 延迟上限 ≈ flush_interval + RTT
+  - `no_wait`：帧入队即返回（最快，崩溃丢窗口内事务）；**不唤醒刷盘**——
+    帧搭车到下一组持久刷盘/段满/空闲节拍（防每帧一段的对象爆炸）
+  - `group`（默认）：等待所在段 durable —— **事件驱动（P2-6b）**：入队即刻
+    唤醒刷盘线程，延迟 ≈ PUT RTT（内存 ≈26µs p50），**与 flush_interval 无关**
   - `always`：每事务独立触发 flush（OSS 上 = 每事务 ≥1 RTT，仅低频关键写用）
 - Latch 表：`DashMap<seq, broadcast>` 或原子 bitmap + condvar；实现用 `parking_lot`。
 - 写放大控制：CHECKPOINT 段(树物化)合并 TXN 段上传时机，避免双写抖动。

@@ -167,8 +167,9 @@ cargo run -p dendro-server -- serve --data /tmp/dendro-data --read-only --pg-por
 
 **核心数字**（进程内引擎天花板，详见 benches/results/README.md）：
 
-- oltp_insert 162k txn/s（p50 5.4µs）；点查 175k txn/s（p50 5.5µs，PK 下推直查）
-- 组提交延迟 p50 ≈ flush_interval，p99≈p50+0.1ms（尾延迟压平）
+- oltp_insert 166k txn/s（p50 5.5µs）；点查 189k txn/s（p50 5.2µs，PK 下推直查）
+- 组提交（Group）延迟 26µs p50，**与 flush_interval 无关**（事件驱动刷盘，
+  P2-6b）；8 并发写者同分支 12.5 万 commits/s（两段式提交解耦，P2-6）
 - CREATE BRANCH 225µs @1 万行（与数据量无关）；MERGE 306µs @千行 diff
 - 崩溃恢复 2 万事务 8ms（HEAD 探测，无 LIST）
 - CBF：DELTA 顺序列 R=8 解码 2.3GB/s；低基数文本 RLE_DICT 48×；

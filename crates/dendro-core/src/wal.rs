@@ -323,7 +323,17 @@ impl WalWriter {
                     if w.tick_once() {
                         return;
                     }
-                    std::thread::sleep(w.cfg.flush_interval);
+                    // 事件驱动（P2-6b）：仍有帧（PUT 在途期间新到的）→ 立即
+                    // 续刷；空闲则挂在条件变量上（enqueue/stop/durable 推进
+                    // 都会 notify），flush_interval 仅作保活节拍上限——
+                    // 租约续期回调靠它周期执行（见 tick_once）。
+                    let mut g = w.shared.lock();
+                    if g.pending_frames > 0 {
+                        drop(g);
+                        continue;
+                    }
+                    let _timeout = w.cv.wait_for(&mut g, w.cfg.flush_interval);
+                    drop(g);
                 }
             })
             .expect("spawn wal thread");
@@ -383,7 +393,14 @@ impl WalWriter {
         payload: &[u8],
         durability: crate::engine::Durability,
     ) -> Result<()> {
-        self.enqueue_only(ty, seq, payload)?;
+        // NoWait 帧不唤醒刷盘（搭车：下一组持久刷盘/段满/空闲节拍兜底）；
+        // Group/Always 立即唤醒（事件驱动，延迟 ≈ PUT 而非定时器间隔）
+        self.enqueue_only(
+            ty,
+            seq,
+            payload,
+            durability != crate::engine::Durability::NoWait,
+        )?;
         match durability {
             crate::engine::Durability::NoWait => Ok(()),
             crate::engine::Durability::Always => {
@@ -394,11 +411,20 @@ impl WalWriter {
         }
     }
 
-    /// 仅入队（P2-6 组提交解耦）：缓冲追加 + 段满通知，**不等待 durable**。
+    /// 仅入队（P2-6 组提交解耦）：缓冲追加，**不等待 durable**。
+    /// `notify`：调用方是否需要 durable 尽快达成（Group/Always = true）——
+    /// true 即刻唤醒刷盘线程（事件驱动）；false（NoWait）不唤醒，帧搭车到
+    /// 下一组持久刷盘/段满/空闲节拍（防每帧一段的对象爆炸与无谓唤醒）。
     /// 供两段式提交使用——validate+enqueue 持 commit_mu，durable 等待在锁外
     /// 并发进行（多提交并入同一组刷盘），install 在 durable 之后二次持锁。
     /// 与 [`Self::append`] 相同的毒化/只读守卫。
-    pub fn enqueue_only(&self, ty: FrameType, seq: u64, payload: &[u8]) -> Result<()> {
+    pub fn enqueue_only(
+        &self,
+        ty: FrameType,
+        seq: u64,
+        payload: &[u8],
+        notify: bool,
+    ) -> Result<()> {
         if self.read_only {
             return Err(SqlError::new("25006", "read-only branch: cannot write"));
         }
@@ -408,6 +434,7 @@ impl WalWriter {
         }
         let frame = encode_frame(ty, seq, payload);
         let _size = frame.len();
+        let mut full = false;
         {
             let mut g = self.shared.lock();
             if g.buf.is_empty() {
@@ -418,9 +445,14 @@ impl WalWriter {
             g.pending_frames += 1;
             g.buf.extend_from_slice(&frame);
             // 段满：立即触发 flush（软阈值）
-            if g.buf.len() as u64 >= self.cfg.segment_bytes {
-                self.cv.notify_all();
-            }
+            full = g.buf.len() as u64 >= self.cfg.segment_bytes;
+        }
+        // 事件驱动组提交（P2-6b）：需要 durable 的帧入队即刻唤醒刷盘线程——
+        // PUT 在途时到达的帧自然并入下一组（慢存储自动成批摊薄 RTT，
+        // 快存储零定时器等待）。此前仅段满才 notify，常规帧要等
+        // flush_interval 定时器：内存存储的单提交延迟被人为抬到 50ms 级。
+        if notify || full {
+            self.cv.notify_all();
         }
         Ok(())
     }

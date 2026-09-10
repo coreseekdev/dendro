@@ -2,10 +2,10 @@
   "suite": "recovery",
   "rows": [
   {"name": "recover_txns_1000_s", "value": 0.000, "unit": "s"},
-  {"name": "recovered_rows_1000", "value": 866.000, "unit": "rows"},
+  {"name": "recovered_rows_1000", "value": 981.000, "unit": "rows"},
   {"name": "recover_txns_5000_s", "value": 0.000, "unit": "s"},
-  {"name": "recovered_rows_5000", "value": 4959.000, "unit": "rows"},
+  {"name": "recovered_rows_5000", "value": 4999.000, "unit": "rows"},
   {"name": "recover_txns_20000_s", "value": 0.000, "unit": "s"},
-  {"name": "recovered_rows_20000", "value": 19815.000, "unit": "rows"}
+  {"name": "recovered_rows_20000", "value": 20000.000, "unit": "rows"}
   ]
 }
