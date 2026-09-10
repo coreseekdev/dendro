@@ -138,13 +138,29 @@ fn as_of_errors_and_dialect_fallback() {
     let db = Database::open(DbOptions::memory()).unwrap();
     setup_history(&db);
     let mut s = db.new_session();
-    // base32 合法但 CAS 无此对象 → 退化为时间戳解析 → 失败 22023
-    //（base32 字母表无 0/1/8/9？有——'0'合法字符集见 Hash::from_base32；
-    //  用明显非法的哈希保证 CAS miss + 非 数字）
+    // 非法字面量（非 base32、非数字、非 ISO）→ 22023
     let err = s
         .exec("SELECT * FROM t FOR SYSTEM_TIME AS OF 'zzzzzzzzzzzzzzzz'")
         .unwrap_err();
     assert_eq!(err.state, "22023", "{err}");
+    // base32 合法但 CAS 无此对象 → 落到时间戳解析 → 失败 22023（非 500）
+    let err = s
+        .exec("SELECT * FROM t FOR SYSTEM_TIME AS OF 'aaaaaaaaaaaaaaaa'")
+        .unwrap_err();
+    assert_eq!(err.state, "22023", "{err}");
+    // 年份溢出（审计 R2：此前 debug 构建 panic）→ 干净 22023
+    let err = s
+        .exec("SELECT * FROM t FOR SYSTEM_TIME AS OF '99999999999-01-01'")
+        .unwrap_err();
+    assert_eq!(err.state, "22023", "{err}");
+    // 月长/闰年校验（此前 02-30 滚动到 3 月）
+    let err = s
+        .exec("SELECT * FROM t FOR SYSTEM_TIME AS OF '2026-02-30'")
+        .unwrap_err();
+    assert_eq!(err.state, "22023", "{err}");
+    // µs 分数秒（>3 位）接受（截断到 ms）
+    s.exec("SELECT count(*) FROM t FOR SYSTEM_TIME AS OF '2099-01-01T00:00:00.123456'")
+        .unwrap();
     // PG 方言本身不解析该子句；重解析兜底后才可用——上面的成功路径
     // 已隐式验证。此处验证不含子句的普通查询不受影响：
     s.exec("SELECT * FROM t").unwrap();
@@ -180,5 +196,125 @@ fn as_of_time_travel_is_read_only_and_stable() {
             )
         ),
         vec![vec!["c1".to_string(), "c1".to_string()]]
+    );
+}
+
+// ---- 审计 R2 回归：版本子句曾被快路径忽略（P0）----
+
+#[test]
+fn as_of_pk_predicate_reads_history_not_current() {
+    // PK 直查快路径（try_pk_pushdown → build_point_view 读 memtx ∪ 当前树）
+    // 此前无视版本子句：历史点查返回**当前**值 + 泄漏在途行。修复后必须
+    // 回落 time travel 路径。
+    let db = Database::open(DbOptions::memory()).unwrap();
+    {
+        let mut s = db.new_session();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
+            .unwrap();
+        s.exec("INSERT INTO t VALUES (1, 'old'), (2, 'keep')")
+            .unwrap();
+        s.exec("CHECKPOINT").unwrap();
+        let h = commit_at(&db, "main", 0); // HEAD = 物化 'old' 的提交
+        s.exec("UPDATE t SET v = 'NEW' WHERE id = 1").unwrap();
+        s.exec("INSERT INTO t VALUES (3, 'later')").unwrap(); // 在途，未物化
+        s.exec("CHECKPOINT").unwrap();
+        // 历史 HEAD 哈希 + PK 等值：必须见 'old'（当前值为 'NEW'）
+        assert_eq!(
+            q(
+                &db,
+                &format!("SELECT v FROM t FOR SYSTEM_TIME AS OF '{h}' WHERE id = 1")
+            ),
+            vec![vec!["old".to_string()]]
+        );
+        // 快照后新增的行不可见（即便当前存在）
+        assert!(q(
+            &db,
+            &format!("SELECT v FROM t FOR SYSTEM_TIME AS OF '{h}' WHERE id = 3")
+        )
+        .is_empty());
+        // IN 形态同样走历史
+        assert_eq!(
+            q(
+                &db,
+                &format!(
+                    "SELECT id FROM t FOR SYSTEM_TIME AS OF '{h}' WHERE id IN (1, 3) ORDER BY id"
+                )
+            ),
+            vec![vec!["1".to_string()]]
+        );
+    }
+}
+
+#[test]
+fn as_of_on_view_rejected_not_silently_current() {
+    // 视图无提交链：此前 FROM v FOR SYSTEM_TIME 按当前时间求值（静默错误），
+    // 现在显式 0A000
+    let db = Database::open(DbOptions::memory()).unwrap();
+    let (h_c1, _) = {
+        let mut s = db.new_session();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
+            .unwrap();
+        s.exec("INSERT INTO t VALUES (1, 'c0')").unwrap();
+        s.exec("CHECKPOINT").unwrap();
+        s.exec("UPDATE t SET v = 'c1' WHERE id = 1").unwrap();
+        s.exec("CHECKPOINT").unwrap();
+        let h = commit_at(&db, "main", 0);
+        s.exec("CREATE VIEW vt AS SELECT v FROM t").unwrap();
+        (h, 0)
+    };
+    let mut s = db.new_session();
+    let err = s
+        .exec(&format!("SELECT * FROM vt FOR SYSTEM_TIME AS OF '{h_c1}'"))
+        .unwrap_err();
+    assert_eq!(err.state, "0A000", "{err}");
+}
+
+#[test]
+fn as_of_ap_path_reads_history_not_current_segments() {
+    // AP 列存快路径（≥10k 行触发）此前无视版本子句 → 历史查询读当前段。
+    // 12k 行：checkpoint（v=hist_*）→ 全量 UPDATE（v=new_*）→ checkpoint
+    // → AS OF 旧提交 count(new_*) 必须为 0
+    let db = Database::open(DbOptions::memory()).unwrap();
+    let mut s = db.new_session();
+    s.exec("CREATE TABLE big (id BIGINT PRIMARY KEY, v TEXT)")
+        .unwrap();
+    let values: Vec<String> = (0..12_000).map(|i| format!("({i}, 'hist_{i}')")).collect();
+    s.exec(&format!("INSERT INTO big VALUES {}", values.join(", ")))
+        .unwrap();
+    s.exec("CHECKPOINT").unwrap();
+    let h = commit_at(&db, "main", 0);
+    if s.exec("UPDATE big SET v = 'new_' || id").is_err() {
+        // 表达式拼接不支持时退化为逐行 UPDATE（等价触发段重建）
+        for i in 0..12_000 {
+            s.exec(&format!("UPDATE big SET v = 'new_{i}' WHERE id = {i}"))
+                .unwrap();
+        }
+    }
+    s.exec("CHECKPOINT").unwrap();
+    // AS OF 旧提交：无 'new_' 行（列存路径或行路径都不得泄漏当前段）
+    // 当前态确已全量改写（sanity）
+    assert_eq!(
+        q(&db, "SELECT v FROM big WHERE id = 42"),
+        vec![vec!["new_42".to_string()]]
+    );
+    // 历史快照：行数 + 抽样值全为 hist_*（任何路径泄漏当前段都会现形）
+    let rows = s
+        .exec(&format!(
+            "SELECT count(*) FROM big FOR SYSTEM_TIME AS OF '{h}'"
+        ))
+        .unwrap();
+    if let Some(Output::Rows(rs)) = rows.last() {
+        let cnt = rs.text_rows()[0][0].clone().unwrap_or_default();
+        assert_eq!(cnt, "12000", "历史快照行数");
+    }
+    assert_eq!(
+        q(
+            &db,
+            &format!("SELECT v FROM big FOR SYSTEM_TIME AS OF '{h}' WHERE id IN (0, 42, 11999) ORDER BY id")
+        )
+        .iter()
+        .map(|r| r[0].clone())
+        .collect::<Vec<_>>(),
+        vec!["hist_0".to_string(), "hist_42".to_string(), "hist_11999".to_string()]
     );
 }

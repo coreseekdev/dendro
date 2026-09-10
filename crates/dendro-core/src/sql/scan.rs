@@ -574,7 +574,24 @@ fn table_scan_opt(
             "view expansion exceeds max depth (8); circular view definition?",
         ));
     }
-    if let TableFactor::Table { name, .. } = tf {
+    if let TableFactor::Table { name, version, .. } = tf {
+        // P1-10：视图没有自己的提交链（视图体是查询文本，不是物化树）。
+        // 带版本子句的视图引用显式拒绝——此前 version 被忽略，历史查询
+        // 会对视图按**当前时间**求值（静默错误）。
+        if version.is_some() {
+            let vname = name
+                .0
+                .iter()
+                .filter_map(|p| p.as_ident())
+                .map(|i| i.value.to_ascii_lowercase())
+                .collect::<Vec<_>>()
+                .join(".");
+            if db.manifest().manifest.views.contains_key(&vname) {
+                return Err(SqlError::not_supported(format!(
+                    "time travel on view \"{vname}\" (views have no commit chain); AS OF the underlying base tables instead"
+                )));
+            }
+        }
         let vname = name
             .0
             .iter()
@@ -619,13 +636,19 @@ fn try_ap_scan(
     pushdown_limit: Option<usize>,
 ) -> Result<Option<TableView>> {
     let name = match tf {
-        TableFactor::Table { name, .. } => name
-            .0
-            .iter()
-            .filter_map(|p| p.as_ident())
-            .map(|i| i.value.clone())
-            .collect::<Vec<_>>()
-            .join("."),
+        TableFactor::Table { name, version, .. } => {
+            // P1-10：AP 列存只有当前物化段——带版本子句的查询走 time travel
+            // 路径（列存历史快照 v2；此前 version 被忽略 → 历史查询读当前段）
+            if version.is_some() {
+                return Ok(None);
+            }
+            name.0
+                .iter()
+                .filter_map(|p| p.as_ident())
+                .map(|i| i.value.clone())
+                .collect::<Vec<_>>()
+                .join(".")
+        }
         _ => return Ok(None),
     };
     let Some(ap) = db.columnar() else {
@@ -945,13 +968,20 @@ fn try_pk_pushdown(
     _snapshot: u64,
 ) -> Result<Option<(crate::versioned::TableSchema, crate::versioned::TableEntry)>> {
     let name = match tf {
-        TableFactor::Table { name, .. } => name
-            .0
-            .iter()
-            .filter_map(|p| p.as_ident())
-            .map(|i| i.value.clone())
-            .collect::<Vec<_>>()
-            .join("."),
+        TableFactor::Table { name, version, .. } => {
+            // P1-10：PK 直查读 memtx ∪ 当前树——无历史根概念。带版本子句的
+            // 查询必须回落 table_scan 的 time travel 路径（此前 version 被
+            // 忽略 → 历史点查静默返回当前数据 + 泄漏在途 memtx 行）
+            if version.is_some() {
+                return Ok(None);
+            }
+            name.0
+                .iter()
+                .filter_map(|p| p.as_ident())
+                .map(|i| i.value.clone())
+                .collect::<Vec<_>>()
+                .join(".")
+        }
         _ => return Ok(None),
     };
     let low = name.to_ascii_lowercase();
@@ -1180,9 +1210,17 @@ fn resolve_as_of(
             )))
         }
     };
-    // ① 提交哈希：base32 可解码且 CAS 命中 → 精确提交（跨分支快照读允许）
+    // ① 提交哈希：base32 可解码且 CAS 命中 → 精确提交（跨分支快照读允许）。
+    // 类型标签非 Commit 的对象（node/schema/哈希猜测命中）→ 22023 而非 500；
+    // CAS 未命中 → 落到时间戳解析路径
     if let Some(h) = crate::format::hash::Hash::from_base32(&literal) {
-        if let Ok((_ty, data)) = db.cas.get(&h) {
+        if let Ok((ty, data)) = db.cas.get(&h) {
+            if ty != crate::objstore::cas::ChunkType::Commit {
+                return Err(SqlError::new(
+                    "22023",
+                    format!("AS OF \"{literal}\": object exists but is not a commit"),
+                ));
+            }
             return crate::versioned::commit::Commit::decode(&data)
                 .map(Some)
                 .map_err(|e| SqlError::internal(format!("as-of commit: {e}")));
@@ -1241,7 +1279,29 @@ fn parse_as_of_ms(s: &str) -> Result<i64> {
         mo.parse::<u32>().map_err(|_| bad())?,
         d.parse::<u32>().map_err(|_| bad())?,
     );
-    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) {
+    // 年份上界（轮次审计 R2）：无界年份在 days*86_400*1000 处 i64 溢出——
+    // debug 构建 panic、release 静默回绕。±300_000 年远超任何提交时间线
+    // 且算术余量 >30 倍（300000*366*86400*1000 ≈ 9.5e15 < i64::MAX/30）。
+    if !(-300_000..=300_000).contains(&y) {
+        return Err(bad());
+    }
+    // 月长/闰年校验（此前 2026-02-30 会滚动到 3 月 2 日）
+    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    let dim = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ][(mo - 1) as usize];
+    if !(1..=12).contains(&mo) || !(1..=dim).contains(&d) {
         return Err(bad());
     }
     let mut hh = 0i64;
@@ -1266,12 +1326,13 @@ fn parse_as_of_ms(s: &str) -> Result<i64> {
             sec = parse(parts[2])?;
         }
         if let Some(f) = frac {
-            let f = f.trim_end_matches('0');
-            if f.len() > 3 {
+            // 任意位宽分数秒：取前 3 位为毫秒，余位须为数字（µs/ns 常见）
+            if f.is_empty() || !f.chars().all(|c| c.is_ascii_digit()) {
                 return Err(bad());
             }
-            if !f.is_empty() {
-                ms = f.parse::<i64>().map_err(|_| bad())? * 10i64.pow(3 - f.len() as u32);
+            let f3: String = f.chars().take(3).collect();
+            if !f3.is_empty() {
+                ms = f3.parse::<i64>().map_err(|_| bad())? * 10i64.pow(3 - f3.len() as u32);
             }
         }
         if !(0..24).contains(&hh) || !(0..60).contains(&mi) || !(0..61).contains(&sec) {

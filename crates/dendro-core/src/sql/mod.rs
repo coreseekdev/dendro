@@ -55,10 +55,12 @@ pub(crate) fn parse_batch(sql: &str, d: SqlDialect) -> Result<Vec<Statement>> {
     match parse(dialect) {
         Ok(stmts) => Ok(stmts),
         Err(e) => {
-            // P1-10 time travel：PG/MySQL 方言 supports_table_versioning=false，
-            // `FOR SYSTEM_TIME AS OF` 子句解析失败。仅含该子句的查询改用
-            // DendroTimeTravelDialect（版本子句开 + 通用词法）重解析——
-            // 其余查询保持原方言精度，不受影响。
+            // P1-10 time travel：PG/MySQL 方言 supports_table_versioning=false。
+            // 触发条件 = SQL 含版本子句——按错误签名收窄是不可靠的：派生表内
+            // 的 `FOR` 会被 PG 解析器误当别名吞掉，报错远离子句位置（slt 019
+            // 实证）。已知残留（审计 R3）：E'' 转义串与版本子句同句时走兜底
+            // 方言词法（trait 默认无 E''）→ 42703，属罕见组合且失败是响亮的；
+            // sqlparser 的 E'' 支持是类型级门控（dialect_of!），自定义方言无法继承。
             if sql.to_ascii_uppercase().contains("FOR SYSTEM_TIME") {
                 return parse(&DendroTimeTravelDialect);
             }

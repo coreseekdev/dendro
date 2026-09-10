@@ -153,6 +153,16 @@ SELECT * FROM t FOR SYSTEM_TIME AS OF '<commit_hash>'         -- 提交哈希精
 - 只读：无 memtx overlay、无会话写；谓词/LIMIT/JOIN（各表可独立 AS OF）正常组合。
 - 方言注：sqlparser 对 PG 关闭 `supports_table_versioning`；含该子句的语句
   经 `DendroTimeTravelDialect`（版本子句开）重解析兜底（`sql/mod.rs`）。
+  已知残留：`E''` 转义串与版本子句同句时兜底方言不识别（42703）——
+  sqlparser 的 E'' 支持是类型级门控，自定义方言无法继承；罕见组合。
+- **快路径门控**（审计 R2 P0 修复）：PK 直查（`try_pk_pushdown`，读 memtx ∪
+  当前树）与 AP 列存（`try_ap_scan`，读当前物化段）都无历史根概念——带版本
+  子句的查询必须回落 time travel 路径；视图引用（无提交链）显式 0A000
+  （此前两者静默按当前态求值）。列存历史快照 v2。
+- 时间字面量校验：年份 |y| ≤ 300_000（无界年份 i64 溢出：debug panic /
+  release 回绕）；月长 + 闰年校验；分数秒任意位宽（截断到 ms）。
+- 显式事务内 AS OF 以**当前分支 head** 为解析起点（非 BEGIN 冻结根）——
+  快照本身不可变，事务内重复 AS OF 在并发 checkpoint 下可能解析到不同提交。
 
 - 分支内事务提交 = 新 commit 节点 + catalog CAS（乐观；冲突重读重试）
 - `USE BRANCH` 只是会话态；跨会话并发写同一分支由 commit CAS 串行化（first-writer-wins

@@ -217,10 +217,19 @@ fn concurrent_repeatable_read_snapshot_stability() {
     s.exec("COMMIT").unwrap();
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     let committed = writer.join().unwrap();
-    // 提交后新快照可见写者推进（至少推进若干行）
-    let after: usize = rows(&db, "SELECT count(*) FROM t")[0][0].parse().unwrap();
+    // 提交后新快照可见写者推进。**有界等待**（审计 R2-9：CI 过载时写者
+    // 20ms 内可能零进展——轮询至多 2s，消除时序脆断言）
+    let c1n: usize = c1.parse().unwrap();
+    let mut after = c1n;
+    for _ in 0..100 {
+        after = rows(&db, "SELECT count(*) FROM t")[0][0].parse().unwrap();
+        if after > c1n {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
     assert!(
-        after > c1.parse::<usize>().unwrap(),
+        after > c1n,
         "提交后应见并发写入：before={c1} after={after} writer_commits={committed}"
     );
 }
@@ -237,12 +246,13 @@ fn rows_in(s: &mut dendro_core::Session, sql: &str) -> Vec<Vec<String>> {
 }
 
 #[test]
-fn concurrent_mixed_ops_pk_invariant_stress() {
-    // 8 线程 × 混合 INSERT/UPDATE/DELETE 打 0..32 键空间：
-    // 终态不变量——PK 唯一、值形如 "t{thread}" 自洽、行数 = 存活键数。
-    // 组提交间隔压到 1ms：默认 50ms 下每条自动提交语句要等一个 flush
-    // 间隔（设计使然，README"组提交延迟 p50 ≈ flush_interval"），1600 条
-    // 语句会把用例拖到 30s+；不变量断言与间隔无关。
+fn concurrent_counter_updates_no_lost_update() {
+    // **丢失更新探测器**（审计 R2-9：旧"混合操作"用例在 OCC 完全失效时也
+    // 能通过——PK 唯一 + 值形自洽不依赖冲突检测）。8 线程对 0..8 号键做
+    // 自增（read-modify-write）：每次成功 UPDATE 恰使目标键 +1 ⇒ 终态
+    // sum(n) == 成功语句数。任何丢失更新（提交覆盖未读入的并发值）都令
+    // sum 偏小——OCC 语义的直接可观测后果。
+    // 组提交间隔压到 1ms（默认 50ms × 800 语句 = 20s+，与断言无关）。
     let db = Database::open(DbOptions {
         wal_flush_interval_ms: 1,
         ..DbOptions::memory()
@@ -250,50 +260,42 @@ fn concurrent_mixed_ops_pk_invariant_stress() {
     .unwrap();
     {
         let mut s = db.new_session();
-        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
+        s.exec("CREATE TABLE c (id BIGINT PRIMARY KEY, n BIGINT)")
             .unwrap();
+        for i in 0..8 {
+            s.exec(&format!("INSERT INTO c VALUES ({i}, 0)")).unwrap();
+        }
     }
     const THREADS: usize = 8;
-    const KEYS: i64 = 32;
+    const ITERS: usize = 100;
+    let successes = Arc::new(std::sync::atomic::AtomicU64::new(0));
     std::thread::scope(|scope| {
         for th in 0..THREADS {
             let db = db.clone();
+            let successes = successes.clone();
             scope.spawn(move || {
                 let mut s = db.new_session();
                 let mut rng = th as u64 * 2654435761 + 1;
-                for _ in 0..200 {
+                for _ in 0..ITERS {
                     rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
-                    let id = (rng >> 33) % KEYS as u64;
-                    match rng >> 61 {
-                        0..=1 => {
-                            let _ = s.exec(&format!("INSERT INTO t VALUES ({id}, 't{th}')"));
-                        }
-                        2..=3 => {
-                            let _ = s.exec(&format!("UPDATE t SET v = 't{th}' WHERE id = {id}"));
-                        }
-                        4 => {
-                            let _ = s.exec(&format!("DELETE FROM t WHERE id = {id}"));
-                        }
-                        _ => {
-                            let _ = s.exec(&format!("SELECT v FROM t WHERE id = {id}"));
-                        }
+                    let id = (rng >> 33) % 8;
+                    if s.exec(&format!("UPDATE c SET n = n + 1 WHERE id = {id}"))
+                        .is_ok()
+                    {
+                        successes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
+                    // 40001（OCC 拒绝并发自增）合法：不计入成功数
                 }
             });
         }
     });
-    let all = rows(&db, "SELECT id, v FROM t ORDER BY id");
-    // 不变量 1：PK 唯一（ordered + 主键 ⇒ 无重复 id）
-    let ids: Vec<&String> = all.iter().map(|r| &r[0]).collect();
-    let uniq = ids.iter().collect::<std::collections::HashSet<_>>();
-    assert_eq!(ids.len(), uniq.len(), "PK 唯一性被破坏：{ids:?}");
-    // 不变量 2：值自洽（v 恒为某写者标记）
-    for r in &all {
-        assert!(
-            r[1].starts_with('t') && r[1][1..].parse::<usize>().is_ok(),
-            "值被撕裂/污染：{r:?}"
-        );
-    }
+    let expected = successes.load(std::sync::atomic::Ordering::Relaxed);
+    assert!(expected > 0, "压力用例必须至少有一些成功提交");
+    let total: i64 = rows(&db, "SELECT sum(n) FROM c")[0][0].parse().unwrap();
+    assert_eq!(
+        total as u64, expected,
+        "丢失更新：sum(n) != 成功语句数（OCC 冲突检测缺陷）"
+    );
 }
 
 #[test]
