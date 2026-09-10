@@ -251,6 +251,7 @@ struct WalShared {
     seg_appended: u64,
     seg_frames_total: u64, // 当前打开段累计帧数（封段 trailer 用）
     seg_min_seq_open: u64, // 当前打开段最小 seq（封段 trailer 用）
+    seg_prealloc: u64,     // 当前打开段已预分配字节数（P2-6f；0 = 未预分配）
     /// **写者毒化（P0-D 错误语义定案）**：任何 flush PUT 失败后置位。
     /// 置位后：append 一律拒绝（SQLSTATE 40003 completion_unknown），
     /// flush_loop 停止上传（确定失败的帧绝不持久化——错误 = 未提交）；
@@ -311,6 +312,7 @@ impl WalWriter {
                 seg_appended: 0,
                 seg_frames_total: 0,
                 seg_min_seq_open: 0,
+                seg_prealloc: 0,
                 poisoned: false,
             }),
             cv: Condvar::new(),
@@ -380,6 +382,7 @@ impl WalWriter {
                 seg_appended: 0,
                 seg_frames_total: 0,
                 seg_min_seq_open: 0,
+                seg_prealloc: 0,
                 poisoned: false,
             }),
             cv: Condvar::new(),
@@ -537,7 +540,7 @@ impl WalWriter {
             // will_close 时同步推进 cur_seg：失败路径已毒化（不再写、无段洞
             // ——P0 不变量"失败不产生段号空洞"由毒化保证），成功路径段已封口；
             // 窗口期新帧入队自然落到下一段，不会写进已封 trailer 的段。
-            let (seg, payload, batch_max, _will_close) = {
+            let (seg, payload, write_off, batch_max, will_close, need_prealloc) = {
                 let mut g = self.shared.lock();
                 if g.poisoned || g.buf.is_empty() {
                     return Ok(g.flushed_seg);
@@ -556,8 +559,9 @@ impl WalWriter {
                 g.pending_frames = 0;
                 g.min_seq = 0;
                 g.max_seq = 0;
-                let will_close = g.seg_appended + payload.len() as u64 + TRAILER_LEN as u64
-                    >= self.cfg.segment_bytes;
+                let write_off = g.seg_appended;
+                let will_close =
+                    write_off + payload.len() as u64 + TRAILER_LEN as u64 >= self.cfg.segment_bytes;
                 if will_close {
                     let seg_frames_total = g.seg_frames_total + batch_frames;
                     payload.extend_from_slice(&encode_trailer(
@@ -574,10 +578,35 @@ impl WalWriter {
                     g.seg_frames_total += batch_frames;
                     g.seg_min_seq_open = min_open;
                 }
-                (seg, payload, batch_max, will_close)
+                // 预分配判定（P2-6f）：新段/写越已配范围 → fallocate 续配。
+                // 文件尺寸固定 ⇒ append_at 的 fdatasync 免元数据日志
+                // （durable 延迟 ~2×）；分块 = min(segment_bytes, 4MB)
+                let need_prealloc = g.seg_prealloc < write_off + payload.len() as u64;
+                (
+                    seg,
+                    payload,
+                    write_off,
+                    batch_max,
+                    will_close,
+                    need_prealloc,
+                )
             };
             let path = Self::seg_path(&self.branch, self.epoch, seg);
-            if let Err(e) = self.obj.append(&path, &payload) {
+            if need_prealloc {
+                let chunk = self.cfg.segment_bytes.min(4 << 20);
+                let round = (write_off / chunk + 1) * chunk;
+                match self.obj.preallocate(&path, round) {
+                    Ok(()) => {
+                        self.shared.lock().seg_prealloc = round;
+                    }
+                    Err(e) => {
+                        // 预分配失败不致命：pwrite 按需扩展尺寸，fdatasync
+                        // 退化为含元数据（慢但正确）——告警后继续
+                        tracing::warn!(path = %path, error = %e, "wal segment preallocate failed; degrading");
+                    }
+                }
+            }
+            if let Err(e) = self.obj.append_at(&path, write_off, &payload) {
                 // 失败：毒化且**不回滚缓冲**——append 可能已写入部分字节，
                 // 回滚会造成 reopen 后重放重复帧。已落盘前缀由帧 CRC 守护，
                 // 撕尾由恢复端容忍；本批事务按 Uncertain 对账（SPEC 02 §3.5）。
@@ -588,6 +617,13 @@ impl WalWriter {
                 ));
             }
             self.advance_durable(seg, batch_max);
+            if will_close {
+                // 封段缩回实际尺寸（回收预分配空间）；失败仅空间浪费
+                let used = write_off + payload.len() as u64;
+                if let Err(e) = self.obj.resize(&path, used) {
+                    tracing::warn!(path = %path, error = %e, "wal segment resize failed");
+                }
+            }
             let us = t0.elapsed().as_micros() as u64;
             FLUSH_LATENCY_US.fetch_add(us, Ordering::Relaxed);
             FLUSH_LATENCY_CNT.fetch_add(1, Ordering::Relaxed);
@@ -769,11 +805,12 @@ impl WalWriter {
     /// 封口当前打开段（追加模式）：trailer 落盘 + 推进段号。缓冲应已空
     /// （close_graceful 先行 flush）；失败仅告警——reopen 撕尾容忍兜底。
     fn close_open_segment(&self) -> Result<()> {
-        let (path, trailer, seg) = {
+        let (path, trailer, off, seg) = {
             let mut g = self.shared.lock();
             if g.seg_appended == 0 {
                 return Ok(());
             }
+            let off = g.seg_appended;
             let trailer = encode_trailer(
                 g.seg_frames_total,
                 g.seg_min_seq_open,
@@ -782,12 +819,20 @@ impl WalWriter {
             g.seg_appended = 0;
             g.seg_frames_total = 0;
             g.seg_min_seq_open = 0;
+            g.seg_prealloc = 0; // 新段重新预分配
             let seg = g.cur_seg;
             g.cur_seg += 1;
-            (Self::seg_path(&self.branch, self.epoch, seg), trailer, seg)
+            (
+                Self::seg_path(&self.branch, self.epoch, seg),
+                trailer,
+                off,
+                seg,
+            )
         };
-        self.obj.append(&path, &trailer)?;
-        self.advance_durable(seg, 0);
+        // trailer 落在已用字节末尾（off = 封口前累计写入量），随后缩回实际
+        // 尺寸回收预分配空间
+        self.obj.append_at(&path, off, &trailer)?;
+        self.obj.resize(&path, off + TRAILER_LEN as u64)?;
         Ok(())
     }
 }

@@ -96,26 +96,31 @@ impl ObjStore for LocalObjStore {
         }
     }
 
-    fn append(&self, path: &str, data: &[u8]) -> ObjResult<()> {
+    fn append_at(&self, path: &str, offset: u64, data: &[u8]) -> ObjResult<()> {
         let p = self.full(path)?;
         let parent_existed = p.parent().map(|d| d.exists()).unwrap_or(true);
         if let Some(parent) = p.parent() {
             fs::create_dir_all(parent).map_err(|e| map_io(e, &p))?;
         }
         let existed = p.exists();
-        let mut f = fs::OpenOptions::new()
-            .append(true)
+        let f = fs::OpenOptions::new()
+            .write(true)
             .create(true)
             .open(&p)
             .map_err(|e| map_io(e, &p))?;
+        // 预分配尺寸内的写入不改文件尺寸 ⇒ fdatasync 纯数据刷盘（无元数据
+        // 日志）。未预分配时 pwrite 扩展尺寸 → fdatasync 退化为 fsync 级
+        // 别（正确性不变，仅慢）。
+        use std::io::{Seek, SeekFrom, Write};
+        let mut f = f;
+        f.seek(SeekFrom::Start(offset)).map_err(|e| map_io(e, &p))?;
         f.write_all(data).map_err(|e| map_io(e, &p))?;
-        f.sync_all().map_err(|e| map_io(e, &p))?;
+        f.sync_data().map_err(|e| map_io(e, &p))?;
         if !existed {
-            // 目录项持久化链（审计 R5-2）：文件已 fsync，但目录项/新建的
-            // epoch 目录本身可能未落盘——掉电后整个目录（含已 fsync 的段）
+            // 目录项持久化链（审计 R5-2）：文件已 fdatasync，但目录项/新建
+            // 的 epoch 目录本身可能未落盘——掉电后整个目录（含已落盘段）
             // 消失 = 已 ack 提交丢失。父目录 + （新建时的）祖父目录都要
-            // fsync。失败**上抛**：目录项不持久 = ack 不安全，调用方按
-            // Uncherent 毒化（每段一次，成本可摊薄）。
+            // fsync；失败**上抛**（目录项不持久 = ack 不安全 → 毒化）。
             if let Some(parent) = p.parent() {
                 let d = fs::File::open(parent).map_err(|e| map_io(e, &p))?;
                 d.sync_all().map_err(|e| map_io(e, &p))?;
@@ -127,6 +132,45 @@ impl ObjStore for LocalObjStore {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// fallocate 全量预分配（空间 + 尺寸一步到位；后续 append_at 不改尺寸）
+    fn preallocate(&self, path: &str, len: u64) -> ObjResult<()> {
+        let p = self.full(path)?;
+        if let Some(parent) = p.parent() {
+            fs::create_dir_all(parent).map_err(|e| map_io(e, &p))?;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            let f = fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .open(&p)
+                .map_err(|e| map_io(e, &p))?;
+            let ret = unsafe { libc::fallocate(f.as_raw_fd(), 0, 0, len as i64) };
+            if ret != 0 {
+                return Err(ObjError::Io(std::io::Error::last_os_error().to_string()));
+            }
+            // fallocate 改变尺寸到 len——数据一致性由 append_at 的偏移写保证
+            f.sync_all().map_err(|e| map_io(e, &p))?;
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (p, len);
+        }
+        Ok(())
+    }
+
+    /// 缩到实际使用尺寸（封段回收预分配空间；失败仅空间浪费）
+    fn resize(&self, path: &str, len: u64) -> ObjResult<()> {
+        let p = self.full(path)?;
+        let f = fs::OpenOptions::new()
+            .write(true)
+            .open(&p)
+            .map_err(|e| map_io(e, &p))?;
+        f.set_len(len).map_err(|e| map_io(e, &p))?;
         Ok(())
     }
 

@@ -61,13 +61,24 @@ pub trait ObjStore: Send + Sync + 'static {
     /// 仅本地/内存实现高效；恢复关键路径不得依赖
     fn list_prefix(&self, prefix: &str) -> ObjResult<Vec<String>>;
     fn copy(&self, from: &str, to: &str) -> ObjResult<()>;
-    /// 就地追加（P2-6e WAL 段优化）：字节序续写到既存/新建对象尾部并 fsync。
-    /// 语义契约：单写者（调用方 = 分支 flush 单飞）；追加非原子——读到中途
-    /// 字节的读者按"撕尾容忍"处理（WAL 段专用，恢复端 FrameIter 已容忍）。
-    /// 默认不支持（对象存储不可追加）——`supports_append()` = false，
+    /// 偏移就地写（P2-6e WAL 段优化）：在 `offset` 处覆写 `data` 并
+    /// **fdatasync**。配合 [`Self::preallocate`] 使用（文件尺寸固定 ⇒
+    /// fdatasync 免元数据日志，durable 提交延迟 ≈2×）。
+    /// 语义契约：单写者（调用方 = 分支 flush 单飞）；写入非原子——读到
+    /// 中途字节的读者按"撕尾容忍"处理（WAL 段专用，恢复端已容忍）。
+    /// 默认不支持（对象存储无偏移持久写）——`supports_append()` = false，
     /// WAL 写入端自动退化为整段 put。
-    fn append(&self, _path: &str, _data: &[u8]) -> ObjResult<()> {
+    fn append_at(&self, _path: &str, _offset: u64, _data: &[u8]) -> ObjResult<()> {
         Err(ObjError::Io("append unsupported by this store".into()))
+    }
+    /// 预分配（fallocate）：空间+尺寸一步到位，后续 append_at 不改尺寸。
+    /// 默认 no-op（不支持 = 退化为按需扩展，fdatasync 含元数据、较慢但正确）
+    fn preallocate(&self, _path: &str, _len: u64) -> ObjResult<()> {
+        Ok(())
+    }
+    /// 缩到实际使用尺寸（封段时回收预分配空间；默认 no-op，失败仅浪费空间）
+    fn resize(&self, _path: &str, _len: u64) -> ObjResult<()> {
+        Ok(())
     }
     fn supports_append(&self) -> bool {
         false

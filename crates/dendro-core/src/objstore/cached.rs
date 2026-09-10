@@ -232,9 +232,15 @@ impl ObjStore for CachedObjStore {
     fn copy(&self, from: &str, to: &str) -> ObjResult<()> {
         self.inner.copy(from, to)
     }
-    fn append(&self, path: &str, data: &[u8]) -> ObjResult<()> {
+    fn append_at(&self, path: &str, offset: u64, data: &[u8]) -> ObjResult<()> {
         // WAL 追加路径不进读缓存，直通内层
-        self.inner.append(path, data)
+        self.inner.append_at(path, offset, data)
+    }
+    fn preallocate(&self, path: &str, len: u64) -> ObjResult<()> {
+        self.inner.preallocate(path, len)
+    }
+    fn resize(&self, path: &str, len: u64) -> ObjResult<()> {
+        self.inner.resize(path, len)
     }
     fn supports_append(&self) -> bool {
         self.inner.supports_append()
