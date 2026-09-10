@@ -1726,7 +1726,7 @@ fn validate_inflight(b: &Branch, txn: &Txn) -> Result<()> {
 /// 已 ack 的行 4 不可见（TLC 反例实证）。与 Pass2 同公式：
 /// frontier = min(installed_max, min(in-flight)-1)。
 fn recompute_watermark_on_removal(b: &Branch) {
-    let mut g = b.inflight.lock();
+    let g = b.inflight.lock();
     let imax = b.installed_max.load(Ordering::Acquire);
     let frontier = g
         .keys()
