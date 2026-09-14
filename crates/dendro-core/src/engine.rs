@@ -981,14 +981,6 @@ impl Database {
         Ok(map)
     }
 
-    fn parent_of(&self, c: &Commit) -> Result<Commit> {
-        c.parents
-            .first()
-            .map(|p| self.load_commit(p))
-            .transpose()?
-            .ok_or_else(|| SqlError::internal("no parent"))
-    }
-
     /// 在分支上写一个新 commit（树根 + 父链），推进 manifest；当前分支 memtx pending 保留
     pub(crate) fn write_branch_commit(
         &self,
