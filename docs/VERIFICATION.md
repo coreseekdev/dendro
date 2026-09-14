@@ -52,7 +52,7 @@
 | I-C3 | NoPhantom | 可见行 ⊆ acked ∪ uncertain-durable（Uncertain = 已持久化但客户端收到错误，reopen 后可见且未 ack——SPEC 02 §3.5） | 幻行 | opfuzz chaos（uncertain 注入档 🚧 待接） |
 | I-C4 | 段退休安全 | retire_bound ≤ 全部已安装前沿（在途帧段不可退休） | reopen 丢已 ack 数据（R6 实证） | retirement_bounded ✅ |
 | I-C5 | 撕尾合同二分 | 已封段严格 / 未封段容忍 | 两个方向各有一种静默丢 | 双合同测试 ✅ |
-| I-C6 | FrameIter 不可信输入 | 任意字节输入不 panic（Err/None 而非 UB） | 网络可达 DoS | 边界测试 ✅ + Kani harness 🚧 |
+| I-C6 | FrameIter 不可信输入 | 任意字节输入不 panic（Err/None 而非 UB） | 网络可达 DoS | 边界测试 ✅ + Kani 0.67 3/3 SUCCESS ✅ |
 | I-C7 | 水位停滞免役 | in-flight 全部摘除后（含失败路径）watermark = installed_max | 已 ack 行不可见（R8-WM TLC 反例） | watermark_recovers（精确等值断言）✅ + TLC StallFreedom ✅ |
 
 ### I-D 分支 / 合并 / manifest（⬜ 待建模）

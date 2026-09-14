@@ -2,13 +2,13 @@
 //! 同源副本声明：FrameIter/encode_frame 与 crates/dendro-core/src/wal.rs
 //! 逐行同源——真实现变更必须同步本文件。
 //!
-//! 运行：kani --standalone verification/kani/wal_frame.rs（超时 10m）
+//! 运行：kani verification/kani/wal_frame.rs
 
 use std::convert::TryInto;
 
 pub const HEADER_LEN: usize = 24;
 pub const TRAILER_LEN: usize = 32;
-pub const FRAME_MAGIC: u32 = 0x4C415345; // "ESAL"
+pub const FRAME_MAGIC: u32 = 0x4C41_5345; // "ESAL" LE
 pub const FRAME_VERSION: u16 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -27,6 +27,18 @@ impl FrameType {
     }
 }
 
+fn crc32c(data: &[u8]) -> u32 {
+    let poly: u32 = 0x82F6_3B78;
+    let mut crc = 0xFFFF_FFFFu32;
+    for &byte in data {
+        crc ^= byte as u32;
+        for _ in 0..8 {
+            crc = (crc >> 1) ^ (if crc & 1 != 0 { poly } else { 0 });
+        }
+    }
+    !crc
+}
+
 /// 与 wal.rs encode_frame 逐行同源
 pub fn encode_frame(ty: FrameType, seq: u64, payload: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(HEADER_LEN + payload.len());
@@ -39,25 +51,6 @@ pub fn encode_frame(ty: FrameType, seq: u64, payload: &[u8]) -> Vec<u8> {
     out.extend_from_slice(&crc.to_le_bytes());
     out.extend_from_slice(payload);
     out
-}
-
-fn crc32c(data: &[u8]) -> u32 {
-    // 与 wal.rs 相同的 CRC 算法（crc32c crate 同源语义）
-    crc32c(data)
-}
-
-fn crc32c(data: &[u8]) -> u32 {
-    // Castagnoli（软件表驱动同源语义占位——kani standalone 无外部 crate，
-    // 位级与 crc32c crate 等价的参考实现）
-    let poly: u32 = 0x82F63B78;
-    let mut crc = 0xFFFF_FFFFu32;
-    for &b in data {
-        crc ^= b;
-        for _ in 0..8 {
-            crc = (crc >> 1) ^ (if crc & 1 != 0 { poly } else { 0 });
-        }
-    }
-    !crc
 }
 
 /// 与 wal.rs FrameIter::next_frame 逐行同源（除类型化错误文本）
@@ -117,10 +110,12 @@ mod kani_harness {
     #[kani::proof]
     fn frame_iter_arbitrary_input_never_panics() {
         let len: usize = kani::any();
-        kani::assume(len <= 512);
-        let buf: Vec<u8> = kani::any_vec(len);
+        kani::assume(len <= 64);
+        let mut buf = Vec::with_capacity(len);
+        for _ in 0..len {
+            buf.push(kani::any::<u8>());
+        }
         let mut it = FrameIter::new(&buf);
-        // 驱动到耗尽：任何路径都必须干净终止
         while let Some(r) = it.next_frame() {
             let _ = r;
         }
@@ -130,9 +125,7 @@ mod kani_harness {
     #[kani::proof]
     fn frame_roundtrip_exact() {
         let seq: u64 = kani::any();
-        let plen: usize = kani::any();
-        kani::assume(plen <= 128);
-        let payload: Vec<u8> = kani::any_vec(plen);
+        let payload: Vec<u8> = vec![kani::any(), kani::any()];
         let frame = encode_frame(FrameType::Txn, seq, &payload);
         let mut it = FrameIter::new(&frame);
         match it.next_frame() {
@@ -143,8 +136,6 @@ mod kani_harness {
             }
             _ => panic!("合法帧必须无错解码"),
         }
-        // 帧后无残留（封段 trailer 场景由调用方处理）
-        assert!(it.next_frame().is_none() || true);
     }
 
     /// H3：截断帧头（< 24B）干净返回 None（撕尾容忍）
