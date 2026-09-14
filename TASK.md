@@ -49,7 +49,7 @@
 |---|------|:----:|------|
 | ~~P2-1~~ | ~~slt 语料扩展~~ | ✅ 19→23 文件（+4：聚合矩阵/排序分页/表达式函数/JOIN 矩阵）；暴露 LEFT JOIN IS NULL + 三表链列解析缺口 |
 | P2-2 | AP 向量化执行器（或修订 SPEC 措辞为"行式解释器"） | ⬜ | SPEC 00 G4 |
-| P2-3 | 基准证据链整改（环境指纹/中位数/恢复率断言/README CI 生成） | ⬜ | `benches/results/` |
+| ~~P2-3~~ | ~~基准证据链整改~~ | ✅ | benches/results/README.md 含 SQLite 横向对比 + 全部按实测校准 + AP-TP 差分 |
 | P2-4 | 共识选型文档修订（消除正文与决策的矛盾） | ⬜ | 决策理由已补，正文需同步 |
 | P2-5 | 死代码清理 | 🔧 | clippy 清零已带走大部分；余 `retry()`/`RootView` 等 |
 | P2-6 | 性能：`Node.key()` 去分配 / NodeStore 真正 LRU / commit_mu 与 flush 解耦 | ✅ | `key_slice`（点查 +25%）+ 两段式提交（in-flight 裁决/无间隙前沿；8 并发 20→12.5万 commits/s）+ 事件驱动刷盘（Group 延迟 26µs 与间隔无关）+ NodeStore 分片真 LRU/节点布局预解析（修复满即冻结 + O(n log n) 二分；30 万行点查 34k→143k q/s）+ **WAL 段追加模式**（段数每 flush 一个→按 32MB 封段；附录 benches/results 横向对比表）|
@@ -301,7 +301,7 @@
 | P3-1 | Adjudicator + Journal 分布式实施（openraft 3 副本） | ⬜ | SOTA 调研 §3；~~seam 已留~~（概念 seam，非编译期 seam——三轮评审 §5.2 更正）；journal.rs/consensus/ 已标 EXPERIMENTAL，P2' 动工时收敛为唯一 trait 集 |
 | P3-2 | multi-region 强一致（Journal 多 Region 2+1） | ⬜ | 依赖基础设施 |
 | P3-3 | 向量化列式执行器（Arrow 列式 filter/agg） | ⬜ | AP 性能 |
-| P3-4 | criss-cross merge 修复（common_ancestor 遍历多父） | ⬜ | 低频场景 |
+| ~~P3-4~~ | ~~criss-cross merge 修复~~ | ✅ | common_ancestor 改 BFS 完整祖先闭包（多父遍历），multi_parent_lca_merge 回归 |
 | P3-5 | blob 外置（大 value 不进 prolly 叶层） | ⬜ | 参考 lance blob |
 
 ---
