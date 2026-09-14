@@ -3,31 +3,8 @@
 //! 此前范围下推曾使两路径静默分叉（R6 审计 P0 修复的回归防线）。
 
 use dendro_core::{Database, DbOptions, Output};
+use std::sync::Arc;
 
-fn setup(n_tree: usize, n_overlay: usize) -> Arc<Database> {
-    let db = Database::open(DbOptions::memory()).unwrap();
-    {
-        let mut s = db.new_session();
-        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
-            .unwrap();
-        // 分批插入树层数据
-        for batch in (0..n_tree).step_by(10_000) {
-            let end = (batch + 10_000).min(n_tree);
-            let vals: Vec<String> = (batch..end).map(|i| format!("({i}, 'tree-{i}')")).collect();
-            s.exec(&format!("INSERT INTO t VALUES {}", vals.join(", ")))
-                .unwrap();
-        }
-        s.exec("CHECKPOINT").unwrap();
-        // overlay 增量（不 checkpoint）
-        for batch in (n_tree..n_tree + n_overlay).step_by(10_000) {
-            let end = (batch + 10_000).min(n_tree + n_overlay);
-            let vals: Vec<String> = (batch..end).map(|i| format!("({i}, 'hot-{i}')")).collect();
-            s.exec(&format!("INSERT INTO t VALUES {}", vals.join(", ")))
-                .unwrap();
-        }
-    }
-    db
-}
 
 fn ids(db: &Arc<Database>, sql: &str) -> Vec<i64> {
     let mut s = db.new_session();
