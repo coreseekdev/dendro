@@ -3,8 +3,6 @@
 //! - I-F2 过期写者零新副作用：租约过期后 flush_loop 不上传（诚实边界：回放消解）
 //! - I-F3 脑裂收敛：双 epoch 并发 ack 的提交，恢复后收敛为高 epoch 串行历史
 
-use dendro_core::objstore::memory::MemoryObjStore;
-use dendro_core::objstore::ObjStore;
 use dendro_core::{Database, DbOptions, StoreConfig};
 use std::sync::Arc;
 
