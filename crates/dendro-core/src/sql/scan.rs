@@ -461,7 +461,22 @@ fn eval_const(v: &Expr) -> Result<i64> {
 fn col_lookup(names: &[String]) -> impl Fn(&str) -> Option<usize> + '_ {
     move |name: &str| {
         let low = name.to_ascii_lowercase();
-        names.iter().position(|n| n.to_ascii_lowercase() == low)
+        // 精确匹配（含限定名 e.id / 表别名.列名）
+        if let Some(pos) = names.iter().position(|n| n.to_ascii_lowercase() == low) {
+            return Some(pos);
+        }
+        // 限定名回退：`d.id` → 尝试匹配裸列名 `id`（JOIN 输出的 TableView
+        // 列名不含表别名前缀——col_lookup 需消解限定名差异，否则 JOIN 后
+        // WHERE 过滤列查找失败 → 行被静默丢弃）
+        if let Some(dot) = low.rfind('.') {
+            let bare = &low[dot + 1..];
+            return names.iter().position(|n| {
+                let nl = n.to_ascii_lowercase();
+                nl == bare
+                    || nl.rfind('.').map_or(false, |p| &nl[p + 1..] == bare)
+            });
+        }
+        None
     }
 }
 
