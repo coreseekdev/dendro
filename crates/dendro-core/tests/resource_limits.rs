@@ -418,3 +418,60 @@ fn watermark_recovers_when_inflight_drains_via_failures() {
         "已 ack 行在无新提交时必须全部可见（水位随摘除精确推进）：got={got} acked={acked_n}"
     );
 }
+
+#[test]
+fn multi_parent_lca_merge() {
+    // P3-4 回归：多父 merge 后再 merge，LCA 必须穿越 merge commit 的全部
+    // 父指针（此前只遍历第一父链 → criss-cross 场景合并丢数据）
+    let db = Database::open(DbOptions::memory()).unwrap();
+    let mut s = db.new_session();
+    s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
+        .unwrap();
+    s.exec("INSERT INTO t VALUES (1, 'base')").unwrap();
+    s.exec("CHECKPOINT").unwrap();
+
+    // b1: 修改 id=1 → 'b1'
+    s.exec("CREATE BRANCH b1 FROM main").unwrap();
+    s.exec("USE BRANCH b1").unwrap();
+    s.exec("UPDATE t SET v = 'b1' WHERE id = 1").unwrap();
+    s.exec("CHECKPOINT").unwrap();
+
+    // b2: 添加 id=2 → 'b2'
+    s.exec("USE BRANCH main").unwrap();
+    s.exec("CREATE BRANCH b2 FROM main").unwrap();
+    s.exec("USE BRANCH b2").unwrap();
+    s.exec("INSERT INTO t VALUES (2, 'b2')").unwrap();
+    s.exec("CHECKPOINT").unwrap();
+
+    // b1 ← b2（b1 合并 b2，产生多父 merge commit）
+    s.exec("USE BRANCH b1").unwrap();
+    s.exec("MERGE BRANCH b2 INTO b1").unwrap();
+    s.exec("CHECKPOINT").unwrap();
+    // b1 现有：id=1 'b1', id=2 'b2'
+
+    // main ← b1（main 合并 b1）
+    s.exec("USE BRANCH main").unwrap();
+    s.exec("MERGE BRANCH b1 INTO main").unwrap();
+
+    // 全量验证：两个分支的更改都可见
+    assert_eq!(
+        {
+            let mut s2 = db.new_session();
+            match &s2.exec("SELECT v FROM t WHERE id = 1").unwrap()[0] {
+                dendro_core::Output::Rows(rs) => rs.text_rows()[0][0].clone().unwrap(),
+                _ => String::new(),
+            }
+        },
+        "b1"
+    );
+    assert_eq!(
+        {
+            let mut s2 = db.new_session();
+            match &s2.exec("SELECT v FROM t WHERE id = 2").unwrap()[0] {
+                dendro_core::Output::Rows(rs) => rs.text_rows()[0][0].clone().unwrap(),
+                _ => String::new(),
+            }
+        },
+        "b2"
+    );
+}

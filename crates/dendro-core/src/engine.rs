@@ -932,29 +932,53 @@ impl Database {
         Commit::decode(&data)
     }
 
+    /// 最近公共祖先（P3-4 修复）：收集两侧完整祖先闭包（遍历全部父指针），
+    /// 取交集中高度最大者。此前只遍历第一父链——criss-cross merge（merge
+    /// commit 多父）下 LCA 可能跳过真实公共祖先导致合并丢数据。
     fn common_ancestor(&self, a: &Commit, b: &Commit) -> Result<Option<Commit>> {
-        // 按高度对齐后同步上溯（merge commit 多父取第一父近似；完整祖先闭包 v2）
-        let (mut x, mut y) = (a.clone(), b.clone());
+        let anc_a = self.collect_ancestors(a)?;
+        let anc_b = self.collect_ancestors(b)?;
+        // 交集：同时是 a 和 b 祖先的提交地址
+        let mut best: Option<&Commit> = None;
+        for (addr, commit) in anc_a.iter() {
+            if anc_b.contains_key(addr) {
+                match best {
+                    Some(prev) if prev.height >= commit.height => {}
+                    _ => best = Some(commit),
+                }
+            }
+        }
+        match best {
+            Some(c) => Ok(Some(c.clone())),
+            None => Ok(None),
+        }
+    }
+
+    /// BFS 收集从 commit 到根的完整祖先闭包：addr → Commit（含自身）
+    fn collect_ancestors(
+        &self,
+        root: &Commit,
+    ) -> Result<std::collections::HashMap<String, Commit>> {
+        let mut map = std::collections::HashMap::new();
+        let mut queue = std::collections::VecDeque::new();
+        map.insert(root.addr().to_base32(), root.clone());
+        queue.push_back(root.clone());
         let mut guard = 0;
-        while x.height > y.height {
-            x = self.parent_of(&x)?;
-            guard += 1;
-            if guard > 100_000 {
-                return Err(SqlError::internal("ancestor walk overflow"));
+        while let Some(c) = queue.pop_front() {
+            for p in &c.parents {
+                if map.contains_key(p.to_base32().as_str()) {
+                    continue;
+                }
+                let pc = self.load_commit(p)?;
+                map.insert(p.to_base32(), pc.clone());
+                queue.push_back(pc);
+                guard += 1;
+                if guard > 200_000 {
+                    return Err(SqlError::internal("ancestor closure overflow"));
+                }
             }
         }
-        while y.height > x.height {
-            y = self.parent_of(&y)?;
-        }
-        while x.addr() != y.addr() {
-            x = self.parent_of(&x)?;
-            y = self.parent_of(&y)?;
-            guard += 1;
-            if guard > 100_000 {
-                return Err(SqlError::internal("ancestor walk overflow"));
-            }
-        }
-        Ok(Some(x))
+        Ok(map)
     }
 
     fn parent_of(&self, c: &Commit) -> Result<Commit> {

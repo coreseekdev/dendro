@@ -5,7 +5,6 @@
 use dendro_core::{Database, DbOptions, Output};
 use std::sync::Arc;
 
-
 fn ids(db: &Arc<Database>, sql: &str) -> Vec<i64> {
     let mut s = db.new_session();
     match &s.exec(sql).unwrap()[0] {
