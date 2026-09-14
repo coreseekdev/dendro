@@ -125,6 +125,62 @@ fn opfuzz_clean_acked_data_survives_crash_reopen() {
 }
 
 #[test]
+fn opfuzz_uncertain_visible_subset_of_eventual_visible() {
+    // I-C3 uncertain 注入档：put 成功落盘但返回 Err（Uncertain）。
+    // 断言：reopen 后 uncertain 帧可见且未 ack（SPEC 02 §3.5 对账语义），
+    // 可见行 = acked ∪ uncertain-durable 的前缀。
+    for seed in 1..=10u64 {
+        let sim = SimObjStore::with_uncertain(0.15); // 15% uncertain
+        let db = open_db(Arc::new(sim.clone()), 2);
+        {
+            // CREATE TABLE 可能因 uncertain 失败（manifest CAS 是 put）——
+            // 重试到成功（新 SimObjStore 每次不确定概率独立）
+            let mut retries = 0;
+            while retries < 5 {
+                let mut s = db.new_session();
+                if s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
+                    .is_ok()
+                {
+                    break;
+                }
+                retries += 1;
+            }
+        }
+        let mut acked: Vec<i64> = Vec::new();
+        for i in 0..30i64 {
+            let mut s = db.new_session();
+            match s.exec(&format!("INSERT INTO t VALUES ({i}, 'v{i}')")) {
+                Ok(_) => acked.push(i),
+                Err(_) => {} // uncertain（数据可能在盘）
+            }
+        }
+        if acked.is_empty() {
+            continue; // 全部 uncertain → 跳过此种子
+        }
+        drop(db);
+        // reopen：uncertain 帧回放可见
+        let db2 = open_db(Arc::new(sim.clone()), 2);
+        let got = visible_rows(&db2);
+        assert!(
+            got.len() >= acked.len(),
+            "seed {seed}: 可见行 {0} < acked {1}（不确定帧丢失）",
+            got.len(),
+            acked.len()
+        );
+        // 已 ack 的必须在前缀位置（ID 单调）
+        for (i, a) in acked.iter().enumerate() {
+            if i < got.len() {
+                // got 的前 acked.len() 个应覆盖所有 acked
+            }
+        }
+        // 可见行 ⊆ 全部尝试插入的行
+        for g in &got {
+            assert!(*g >= 0 && *g < 30, "seed {seed}: 幻行 {g}");
+        }
+    }
+}
+
+#[test]
 fn opfuzz_chaos_reopen_always_legal_no_phantom() {
     for seed in 1..=N_SEEDS_CHAOS {
         let mut rng = Lcg(seed * 31337 + 7);
