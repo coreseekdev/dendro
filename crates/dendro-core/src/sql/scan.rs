@@ -472,7 +472,7 @@ fn col_lookup(names: &[String]) -> impl Fn(&str) -> Option<usize> + '_ {
             let bare = &low[dot + 1..];
             return names.iter().position(|n| {
                 let nl = n.to_ascii_lowercase();
-                nl == bare || nl.rfind('.').map_or(false, |p| &nl[p + 1..] == bare)
+                nl == bare || nl.ends_with(bare)
             });
         }
         None
