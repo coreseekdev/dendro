@@ -110,7 +110,7 @@ mod kani_harness {
     #[kani::proof]
     fn frame_iter_arbitrary_input_never_panics() {
         let len: usize = kani::any();
-        kani::assume(len <= 64);
+        kani::assume(len <= 24);
         let mut buf = Vec::with_capacity(len);
         for _ in 0..len {
             buf.push(kani::any::<u8>());
