@@ -1,0 +1,47 @@
+# 视图矩阵（P2-1 续）：CREATE / REPLACE / DROP / 查询视图
+
+statement ok
+CREATE TABLE base (id BIGINT PRIMARY KEY, a BIGINT, b TEXT)
+
+statement ok
+INSERT INTO base VALUES (1, 10, 'x'), (2, 20, 'y'), (3, NULL, 'z')
+
+statement ok
+CREATE VIEW v_pos AS SELECT id, a FROM base WHERE a > 0
+
+query I I
+SELECT id, a FROM v_pos ORDER BY id
+----
+1 10
+2 20
+
+# 查视图 + WHERE
+query I
+SELECT id FROM v_pos WHERE a >= 20
+----
+2
+
+# CREATE OR REPLACE
+statement ok
+CREATE OR REPLACE VIEW v_pos AS SELECT id FROM base WHERE a > 15
+
+query I
+SELECT id FROM v_pos
+----
+2
+
+# DROP VIEW
+statement ok
+DROP VIEW v_pos
+
+statement error
+SELECT * FROM v_pos
+
+# 聚合视图
+statement ok
+CREATE VIEW v_agg AS SELECT count(*) AS cnt FROM base
+
+query I
+SELECT cnt FROM v_agg
+----
+3
