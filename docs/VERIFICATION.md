@@ -29,7 +29,7 @@
 | I-A3 | **WatermarkBound** | watermark ≤ installed_max | 可见性超前 = 未安装读 | TLC ✅ |
 | I-A4 | **InFlightSane** | in-flight ∩ (installed ∪ lost) = ∅ | 摘除不完备 | TLC ✅ |
 | I-A5 | **Disjoint** | installed ∩ lost = ∅ | 双重结算 | TLC ✅ |
-| I-A6 | **StallFreedom**（活性） | installed_max 到顶后 watermark 必追平 | 已 ack 行永久不可见（R8-WM TLC 反例→修复） | TLC liveness ✅ |
+| I-A6 | **StallFreedom**（活性） | installed_max 到顶后 watermark 必追平 | 已 ack 行永久不可见（R8-WM TLC 反例→修复） | TLC liveness ✅（模型 drop 路径回灌后 781 状态全绿）|
 | I-A7 | **GapFreeFrontier** | frontier = min(installed_max, min(in-flight)−1)；三处摘除路径同一公式 | 水位停滞/跳过（R4 实证两形态） | 回归（out-of-order + 摘除失败）+ TLC |
 | I-A8 | **Pass2 无副作用拒绝** | 等待失败摘除后不得安装 | Uncertain 演变幽灵行 | opfuzz chaos（无幻行断言）|
 
@@ -53,7 +53,7 @@
 | I-C4 | 段退休安全 | retire_bound ≤ 全部已安装前沿（在途帧段不可退休） | reopen 丢已 ack 数据（R6 实证） | retirement_bounded ✅ |
 | I-C5 | 撕尾合同二分 | 已封段严格 / 未封段容忍 | 两个方向各有一种静默丢 | 双合同测试 ✅ |
 | I-C6 | FrameIter 不可信输入 | 任意字节输入不 panic（Err/None 而非 UB） | 网络可达 DoS | 边界测试 ✅ + Kani harness 🚧 |
-| I-C7 | 水位停滞免役 | in-flight 全部摘除后（含失败路径）watermark = installed_max | 已 ack 行不可见（R8-WM TLC 反例） | watermark_recovers ✅ + TLC StallFreedom ✅ |
+| I-C7 | 水位停滞免役 | in-flight 全部摘除后（含失败路径）watermark = installed_max | 已 ack 行不可见（R8-WM TLC 反例） | watermark_recovers（精确等值断言）✅ + TLC StallFreedom ✅ |
 
 ### I-D 分支 / 合并 / manifest（⬜ 待建模）
 
