@@ -149,10 +149,11 @@ fn opfuzz_uncertain_visible_subset_of_eventual_visible() {
         let mut acked: Vec<i64> = Vec::new();
         for i in 0..30i64 {
             let mut s = db.new_session();
-            match s.exec(&format!("INSERT INTO t VALUES ({i}, 'v{i}')")) {
-                Ok(_) => acked.push(i),
-                Err(_) => {} // uncertain（数据可能在盘）
-            }
+            if s.exec(&format!("INSERT INTO t VALUES ({i}, 'v{i}')"))
+                .is_ok()
+            {
+                acked.push(i);
+            } // uncertain（数据可能在盘）
         }
         if acked.is_empty() {
             continue; // 全部 uncertain → 跳过此种子
@@ -168,11 +169,6 @@ fn opfuzz_uncertain_visible_subset_of_eventual_visible() {
             acked.len()
         );
         // 已 ack 的必须在前缀位置（ID 单调）
-        for (i, a) in acked.iter().enumerate() {
-            if i < got.len() {
-                // got 的前 acked.len() 个应覆盖所有 acked
-            }
-        }
         // 可见行 ⊆ 全部尝试插入的行
         for g in &got {
             assert!(*g >= 0 && *g < 30, "seed {seed}: 幻行 {g}");
