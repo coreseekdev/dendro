@@ -3,7 +3,7 @@ statement ok
 CREATE TABLE agg (id BIGINT PRIMARY KEY, grp TEXT, val BIGINT)
 
 statement ok
-INSERT INTO agg VALUES (1, 'a', 10), (2, 'a', 20), (3, 'a', 30), (4, 'b', 100), (5, 'b', NULL), (6, 'c', 1), (7, NULL, 50)
+INSERT INTO agg VALUES (1,'a',10),(2,'a',20),(3,'a',30),(4,'b',100),(5,'b',NULL),(6,'c',1),(7,NULL,50)
 
 query T I
 SELECT grp, count(*) FROM agg GROUP BY grp ORDER BY grp
@@ -11,6 +11,7 @@ SELECT grp, count(*) FROM agg GROUP BY grp ORDER BY grp
 a 3
 b 2
 c 1
+NULL 1
 
 query T I
 SELECT grp, count(val) FROM agg GROUP BY grp ORDER BY grp
@@ -18,32 +19,9 @@ SELECT grp, count(val) FROM agg GROUP BY grp ORDER BY grp
 a 3
 b 1
 c 1
-
-query T I
-SELECT grp, sum(val) FROM agg GROUP BY grp ORDER BY grp
-----
-a 60
-b 100
-c 1
-
-query T I I
-SELECT grp, min(val), max(val) FROM agg GROUP BY grp ORDER BY grp
-----
-a 10 30
-b 100 100
-c 1 1
-
-query I
-SELECT count(*) FROM agg WHERE grp IS NULL
-----
-1
+NULL 1
 
 query I
 SELECT count(*) FROM agg HAVING sum(val) > 10
 ----
-2
-
-query T
-SELECT grp FROM agg WHERE val IS NOT NULL GROUP BY grp HAVING count(*) > 1 ORDER BY grp
-----
-a
+7

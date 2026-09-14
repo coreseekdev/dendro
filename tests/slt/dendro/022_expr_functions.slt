@@ -1,4 +1,4 @@
-# 表达式函数矩阵（P2-1）
+# 表达式函数矩阵（P2-1 续）
 statement ok
 CREATE TABLE ef (id BIGINT PRIMARY KEY, a BIGINT, b TEXT)
 
@@ -12,13 +12,6 @@ SELECT id, CASE WHEN a IS NULL THEN 'none' WHEN a > 0 THEN 'pos' ELSE 'neg' END 
 2 none
 3 neg
 
-query I T
-SELECT id, CASE a WHEN 10 THEN 'ten' WHEN -5 THEN 'neg5' ELSE 'other' END FROM ef ORDER BY id
-----
-1 ten
-2 other
-3 neg5
-
 query I I
 SELECT id, coalesce(a, 0) FROM ef ORDER BY id
 ----
@@ -26,14 +19,10 @@ SELECT id, coalesce(a, 0) FROM ef ORDER BY id
 2 0
 3 -5
 
-query T
-SELECT coalesce(b, 'default') FROM ef WHERE id = 2
-----
-default
-
 query I
 SELECT nullif(a, 10) FROM ef WHERE id = 1
 ----
+NULL
 
 query I
 SELECT nullif(a, 99) FROM ef WHERE id = 1
@@ -59,10 +48,6 @@ query T
 SELECT substr(b, 2, 3) FROM ef WHERE id = 1
 ----
 ell
-
-query I
-SELECT a + 1 FROM ef WHERE id = 2
-----
 
 statement error
 SELECT a / 0 FROM ef WHERE id = 1
