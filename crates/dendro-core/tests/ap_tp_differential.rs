@@ -2,8 +2,7 @@
 //! （prolly 树 + memtx overlay）必须返回相同的可见行集。
 //! 此前范围下推曾使两路径静默分叉（R6 审计 P0 修复的回归防线）。
 
-use dendro_core::{Database, DbOptions, Output, StoreConfig};
-use std::sync::Arc;
+use dendro_core::{Database, DbOptions, Output};
 
 fn setup(n_tree: usize, n_overlay: usize) -> Arc<Database> {
     let db = Database::open(DbOptions::memory()).unwrap();
