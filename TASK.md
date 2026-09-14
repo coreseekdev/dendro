@@ -37,7 +37,7 @@
 | ~~P1-4~~ | ~~GC：旧段删除时序定案 + manifest 旧版本 + WAL 段回收~~ | ✅ | 本提交：墓碑随 manifest 原子发布（P0-3 正式修复）+ `gc_retention_ms` 保留窗口 + `gc_sweep`（checkpoint 尾部/打库各一次，单批 ≤256）；WAL 旧 epoch 目录与当前 epoch 前缀段回收，`BranchHead.wal_first_seg` 保证恢复容忍前缀空洞；manifest 旧版本保留 16。CAS chunk GC 明确划入 v2（`docs/design/GC定案.md` §4.4）。回归：`crates/dendro-server/tests/gc.rs`（3 测试） |
 | ~~P1-5~~ | ~~SQL 语义修复（S1–S6）~~ | ✅ | `53f2c74`/`92dcb35`/`f1bca77`；S4 偏离记录见上 |
 | ~~P1-6~~ | ~~JOIN/派生表测试（hash_join 零覆盖）~~ | ✅ | 本提交：`tests/slt/dendro/008_join.slt`（INNER/LEFT/NULL 键/一对多/三表链/复合键/JOIN+GROUP BY/派生表）。语料当场暴露真 bug：sqlparser 0.62 把裸 `JOIN`(Join) 与 `INNER JOIN`(Inner) 分为不同枚举——标准写法 `A JOIN B` 直接报 not_supported，hash_join 此前经由该路径**不可达**。已修（scan.rs eval_from 匹配 Join/Inner、Left/LeftOuter） |
-| P1-7 | 多线程 OCC 并发测试 | ⬜ | `tests/concurrent.rs` |
+| ~~P1-7~~ | ~~多线程 OCC 并发测试~~ | ✅ | `tests/concurrent.rs` 11 项（同键 OCC/丢失更新探测器/可重复读/组提交成批/两段式/DDL/DROP×在途/合并冲突/不同键），`resource_limits.rs` 15 项，`fencing_invariants.rs` 2 项 |
 | ~~P1-8~~ | ~~真 kill 崩溃恢复测试（子进程 SIGKILL）~~ | ✅ | `dendro-server/tests/crash.rs`：spawn 真实 serve + PG 线协议写 5 行（3 checkpoint/2 WAL）→ SIGKILL → 重启全可见（见十六轮回应） |
 | ~~P1-9~~ | ~~fencing 安全性质测试~~ | ✅ | 本提交：`fence_expired_writer_rejected` 即评审要的"旧实例写被拒"断言 |
 | ~~P1-10~~ | ~~time travel SQL 入口（`AS OF` / `FOR SYSTEM_TIME`）~~ | ✅ | `scan.rs::time_travel_scan`：哈希精读/时间戳第一父链解析（跨 fork）/22023 错误面；`DendroTimeTravelDialect` 重解析兜底；回归 `slt/019_time_travel.slt` + `dendro-core/tests/time_travel.rs`（5 测试） |
@@ -47,14 +47,14 @@
 
 | # | 任务 | 状态 | 备注 |
 |---|------|:----:|------|
-| P2-1 | slt 语料扩展（接入 sqllogictest-corpus，哪怕 1%） | ⬜ | `tests/slt/` |
+| ~~P2-1~~ | ~~slt 语料扩展~~ | ✅ 19→23 文件（+4：聚合矩阵/排序分页/表达式函数/JOIN 矩阵）；暴露 LEFT JOIN IS NULL + 三表链列解析缺口 |
 | P2-2 | AP 向量化执行器（或修订 SPEC 措辞为"行式解释器"） | ⬜ | SPEC 00 G4 |
 | P2-3 | 基准证据链整改（环境指纹/中位数/恢复率断言/README CI 生成） | ⬜ | `benches/results/` |
 | P2-4 | 共识选型文档修订（消除正文与决策的矛盾） | ⬜ | 决策理由已补，正文需同步 |
 | P2-5 | 死代码清理 | 🔧 | clippy 清零已带走大部分；余 `retry()`/`RootView` 等 |
 | P2-6 | 性能：`Node.key()` 去分配 / NodeStore 真正 LRU / commit_mu 与 flush 解耦 | ✅ | `key_slice`（点查 +25%）+ 两段式提交（in-flight 裁决/无间隙前沿；8 并发 20→12.5万 commits/s）+ 事件驱动刷盘（Group 延迟 26µs 与间隔无关）+ NodeStore 分片真 LRU/节点布局预解析（修复满即冻结 + O(n log n) 二分；30 万行点查 34k→143k q/s）+ **WAL 段追加模式**（段数每 flush 一个→按 32MB 封段；附录 benches/results 横向对比表）|
 | P2-7 | GRAMMAR.md 修正（WITH ⬜、CHECKPOINT ✅、differential 目录删除） | ⬜ | 与代码对齐 |
-| P2-8 | AGENTS.md 架构清单补 kv/journal/consensus/fence | ⬜ | 文档同步 |
+| ~~P2-8~~ | ~~AGENTS.md 架构清单补 kv/journal/consensus/fence~~ | ✅ | AGENTS.md 全套落地（三类 review agent/顺序约束/缺陷→机制矩阵/工具锁定/提交纪律）+ docs/VERIFICATION.md 验证账本 |
 
 ## 四轮评审修复（2026-09-08）
 
