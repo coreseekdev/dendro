@@ -50,6 +50,9 @@ pub fn parse_only(sql: &str, d: SqlDialect) -> std::result::Result<String, Strin
         .map_err(|e| e.message)
 }
 
+/// v2b B1：标量层步列表（编译 + eval_row）。compile-or-fallback 合同。
+pub mod scalar;
+
 pub(crate) fn parse_batch(sql: &str, d: SqlDialect) -> Result<Vec<Statement>> {
     let dialect: &dyn sqlparser::dialect::Dialect = match d {
         SqlDialect::Pg => &PostgreSqlDialect {},

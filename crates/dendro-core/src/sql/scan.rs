@@ -161,13 +161,23 @@ pub(crate) fn eval_query(
             }
         }
         let cols = col_lookup(&tv.names);
-        // WHERE 过滤（求值错误 → 语句失败，不静默吞）
+        // WHERE 过滤（求值错误 → 语句失败，不静默吞）。
+        // v2b B2：编译优先——谓词编译为 ScalarProgram 逐行步进（ir-spec 03）；
+        // 编译失败（Function/TryCast/Substring 等未覆盖形态）整体回落 AST
+        // 直评，行为与既有路径逐字节一致（B1 差分 + slt 护航）。
+        let compiled = crate::sql::scalar::compile_predicate(w, &cols, tv.names.len()).ok();
         let mut filtered = Vec::with_capacity(tv.rows.len());
         for row in tv.rows.drain(..) {
-            match expr::eval(w, &row, &cols) {
-                Ok(SqlValue::Bool(true)) => filtered.push(row),
-                Ok(_) => {}
-                Err(e) => return Err(e),
+            let keep = match &compiled {
+                Some(p) => {
+                    let mut out = SqlValue::Null;
+                    crate::sql::scalar::eval_row(&p.prog, &row, &[], &mut out)?;
+                    matches!(out, SqlValue::Bool(true))
+                }
+                None => matches!(expr::eval(w, &row, &cols), Ok(SqlValue::Bool(true))),
+            };
+            if keep {
+                filtered.push(row);
             }
         }
         tv.rows = filtered;
