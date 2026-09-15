@@ -4,8 +4,6 @@
 //! 检查点检测。PG CancelRequest 可从另一连接设置目标 backend 的令牌。
 
 use dendro_core::{Database, DbOptions, Output};
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
 
 #[test]
 fn cancel_token_aborts_running_scan() {
@@ -27,13 +25,16 @@ fn cancel_token_aborts_running_scan() {
     // 创建带取消令牌的会话
     let mut s = db.new_session();
     let token = s.cancel_token();
-    assert!(!token.load(Ordering::Relaxed), "初始未取消");
+    assert!(
+        !token.load(std::sync::atomic::Ordering::Relaxed),
+        "初始未取消"
+    );
 
     // 后台线程 50ms 后取消
     let t = token.clone();
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(50));
-        t.store(true, Ordering::SeqCst);
+        t.store(true, std::sync::atomic::Ordering::SeqCst);
     });
 
     // 大表全扫（>50ms）→ 取消后 57014
