@@ -130,7 +130,7 @@ R6 P0 教训）、I-H1 差分、I-C4 段退休界。
 4. 跨表 join 的 placement 传播：Delta×Main join = 3 种层组合 × pipeline
    边界——v1 先限制"join 两侧同层"，跨层 join 归入 v3。
 
-## 7. IR 构造：VDBE × Arrow 的双方言合成（dVBE + BatchFlow）
+## 7. 【已取代 → 见 §9】IR 构造：VDBE × Arrow 的双方言合成（dVBE + BatchFlow）
 
 > 追问（2026-09-15）：能否参考 VDBE 与 Arrow 的设计思路构造 IR？
 > 结论：**能，且必须分层取用**——VDBE 与 Arrow 不在同一层，它们分别回答
@@ -199,7 +199,7 @@ R6 P0 教训）、I-H1 差分、I-C4 段退休界。
 | Arrow | 把 Arrow 当查询引擎（Acero 直接嵌入） | Acero = Arrow 官方 C++ 流式执行引擎（ExecPlan/ExecNode：Source/Sink/Filter/Project/Aggregate/HashJoin，批间异步推拉，**官方标注 experimental、API 不稳**）。不嵌入的理由：① 快照/分支/时间旅行语义进不了其 SourceNode 契约；② C++ 链接/维护负担；③ dendro 自家 BatchFlow 方言只需几十个内核组合，Arrow compute kernels 已够。可取之处：它的 ExecNode 接口划分与 Substrait 对接是 BatchFlow 方言节点集的对照物 |
 | Arrow | dictionary/RLE 全编码集进入 IR | IR 只记逻辑类型；编码是 CBF 存储层私事（footer 决定） |
 
-## 8. dVBE 重定义（无 SQLite 兼容约束，ISA 自主设计）
+## 8. 【已取代 → 见 §9】dVBE 重定义（无 SQLite 兼容约束，ISA 自主设计）
 
 > 授权（2026-09-15）：dendro 不要求 SQLite 兼容——dVBE 的指令集可以
 > 完全按自家语义重新定义。VDBE 只取**架构思想**（寄存器/游标/prepare
@@ -273,3 +273,68 @@ v2c-1 **不实现字节码**：计划树解释器 + 三层 Cursor（dVBE-0）已
 | 大扫描/聚合/投影 | BatchFlow + CbfCursor(批) | 内核纯函数，SIMD/selection 受益 |
 | Main+Delta 归并 | BatchFlow（Main 批）+ dVBE（Delta 尾）在归并边界汇 | 归并点是显式边界 |
 | hash join（跨层） | build=Delta gather 成批；probe=Main 批流 | v3（待决问题 4） |
+
+## 9. 【现行方案】修订：统一 ChunkPlane——单一 Arrow 形执行表示（取代 §7/§8 双方言）
+
+> 修订理由（2026-09-15，架构定向）：调研 DuckDB/ClickHouse/Velox/Polars
+> 四引擎后确认，push-based 批式向量化管线是执行表示的**行业收敛点**；
+> TP/AP 存储不对称（Delta 小行存 / Main 大列存）是**放置层问题，不是
+> 执行表示问题**。双方言（寄存器字节码 + 批数据流）引入的跨方言物化
+> 边界、ISA 维护、两套算子库，收益不抵复杂度。dVBE 全线砍除。
+
+### 9.1 四引擎执行表示对照（调研结论）
+
+| 引擎 | 顶层表示 | 数据单元 | 并行 | 与 dendro 的关系 |
+|------|---------|---------|------|-----------------|
+| DuckDB | push-based 管线（操作树推 DataChunk）| **Vector（2048 行）×多编码**（flat/constant/dictionary/RLE/FSST）+ selection vector | morsel/pipeline | 设计母本；"类 Arrow 但为执行而生、与 Velox 共同设计"（Raasveldt CMU 15-721）|
+| ClickHouse | 处理器 DAG（显式端口，prepare/work/schedule）| Block（列集） | 端口跨 lane | 显式控制流的参照 |
+| Velox | Task → 线性 Pipelines → Drivers（在 exchange 处切开）| RowVector 批 | Driver=管线切片线程 | 管线切分规则参照（hash build/probe 分段）|
+| Polars 新流 | 物理节点 DAG + **Morsel**（morsel.rs）| Morsel（批） | async morsel 多线程 | **Rust 同侪**，out-of-core 参照 |
+| ~~SQLite/Turso~~ | 寄存器字节码 VM | 寄存器 | 单线程 | 少数派；dendro 不再走此路 |
+
+**共识**：一个引擎一种执行表示（批式向量管线），TP 与 AP 的差异落在
+**数据源**（索引 seek vs 段扫描）与**数据量**（1 行 chunk vs 2048 行
+chunk），不落在执行模型上。DuckDB 以此同时服务嵌入式 TP 与 OLAP。
+
+### 9.2 统一抽象：ChunkPlane（执行层）
+
+```
+逻辑 IR（不变，§1）+ coverage 派发（不变，§2）
+    ↓ 降低（唯一方言）
+物理管线 = Source → [算子]* → Sink     （push-based，批间传递）
+```
+
+- **执行 Chunk（新核心类型）**：列式、**可变、可复用**、带 validity 与
+  selection——Arrow 形状但为执行而生（DuckDB 教训：arrow-rs RecordBatch
+  不可变、逐算子分配，做执行货币开销大）。只在**边界**转 RecordBatch：
+  CBF 解码出口、最终结果集入口。`chunk → RecordBatch` 零拷贝可做；
+  反向 gather 需拷贝（小数据可接受）。
+- **Source 即放置层多态**（取代 §7 的三游标——同一抽象，批语义）：
+  - `MemtxSource`：snapshot 过滤 + 行解码 → 小 chunk（1~64 行）；
+    点查退化为 **Source→Sink 退化管线**（零中间算子，等价今日
+    try_pk_pushdown 快路径——快路径保住了，只是换了表示）；
+  - `CbfSource`：段（zone map 剪枝后）→ 批（零拷贝切片）；
+  - `ProllySource`：node 流 → chunk（时间旅行/分支点）；
+  - `MainPlusDeltaSource`：归并源（§2 派发-2 的 IR 化）。
+- **算子库唯一**：Filter/Project/HashJoin/Aggregate/Sort/Limit——
+  一套实现同时服务 TP/AP；SIMD 优化一处受益两处。
+
+### 9.3 对 v2c 路径的影响
+
+| 步骤 | 原计划（§4） | 修订后 |
+|------|-------------|--------|
+| v2c-1 | 计划树解释器 + 三层 Cursor（dVBE-0）| **逻辑 IR + ChunkPlane 派发**：按 coverage 选 Source，退化为管线的快路径先行；I-H1 差分护航 |
+| v2c-2 | 归并替换 hash 去重 | 不变（MainPlusDeltaSource 内部） |
+| v2c-3 | 段增量物化 + 字节比 bench | 不变 |
+| ~~dVBE-1~~ | 寄存器 ISA 拍平 | **取消**；§8 ISA 骨架归档。重开条件：TP 点查 p50 相比今日快路径劣化 >30%，或进入与 SQLite 正面竞争的亚微米场景 |
+
+### 9.4 风险与缓解
+
+1. **逐查询 chunk 分配开销**（TP 点查本应 ~µs）：线程本地 chunk 池
+   复用 + 退化管线（无中间算子）+ 计划缓存/v2b。验收：TP 基准不低于
+   现状 325k txn/s 的 85%。
+2. **行→chunk 解码成本**（Delta 层）：与今日行路径解码同量级，非新增；
+   长期可让 memtx 行格式对齐 chunk 列式布局（v3 评估）。
+3. **arrow-rs RecordBatch 不可变与执行 Chunk 的双类型**：边界转换器
+   单点维护（`chunk→RecordBatch` 零拷贝；RecordBatch 仅作出口格式），
+   防止两套类型逻辑漂移——与 CBF/RecordSet 既有关系一致。
