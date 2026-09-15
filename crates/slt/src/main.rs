@@ -17,6 +17,7 @@ impl DB for SltDb {
 
     fn run(&mut self, sql: &str) -> Result<DBOutput<Self::ColumnType>, Self::Error> {
         let sql = sql.trim();
+
         if sql.is_empty() {
             return Ok(DBOutput::StatementComplete(0));
         }

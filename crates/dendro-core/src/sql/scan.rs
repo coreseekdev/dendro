@@ -185,15 +185,38 @@ pub(crate) fn eval_query(
                     }
                 }
                 SetOperator::Intersect => {
-                    let mut result = Vec::new();
-                    let mut seen = std::collections::HashSet::new();
-                    for r in lt.rows {
-                        let k = row_key(&r);
-                        if right_keys.contains(&k) && (all || seen.insert(k)) {
-                            result.push(r);
+                    if all {
+                        // INTERSECT ALL：多重集交——每值 min(count_l, count_r) 份
+                        // （限制输出计数 ≤ 右侧计数，与 EXCEPT ALL 对称）
+                        let mut right_counts: std::collections::HashMap<String, u64> =
+                            std::collections::HashMap::new();
+                        for r in &rt.rows {
+                            *right_counts.entry(row_key(r)).or_insert(0) += 1;
                         }
+                        lt.rows
+                            .into_iter()
+                            .filter(|r| {
+                                let k = row_key(r);
+                                match right_counts.get_mut(&k) {
+                                    Some(c) if *c > 0 => {
+                                        *c -= 1;
+                                        true
+                                    }
+                                    _ => false,
+                                }
+                            })
+                            .collect()
+                    } else {
+                        // INTERSECT（DISTINCT）：集交 + 去重
+                        let mut seen = std::collections::HashSet::new();
+                        lt.rows
+                            .into_iter()
+                            .filter(|r| {
+                                let k = row_key(r);
+                                right_keys.contains(&k) && seen.insert(k)
+                            })
+                            .collect()
                     }
-                    result
                 }
                 other => return Err(SqlError::not_supported(format!("set op: {other:?}"))),
             };
