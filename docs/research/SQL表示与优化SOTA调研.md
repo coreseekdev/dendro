@@ -69,7 +69,15 @@ pub struct RelNode<T: RelNodeType, D: RelAttrType> {
 
 - **生产背书**：Wasmtime 1.0（2022-09）起 Cranelift 是其默认优化代码生成器（JIT + AOT），Fastly/Shopify 级生产负载；版本号随 Wasmtime 走（仍 0.x 语义化版本，但稳定性分层文档明确）。2025-11 仍在扩功能（异常处理提案实现）。
 - **SIMD**：Wasm SIMD128 在 x86-64/aarch64 完全支持且默认开启；relaxed-SIMD 已实现；**缺口**：RISC-V 无 SIMD、且其向量形状是 128 位定宽（Wasm 形状）——**不是 AVX-512 级宽内核**。对数据库的含义：标量表达式 JIT（逐行或小块循环）理想；向量化内核仍需手写/Arrow，不能指望 Cranelift 自动向量化。
-- **ReadySet 案例（本地克隆实证修正）**：ReadySet **历史版本**曾在 dataflow 里用 `cranelift-jit` 编译 SQL 标量表达式（crates.io 反向依赖可查），但**当前源码（stable-250227+）已整体移除 JIT，退回纯 AST 解释器**（`dataflow-expression/src/eval.rs` 直接对 DfValue 模式匹配，全树 cranelift 零命中）。这个"从 JIT 退回解释器"的产品决策，与其缓存点查负载形态一致——是"解释器优先、JIT 按需"路线最有力的生产实证。本地参考副本在 `~/src.db/ref-projects/readyset/`（BSL 1.1，**仅可读禁止复制**，见 ref-projects/README.md）。
+- **ReadySet 案例（全量 git 历史一手核查）**：本地副本已 unshallow 至全量 **12,731 个提交（2016-06-08 Noria "First steps" 起）**——`--grep cranelift` / `-S cranelift` **零命中**，PR 搜索零命中，llvm/inkwell/codegen 仅 CI 配置噪音；当前求值层是纯解释器（`dataflow-expression/src/eval.rs`，2,003 行）。**结论：这条血脉从未引入过 JIT**（此前"曾用后移除"系二手讹传，已否定）。它对求值性能的解法是**解释器工程**：`concrete-iter` proc-macro 把 enum 迭代器调度具体化（消分支/虚开销）、LIKE 模式 `#[cached]` 预编译、类型提升查表（promotion/ 模块）。本地参考副本 `~/src.db/ref-projects/readyset/`（BSL 1.1，**仅可读禁止复制**，见 ref-projects/README.md）。
+
+  **为什么十年不上 JIT（基于全历史与架构的四点分析）**：
+  1. **负载形状不匹配**：Noria（OSDI'18）是部分状态化增量数据流——表达式在**每条变更行**上求值（常为 1 行/次），伴随路由与部分状态查改；JIT 的收益模型（编译一次、数千 tuple 紧循环摊销）在这里根本不成立。这与 OLAP 大扫描（向量化/编译的主场）是两种形状。
+  2. **语义复杂度 > 性能收益**：collation、时区、类型提升矩阵、NULL 三值逻辑、JSON——JIT 化等于把这套语义在低层 IR 重写一遍：要么语义不全（兼容事故），要么工程量翻倍。产品卖点是 wire 兼容与缓存正确性，表达式求值不在瓶颈路径上。
+  3. **解释器工程的现代答案**：concrete-iter / 模式缓存 / 查表证明"不靠 JIT 也能快"——LuaJIT"解释器才是产品"哲学的工程化。
+  4. **行业平行证据**：`datafusion-jit`（DataFusion 官方实验 crate，v23.0.0，2023-04 后消亡未进主线）；cranelift-jit 反向依赖 118 个中无任何 readyset/noria 系。
+
+  > 方法论教训（账本精神）：本次"曾用后移除"最初来自检索 AI 的总结——在反向依赖、crates.io、git 全历史三个层面均不成立。**二手检索结论必须一手验证。**
 - Cranelift 自身用 e-graph（isle 指令选择）做表达式改写——"IR 利于改写"的活例子。
 
 ### 6.2 脚本语言 VM/JIT 的可借鉴清单
@@ -119,7 +127,7 @@ pub struct RelNode<T: RelNodeType, D: RelAttrType> {
 
 1. **向量化基线形制**：定宽向量（DuckDB `STANDARD_VECTOR_SIZE=2048`，cache 友好）+ push-based pipeline + morsel 多线程（Leis SIGMOD'14）。"拆分"的工业标准即 morsel——直接呼应 §6.4 的 pipeline 边界建模：morsel 是 pipeline 的并行执行货币。
 2. **selection vector 优于物化过滤**：filter 产出选择向量在算子间传递"紧凑选中集"；DuckDB 向量支持 flat/constant/dictionary/RLE 四编码——惰性物化的执行层表达。dendro 落点：Arrow 的 `filter_record_batch` 内部即 selection 语义，P2-2 用它起步，无需自造。
-3. **编译 vs 向量化的定量结论**（Kersten/Leis/Kemper/Neumann/Boncz，VLDB'18，235+ 引用）："**向量化更善于隐藏 cache miss 延迟（大扫描/低选择性），data-centric 编译指令数更少（cache-resident 热点）**，两者皆胜过 Volcano 迭代器，现代系统混合化"。—— dendro TP（解释）/AP（向量化）双引擎的理论背书；也回答"手写 Arrow 还是 JIT"：**混合已够，JIT 非必需**（ReadySet 的退回与此互证）。
+3. **编译 vs 向量化的定量结论**（Kersten/Leis/Kemper/Neumann/Boncz，VLDB'18，235+ 引用）："**向量化更善于隐藏 cache miss 延迟（大扫描/低选择性），data-centric 编译指令数更少（cache-resident 热点）**，两者皆胜过 Volcano 迭代器，现代系统混合化"。—— dendro TP（解释）/AP（向量化）双引擎的理论背书；也回答"手写 Arrow 还是 JIT"：**混合已够，JIT 非必需**（ReadySet 十年全历史从未引入 JIT，与此互证）。
 4. **Rust SIMD 现实（2025）**：arrow-rs 主要依赖 LLVM autovectorization，显式 SIMD kernel 仅 min/max/sum（issue #5032，社区正重评是否扩展）；`std::simd` 仍 nightly；LanceDB 实测手写 SIMD 可显著超越 arrow kernel；**LLVM 不自动向量化浮点运算**。dendro 落点：整型过滤/比较靠 autovec 起步够用；热点（聚合、FSST 解码后过滤）再考虑 `wide`/`pulp`/intrinsics，且必须 bench 驱动（当前 ap_group_agg 200k 行 185ms，先算法后 SIMD）。
 5. **字典编码 SIMD 探测**：谓词先在字典层求值再展开（DuckDB dictionary vector + selection vector 组合）。dendro CBF 已有字典类布局，谓词下推到字典层是现成的增量优化点。
 6. **迟物化（late materialization）**：join/过滤链传 selection/index 而非整行拷贝——对 AP 投影的 join 输出形状影响最大，是 P2-2 之后的第一优先级。
