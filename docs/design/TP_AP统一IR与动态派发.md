@@ -5,6 +5,16 @@
 - 命题来源：架构定向——**TP 侧数据可能不足 AP 侧的 1/10，不能认为 TP & AP 是
   "一份数据的两种形态"**；目标是统一 IR，使查询派发成为可推理的动态决策。
 
+> **设计结论（2026-09-15 定稿，经四轮评审：dVBE 双方言 → 统一 ChunkPlane
+> → TP 主流口径 → PG 落地）**：
+> **一个逻辑 IR**（PlanNode<T,D> + placement×coverage 属性束，§1）
+> **↓ 唯一执行方言**：ChunkPlane push 管线（§9，可变执行 Chunk，边界转 RecordBatch）
+> **↓ 三层数据源**：MemtxSource / CbfSource / ProllySource（+MainPlusDelta 归并源）
+> **↓ 派发 = coverage 推理纯函数**（§2）；点查 = Source→Sink 退化管线
+> **标量层**：PG11 式步列表（EEOP 同构），v2b 先行（§10）
+> **不做**：JIT、dVBE 字节码（§8 归档）、双引擎、Cascades。
+> **护航**：I-H1 差分 / TP ≥325k×85% / gap-free watermark / Q-14 / 时间旅行门控。
+
 ## 0. 核心立场：三层放置模型（placement tiers），不是双副本
 
 经典 HTAP（TiDB TiFlash）把 TP/AP 当作**同一份数据的两种完整形态**，代价是
@@ -371,3 +381,46 @@ RecordBatch，chunk-plane 只是把中间执行层也统一，点查成本结构
 **验收线重申**：TP 基准 ≥ 现状 325k txn/s 的 85%；退化管线 + 线程本地
 chunk 池 + 计划缓存三重压制常数开销。若此线不达，优先优化 chunk 池
 而非重开户VBE路线。
+
+## 10. PG（新架构）可参考之处的落地清单
+
+### 10.1 参考映射表
+
+| PG 机制 | 取舍 | dendro 落地 | 里程碑 |
+|---------|------|------------|--------|
+| **PG11 表达式步列表**（ExprState：Expr → EEOP_* 编译步，执行期 dispatch 循环解释，可选 LLVM JIT）| **取（核心）** | `ScalarStep` 步列表：prepare 期编译一次；`eval_row`（TP，1 行 chunk 语义）+ `eval_chunk`（AP，列上向量化）双后端 | **v2b** |
+| prepare/再编译（schema cookie 失效）| 取 | 计划缓存二级键 `xxh3(sql)+catalog_version`，DDL 自动 miss；与 v2a（纯 AST 级，无失效）构成两级缓存 | **v2b** |
+| LLVM JIT（表达式编译为本地码）| **不取** | PG 自己的经验：OLTP 上编译延迟常吞掉收益（社区默认建议低代价查询关 JIT）。dendro 的等价物是向量化 eval_chunk；重开条件与 dVBE 相同 | 永久观察 |
+| ExecProcNode 需求驱动（Volcano）| **不取** | push-based 已定（§9）；LIMIT/EXISTS 短路由由 Sink 断流实现（push 模型同样可短路） | v2c-1 |
+| PG18 异步 I/O（io_uring）| 暂不取 | dendro 存储层是对象存储（ObjStore trait），本地 io_uring 语义作用有限；OSS 客户端层可另行评估 | 远期 |
+
+### 10.2 ScalarStep 落地规格（v2b，独立可交付）
+
+```rust
+// 编译期（prepare 一次；catalog_version 进缓存键）
+enum ScalarStep {
+    Const(u32),          // 常量池索引
+    Col(usize),          // 列索引（绑定计划的产物；AST 无此信息）
+    Cmp(Op) / Arith(Op) / LogicAnd / LogicOr / Not / IsNull,
+    Like(u32) / Cast(Ty) / Builtin(u32, u8),   // 函数走表（§8.2 纪律承袭）
+    Jump(u32) / JumpIfFalse(u32),              // 三值逻辑短路
+    Out,                 // 结果寄存器
+}
+// 执行期双后端：同一份步列表
+eval_row(&[ScalarStep], &const_pool, row: &[SqlValue]) -> SqlValue          // TP
+eval_chunk(&[ScalarStep], &const_pool, chunk: &Chunk, sel) -> Chunk         // AP（v2c-1 接入）
+```
+
+- 现有 `optimize.rs` 常量折叠/布尔化简**迁移到编译期**（编译时跑规则，
+  步列表即化简产物——规则跑一次而非每次执行）；
+- **护航回归**：负数字面量（R8 教训）、NULL 三值逻辑、collation 比较、
+  类型提升矩阵——编译器单测逐条对应 eval.rs 现有语义；
+- 与 EXPLAIN 的关系：步列表打印即表达式解释（对标 PG `EXPLAIN (VERBOSE)`）。
+
+### 10.3 落地顺序与验收（合成 §4）
+
+| 里程碑 | 内容 | 验收 |
+|--------|------|------|
+| **v2b** | ScalarStep 编译器 + eval_row + 两级计划缓存 | 现有 SQL 语义回归全绿；点查 p50 不劣于 v2a；EXPLAIN 输出步列表 |
+| **v2c-1** | Chunk（可变/线程本地池）+ 三层 Source + coverage 派发器替换 if-else 链；eval_chunk 接入 | I-H1 差分全绿；26 slt 全绿；TP ≥ 276k txn/s（85% 线）|
+| v2c-2/3 | 归并源、段增量物化、字节比 bench | 不变（§4）|
