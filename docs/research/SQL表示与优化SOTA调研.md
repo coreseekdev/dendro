@@ -63,7 +63,47 @@ pub struct RelNode<T: RelNodeType, D: RelAttrType> {
 - 计划缓存 v2a（I-E4：纯 AST 无失效需求）：v2b 的绑定计划是**新增一档**，不替换 v2a——未参数化热查询继续走 v2a，prepared/高频查询走 v2b。
 - HTAP 双引擎（TP 行式解释 / AP Arrow 列式）：这本身就是粗粒度的"自适应执行"（Umbra 谱系的 HTAP 形状），SOTA 方向一致；细化（表达式级 JIT）排观察旗。
 
-## 引用来源
+## 6. 追问轮：Cranelift 实证、脚本 JIT 借鉴、轻量编译器候选、IR 信息密度
+
+### 6.1 Cranelift 成熟度（实证结论：标量表达式 JIT 可用，宽向量内核不行）
+
+- **生产背书**：Wasmtime 1.0（2022-09）起 Cranelift 是其默认优化代码生成器（JIT + AOT），Fastly/Shopify 级生产负载；版本号随 Wasmtime 走（仍 0.x 语义化版本，但稳定性分层文档明确）。2025-11 仍在扩功能（异常处理提案实现）。
+- **SIMD**：Wasm SIMD128 在 x86-64/aarch64 完全支持且默认开启；relaxed-SIMD 已实现；**缺口**：RISC-V 无 SIMD、且其向量形状是 128 位定宽（Wasm 形状）——**不是 AVX-512 级宽内核**。对数据库的含义：标量表达式 JIT（逐行或小块循环）理想；向量化内核仍需手写/Arrow，不能指望 Cranelift 自动向量化。
+- **直接先例**：**ReadySet** 用 `cranelift-jit` 把 SQL 标量表达式编译成原生代码跑在 dataflow 节点里——与 dendro"标量层 JIT"的设想完全同形，且它只 JIT 标量层、算子层仍解释，就已经拿到主要收益。
+- Cranelift 自身用 e-graph（isle 指令选择）做表达式改写——"IR 利于改写"的活例子。
+
+### 6.2 脚本语言 VM/JIT 的可借鉴清单
+
+| 系统 | 状态 | 对 dendro 的可借鉴点 |
+|------|------|---------------------|
+| **LuaJIT** | 唯一成功的轻量 JIT（孤本） | ① **解释器才是产品**：胜负 80% 在解释器设计（寄存器式定宽字节码 + 内联缓存），JIT 只是热路径放大器——与 dendro"v2b 绑定计划优先"同哲学；② trace-based（只编译热线性路径）适配"循环热代码"，**不适配 SQL**（查询是短生命周期数据并行流水线，Umbra 按查询编译才对形）；③ 手写汇编后端 = 放弃可移植换极致，Rust 生态没理由走这条路 |
+| **QuickJS / quickjs-ng** | 前者纯解释器（Bellard 明确不做 JIT）；后者 2025 活跃（0.10.0）但**也无 JIT** | 反面教训的正向版：**没有 JIT 也能活**——社区共识"top class engine requires a JIT… LuaJIT is the exception"。对 dendro：不建 JIT 的机会成本比想象低 |
+| **V8 / JSC / Hermes** | 分层引擎标准答案（Ignition→Sparkplug→Maglev→TurboFan；LLInt→Baseline→DFG→FTL；AOT 字节码） | 分层 + profile 引导升级 = Umbra medium-term 的同构，确认"如果将来分层，第一层是字节码/绑定计划"的路线正确 |
+| **ReScript** | 澄清：是 OCaml 系→JS 的编译器（原 BuckleScript），无自有 JIT 运行时 | 不构成参照物 |
+
+### 6.3 轻量编译器项目进度（"不是 GCC/LLVM"候选排查）
+
+| 项目 | 进度 | 可复用性（对 dendro） |
+|------|------|---------------------|
+| **QBE**（轻量 SSA 后端，C，~12k 行）| **近年最活跃**：1.3 版（1.0 以来最大发布，+7000 行）——Windows ABI、PIC 改进；消费者 cproc（C11/C23，可自举，oasis Linux 主编译器）与 Hare（官方后端，0.26.0，NLnet 资助 ARM32）；社区称"OpenBSD of compiler backends"、"唯一认真的非 LLVM 轻量后端" | **设计参考 ≠ 依赖**：MIT 协议可 FFI，但 Cranelift（Rust 原生、ReadySet 先例、Wasmtime 背书）全面占优；QBE 无 JIT 内存模型（出 asm/obj，需自行装载）、无 SIMD。值得抄的是它**极简管线**（紧凑函数级 SSA → 优化 → asm，一个人维护）对"后端不必是庞然大物"的证明 |
+| **Circle**（独立 C++ 编译器，非 LLVM 系）| 活跃：Build 227 四平台，"New Circle"（choice types/pattern matching/interfaces）；但**闭源二进制**（开源时间线是社区长期追问点），一人项目；Safe C++ 标准提案 2025-09 被 ISO 委员会放弃（转向 Profiles），作者转入 C++ Alliance | **零**：闭源、C++ 编译器、与 SQL IR 无关。其意义是"完整编译器可以一人成军"的士气证明 |
+| **TinyCC / libtcc** | 维护半停滞（活跃讨论停留在 2013-2020），有 Rust wrapper crate（libtcc） | 不适用：无优化（≈-O0）、C only、无 SIMD；只适合"运行时编译 C 片段调 C ABI"场景 |
+| cppfront / Carbon | 前者是 Cpp2→C++1 转译器（实验）；后者 Google 继任语言工具链 | 非组件、无关 |
+
+### 6.4 核心命题：IR 携带什么信息，才利于 优化/改写/算子调度（下沉·拆分·合并）
+
+**四类必须有**（每类对应它解锁的调度能力）：
+
+1. **唯一列 ID + 可推导 schema 属性**——改写正确性的地基。谓词下推后"该列来自哪个扫描"必须无歧义；列位置（索引）在重写中漂移，唯一 ID 不漂移（CockroachDB 惯例：查询内列 ID 全局唯一）。
+2. **性质框架（order / distribution / partitioning）**——"拆分与合并"的正解表达。拆分（morsel 化、并行分片）= 插入 Exchange 算子以满足 distribution 性质；合并（融合、省物化点）= 证明子计划已满足性质故 Exchange 可省。性质是"可要求/可推导"的框架成员（Volcano/Cascades 语义），没有它调度只能靠经验规则硬编码。
+3. **pipeline 边界显式化**（HyPer）——"哪些算子能融合"的可判定化。查询 = 由 materialization 点分隔的 pipeline 序列：scan+filter 同 pipeline 可融合；hash join 的 build 侧是边界。IR 必须让 pipeline 成员关系可推导，fusion 的合法性才有判据。
+4. **标量层与关系层分层**——下沉与 JIT 的共享货币。谓词/投影是标量表达式 IR（可下发到 zone map 求值、可编译进 Arrow kernel、可 Cranelift JIT——ReadySet 只做这层就拿到主要收益）；关系算子是另一层。两层混在一个 IR 里，下推与编译的接口就糊了。
+
+**两类禁止进入 IR 本体**：执行细节（内存布局/调用约定进逻辑层 = 锁死改写空间）；统计信息（基数/选择性放 catalog 侧并带版本，IR 只引用——统计是数据而 IR 是结构，混放会使计划缓存随统计失效风暴）。
+
+**dendro 落点**：若建 IR，四必须 + optd 泛形（§4：分支/快照/水位语义放属性 D）即可覆盖当前可见的调度需求（PK/范围下推已有；AP zone map 已有；缺的是 pipeline 边界建模——它决定 P2-2 向量化与未来融合的收益上限）。这再次支持"v2b 绑定计划先行、IR 后置到 v3 触发条件"的排序。
+
+
 
 - [Turso（原 Limbo）——SQLite 的 Rust 重写与 VDBE 字节码](https://turso.tech/blog/introducing-limbo-a-complete-rewrite-of-sqlite-in-rust) / [仓库](https://github.com/tursodatabase/turso)
 - [Adaptive Execution of Compiled Queries（HyPer Flying Start, ICDE 2018）](https://15721.courses.cs.cmu.edu/spring2019/papers/19-compilation/kohn-icde2018.pdf) / [Umbra DB](https://umbra-db.com/) / [Dynamic Blocks（ADMS 2022）](https://www.adms-conf.org/2022-camera-ready/ADMS22_schmidt.pdf) / [编译器框架编译期开销对比（CGO 2024）](https://aengelke.net/pubs/2403-cgo.pdf) / [Cranelift](https://cranelift.dev/)
