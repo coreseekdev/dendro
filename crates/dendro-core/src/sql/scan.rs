@@ -306,7 +306,7 @@ pub(crate) fn eval_query(
         }
         let mut sort_op = crate::exec::pipeline::SortOp::new(asc);
         let mut sink = crate::exec::pipeline::CollectSink::new(None);
-        let mut src: Vec<Result<Vec<Vec<SqlValue>>>> = vec![Ok(keyed_rows)];
+        let src: Vec<Result<Vec<Vec<SqlValue>>>> = vec![Ok(keyed_rows)];
         let mut it = src.into_iter();
         let mut pipe_cx = crate::exec::pipeline::PipeCtx::new(
             vec![],
@@ -2443,105 +2443,6 @@ fn order_key_value(
         }
     }
 }
-
-fn apply_order(
-    rows: &mut Vec<Vec<SqlValue>>,
-    names: &[String],
-    orders: &[OrderByExpr],
-    input: Option<&TableView>,
-) -> Result<()> {
-    let cols = cols_lookup(names);
-    let cols_in = input.map(|tv| cols_lookup(&tv.names));
-    let mut keys: Vec<Vec<SqlValue>> = Vec::with_capacity(rows.len());
-    for (ri, row) in rows.iter().enumerate() {
-        let mut ks = Vec::with_capacity(orders.len());
-        for o in orders {
-            // 别名/列名/位置/表达式
-            let v = match &o.expr {
-                Expr::Identifier(id) => {
-                    let low = id.value.to_ascii_lowercase();
-                    match cols.get(&low) {
-                        Some(&i) => row[i].clone(),
-                        // 未投影列：回退到输入行（FROM 表原始行）
-                        None => match (cols_in.as_ref(), input) {
-                            (Some(ic), Some(tv)) => {
-                                let in_row = &tv.rows[ri];
-                                match ic.get(&low) {
-                                    Some(&j) => in_row[j].clone(),
-                                    None => expr::eval(&o.expr, in_row, &|n| {
-                                        ic.get(&n.to_ascii_lowercase()).copied()
-                                    })?,
-                                }
-                            }
-                            _ => expr::eval(&o.expr, row, &|n| {
-                                cols.get(&n.to_ascii_lowercase()).copied()
-                            })?,
-                        },
-                    }
-                }
-                Expr::Value(vws) => {
-                    if let PV::Number(n, _) = &vws.value {
-                        let idx: usize = n
-                            .parse()
-                            .map_err(|_| SqlError::syntax("bad ORDER BY ordinal"))?;
-                        row.get(idx - 1)
-                            .cloned()
-                            .ok_or_else(|| SqlError::syntax("ORDER BY out of range"))?
-                    } else {
-                        expr::eval(&o.expr, row, &|n| {
-                            cols.get(&n.to_ascii_lowercase()).copied()
-                        })?
-                    }
-                }
-                e => {
-                    if let (Some(ic), Some(tv)) = (cols_in.as_ref(), input) {
-                        let in_row = &tv.rows[ri];
-                        match expr::eval(e, in_row, &|n| ic.get(&n.to_ascii_lowercase()).copied()) {
-                            Ok(v) => v,
-                            Err(_) => {
-                                expr::eval(e, row, &|n| cols.get(&n.to_ascii_lowercase()).copied())?
-                            }
-                        }
-                    } else {
-                        expr::eval(e, row, &|n| cols.get(&n.to_ascii_lowercase()).copied())?
-                    }
-                }
-            };
-            ks.push(v);
-        }
-        keys.push(ks);
-    }
-    // 排序（ Schwartzian：索引排序后重排）
-    let mut idx: Vec<usize> = (0..rows.len()).collect();
-    idx.sort_by(|&a, &b| {
-        for (i, o) in orders.iter().enumerate() {
-            let (x, y) = (&keys[a][i], &keys[b][i]);
-            let ord = if x.is_null() && y.is_null() {
-                Ordering::Equal
-            } else if x.is_null() {
-                Ordering::Greater // null 最后
-            } else if y.is_null() {
-                Ordering::Less
-            } else {
-                expr::cmp_values(x, y).unwrap_or(Ordering::Equal)
-            };
-            let ord = if o.options.asc.unwrap_or(true) {
-                ord
-            } else {
-                ord.reverse()
-            };
-            if ord != Ordering::Equal {
-                return ord;
-            }
-        }
-        Ordering::Equal
-    });
-    let sorted: Vec<Vec<SqlValue>> = idx.into_iter().map(|i| rows[i].clone()).collect();
-    *rows = sorted;
-    Ok(())
-}
-
-// ---------- 伪表 ----------
 
 fn pseudo_branches(db: &Database) -> Result<TableView> {
     let names = vec!["branch".into(), "commit".into(), "parent".into()];
