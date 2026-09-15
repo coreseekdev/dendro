@@ -23,14 +23,16 @@ fn explain_outputs_scan_and_steps() {
     // v2c-1 后行序：Scan / dispatch / Filter / 步列表——按下标断言过时
     assert!(text.iter().any(|l| l.starts_with("dispatch: ")), "{text:?}");
     assert!(text.iter().any(|l| l.starts_with("Filter:")), "{text:?}");
-    // 步列表段：Col 步带列名、比较步存在
+    // dendro.ir v1 标量块（spec 09）：版本头 + SSA 步 + round-trip
     let joined = text.join("\n");
-    assert!(joined.contains("Col #1:v"), "列名标注：{joined}");
-    assert!(joined.contains("Cmp["), "比较步：{joined}");
-    // 反汇编段可再解析（round-trip）：从 Filter: 下一行起
-    let steps_start = joined.find("cols ").unwrap();
-    let prog = dendro_core::sql::scalar::reparse(&joined[steps_start..]);
-    assert!(prog.is_some(), "EXPLAIN 步列表段必须可再解析：{joined}");
+    assert!(joined.contains("dendro.ir v1"), "版本头：{joined}");
+    assert!(joined.contains("%r0 = col 1"), "col 步（SSA 形式）：{joined}");
+    assert!(joined.contains("cols = [\"id\", \"v\"]"), "列名侧表：{joined}");
+    let ir_start = joined.find("dendro.ir v1").unwrap();
+    // 尾部 } 收口（嵌在多行单元格里）
+    let ir_end = joined.rfind('}').unwrap() + 1;
+    let prog = dendro_core::ir::text::parse_scalar(&joined[ir_start..ir_end]);
+    assert!(prog.is_some(), "EXPLAIN 的 IR 段必须可再解析：{joined}");
 }
 
 #[test]

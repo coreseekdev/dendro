@@ -851,8 +851,13 @@ pub(crate) fn exec_statement(
                                     ) {
                                         Ok(p) => {
                                             lines.push(format!("Filter: {w}"));
+                                            // v1 文本 IR（spec 09）：dendro.ir v1
+                                            // 标量块，可 parse 回当时的谓词程序
                                             lines.push(
-                                                crate::sql::scalar::disassemble(&p.prog)
+                                                crate::ir::text::print_scalar("pred", &p.prog)
+                                                    .unwrap_or_else(|_| {
+                                                        "scalar @pred (ir: n/a)".into()
+                                                    })
                                                     .trim_end()
                                                     .to_string(),
                                             );

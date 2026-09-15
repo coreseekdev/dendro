@@ -1,0 +1,121 @@
+; dendro.ir v1 golden（生成见 ir_golden.rs；人工审阅后提交）
+; corpus: gt_const
+dendro.ir v1
+scalar @pred {
+  cols = ["id", "v"]
+  n_cols = 2
+  n_regs = 3
+  %r0 = col 1
+  %r1 = const i32 10
+  %r2 = cmp.gt %r0, %r1
+  qual %r2
+}
+; corpus: eq_and_lt
+dendro.ir v1
+scalar @pred {
+  cols = ["id", "v"]
+  n_cols = 2
+  n_regs = 7
+  %r0 = col 0
+  %r1 = const i32 1
+  %r2 = cmp.eq %r0, %r1
+  %r3 = col 1
+  %r4 = const i32 9
+  %r5 = cmp.lt %r3, %r4
+  %r6 = and %r2, %r5
+  qual %r6
+}
+; corpus: arith_mod
+dendro.ir v1
+scalar @pred {
+  cols = ["id", "v"]
+  n_cols = 2
+  n_regs = 5
+  %r0 = col 0
+  %r1 = const i32 2
+  %r2 = arith.add %r0, %r1
+  %r3 = const i32 3
+  %r4 = arith.mod %r2, %r3
+  qual %r4
+}
+; corpus: concat_str
+dendro.ir v1
+scalar @pred {
+  cols = ["id", "v"]
+  n_cols = 2
+  n_regs = 3
+  %r0 = const str "x"
+  %r1 = col 1
+  %r2 = concat %r0, %r1
+  qual %r2
+}
+; corpus: not_is_null
+dendro.ir v1
+scalar @pred {
+  cols = ["id", "v"]
+  n_cols = 2
+  n_regs = 3
+  %r0 = col 1
+  %r1 = is_null %r0
+  %r2 = not %r1
+  qual %r2
+}
+; corpus: not_in_list
+dendro.ir v1
+scalar @pred {
+  cols = ["id", "v"]
+  n_cols = 2
+  n_regs = 6
+  %r0 = col 0
+  %r1 = const i32 0
+  %r2 = const i32 1
+  %r1 = in.test %r0, %r2
+  jump_if_in_found %r1, L11
+  %r3 = const i32 2
+  %r1 = in.test %r0, %r3
+  jump_if_in_found %r1, L11
+  %r4 = const i32 3
+  %r1 = in.test %r0, %r4
+  jump_if_in_found %r1, L11
+  %r5 = in.finish %r1 neg
+  qual %r5
+}
+; corpus: between_neg
+dendro.ir v1
+scalar @pred {
+  cols = ["id", "v"]
+  n_cols = 2
+  n_regs = 4
+  %r0 = col 1
+  %r1 = const i32 1
+  %r2 = const i32 9
+  %r3 = between %r0, %r1, %r2 neg
+  qual %r3
+}
+; corpus: case_operand
+dendro.ir v1
+scalar @pred {
+  cols = ["id", "v"]
+  n_cols = 2
+  n_regs = 6
+  %r1 = col 0
+  %r2 = const i32 1
+  %r3 = case.hit %r1, %r2
+  jump_if_true %r3, L7
+  %r4 = const i32 10
+  %r0 = mov %r4
+  jump L9
+  %r5 = const i32 0
+  %r0 = mov %r5
+  qual %r0
+}
+; corpus: cast_int
+dendro.ir v1
+scalar @pred {
+  cols = ["id", "v"]
+  n_cols = 2
+  n_regs = 2
+  %r0 = col 1
+  %r1 = cast.int %r0
+  qual %r1
+}
