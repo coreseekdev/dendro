@@ -3,3 +3,4 @@
 
 pub mod chunk;
 pub mod pipeline;
+pub mod source;

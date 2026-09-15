@@ -1226,12 +1226,12 @@ impl Database {
             ne.col_deletes.retain(|k| !reinserted.contains(k));
             ne.col_segments.push(seg);
         }
-        // 纯删除（无新行）：只累积 deletes
-        if !delta_deletes.is_empty() && delta_rows.is_empty() {
-            for d in delta_deletes {
-                if !ne.col_deletes.contains(&d) {
-                    ne.col_deletes.push(d);
-                }
+        // 账本 #27：删除键累积对混合/纯删除两分支统一——原仅"纯删除"
+        // 分支累积，混合增量（行 + 删除同窗口）checkpoint 后旧段里的
+        // 已删行在 AP 路径复活（行路径不可见；streaming_source 差分暴露）
+        for d in delta_deletes {
+            if !ne.col_deletes.contains(&d) {
+                ne.col_deletes.push(d);
             }
         }
         ne.col_rows = ne.col_segments.iter().map(|s| s.rows).sum();

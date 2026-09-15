@@ -1023,80 +1023,40 @@ fn try_ap_scan(
         }
     }
     let pkc = schema.pk[0] as usize;
-    // 归并源（v2c-2，ir-spec 04 §4 MainPlusDelta）：段（旧→新，新者覆盖）
-    // + memtx overlay + 显式事务写，三路按 pk 在 BTreeMap 归并——
-    // 替换原"HashSet 去重 + 非覆盖分支乱序输出"。语义不变量：
-    // - 同 key 优先级 txn > overlay > 新段 > 旧段（与原 seen-新段优先 +
-    //   overlay 覆盖一致）；
-    // - col_deletes 只抑制**段源**行（overlay/txn 的重插不受影响——
-    //   与原 deletes 过滤位于段收集阶段一致）；
-    // - 输出恒 pk 有序（原仅 overlay 分支有序——统一后 AP 与行路径
-    //   行序收敛，消除一类路径相关序）；
-    // - pushdown_limit 早停两分支同口径（原非 overlay 分支忽略 cap）。
-    let _deletes: std::collections::HashSet<Vec<u8>> = entry
-        .col_deletes
-        .iter()
-        .filter_map(|k| crate::format::hash::Hash::from_base32(k))
-        .map(|h| h.as_bytes().to_vec())
-        .collect();
-    // col_deletes 存"行键的 hex"（与 encode_key 输出同一编码）
+    // 归并源（v2c-4，ir-spec 04 §4 MainPlusDelta）：段（旧→新，新者覆盖）
+    // + memtx overlay + 显式事务写，三路按 pk 惰性归并（exec::source 流式
+    // 化——替换 v2c-2 的全量 BTreeMap 物化；语义不变量逐条搬运）：
+    // - 同 key 优先级 txn > overlay > 新段 > 旧段；
+    // - col_deletes 只抑制**段源**行（overlay/txn 的重插不受影响）；
+    // - 输出恒 pk 有序（AP 与行路径行序收敛）；
+    // - pushdown_limit 早停（源侧产出计数）。
     let deletes: std::collections::HashSet<Vec<u8>> = entry
         .col_deletes
         .iter()
         .filter_map(|h| {
+            // col_deletes 存"行键的 hex"（与 encode_key 输出同一编码）
             (0..h.len() / 2)
                 .map(|i| u8::from_str_radix(&h[i * 2..i * 2 + 2], 16))
                 .collect::<std::result::Result<Vec<u8>, _>>()
                 .ok()
         })
         .collect();
-    let mut keyed: std::collections::BTreeMap<Vec<u8>, Vec<SqlValue>> =
-        std::collections::BTreeMap::new();
+    // 段批（ap.scan 内含段级 pk 剪枝——账本 #24 的 None=无界语义）
+    let mut segment_batches = Vec::with_capacity(entry.col_segments.len());
     for seg in entry.col_segments.iter() {
-        // 段级 pk 剪枝
-        if let Some((lo, hi)) = pk_range {
-            // 账本 #24：None=无界——Option 序下 None<=Some(x) 恒真曾把
-            // 单边开范围（hi=None）整段剪掉（AP id>N 返回 0 行）
-            if hi.is_some_and(|h| h <= seg.pk_min) || lo.is_some_and(|l| l >= seg.pk_max) {
-                continue;
-            }
-        }
-        let batches = ap.scan(
+        segment_batches.push(ap.scan(
             db.obj_store(),
             &schema,
             std::slice::from_ref(seg),
             &pk_range,
-        )?;
-        for b in &batches {
-            for mut r in rows_from_batches(b, &schema)? {
-                if pkc >= r.len() {
-                    continue;
-                }
-                let key = crate::format::row::encode_key(&[r[pkc].clone()]);
-                if deletes.contains(&key) {
-                    continue;
-                }
-                r.resize(schema.columns.len(), SqlValue::Null);
-                keyed.insert(key, r);
-            }
-        }
+        )?);
     }
+    let _ = pkc;
     // memtx overlay（覆盖段源；None=墓碑删除）
     let b = db.branch(&sess.branch)?;
     let overlay = b.mem.table(entry.id).snapshot_rows(snapshot);
-    for (k, ov) in overlay {
-        match ov {
-            Some(v) => {
-                if let Ok(r) = row_from_bytes(&schema, &v) {
-                    keyed.insert(k, r);
-                }
-            }
-            None => {
-                keyed.remove(&k);
-            }
-        }
-    }
     // 会话显式事务自身写（最后覆盖；Q-14：AP 路径读事务的写）
+    let mut txn_writes: Vec<(Vec<u8>, Option<std::sync::Arc<Vec<u8>>>)> = Vec::new();
     if let Some(t) = &sess.txn {
         if t.explicit {
             for ((tid, k), m) in &t.writes {
@@ -1105,22 +1065,29 @@ fn try_ap_scan(
                 }
                 match m {
                     crate::prolly::Mutation::Put(v) => {
-                        if let Ok(r) = row_from_bytes(&schema, v) {
-                            keyed.insert(k.clone(), r);
-                        }
+                        txn_writes.push((k.clone(), Some(std::sync::Arc::new(v.clone()))));
                     }
                     crate::prolly::Mutation::Delete => {
-                        keyed.remove(k);
+                        txn_writes.push((k.clone(), None));
                     }
                 }
             }
         }
     }
-    // Q-1：早停同口径——键序前 cap 行（两分支统一）
-    let rows: Vec<Vec<SqlValue>> = match pushdown_limit {
-        Some(cap) => keyed.values().take(cap).cloned().collect(),
-        None => keyed.into_values().collect(),
-    };
+    let src = crate::exec::source::MainPlusDeltaSource::new(
+        segment_batches,
+        overlay,
+        txn_writes,
+        deletes,
+        schema.clone(),
+        pushdown_limit,
+    )?;
+    // v1 消费形态：整流收集进 TableView（后续 Source 直推管线——方向 B）；
+    // 批拉取语义已就位（ROW_BATCH 粒度），物化发生在消费侧而非源侧
+    let mut rows: Vec<Vec<SqlValue>> = Vec::new();
+    for item in src {
+        rows.extend(item?);
+    }
     let names = schema.columns.iter().map(|c| c.name.clone()).collect();
     Ok(Some(TableView { names, rows }))
 }
@@ -1232,7 +1199,7 @@ fn extract_pk_range(sel: &Expr, pk: &str) -> Option<(Option<u64>, Option<u64>)> 
 }
 
 /// Arrow 批 → 行（SqlValue），列型按 schema 收敛
-fn rows_from_batches(
+pub(crate) fn rows_from_batches(
     batch: &arrow::record_batch::RecordBatch,
     schema: &crate::versioned::TableSchema,
 ) -> Result<Vec<Vec<SqlValue>>> {
@@ -2113,7 +2080,7 @@ fn resolve_table_at(
     })
 }
 
-fn row_from_bytes(schema: &crate::versioned::TableSchema, bytes: &[u8]) -> Result<Vec<SqlValue>> {
+pub(crate) fn row_from_bytes(schema: &crate::versioned::TableSchema, bytes: &[u8]) -> Result<Vec<SqlValue>> {
     let mut vals = decode_row(bytes)?;
     // schema 演化：补 NULL / 截断
     vals.resize(schema.columns.len(), SqlValue::Null);

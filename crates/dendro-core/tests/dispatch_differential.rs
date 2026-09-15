@@ -235,3 +235,103 @@ fn merge_source_ordered_output_without_overlay() {
     assert_eq!(top.len(), 3);
     assert_eq!(top[0], 12_000, "DESC 顶三：{top:?}");
 }
+
+/// v2c-4 流式归并源（exec::source）：多段覆盖 + col_deletes 重插 +
+/// 显式事务写（Q-14）的全语义矩阵，Main vs 行路径逐项等价。
+/// 段拓扑：checkpoint① 12k 行 → UPDATE/INSERT/DELETE → checkpoint②
+/// （段2 含同键新版本 + 新行；col_deletes 增 50 键）→ overlay 尾巴
+/// （含对 col_deletes 键的重插——段源抑制不波及尾巴）→ 未提交事务写。
+#[test]
+fn streaming_source_multi_segment_overlay_txn_matrix() {
+    let db = {
+        let db = Database::open(DbOptions {
+            store: StoreConfig::Memory,
+            ..Default::default()
+        })
+        .unwrap();
+        db.set_columnar(Arc::new(dendro_columnar::integrate::CbfColumnar {
+            row_group_rows: 4096,
+        }));
+        let mut s = db.new_session();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v INT)").unwrap();
+        for chunk in 0..12 {
+            let vals: Vec<String> = (0..1000)
+                .map(|i| {
+                    let id = chunk * 1000 + i + 1;
+                    format!("({id}, {id})")
+                })
+                .collect();
+            s.exec(&format!("INSERT INTO t VALUES {}", vals.join(",")))
+                .unwrap();
+        }
+        db.checkpoint_branch("main").unwrap(); // 段1：12k
+        // 增量：更新段1内 100 行（同键新版本）、插入 1k 新行、删除 50 行
+        s.exec("UPDATE t SET v = v + 100000 WHERE id <= 100").unwrap();
+        let ins: Vec<String> = (0..1000)
+            .map(|i| format!("({}, {})", 20000 + i, 20000 + i))
+            .collect();
+        s.exec(&format!("INSERT INTO t VALUES {}", ins.join(",")))
+            .unwrap();
+        s.exec("DELETE FROM t WHERE id BETWEEN 5000 AND 5049").unwrap();
+        db.checkpoint_branch("main").unwrap(); // 段2 + col_deletes
+        // overlay 尾巴：重插一个 col_deletes 键（段源抑制不波及尾巴）+
+        // 常规更新 + 墓碑
+        s.exec("INSERT INTO t VALUES (5005, 777777)").unwrap();
+        s.exec("UPDATE t SET v = v + 200000 WHERE id = 10001").unwrap();
+        s.exec("DELETE FROM t WHERE id = 10002").unwrap();
+        // 显式事务写（未提交；Q-14——AP 路径读事务的写）。
+        // 断言必须在事务存活期内做（session drop = 回滚）
+        s.exec("BEGIN").unwrap();
+        s.exec("UPDATE t SET v = v + 300000 WHERE id = 10003").unwrap();
+        s.exec("DELETE FROM t WHERE id = 10004").unwrap();
+        s.exec("SET dendro.force_source = 'main'").unwrap();
+        let r = s.exec("SELECT v FROM t WHERE id = 10003").unwrap();
+        let v = match &r[0] {
+            Output::Rows(rs) => rs.text_rows()[0][0].clone().unwrap(),
+            _ => panic!(),
+        };
+        assert_eq!(v, "310003", "事务写必须在 AP 路径可见（Q-14）");
+        let r2 = s.exec("SELECT v FROM t WHERE id = 10004").unwrap();
+        assert!(
+            matches!(&r2[0], Output::Rows(rs) if rs.text_rows().is_empty()),
+            "事务删除必须在 AP 路径可见（Q-14）"
+        );
+        s.exec("SET dendro.force_source = 'auto'").unwrap();
+        s.exec("ROLLBACK").unwrap(); // 回滚——后续差分不带事务写
+        db
+    };
+    // 全表等价（13k - 50 + 1 行级别；两路径行集必须一致）
+    diff(&db, "SELECT id, v FROM t", &["auto", "main", "fallback"]);
+    // 特征值逐项断言（main 臂）
+    let q = |sql: &str| -> Vec<i64> {
+        let (_, rows) = run(&db, "main", sql);
+        rows.into_iter()
+            .map(|r| match r[1] {
+                SqlValue::Int64(v) => v,
+                SqlValue::Int32(v) => v as i64,
+                _ => panic!("{r:?}"),
+            })
+            .collect()
+    };
+    // 段2 覆盖段1（id=1 两段都有 → 新版本 +100000）
+    assert_eq!(q("SELECT id, v FROM t WHERE id = 1"), vec![100001]);
+    // col_deletes 抑制段源，但 overlay 重插的 5005 可见（值 777777）
+    assert_eq!(q("SELECT id, v FROM t WHERE id = 5005"), vec![777777]);
+    // 删除区间外相邻键正常（5050；区间内 5004 不可见）
+    assert_eq!(q("SELECT id, v FROM t WHERE id = 5050"), vec![5050]);
+    assert_eq!(run(&db, "main", "SELECT id FROM t WHERE id = 5004").1.len(), 0);
+    // overlay 更新 + 墓碑
+    assert_eq!(q("SELECT id, v FROM t WHERE id = 10001"), vec![210001]);
+    assert_eq!(run(&db, "main", "SELECT id FROM t WHERE id = 10002").1.len(), 0);
+    // 事务已回滚（fixture 尾部 ROLLBACK）——写不可见
+    assert_eq!(q("SELECT id, v FROM t WHERE id = 10003"), vec![10003]);
+    assert_eq!(q("SELECT id, v FROM t WHERE id = 10004"), vec![10004]);
+    // pk 范围 + LIMIT 早停同口径
+    diff(
+        &db,
+        "SELECT id FROM t WHERE id > 19999 ORDER BY id LIMIT 5",
+        &["main", "fallback"],
+    );
+    // 行数等价（两路径 count 一致）
+    diff(&db, "SELECT count(*) FROM t", &["main", "fallback"]);
+}
