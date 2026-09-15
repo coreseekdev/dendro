@@ -77,10 +77,12 @@ pub fn register_cancel(pid: i32, token: std::sync::Arc<std::sync::atomic::Atomic
 }
 
 pub fn cancel_by_pid(pid: i32) -> bool {
-    cancel_registry().get(&pid).map_or(false, |t| {
+    if let Some(t) = cancel_registry().get(&pid) {
         t.store(true, Ordering::SeqCst);
         true
-    })
+    } else {
+        false
+    }
 }
 
 fn unregister_cancel(pid: i32) {
