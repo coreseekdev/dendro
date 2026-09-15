@@ -280,12 +280,44 @@ pub(crate) fn eval_query(
     };
     if !order_exprs.is_empty() {
         let has_input = out_rows.len() == tv.rows.len();
-        apply_order(
-            &mut out_rows,
-            &out_names,
-            order_exprs,
-            if has_input { Some(&tv) } else { None },
-        )?;
+        // v2c-2：SortOp 接线——键提取仍用 apply_order 逻辑（别名/序数/
+        // 未投影列回退的复杂度不值得管线化），排序本体走 SortOp
+        // （breaker 形态；与手写 sort_by 的差分在 operator_tests）
+        let asc: Vec<bool> = order_exprs
+            .iter()
+            .map(|o| o.options.asc.unwrap_or(true))
+            .collect();
+        let cols = cols_lookup(&out_names);
+        let cols_in = if has_input {
+            Some(cols_lookup(&tv.names))
+        } else {
+            None
+        };
+        // 键提取（Schwartzian——apply_order 的键提取段原样搬运）
+        let mut keyed_rows: Vec<Vec<SqlValue>> = Vec::with_capacity(out_rows.len());
+        for (ri, row) in out_rows.iter().enumerate() {
+            let mut kr = Vec::with_capacity(asc.len() + row.len());
+            for o in order_exprs {
+                let v = order_key_value(o, row, ri, &cols, &cols_in, &tv, has_input)?;
+                kr.push(v);
+            }
+            kr.extend(row.iter().cloned());
+            keyed_rows.push(kr);
+        }
+        let mut sort_op = crate::exec::pipeline::SortOp::new(asc);
+        let mut sink = crate::exec::pipeline::CollectSink::new(None);
+        let mut src: Vec<Result<Vec<Vec<SqlValue>>>> = vec![Ok(keyed_rows)];
+        let mut it = src.into_iter();
+        let mut pipe_cx = crate::exec::pipeline::PipeCtx::new(
+            vec![],
+            sess.stmt_deadline,
+            sess.cancel_token.clone(),
+        );
+        crate::exec::pipeline::drive(&mut pipe_cx, &mut it, &mut sort_op, &mut sink)?;
+        // SortOp.push 内部已 drain 键前缀（键-行分离），sink.rows 即纯数据行
+        // ——**不得再 drain**（曾双重 drain 把数据列删空 → make_record_set
+        // 空行越界 panic，merge_source 测试首跑即抓）
+        out_rows = sink.rows;
     }
     // OFFSET/LIMIT（0.62: limit_clause）
     if let Some(lc) = &q.limit_clause {
@@ -2351,6 +2383,66 @@ fn collect_agg_calls(
 }
 
 // ---------- ORDER ----------
+
+/// ORDER BY 键提取（apply_order 的键提取段函数化——逻辑零改动）：
+/// 别名→投影列 / 序数 / 未投影列回退输入行 / 任意表达式
+fn order_key_value(
+    o: &OrderByExpr,
+    row: &[SqlValue],
+    ri: usize,
+    cols: &std::collections::HashMap<String, usize>,
+    cols_in: &Option<std::collections::HashMap<String, usize>>,
+    tv: &TableView,
+    has_input: bool,
+) -> Result<SqlValue> {
+    match &o.expr {
+        Expr::Identifier(id) => {
+            let low = id.value.to_ascii_lowercase();
+            match cols.get(&low) {
+                Some(&i) => Ok(row[i].clone()),
+                None => match (cols_in.as_ref(), has_input) {
+                    (Some(ic), true) => {
+                        let in_row = &tv.rows[ri];
+                        match ic.get(&low) {
+                            Some(&j) => Ok(in_row[j].clone()),
+                            None => expr::eval(&o.expr, in_row, &|n| {
+                                ic.get(&n.to_ascii_lowercase()).copied()
+                            }),
+                        }
+                    }
+                    _ => expr::eval(&o.expr, row, &|n| {
+                        cols.get(&n.to_ascii_lowercase()).copied()
+                    }),
+                },
+            }
+        }
+        Expr::Value(vws) => {
+            if let PV::Number(n, _) = &vws.value {
+                let idx: usize = n
+                    .parse()
+                    .map_err(|_| SqlError::syntax("bad ORDER BY ordinal"))?;
+                row.get(idx - 1)
+                    .cloned()
+                    .ok_or_else(|| SqlError::syntax("ORDER BY out of range"))
+            } else {
+                expr::eval(&o.expr, row, &|n| {
+                    cols.get(&n.to_ascii_lowercase()).copied()
+                })
+            }
+        }
+        e => {
+            if let (Some(ic), true) = (cols_in.as_ref(), has_input) {
+                let in_row = &tv.rows[ri];
+                match expr::eval(e, in_row, &|n| ic.get(&n.to_ascii_lowercase()).copied()) {
+                    Ok(v) => Ok(v),
+                    Err(_) => expr::eval(e, row, &|n| cols.get(&n.to_ascii_lowercase()).copied()),
+                }
+            } else {
+                expr::eval(e, row, &|n| cols.get(&n.to_ascii_lowercase()).copied())
+            }
+        }
+    }
+}
 
 fn apply_order(
     rows: &mut Vec<Vec<SqlValue>>,
