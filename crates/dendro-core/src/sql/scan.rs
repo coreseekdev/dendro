@@ -107,16 +107,7 @@ pub(crate) fn eval_query(
             right,
         } => {
             use sqlparser::ast::{SetOperator, SetQuantifier};
-            if !matches!(op, SetOperator::Union) {
-                return Err(SqlError::not_supported(format!(
-                    "set op: {op:?}（v1 仅 UNION）"
-                )));
-            }
-            // SQL 标准：UNION 默认 DISTINCT（去重），UNION ALL 保留重复
-            let all = matches!(
-                set_quantifier,
-                SetQuantifier::All | SetQuantifier::AllByName
-            );
+            // 三算子统一（S-4 v2）：UNION / EXCEPT / INTERSECT
             let mk_query = |body: Box<SetExpr>| sqlparser::ast::Query {
                 with: None,
                 body,
@@ -129,30 +120,83 @@ pub(crate) fn eval_query(
                 format_clause: None,
                 pipe_operators: Vec::new(),
             };
-            // PG：尾部 ORDER BY/LIMIT 属于整个 UNION 结果——不传给子查询，
-            // 合并后统一应用（曾传给左侧导致右侧乱序混入）
             let lt = eval_query(db, sess, &mk_query(left.clone()), snapshot)?;
             let rt = eval_query(db, sess, &mk_query(right.clone()), snapshot)?;
             if lt.names.len() != rt.names.len() {
                 return Err(SqlError::syntax(format!(
-                    "UNION: column count mismatch {}/{}",
+                    "set op: column count mismatch {}/{}",
                     lt.names.len(),
                     rt.names.len()
                 )));
             }
-            let mut rows = lt.rows;
-            rows.extend(rt.rows);
-            if !all {
-                let mut seen = std::collections::HashSet::new();
-                rows.retain(|r| {
-                    let key: String = r
-                        .iter()
-                        .map(|v| expr::to_text(v.clone()))
-                        .collect::<Vec<_>>()
-                        .join("\u{1}");
-                    seen.insert(key)
-                });
-            }
+            let row_key = |r: &Vec<SqlValue>| -> String {
+                r.iter()
+                    .map(|v| expr::to_text(v.clone()))
+                    .collect::<Vec<_>>()
+                    .join("\u{1}")
+            };
+            let right_keys: std::collections::HashSet<String> =
+                rt.rows.iter().map(&row_key).collect();
+            let all = matches!(
+                set_quantifier,
+                SetQuantifier::All | SetQuantifier::AllByName
+            );
+            let mut rows: Vec<Vec<SqlValue>> = match op {
+                SetOperator::Union => {
+                    let mut combined = lt.rows;
+                    combined.extend(rt.rows);
+                    if !all {
+                        let mut seen = std::collections::HashSet::new();
+                        combined.retain(|r| seen.insert(row_key(r)));
+                    }
+                    combined
+                }
+                SetOperator::Except => {
+                    if all {
+                        // EXCEPT ALL：多重集差——右删 min(count_l, count_r) 次
+                        let mut right_counts: std::collections::HashMap<String, u64> =
+                            std::collections::HashMap::new();
+                        for r in &rt.rows {
+                            *right_counts.entry(row_key(r)).or_insert(0) += 1;
+                        }
+                        lt.rows
+                            .into_iter()
+                            .filter(|r| {
+                                let k = row_key(r);
+                                match right_counts.get_mut(&k) {
+                                    Some(c) if *c > 0 => {
+                                        *c -= 1;
+                                        false
+                                    }
+                                    _ => true,
+                                }
+                            })
+                            .collect()
+                    } else {
+                        // EXCEPT（DISTINCT）：集差 + 去重
+                        let mut seen = std::collections::HashSet::new();
+                        lt.rows
+                            .into_iter()
+                            .filter(|r| {
+                                let k = row_key(r);
+                                !right_keys.contains(&k) && seen.insert(k)
+                            })
+                            .collect()
+                    }
+                }
+                SetOperator::Intersect => {
+                    let mut result = Vec::new();
+                    let mut seen = std::collections::HashSet::new();
+                    for r in lt.rows {
+                        let k = row_key(&r);
+                        if right_keys.contains(&k) && (all || seen.insert(k)) {
+                            result.push(r);
+                        }
+                    }
+                    result
+                }
+                other => return Err(SqlError::not_supported(format!("set op: {other:?}"))),
+            };
             // 外层 ORDER BY / LIMIT 统一应用到合并结果
             let order_exprs: &[sqlparser::ast::OrderByExpr] =
                 match q.order_by.as_ref().map(|o| &o.kind) {
@@ -199,7 +243,7 @@ pub(crate) fn eval_query(
                     sess.cancel_token.clone(),
                 );
                 crate::exec::pipeline::drive(&mut pipe_cx, &mut it, &mut sort_op, &mut sink)?;
-                rows = sink.rows; // SortOp 已去键前缀
+                rows = sink.rows;
             }
             if let Some(sqlparser::ast::LimitClause::LimitOffset { limit, offset, .. }) =
                 &q.limit_clause

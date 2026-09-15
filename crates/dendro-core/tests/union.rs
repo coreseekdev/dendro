@@ -103,3 +103,94 @@ fn union_nested() {
         .unwrap();
     assert_eq!(r.row_count(), 4, "三路：x,y,z,w");
 }
+
+#[test]
+fn except_removes_right_from_left() {
+    let mut c = Connection::memory().unwrap();
+    c.execute("CREATE TABLE s1 (id BIGINT PRIMARY KEY, v BIGINT)")
+        .unwrap();
+    c.execute("CREATE TABLE s2 (id BIGINT PRIMARY KEY, v BIGINT)")
+        .unwrap();
+    c.execute("INSERT INTO s1 VALUES (1, 1), (2, 2), (3, 3)")
+        .unwrap();
+    c.execute("INSERT INTO s2 VALUES (1, 2), (2, 4)").unwrap();
+    let r = c
+        .query("SELECT v FROM s1 EXCEPT SELECT v FROM s2 ORDER BY v")
+        .unwrap();
+    let vs: Vec<i64> = r
+        .rows
+        .iter()
+        .filter_map(|r| match r[0] {
+            dendro_core::types::SqlValue::Int32(v) => Some(v as i64),
+            dendro_core::types::SqlValue::Int64(v) => Some(v),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(vs, vec![1, 3], "EXCEPT: {vs:?}（去掉 2 和 4）");
+}
+
+#[test]
+fn intersect_common_rows() {
+    let mut c = Connection::memory().unwrap();
+    c.execute("CREATE TABLE s1 (id BIGINT PRIMARY KEY, v BIGINT)")
+        .unwrap();
+    c.execute("CREATE TABLE s2 (id BIGINT PRIMARY KEY, v BIGINT)")
+        .unwrap();
+    c.execute("INSERT INTO s1 VALUES (1, 1), (2, 2), (3, 3)")
+        .unwrap();
+    c.execute("INSERT INTO s2 VALUES (1, 2), (2, 4)").unwrap();
+    let r = c
+        .query("SELECT v FROM s1 INTERSECT SELECT v FROM s2 ORDER BY v")
+        .unwrap();
+    let vs: Vec<i64> = r
+        .rows
+        .iter()
+        .filter_map(|r| match r[0] {
+            dendro_core::types::SqlValue::Int32(v) => Some(v as i64),
+            dendro_core::types::SqlValue::Int64(v) => Some(v),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(vs, vec![2], "INTERSECT: {vs:?}（仅 2 在两侧）");
+}
+
+#[test]
+fn except_all_keeps_dups() {
+    let mut c = Connection::memory().unwrap();
+    c.execute("CREATE TABLE s1 (id BIGINT PRIMARY KEY, v BIGINT)")
+        .unwrap();
+    c.execute("CREATE TABLE s2 (id BIGINT PRIMARY KEY, v BIGINT)")
+        .unwrap();
+    c.execute("INSERT INTO s1 VALUES (1, 1), (2, 1), (3, 2)")
+        .unwrap();
+    c.execute("INSERT INTO s2 VALUES (1, 1)").unwrap();
+    let r = c
+        .query("SELECT v FROM s1 EXCEPT ALL SELECT v FROM s2 ORDER BY v")
+        .unwrap();
+    let vs: Vec<i64> = r
+        .rows
+        .iter()
+        .filter_map(|r| match r[0] {
+            dendro_core::types::SqlValue::Int32(v) => Some(v as i64),
+            dendro_core::types::SqlValue::Int64(v) => Some(v),
+            _ => None,
+        })
+        .collect();
+    // EXCEPT ALL: 左侧 [1,1,2] 减右侧 [1]（一次）→ [1,2]
+    assert_eq!(vs, vec![1, 2], "EXCEPT ALL 保留重复：{vs:?}");
+}
+
+#[test]
+fn intersect_empty() {
+    let mut c = Connection::memory().unwrap();
+    c.execute("CREATE TABLE s1 (id BIGINT PRIMARY KEY, v BIGINT)")
+        .unwrap();
+    c.execute("CREATE TABLE s2 (id BIGINT PRIMARY KEY, v BIGINT)")
+        .unwrap();
+    c.execute("INSERT INTO s1 VALUES (1, 1)").unwrap();
+    c.execute("INSERT INTO s2 VALUES (1, 2)").unwrap();
+    let r = c
+        .query("SELECT v FROM s1 INTERSECT SELECT v FROM s2")
+        .unwrap();
+    assert_eq!(r.row_count(), 0, "无交集");
+}
