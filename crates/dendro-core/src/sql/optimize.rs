@@ -13,7 +13,7 @@ pub fn optimize(e: &Expr) -> Expr {
             let r = optimize(right);
             fold_binary(op, &l, &r).unwrap_or(Expr::BinaryOp {
                 left: Box::new(l),
-                op: *op,
+                op: op.clone(),
                 right: Box::new(r),
             })
         }
