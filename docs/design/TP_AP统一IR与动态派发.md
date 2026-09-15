@@ -338,3 +338,36 @@ chunk），不落在执行模型上。DuckDB 以此同时服务嵌入式 TP 与 
 3. **arrow-rs RecordBatch 不可变与执行 Chunk 的双类型**：边界转换器
    单点维护（`chunk→RecordBatch` 零拷贝；RecordBatch 仅作出口格式），
    防止两套类型逻辑漂移——与 CBF/RecordSet 既有关系一致。
+
+### 9.5 与 TP 主流执行器的关系（MySQL/PG 口径）
+
+**事实**：wire 主流 TP 确实不走向量化管线——MySQL 8.0 是行式迭代执行器
+（RowIterator 协议，逐行）；PG 是 tuple-at-a-time 需求驱动管线
+（ExecProcNode），标量表达式走 PG11 的步列表解释器（EEOP_* 编译步）
++ 可选 LLVM JIT。**为什么他们行式**：① 行堆 MVCC 存储——可见性
+（xmin/xmax）逐元组检查，行式执行与存储同构；② 30 年遗产路径；③
+他们的 AP 答案恰恰是**外挂第二引擎**：
+
+| 主流 TP | HTAP 答案 | 形态 |
+|---------|----------|------|
+| MySQL | HeatWave（内存列存加速集群）| 双引擎外挂 |
+| PostgreSQL | Citus / AlloyDB 列存加速器 / pg_duckdb（把 DuckDB 整个嵌进 PG）| 双引擎外挂 |
+| TiDB（MySQL wire）| TiFlash 列存副本 | 双引擎外挂 |
+
+**这正是本提案否定的"一份数据两种形态"**——主流 TP 世界用血泪证明
+双引擎的代价（同步延迟、一致性口径、运维双倍）。dendro 的差异化恰在
+反面：**wire 兼容 ≠ 执行器兼容**（CockroachDB 说 PG wire、ReadySet 说
+MySQL/PG wire，内部执行器都是自家形态）；且 dendro 的结果货币本来就是
+Arrow——今天每条点查的 `Output::Rows(RecordSet{batches})` 都在构建
+RecordBatch，chunk-plane 只是把中间执行层也统一，点查成本结构没有
+质变。
+
+**从 PG 学一件真东西（采纳进 v2b）**：PG11 表达式步列表——标量表达式
+在 prepare 期编译为 `EEOP_*` 步列表、执行期循环解释、可选 JIT。v2b
+绑定计划的 ScalarExpr 形态由此定：**AST → 步列表**（prepare 一次），
+步列表在 chunk 列上求值 = 向量化表达式（AP），在 1 行 chunk 上求值 =
+行语义（TP）——同一表示两种粒度，与 chunk-plane 正交且互惠。
+
+**验收线重申**：TP 基准 ≥ 现状 325k txn/s 的 85%；退化管线 + 线程本地
+chunk 池 + 计划缓存三重压制常数开销。若此线不达，优先优化 chunk 池
+而非重开户VBE路线。
