@@ -14,6 +14,7 @@ pub mod versioned;
 pub mod wal;
 
 pub mod consensus;
+pub mod exec;
 pub mod journal;
 pub mod kv;
 pub mod memtx;

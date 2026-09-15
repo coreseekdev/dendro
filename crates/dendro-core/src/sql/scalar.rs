@@ -781,8 +781,6 @@ pub fn eval_row(
     Err(SqlError::internal("scalar: program missing terminator"))
 }
 
-
-
 // ---------------------------------------------------------------------------
 // B4：反汇编与再解析（EXPLAIN 步列表段 / R4 round-trip；09 文本表示的
 // 标量方言前奏——正式 dendro.ir 格式随 v2c-1 落地，此处先立 round-trip

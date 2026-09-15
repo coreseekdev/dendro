@@ -676,6 +676,7 @@ impl Database {
             statement_timeout_ms: self.opts.default_statement_timeout_ms,
             stmt_deadline: None,
             cancel_token: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            force_source: None,
         }
     }
 
@@ -1564,6 +1565,10 @@ pub struct Session {
     pub(crate) stmt_deadline: Option<std::time::Instant>,
     /// 语句取消令牌（S-3 后续：CancelRequest 从另一连接设置）
     pub(crate) cancel_token: Arc<std::sync::atomic::AtomicBool>,
+    /// 强制派发目标（v2c-1 / ADR-5）：仅调试/测试构建可经
+    /// `SET dendro.force_source` 设置（release 的 SET 处理忽略——调试面
+    /// 不进生产语义）。差分测试的枚举轴。
+    pub(crate) force_source: Option<crate::sql::dispatch::ScanAlt>,
 }
 
 impl Session {

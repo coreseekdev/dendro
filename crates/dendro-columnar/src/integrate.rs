@@ -163,9 +163,11 @@ impl ColumnarStore for CbfColumnar {
     ) -> Result<Vec<RecordBatch>> {
         let mut out = Vec::new();
         for seg in segments {
-            // 段级 pk 剪枝：开区间 (lo,hi) 与 [min,max] 不相交则整段跳过
+            // 段级 pk 剪枝：开区间 (lo,hi) 与 [min,max] 不相交则整段跳过。
+            // 账本 #24：None=无界——不得用 Option 序比较（None<=Some 恒真
+            // 会把单边开范围整段剪掉）
             if let Some((lo, hi)) = pk_range {
-                if hi <= &Some(seg.pk_min) || lo >= &Some(seg.pk_max) {
+                if hi.is_some_and(|h| h <= seg.pk_min) || lo.is_some_and(|l| l >= seg.pk_max) {
                     continue;
                 }
             }
@@ -182,7 +184,8 @@ impl ColumnarStore for CbfColumnar {
                 let pk = &rgm.cols[0];
                 if let Some((lo, hi)) = pk_range {
                     if let (Some(b0), Some(bl)) = (pk.blocks.first(), pk.blocks.last()) {
-                        if hi <= &Some(b0.min) || lo >= &Some(bl.max) {
+                        // 账本 #24 同修：None=无界（is_some_and 判定）
+                        if hi.is_some_and(|h| h <= b0.min) || lo.is_some_and(|l| l >= bl.max) {
                             continue;
                         }
                     }

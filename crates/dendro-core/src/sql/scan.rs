@@ -647,33 +647,47 @@ fn table_scan_opt(
             }
         }
     }
-    // 快路径 1：单表 + pk 等值/IN 且无其他复杂谓词 → 直查
-    if let Some((schema, entry)) = try_pk_pushdown(db, sess, tf, selection, snapshot)? {
-        let sel = selection.expect("pushdown implies selection");
-        return build_point_view(db, sess, &schema, &entry, sel, snapshot);
+    // v2c-1：派发器决策（ir-spec 05——原快路径 if-else 链的纯函数化）。
+    // 执行器保持内部守卫（决策与执行间的竞态由执行器兜底回落）。
+    match crate::sql::dispatch::dispatch_scan(db, sess, tf, selection, snapshot)? {
+        crate::sql::dispatch::ScanAlt::CurrentPoint => {
+            if let Some((schema, entry)) = try_pk_pushdown(db, sess, tf, selection, snapshot)? {
+                let sel = selection.expect("pushdown implies selection");
+                return build_point_view(db, sess, &schema, &entry, sel, snapshot);
+            }
+            table_scan(db, sess, tf, snapshot, pushdown_limit, selection)
+        }
+        crate::sql::dispatch::ScanAlt::MainPlusDelta => {
+            if let Some(tv) = try_ap_scan(db, sess, tf, selection, snapshot, pushdown_limit)? {
+                return Ok(tv);
+            }
+            table_scan(db, sess, tf, snapshot, pushdown_limit, selection)
+        }
+        // RowFallback 即现行 table_scan（prolly+overlay 行路径）；
+        // HistoryScan 由 table_scan 内部按 version 子句路由（time_travel_scan）
+        crate::sql::dispatch::ScanAlt::HistoryScan | crate::sql::dispatch::ScanAlt::RowFallback => {
+            table_scan(db, sess, tf, snapshot, pushdown_limit, selection)
+        }
     }
-    // 快路径 2：列存投影可用（AP 路径，>= 1 万行）→ CBF 扫描 + zone map 剪枝
-    if let Some(tv) = try_ap_scan(db, sess, tf, selection, snapshot, pushdown_limit)? {
-        return Ok(tv);
-    }
-    table_scan(db, sess, tf, snapshot, pushdown_limit, selection)
 }
 
 /// AP 路径：表有列存投影且行数达标时走 CBF 扫描
-fn try_ap_scan(
+/// AP 路径资格判定（v2c-1 与 dispatch 共用的单一事实源）：
+/// 带版本子句 / 非表 / 无列存 / 解析失败 / 段空或行数 < 1 万 → 不适用。
+/// `bypass_threshold`：force_source 调试旁路行数阈值（结构性条件
+/// （段存在）仍强制——无段无法执行）。
+pub(crate) fn ap_resolve(
     db: &Database,
-    sess: &mut Session,
+    sess: &Session,
     tf: &TableFactor,
-    selection: Option<&Expr>,
-    snapshot: u64,
-    pushdown_limit: Option<usize>,
-) -> Result<Option<TableView>> {
+    bypass_threshold: bool,
+) -> Option<(crate::versioned::TableSchema, crate::versioned::TableEntry)> {
     let name = match tf {
         TableFactor::Table { name, version, .. } => {
             // P1-10：AP 列存只有当前物化段——带版本子句的查询走 time travel
             // 路径（列存历史快照 v2；此前 version 被忽略 → 历史查询读当前段）
             if version.is_some() {
-                return Ok(None);
+                return None;
             }
             name.0
                 .iter()
@@ -682,11 +696,9 @@ fn try_ap_scan(
                 .collect::<Vec<_>>()
                 .join(".")
         }
-        _ => return Ok(None),
+        _ => return None,
     };
-    let Some(ap) = db.columnar() else {
-        return Ok(None);
-    };
+    db.columnar()?;
     let short_name = name.rsplit('.').next().unwrap_or(&name).to_string();
     // 显式事务：以 BEGIN 冻结的 catalog 根解析（Q-14——此前 AP 路径用当前
     // head，事务内树的可见性与行路径不一致）
@@ -698,12 +710,30 @@ fn try_ap_scan(
         Some(r) => resolve_table_at(db, Some(&r), &short_name),
         None => resolve_table(db, &sess.branch, &short_name),
     };
-    let Ok((schema, entry)) = resolved else {
+    let (schema, entry) = resolved.ok()?;
+    if entry.col_segments.is_empty() {
+        return None;
+    }
+    if !bypass_threshold && entry.col_rows < 10_000 {
+        return None;
+    }
+    Some((schema, entry))
+}
+
+fn try_ap_scan(
+    db: &Database,
+    sess: &mut Session,
+    tf: &TableFactor,
+    selection: Option<&Expr>,
+    snapshot: u64,
+    pushdown_limit: Option<usize>,
+) -> Result<Option<TableView>> {
+    let Some((schema, entry)) = ap_resolve(db, sess, tf, false) else {
         return Ok(None);
     };
-    if entry.col_segments.is_empty() || entry.col_rows < 10_000 {
+    let Some(ap) = db.columnar() else {
         return Ok(None);
-    }
+    };
     // pk 范围提取（order 域，开区间语义收集）
     let mut pk_range: Option<(Option<u64>, Option<u64>)> = None;
     if schema.pk.len() == 1 {
@@ -736,7 +766,9 @@ fn try_ap_scan(
     for seg in entry.col_segments.iter().rev() {
         // 段级 pk 剪枝
         if let Some((lo, hi)) = pk_range {
-            if hi <= Some(seg.pk_min) || lo >= Some(seg.pk_max) {
+            // 账本 #24：None=无界——Option 序下 None<=Some(x) 恒真曾把
+            // 单边开范围（hi=None）整段剪掉（AP id>N 返回 0 行）
+            if hi.is_some_and(|h| h <= seg.pk_min) || lo.is_some_and(|l| l >= seg.pk_max) {
                 continue;
             }
         }
@@ -1119,7 +1151,7 @@ fn pk_range_keys(
 }
 
 /// 判定 WHERE 是否为 pk 直查形态
-fn try_pk_pushdown(
+pub(crate) fn try_pk_pushdown(
     db: &Database,
     sess: &mut Session,
     tf: &TableFactor,

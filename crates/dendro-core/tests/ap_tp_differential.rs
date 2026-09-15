@@ -21,6 +21,11 @@ fn ids(db: &Arc<Database>, sql: &str) -> Vec<i64> {
 fn ap_tp_same_visible_rows_after_checkpoint() {
     // 12k 行（≥10k 触发列存）→ checkpoint 物化 → 无 overlay → 两路径同果
     let db = Database::open(DbOptions::memory()).unwrap();
+    // I-H1 修真（v2c-1 实证）：此前未接线 columnar——两侧恒走行路径，
+    // "差分"空转通过。接线后 AP 路径真实参与。
+    db.set_columnar(Arc::new(dendro_columnar::integrate::CbfColumnar {
+        row_group_rows: 4096,
+    }));
     {
         let mut s = db.new_session();
         s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
@@ -42,6 +47,11 @@ fn ap_tp_same_visible_rows_after_checkpoint() {
 fn ap_tp_overlay_merge_consistent() {
     // checkpoint 后追加 overlay 行 → AP/TP 合并结果一致
     let db = Database::open(DbOptions::memory()).unwrap();
+    // I-H1 修真（v2c-1 实证）：此前未接线 columnar——两侧恒走行路径，
+    // "差分"空转通过。接线后 AP 路径真实参与。
+    db.set_columnar(Arc::new(dendro_columnar::integrate::CbfColumnar {
+        row_group_rows: 4096,
+    }));
     {
         let mut s = db.new_session();
         s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
@@ -76,6 +86,11 @@ fn ap_tp_overlay_merge_consistent() {
 fn ap_tp_delete_reinsert_consistency() {
     // DELETE → reinsert 交错：列存 deletion vector 与行路径一致
     let db = Database::open(DbOptions::memory()).unwrap();
+    // I-H1 修真（v2c-1 实证）：此前未接线 columnar——两侧恒走行路径，
+    // "差分"空转通过。接线后 AP 路径真实参与。
+    db.set_columnar(Arc::new(dendro_columnar::integrate::CbfColumnar {
+        row_group_rows: 4096,
+    }));
     let mut s = db.new_session();
     s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
         .unwrap();

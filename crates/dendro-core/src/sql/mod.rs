@@ -51,6 +51,8 @@ pub fn parse_only(sql: &str, d: SqlDialect) -> std::result::Result<String, Strin
         .map_err(|e| e.message)
 }
 
+/// v2c-1：coverage 派发器（扫描路径选择的纯函数化 + force_source）。
+pub mod dispatch;
 /// v2b B1：标量层步列表（编译 + eval_row）。compile-or-fallback 合同。
 pub mod scalar;
 
@@ -868,6 +870,35 @@ pub(crate) fn exec_statement(
                     .collect::<Vec<_>>()
                     .join(".")
                     .to_ascii_lowercase();
+                // v2c-1（ADR-5）：`SET dendro.force_source = '…'`（仅调试/
+                // 测试构建接受；release 忽略——调试面不进生产语义）
+                if name == "dendro.force_source" {
+                    #[cfg(any(debug_assertions, test))]
+                    {
+                        let v = match values.first() {
+                            Some(sqlparser::ast::Expr::Value(v)) => match &v.value.clone() {
+                                PV::SingleQuotedString(sv) => sv.clone(),
+                                PV::DoubleQuotedString(sv) => sv.clone(),
+                                other => other.to_string(),
+                            },
+                            Some(other) => other.to_string(),
+                            None => String::new(),
+                        };
+                        sess.force_source = crate::sql::dispatch::parse_force(&v)?;
+                        return Ok(Some(Output::Command {
+                            tag: "SET".into(),
+                            affected: 0,
+                        }));
+                    }
+                    #[cfg(not(any(debug_assertions, test)))]
+                    {
+                        return Ok(Some(Output::Command {
+                            tag: "SET".into(),
+                            affected: 0,
+                        }));
+                    }
+                }
+                // S-3：`SET statement_timeout = <毫秒>` 是唯一实语义的会话参数
                 if name == "statement_timeout" {
                     let ms = values.first().and_then(|e| match e {
                         sqlparser::ast::Expr::Value(vws) => match &vws.value {
