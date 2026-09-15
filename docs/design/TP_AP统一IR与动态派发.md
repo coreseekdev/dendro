@@ -129,3 +129,82 @@ R6 P0 教训）、I-H1 差分、I-C4 段退休界。
    一致性口径（v2c-3 前必须定）。
 4. 跨表 join 的 placement 传播：Delta×Main join = 3 种层组合 × pipeline
    边界——v1 先限制"join 两侧同层"，跨层 join 归入 v3。
+
+## 7. IR 构造：VDBE × Arrow 的双方言合成（dVBE + BatchFlow）
+
+> 追问（2026-09-15）：能否参考 VDBE 与 Arrow 的设计思路构造 IR？
+> 结论：**能，且必须分层取用**——VDBE 与 Arrow 不在同一层，它们分别回答
+> IR 的两个子问题：VDBE 回答"**执行形态**"（指令如何驱动存储游标），
+> Arrow 回答"**数据货币**"（算子间传什么）。合成 = 同一逻辑 IR 的两个
+> **执行方言**。
+
+### 7.1 分层图景
+
+```
+逻辑 IR（PlanNode<T,D> + placement/coverage 属性束）   ← 派发推理在这里
+    │ 降低（lowering）二选一或混合
+    ├── TP 方言 dVBE：寄存器字节码 + 游标抽象           ← 取自 VDBE
+    └── AP 方言 BatchFlow：RecordBatch 数据流 + 纯内核  ← 取自 Arrow
+```
+
+### 7.2 从 VDBE 取什么（四件，及 dendro 对应物）
+
+1. **游标抽象是统一异构存储的关键**——VDBE 用 OpenRead/SeekGE/Next/Column
+   一套指令操作 btree 游标，不关心页层细节。dendro 版：`trait Cursor
+   { seek(pk); next() -> Row; column(i) }`，按放置层实现三个游标：
+   `MemtxCursor`（Delta，snapshot_rows_in_range 已有 BTreeMap range）、
+   `CbfCursor`（Main，段批切片）、`ProllyCursor`（History，node 流）。
+   **同一套指令跨三层执行——这就是"统一"的落点**：派发器选的是游标
+   实例，不是指令集。
+2. **寄存器式扁平程序**（非栈式）：prepare 一次编译成线性指令 +
+   寄存器数组，执行循环一个 match。对 TP 的分支形计划（点查、索引
+   seek、小 join）派发开销最低。v2c-1 先用"计划树解释器 + 游标"
+   （≈dVBE-0，即今天 exec 的游标参数化改写）；**拍平成寄存器程序
+   （dVBE-1）仅在 profiling 显示树遍历开销显著时做**——避免过早
+   引入字节码维护负担。
+3. **prepare 期绑定 + schema cookie 失效**：SQLite 靠 schema cookie
+   在 schema 变更时 reprepare。与 v2b 绑定计划的"catalog 版本进缓存键"
+   完全同构——两个独立设计收敛于同一机制，视为验证。
+4. **EXPLAIN 即免费产物**：线性指令流天然可打印（现 EXPLAIN 是占位
+   字符串）。子查询/关联子查询用 VDBE 的 coroutine 模式（OP_InitCoroutine）
+   而非内联展开。
+
+### 7.3 从 Arrow 取什么（三件）
+
+1. **RecordBatch 是算子间唯一数据货币**——AP 方言的每个算子是
+   `RecordBatch → RecordBatch` 纯函数 + selection vector。dendro 已经
+   天然对齐：CBF 解码产出 RecordBatch（columnar/reader.rs read_cbf）、
+   RecordSet 持 batches（types.rs:147）。**不自造列存格式**。
+2. **零拷贝切片**：Arrow buffer+offset 切片让"CbfCursor 把批切片伪装成
+   行游标"不付出物化代价——dVBE 读 Main 层时按需 gather，批仍以批流转。
+3. **物理类型格**：SqlValue ↔ Arrow 类型已有转换（ColumnMeta/rows_from_batches）。
+   把它升格为 IR 的值格（value lattice）——寄存器（dVBE）与批列
+   （BatchFlow）是同一值格的两种物理视图，跨方言转换只发生在这里。
+
+### 7.4 桥：物化边界 = pipeline 边界
+
+跨方言只允许在显式边界发生，且方向固定：
+- **批→寄存器**（unwind）：仅 LIMIT/点查返回/TP join 的 probe 侧小输入；
+- **寄存器→批**（gather）：仅 AP 算子消费 Delta 输出时（如 hash join 的
+  build 侧从 memtx 收批）——复用 §7.2-1 的游标批量读。
+边界即 pipeline 边界（§6.4-③ 的落地物）：边界内融合（filter 并入 scan）、
+边界处物化。**禁止逐行跨界**——那是双引擎 HTAP 的经典性能坟场。
+
+### 7.5 明确不取的部分
+
+| 来源 | 不取 | 理由 |
+|------|------|------|
+| VDBE | 完整 SQLite opcode 兼容 | Embed API 只需语义层兼容；opcode 兼容锁死指令集演进 |
+| VDBE | 栈式机/全局 DB 锁 | 寄存器式已选；并发靠 dendro 两段式提交 |
+| Arrow | 把 Arrow 当查询引擎（Acero 直接嵌入） | 快照/分支/时间旅行语义进不了 Acero 的数据源契约；只取数据层 |
+| Arrow | dictionary/RLE 全编码集进入 IR | IR 只记逻辑类型；编码是 CBF 存储层私事（footer 决定） |
+
+### 7.6 降低规则（派发的第二半）
+
+| 计划形状 | 方言 | 理由 |
+|---------|------|------|
+| 点查/小范围/事务内读 | dVBE + MemtxCursor | 顺序 seek，向量化无收益 |
+| AS OF/分支点读 | dVBE + ProllyCursor | 行流天然 |
+| 大扫描/聚合/投影 | BatchFlow + CbfCursor(批) | 内核纯函数，SIMD/selection 受益 |
+| Main+Delta 归并 | BatchFlow（Main 批）+ dVBE（Delta 尾）在归并边界汇 | 归并点是显式边界 |
+| hash join（跨层） | build=Delta gather 成批；probe=Main 批流 | v3（待决问题 4） |
