@@ -14,6 +14,11 @@ pub struct Chunk {
 }
 ```
 
+- **len = 逻辑行数**（评审 D4 定死）：`sel=Some(s)` 时 `s.len()==len`
+  且 `arrays[i].len() >= len`（物化后相等）——这一句决定全部算子写法；
+- **零行不变量**（评审 D3，DuckDB/Polars 同款）：算子不接收也不发送
+  0 行 Chunk；Filter 全批滤空时跳过 push 直接 Continue；空结果集的
+  schema 由 Sink 出口保证（Chunk 自带 Arc<ChunkSchema>）；
 - **v1 实现**：包装 arrow ArrayRef + selection（ADR-4：分配优化推迟，
   藏在类型后）；
 - 常量列/字典列等 DuckDB 式多编码 **v1 不做**——CBF 解码出的就是
@@ -21,7 +26,7 @@ pub struct Chunk {
 - **边界转换**：`Chunk → RecordBatch`（结果集出口，零拷贝）；
   `RecordBatch → Chunk`（CBF 入口，零拷贝）；**禁止逐行跨界**。
 
-## 2. 管线协议（push-based；评审 P1-7 补错误通道）
+## 2. 管线协议（评审 D1/D2 修正：补 finish/EOS 与停止令牌）
 
 ```rust
 pub enum FlowControl {
@@ -30,25 +35,40 @@ pub enum FlowControl {
     Err(SqlError),           // 求值错误 → 语句失败（现状语义）
 }
 pub trait Sink { fn push(&mut self, cx: &mut Ctx, c: Chunk) -> FlowControl; }
-pub trait PipeOp { fn push(&mut self, cx: &mut Ctx, c: Chunk, out: &mut dyn Sink) -> FlowControl; }
+pub trait PipeOp {
+    fn push(&mut self, cx: &mut Ctx, c: Chunk, out: &mut dyn Sink) -> FlowControl;
+    /// 输入耗尽（EOS）后的收尾（评审 D1：DuckDB Sink→Combine→Finalize
+    /// / Polars 聚合节点"Sink 态→combine→Source 态"的同构物）。
+    /// Aggregate 吐最终组（含"空输入+无分组仍出一行"合同）、Sort 排序后
+    /// 吐全部行、HashJoin build 收表——没有此方法三者全部堵死。
+    fn finish(&mut self, cx: &mut Ctx, out: &mut dyn Sink) -> FlowControl;
+}
 ```
 
-- **错误即停、逐层透传**：Filter 谓词类型错/除零、Cast 失败、join 键
-  比较错——Err 沿管线逐层上抛（等价现状"求值错误 → 语句失败"，
-  scan.rs:168-170）；**Source 在错误后不得再被 poll**；
-- `Ctx` 携带：会话句柄（deadline_check/cancel——每算子 push 前检查）、
-  内存守卫配额、标量程序引用、**参数数组**（Param 步取值，见 06 §1.1）；
-- **Stop 沿 push 链逆向传播**（LIMIT 短路/EXISTS 半连接）；
-- v1 **单线程顺序执行**（morsel 并行是 v3）。
+- 驱动器：Source 迭代器产批推链，None 后**按装配序调用各算子 finish**；
+- **HashJoin 由装配器拆两段**：build 子管线（build 输入 → 收集器 Sink）
+  + probe 主管线（build 表就绪后 probe 输入流过）——不靠单个算子内部
+  状态机承载双输入（DuckDB pipeline 切分同构）；
+- **停止令牌随 Ctx 走**（评审 D2，Polars SourceToken 同构）：Ctx 持有
+  `stopped: AtomicBool`（v1 可退化为普通 bool），任何算子返回 Stop 时
+  驱动器置位，**Source 每次产批前检查**；"不得再 poll"扩展为
+  **Err/Stop 后均不得**（LIMIT 满员后不再拉批）；
+- Stop（正常停止）与 Err（语句失败）保持二分，不合并；
+- **metrics 挂点**（评审 D7，Polars 调度器注入模式同构）：驱动器在
+  算子边界统一计数（rows/time，v1 可空实现），算子不感知——为
+  EXPLAIN ANALYZE 预留；Ctx 携带：deadline_check/cancel 检查点、
+  内存守卫配额、标量程序引用、**参数数组**、**停止令牌**；
+- v1 **单线程顺序执行**（morsel 并行是 v3；跨线程后返回值传播失效，
+  届时令牌是唯一通道——现在的 Ctx 形状即为其预留）。
 
-## 3. 算子集## 3. 算子集（v1 最小集）
+## 3. 算子集## 3. 算子集## 3. 算子集（v1 最小集）
 
 | 算子 | 语义 | 备注 |
 |------|------|------|
 | Filter(pred) | 逐行 eval_row → sel 累积（v1）；列式求值（v2，见 03 §5） | 不物化，传 sel |
 | Project(exprs) | 表达式列物化 | 仅末端 |
 | HashJoin(build, probe) | build 侧收集 hash 表；probe 逐批 | v1 限同层两侧（ADR-6）|
-| Aggregate(groups, aggs) | 分组聚合（现有 agg 语义迁入） | 现 ap_group_agg 的算子化 |
+| Aggregate(groups, aggs) | 分组聚合（现有 agg 语义迁入） | 现 ap_group_agg 的算子化；**strict 聚合遇 NULL 输入跳过转移**写进算子合同（PG EEOP_AGG_STRICT_INPUT_CHECK 对应物，评审 M4）|
 | Sort / Limit | 排序 / 截断 | Limit 即 Sink 特例 |
 
 算子**无状态于查询间**（状态在 Ctx/算子实例内）；同一算子类型服务

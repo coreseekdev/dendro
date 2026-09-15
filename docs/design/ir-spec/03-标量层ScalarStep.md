@@ -13,7 +13,8 @@ pub enum ScalarStep {
     Param(u16),              // 参数槽位 $n（评审 P0-3：prepared 模板编译必需）
     Cmp(BinaryOperator),     // < <= = != >= like 等比较（语义=现 eval）
     Arith(BinaryOperator),   // + - * / %（含负数字面量已折 Const）
-    LogicAnd / LogicOr,      // 三值逻辑短路（见 §4）
+    LogicAnd / LogicOr,      // eager 合成（见 §4：v1 无短路！）
+    Qual,                    // 谓词终结步：NULL→false 丢行（EEOP_QUAL 同构，见 §4.5）
     Not,
     IsNull,
     Like(u32),               // 编译后的模式（常量池：预解析 LikePattern）
@@ -32,6 +33,12 @@ pub struct ScalarProgram {
 **纪律**（承袭父文档 §8.2）：核心指令封闭于上表；新函数 = builtin 表
 新条目，不加指令。目标：指令数 ≤ 20，builtin 表不限。
 
+**builtin 表条目含 `strict: bool` 元数据**（评审 M4，PG
+proisstrict/EEOP_FUNCEXPR_STRICT 同构）：strict 函数任一参数 NULL 即
+短路返回 NULL，不进函数调用——NULL 前置检查由解释循环统一执行
+（match 双臂），不再散落在每个 builtin 实现里；附录 A 的 NULL 列以
+strict 位为单一事实源。
+
 ## 2. 编译（Expr → ScalarProgram）
 
 1. **绑定**：列名 → ColId → 物理列偏移（绑定缓存命中则跳过）；
@@ -49,11 +56,19 @@ pub struct ScalarProgram {
 pub fn eval_row(p: &ScalarProgram, row: &[SqlValue], out: &mut SqlValue)
 ```
 
-- 寄存器 = `SmallVec<[SqlValue; 8]>`（栈上，无堆分配——TP 热路径）；
-- 逐行调用，供 DeltaPoint/RowFallback/退化管线使用；
+- **寄存器约定**（评审 M6 补，PG ExprEvalStep.resvalue/resnull 编译期
+  预挂同构）：ScalarProgram 头部记录 `n_regs`（编译期定长，verifier
+  校验跳转/写点不越界）；执行期寄存器文件为定长 `Vec<SqlValue>`，
+  可存放 Ctx 跨行/跨批复用（免每行 SmallVec 构造）；
+- **分配诚实声明**（评审 M6 更正原文"无堆分配"）：`SqlValue::Utf8
+  (String)` 每次经 Col 步即深拷贝一次——**不比现状差**（现状即如此），
+  但也非零分配。优化路径（v2）：字符串寄存器改 Cow/&str 借用、或
+  chunk 级 bump arena 按批重置（PG per-tuple context 同构）；
+- **步尺寸纪律**（PG 单缓存行步的动机）：ScalarStep enum 控制在
+  ~16 字节（无大内嵌负载——大数据进常量池，步只存索引）；
 - 越界/类型错 = 返回内部错误（不 panic；P0-2 同款纪律）。
 
-## 4. 求值序与 NULL 语义（评审 P0-1 修正：现状复刻，非 SQL 标准）
+## 4. 求值序## 4. 求值序与 NULL 语义（评审 P0-1 修正：现状复刻，非 SQL 标准）
 
 **现状是唯一基准**（行为等价红线）：现行 `expr.rs binop`（408-433 行）的
 AND/OR/比较是 **eager + null-first**：两侧**都先求值**，任一侧 NULL 即
@@ -84,11 +99,46 @@ a AND b 编译为：            ; 与现 binop 逐步同构
 
 - v1 实现：对 selection 内的行**循环调用 eval_row**，结果写入输出列
   ——先正确后向量化（分配不是瓶颈，见 ADR-4）；
-- v2 优化：对**无跳转的直线段**（纯 map：Col/Arith/Cmp 序列）做列式
-  求值（列寄存器批处理）；含 Jump 的子图保持行循环。识别在编译期
-  完成（步列表切分为 `Segment::Map(..) | Segment::Control(..)`）。
+- **v2 列式寄存器格式必须现在定死**（评审 D5，DuckDB validity 分离的
+  硬前提）：列寄存器 = **类型化值缓冲 + null bitmap**（对齐 arrow
+  values+validity），禁止把 `Vec<SqlValue>` 直接列化——SqlValue 枚举
+  内嵌 NULL 使循环每行 enum match + String clone，与 DuckDB
+  "无 NULL 裸循环"（CanHaveNull 为假时零 NULL 检查、可自动向量化）
+  差 3-4 个数量级，做了等于白做；
+- v2 直线段优化（编译期切分 `Segment::Map | Segment::Control`）清单
+  **按收益序**（评审 D6）：
+  1. **常量提升出循环**：Const 步在编译期提升为循环不变标量局部——
+     `WHERE x = 5` 的 5 只读一次进寄存器（DuckDB CONSTANT_VECTOR
+     的主要收益**无需**引入常量向量编码即可获得，恰是 dendro
+     AP 主路径形状）；
+  2. 类型化列循环（值缓冲 + null bitmap 分支特化：无 NULL 裸循环 /
+     全 NULL 短路 / 混合三态）；
+  3. 含 Jump 的子图保持行循环。
 
-## 6. 缓存与失效（详见 06）
+## 5.5 步的 NULL 边界语义（评审 M3：命名会诱导错误实现）
+
+PG 教训：Filter 用 EEOP_QUAL（**false 或 null 都跳过**=丢行），CASE
+用 EEOP_JUMP_IF_NOT_TRUE——同一个"跳转"在不同用点对 NULL 行为不同。
+dendro 现状三处各异且必须逐字复刻：
+
+| 用点 | 步 | NULL 行为 | 现状依据 |
+|------|----|----------|---------|
+| Filter 谓词终结 | `Qual` | NULL→false **丢行** | scan.rs 仅 Bool(true) 放行 |
+| CASE（simple）操作数 | `JumpIfNotEq` | NULL=不命中**继续下一分支** | expr.rs:139-142 |
+| CASE（searched）条件 | `JumpIfNotTrue` | **现状 as_bool(Null) 报 internal error** | expr.rs:143（怪癖原样复刻） |
+| InList 内部 | Jump 族 | found/has_null 三值合成 | scan.rs:87-107 |
+
+**`JumpIfFalse` 更名 `JumpIfNotTrue`**（对齐 PG 命名，消除"False 才跳"
+的误导）；附录 A 每行强制含 NULL 行为列。Out（投影输出）与 Qual
+（谓词判定，NULL→false）是两个终结步，不得混用。
+
+## 5.6 预留位（评审 O7：封闭纪律的两处已知撞墙点）
+
+- `Subplan(Box<PlanNode>)` 步：表达式内子查询（标量子查询/EXISTS）
+  ——builtin 表装不下"参数是子查询"的函数（PG EEOP_SUBPLAN 同构）；
+- CTE 节点进 02 NodeKind 的预留注记。两者实现前指令集保持封闭。
+
+## 6. 缓存与失效## 6. 缓存与失效（详见 06）
 
 - `ScalarProgram` 缓存键 = `(xxh3(sql), dialect, catalog_version)`；
 - DDL（CREATE/DROP/ALTER/TRUNCATE）推进 catalog_version ⇒ 自动 miss；

@@ -75,6 +75,10 @@ dispatch: rule#4 (main full coverage, threshold=10000)
 ```
 
 - 输出**派发理由**（rule# + 关键数字）——规则式代价的可观测化；
+**per-ScanAlt 命中/回退计数器**（评审 O8，HeatWave offload/fallback
+计数同构）暴露为会话变量——没有计数器，THRESHOLD(10_000) 调优只能
+靠猜；`[rows→N, time→T]` 数据来自 04 §2 的驱动器 metrics 挂点
+（EXPLAIN ANALYZE 的地基，评审 D7）；
 - `force_source` 生效时标注 `[forced: delta]`（调试可辨识）。
 
 ## 5.5 派发输入：catalog 内存快照（评审 P1-6 补设计）
@@ -83,8 +87,16 @@ dispatch: rule#4 (main full coverage, threshold=10000)
 catalog_lookup，经 chunk 缓存的 CAS 读），且一条查询最多 resolve 同表
 **3 次**（try_pk_pushdown/try_ap_scan/table_scan 各一次）。补设计：
 DbSnapshot 内挂 `Arc<CatalogCache>`（branch → 表名 → {schema, entry,
-col_rows, col_segments}），随 schema_version 原子换新。**附带收益**：
-每查询 3 次 resolve 收敛为 1 次，列为 v2c-1 显式收益项。
+col_rows, col_segments}），**随 DbSnapshot（manifest version）原子换新**
+——不是 schema_version（评审 M2：col_segments 随 checkpoint/退休变化，
+挂错键 = 陈旧段清单 = 漏读/扫退休段，错结果；详见 06 §3.5）。
+**附带收益**：每查询 3 次 resolve 收敛为 1 次，列为 v2c-1 显式收益项。
+
+**派发决策刻意不缓存**（评审 O2 显式化）：派发每执行重算（预算
+200ns），免疫 PG 的参数敏感计划问题（generic vs custom 五次试探）。
+后人若想缓存派发结果：一旦它依赖参数值或 col_rows，PSP 问题立刻
+出现——届时 PG 试探法与 HeatWave secondary_engine_cost_threshold
+代价阈值是参照。这条免疫条件是设计决策，写入本节防退化。
 
 ## 6. 实现前必须回答
 
