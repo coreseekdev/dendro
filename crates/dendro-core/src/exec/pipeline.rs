@@ -291,3 +291,303 @@ mod tests {
         assert_eq!(r.err().unwrap().state, "57014");
     }
 }
+
+// ---------------------------------------------------------------------------
+// v2c-2：算子群扩展——SortOp（breaker）+ ProjectOp + OpAsSink 链组合
+// ---------------------------------------------------------------------------
+
+/// 排序算子（**pipeline breaker**——D1 的 finish()-emits 形态）：
+/// push 阶段缓冲全部行；finish() 排序后一次性推给下游。
+/// 排序语义 = apply_order 的比较器逐字节（ASC null-last / DESC
+/// null-first——reverse 连 null 位一起翻）；键提取由装配层完成
+/// （键-行配对入缓冲），算子只管排与吐。
+pub struct SortOp {
+    /// (sort_key, row) 对；key 为装配层预提取的值向量
+    buffered: Vec<(Vec<SqlValue>, Vec<SqlValue>)>,
+    /// 每键的 ASC 标记（与 key 同长度）
+    asc: Vec<bool>,
+    /// finish 后是否已推（幂等守卫）
+    done: bool,
+}
+
+impl SortOp {
+    pub fn new(asc: Vec<bool>) -> Self {
+        Self {
+            buffered: Vec::new(),
+            asc,
+            done: false,
+        }
+    }
+}
+
+impl PipeOp<Vec<Vec<SqlValue>>> for SortOp {
+    fn push(
+        &mut self,
+        _cx: &mut PipeCtx,
+        batch: Vec<Vec<SqlValue>>,
+        _out: &mut dyn Sink<Vec<Vec<SqlValue>>>,
+    ) -> FlowControl {
+        // breaker：push 阶段只缓冲（键已在装配层配对——batch 每行
+        // 前 asc.len() 个值为键，其余为数据；装配层合同）
+        for mut row in batch {
+            let klen = self.asc.len();
+            let key: Vec<SqlValue> = row.drain(..klen).collect();
+            self.buffered.push((key, row));
+        }
+        FlowControl::Continue
+    }
+
+    fn finish(&mut self, _cx: &mut PipeCtx, out: &mut dyn Sink<Vec<Vec<SqlValue>>>) -> FlowControl {
+        if self.done {
+            return FlowControl::Continue;
+        }
+        self.done = true;
+        self.buffered.sort_by(|(ka, _), (kb, _)| {
+            for (i, &asc) in self.asc.iter().enumerate() {
+                let x = &ka[i];
+                let y = &kb[i];
+                let ord = if x.is_null() && y.is_null() {
+                    std::cmp::Ordering::Equal
+                } else if x.is_null() {
+                    std::cmp::Ordering::Greater // null-last（ASC）
+                } else if y.is_null() {
+                    std::cmp::Ordering::Less
+                } else {
+                    crate::sql::expr::cmp_values(x, y).unwrap_or(std::cmp::Ordering::Equal)
+                };
+                let ord = if asc { ord } else { ord.reverse() };
+                if ord != std::cmp::Ordering::Equal {
+                    return ord;
+                }
+            }
+            std::cmp::Ordering::Equal
+        });
+        let rows: Vec<Vec<SqlValue>> = self.buffered.drain(..).map(|(_, r)| r).collect();
+        if rows.is_empty() {
+            return FlowControl::Continue; // D3：零行不推
+        }
+        out.push(_cx, rows)
+    }
+}
+
+/// 投影算子：每行按表达式列表求值产新行（行变换，非 breaker）
+pub type ColResolver = Box<dyn Fn(&str) -> Option<usize> + Send>;
+
+pub struct ProjectOp {
+    pub exprs: Vec<sqlparser::ast::Expr>,
+    /// 名字→列偏移（装配层闭包；行值经 eval 求值）
+    pub cols: ColResolver,
+}
+
+impl PipeOp<Vec<Vec<SqlValue>>> for ProjectOp {
+    fn push(
+        &mut self,
+        cx: &mut PipeCtx,
+        batch: Vec<Vec<SqlValue>>,
+        out: &mut dyn Sink<Vec<Vec<SqlValue>>>,
+    ) -> FlowControl {
+        let mut projected: Vec<Vec<SqlValue>> = Vec::with_capacity(batch.len());
+        for row in &batch {
+            let mut new_row = Vec::with_capacity(self.exprs.len());
+            for e in &self.exprs {
+                match crate::sql::expr::eval(e, row, &self.cols) {
+                    Ok(v) => new_row.push(v),
+                    Err(er) => return FlowControl::Err(er),
+                }
+            }
+            projected.push(new_row);
+        }
+        let _ = cx;
+        if projected.is_empty() {
+            return FlowControl::Continue;
+        }
+        out.push(cx, projected)
+    }
+}
+
+/// OpAsSink：把下游算子包装为上游的 Sink（链组合的适配器）。
+/// 上游 push → 转发给被包装算子的 push，其输出再推给真正的终端 Sink。
+/// **限制**（v1）：单层适配（A→B→terminal），多层需嵌套——借用检查
+/// 使嵌套复杂化，v1 链深 ≤2 够用（Filter→Sort→Collect）。
+pub struct OpAsSink<'a> {
+    pub op: &'a mut dyn PipeOp<Vec<Vec<SqlValue>>>,
+    pub terminal: &'a mut dyn Sink<Vec<Vec<SqlValue>>>,
+}
+
+impl Sink<Vec<Vec<SqlValue>>> for OpAsSink<'_> {
+    fn push(&mut self, cx: &mut PipeCtx, batch: Vec<Vec<SqlValue>>) -> FlowControl {
+        self.op.push(cx, batch, self.terminal)
+    }
+}
+
+/// 链驱动：source → op1 → op2 → sink（两算子链；OpAsSink 适配中间层）。
+/// EOS 后按装配序 finish（D1：breaker 算子的吐出时机）。
+pub fn drive_pair(
+    cx: &mut PipeCtx,
+    source: &mut dyn Iterator<Item = Result<Vec<Vec<SqlValue>>>>,
+    op1: &mut dyn PipeOp<Vec<Vec<SqlValue>>>,
+    op2: &mut dyn PipeOp<Vec<Vec<SqlValue>>>,
+    sink: &mut dyn Sink<Vec<Vec<SqlValue>>>,
+) -> Result<()> {
+    // 取前判停（同 drive——LIMIT 满员后不再拉）
+    loop {
+        if cx.stopped {
+            break;
+        }
+        let batch = match source.next() {
+            None => break,
+            Some(item) => item?,
+        };
+        cx.checkpoint()?;
+        if batch.is_empty() {
+            continue;
+        }
+        let mut mid = OpAsSink {
+            op: op2,
+            terminal: sink,
+        };
+        match op1.push(cx, batch, &mut mid) {
+            FlowControl::Err(e) => return Err(e),
+            FlowControl::Stop => {
+                cx.stop();
+                break;
+            }
+            FlowControl::Continue => {}
+        }
+    }
+    if !cx.stopped {
+        // finish 按装配序：op1 先（其 finish 产出流入 op2 → sink）
+        let mut mid = OpAsSink {
+            op: op2,
+            terminal: sink,
+        };
+        match op1.finish(cx, &mut mid) {
+            FlowControl::Err(e) => return Err(e),
+            FlowControl::Stop => cx.stop(),
+            FlowControl::Continue => {}
+        }
+        if !cx.stopped {
+            match op2.finish(cx, sink) {
+                FlowControl::Err(e) => return Err(e),
+                FlowControl::Stop => cx.stop(),
+                FlowControl::Continue => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 算子群测试：Filter→Sort→Collect 链 vs 手写等价路径
+#[cfg(test)]
+mod operator_tests {
+    use super::*;
+
+    fn rows_from(pairs: &[(i64, Option<i64>)]) -> Vec<Vec<SqlValue>> {
+        pairs
+            .iter()
+            .map(|(a, b)| {
+                vec![
+                    SqlValue::Int64(*a),
+                    match b {
+                        Some(v) => SqlValue::Int64(*v),
+                        None => SqlValue::Null,
+                    },
+                ]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn sort_breaker_null_semantics() {
+        // ASC：null-last；DESC：null-first（reverse 连 null 位翻）
+        let data = rows_from(&[(1, Some(3)), (2, None), (3, Some(1)), (4, Some(2))]);
+        let asc = vec![true];
+        let mut sort = SortOp::new(asc.clone());
+        let mut sink = CollectSink::new(None);
+        // 装配层合同：每行前 asc.len() 个值为键——这里键=第 2 列
+        let keyed: Vec<Vec<SqlValue>> = data
+            .iter()
+            .map(|r| vec![r[1].clone(), r[0].clone(), r[1].clone()])
+            .collect();
+        let src: Vec<Result<Vec<Vec<SqlValue>>>> = vec![Ok(keyed)];
+        let mut it = src.into_iter();
+        let mut cx = ctx();
+        drive(&mut cx, &mut it, &mut sort, &mut sink).unwrap();
+        // ASC null-last：[3,1],[4,2],[1,3],[2,NULL]
+        let vals: Vec<&SqlValue> = sink.rows.iter().map(|r| &r[1]).collect();
+        assert_eq!(
+            vals,
+            vec![
+                &SqlValue::Int64(1),
+                &SqlValue::Int64(2),
+                &SqlValue::Int64(3),
+                &SqlValue::Null,
+            ],
+            "ASC null-last：{:?}",
+            sink.rows
+        );
+
+        // DESC null-first
+        let mut sort2 = SortOp::new(vec![false]);
+        let mut sink2 = CollectSink::new(None);
+        let keyed2: Vec<Vec<SqlValue>> = data
+            .iter()
+            .map(|r| vec![r[1].clone(), r[0].clone(), r[1].clone()])
+            .collect();
+        let src2: Vec<Result<Vec<Vec<SqlValue>>>> = vec![Ok(keyed2)];
+        let mut it2 = src2.into_iter();
+        let mut cx2 = ctx();
+        drive(&mut cx2, &mut it2, &mut sort2, &mut sink2).unwrap();
+        let vals2: Vec<&SqlValue> = sink2.rows.iter().map(|r| &r[1]).collect();
+        assert_eq!(
+            vals2[0],
+            &SqlValue::Null,
+            "DESC null-first：{:?}",
+            sink2.rows
+        );
+    }
+
+    #[test]
+    fn filter_sort_chain() {
+        // Filter(>2) → Sort(DESC on key) → Collect —— drive_pair 链
+        let data = rows_from(&[(1, Some(5)), (2, Some(1)), (3, Some(4)), (4, Some(2))]);
+        let mut filter = FilterOp::new({
+            let e = sqlparser::ast::Expr::BinaryOp {
+                left: Box::new(sqlparser::ast::Expr::Identifier(
+                    sqlparser::ast::Ident::new("k"),
+                )),
+                op: sqlparser::ast::BinaryOperator::Gt,
+                right: Box::new(sqlparser::ast::Expr::Value(
+                    sqlparser::ast::Value::Number("2".into(), false).into(),
+                )),
+            };
+            let cols = |n: &str| (n == "k").then_some(2usize); // 键前置后 k 在索引 2
+            crate::sql::scalar::compile_predicate(&e, &cols, 2)
+                .unwrap()
+                .prog
+        });
+        let mut sort = SortOp::new(vec![false]); // DESC
+        let mut sink = CollectSink::new(None);
+        // 装配层：键前置（第 2 列为键），键后跟原行
+        let keyed: Vec<Vec<SqlValue>> = data
+            .iter()
+            .map(|r| {
+                let mut kr = vec![r[1].clone()];
+                kr.extend(r.iter().cloned());
+                kr
+            })
+            .collect();
+        let src: Vec<Result<Vec<Vec<SqlValue>>>> = vec![Ok(keyed)];
+        let mut it = src.into_iter();
+        let mut cx = ctx();
+        drive_pair(&mut cx, &mut it, &mut filter, &mut sort, &mut sink).unwrap();
+        // >2 的 k：5,4 → DESC → 5,4；行值列（去掉键前缀后）= [1,5],[3,4]
+        assert_eq!(sink.rows.len(), 2, "{:?}", sink.rows);
+        assert_eq!(sink.rows[0][1], SqlValue::Int64(5)); // 排序后 [id, k]——k 在索引 1
+        assert_eq!(sink.rows[1][1], SqlValue::Int64(4));
+    }
+
+    fn ctx() -> PipeCtx {
+        PipeCtx::new(vec![], None, Arc::new(AtomicBool::new(false)))
+    }
+}
