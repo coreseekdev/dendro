@@ -41,6 +41,15 @@ pub fn agg_display(e: &sqlparser::ast::Expr) -> String {
 /// 计划缓存条目上限（每库）；防未参数化客户端撑爆内存
 const PLAN_CACHE_CAP: usize = 4096;
 
+/// P 层解析冒烟入口（ir-spec B0-a/b/c 与工具用）：与执行路径完全一致的
+/// SQL→AST 行为（parse_batch + 时间旅行方言回退同源）。返回 AST 的
+/// Debug 串——供"解析幂等"（两次解析恒同串）与语料冒烟断言使用。
+pub fn parse_only(sql: &str, d: SqlDialect) -> std::result::Result<String, String> {
+    parse_batch(sql, d)
+        .map(|stmts| format!("{stmts:?}"))
+        .map_err(|e| e.message)
+}
+
 pub(crate) fn parse_batch(sql: &str, d: SqlDialect) -> Result<Vec<Statement>> {
     let dialect: &dyn sqlparser::dialect::Dialect = match d {
         SqlDialect::Pg => &PostgreSqlDialect {},

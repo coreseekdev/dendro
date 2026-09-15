@@ -1,0 +1,389 @@
+# vendored from apache/datafusion-sqlparser-rs tests (Apache-2.0)
+# mysql 测试文件 SQL 字面量（拼接/起始词过滤/去重）——P 层冒烟 B0-a
+# 格式：dialect<TAB>sql（换行已转义）
+mysql	SELECT $a$, àà
+mysql	SELECT 'single',
+mysql	SHOW COLUMNS FROM mytable
+mysql	SHOW COLUMNS FROM mydb.mytable
+mysql	SHOW EXTENDED COLUMNS FROM mytable
+mysql	SHOW FULL COLUMNS FROM mytable
+mysql	SHOW COLUMNS FROM mytable LIKE 'pattern'
+mysql	SHOW COLUMNS FROM mytable WHERE 1 = 2
+mysql	SHOW FIELDS FROM mytable
+mysql	SHOW COLUMNS IN mytable
+mysql	SHOW FIELDS IN mytable
+mysql	SHOW COLUMNS FROM mytable FROM mydb
+mysql	SHOW PROCESSLIST
+mysql	SHOW FULL PROCESSLIST
+mysql	SHOW SESSION STATUS LIKE 'ssl_cipher'
+mysql	SHOW GLOBAL STATUS LIKE 'ssl_cipher'
+mysql	SHOW STATUS WHERE value = 2
+mysql	SHOW TABLES
+mysql	SHOW TABLES FROM mydb
+mysql	SHOW EXTENDED TABLES
+mysql	SHOW FULL TABLES
+mysql	SHOW TABLES LIKE 'pattern'
+mysql	SHOW TABLES WHERE 1 = 2
+mysql	SHOW TABLES IN mydb
+mysql	SHOW EXTENDED FULL TABLES
+mysql	SHOW EXTENDED FULL COLUMNS FROM mytable
+mysql	SHOW EXTENDED FULL CREATE TABLE mytable
+mysql	SHOW EXTENDED FULL COLLATION
+mysql	SHOW EXTENDED FULL VARIABLES
+mysql	SHOW CREATE {obj_type} myident
+mysql	SHOW COLLATION
+mysql	SHOW COLLATION LIKE 'pattern'
+mysql	SHOW COLLATION WHERE 1 = 2
+mysql	USE {object_name}
+mysql	USE {quote}{object_name}{quote}
+mysql	SET sql_mode = CONCAT(@@sql_mode, ',STRICT_TRANS_TABLES')
+mysql	SET LOCAL autocommit = 1
+mysql	CREATE TABLE foo (bar INT PRIMARY KEY AUTO_INCREMENT)
+mysql	CREATE TABLE foo (id INT PRIMARY KEY AUTO_INCREMENT, bar INT NOT NULL, CONSTRAINT bar_key {key_ty} (bar))
+mysql	CREATE TABLE foo (bar INT, var INT, CONSTRAINT constr {key_ty} index_name (bar, var) USING HASH COMMENT 'yes, ' USING BTREE COMMENT 'MySQL allows')
+mysql	CREATE INDEX idx_index ON t(textcol(10))
+mysql	ALTER TABLE tab ADD INDEX idx_index (textcol(10))
+mysql	ALTER TABLE tab ADD PRIMARY KEY (textcol(10))
+mysql	ALTER TABLE tab ADD UNIQUE KEY (textcol(10))
+mysql	ALTER TABLE tab ADD FULLTEXT INDEX (textcol(10))
+mysql	CREATE TABLE t (textcol TEXT, INDEX idx_index (textcol(10)))
+mysql	CREATE INDEX idx_index ON t((col COLLATE utf8mb4_bin) DESC)
+mysql	CREATE TABLE t (jsoncol JSON, PRIMARY KEY ((CAST(col ->> '$.id' AS UNSIGNED)) ASC))
+mysql	CREATE TABLE t (jsoncol JSON, PRIMARY KEY ((CAST(col ->> '$.fields' AS UNSIGNED ARRAY)) ASC))
+mysql	CREATE TABLE foo (bar INT, {key_ty} index_name USING BTREE (bar) USING HASH)
+mysql	CREATE TABLE foo (bar INT, UNIQUE INDEX index_name USING BTREE (bar) USING HASH)
+mysql	CREATE TABLE foo (bar INT, PRIMARY KEY index_name USING BTREE (bar) USING HASH)
+mysql	CREATE TABLE x (y INT, CONSTRAINT constr {key_ty} (y) NOT DEFERRABLE INITIALLY IMMEDIATE)
+mysql	CREATE TABLE foo (x INT UNIQUE KEY)
+mysql	CREATE TABLE foo (x INT KEY)
+mysql	CREATE TABLE foo (x INT PRIMARY KEY)
+mysql	CREATE TABLE foo (bar INT) COMMENT 'baz'
+mysql	CREATE TABLE foo (bar INT) COMMENT = 'baz'
+mysql	CREATE TABLE foo (bar INT NOT NULL AUTO_INCREMENT) ENGINE = InnoDB AUTO_INCREMENT = 123
+mysql	CREATE TABLE mytable (id INT) ENGINE=InnoDB ROW_FORMAT=DYNAMIC KEY_BLOCK_SIZE=8 COMMENT='abc'
+mysql	CREATE TABLE mytable (id INT) KEY_BLOCK_SIZE=8 COMMENT='abc' ENGINE=InnoDB ROW_FORMAT=DYNAMIC
+mysql	CREATE TABLE mytable (id INT) ROW_FORMAT=DYNAMIC KEY_BLOCK_SIZE=8 COMMENT='abc' ENGINE=InnoDB
+mysql	CREATE TABLE foo (bar INT NOT NULL AUTO_INCREMENT) ENGINE = InnoDB AUTO_INCREMENT = 123 DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci INSERT_METHOD = FIRST KEY_BLOCK_SIZE = 8 ROW_FORMAT = DYNAMIC DATA DIRECTORY = '/var/lib/mysql/data' INDEX DIRECTORY = '/var/lib/mysql/index' PACK_KEYS = 1 STATS_AUTO_RECALC = 1 STATS_PERSISTENT = 0 STATS_SAMPLE_PAGES = 128 DELAY_KEY_WRITE = 1 COMPRESSION = 'ZLIB' ENCRYPTION = 'Y' MAX_ROWS = 10000 MIN_ROWS = 10 AUTOEXTEND_SIZE = 64 AVG_ROW_LENGTH = 128 CHECKSUM = 1 CONNECTION = 'mysql://localhost' ENGINE_ATTRIBUTE = 'primary' PASSWORD = 'secure_password' SECONDARY_ENGINE_ATTRIBUTE = 'secondary_attr' START TRANSACTION TABLESPACE my_tablespace STORAGE DISK UNION = (table1, table2, table3)
+mysql	CREATE TABLE foo (bar SET('a', 'b'), baz ENUM('a', 'b'))
+mysql	CREATE TABLE foo (id INT(11)) ENGINE = InnoDB DEFAULT CHARSET = utf8mb3
+mysql	CREATE TABLE foo (id INT(11)) COLLATE = utf8mb4_0900_ai_ci
+mysql	CREATE TABLE foo (id INT(11)) ENGINE = InnoDB DEFAULT CHARSET = utf8mb3 COLLATE = utf8mb4_0900_ai_ci AS SELECT 1
+mysql	CREATE TABLE foo (id INT(11)) ENGINE = InnoDB AS SELECT 1 DEFAULT CHARSET = utf8mb3
+mysql	CREATE TABLE foo (s TEXT CHARACTER SET utf8mb4 COMMENT 'comment')
+mysql	CREATE TABLE t1 (a INT, b INT GENERATED ALWAYS AS (a * 2))
+mysql	CREATE TABLE t1 (a INT, b INT GENERATED ALWAYS AS (a * 2) VIRTUAL)
+mysql	CREATE TABLE t1 (a INT, b INT GENERATED ALWAYS AS (a * 2) STORED)
+mysql	CREATE TABLE t1 (a INT, b INT AS (a * 2))
+mysql	CREATE TABLE t1 (a INT, b INT AS (a * 2) VIRTUAL)
+mysql	CREATE TABLE t1 (a INT, b INT AS (a * 2) STORED)
+mysql	CREATE TABLE t (x INT) DEFAULT CHARSET = utf8mb4, ENGINE = InnoDB , AUTO_INCREMENT 1 DATA DIRECTORY '/var/lib/mysql/data'
+mysql	CREATE TABLE t (x INT) DEFAULT CHARSET = utf8mb4 ENGINE = InnoDB AUTO_INCREMENT = 1 DATA DIRECTORY = '/var/lib/mysql/data'
+mysql	CREATE TABLE `PRIMARY` (`BEGIN` INT PRIMARY KEY)
+mysql	SELECT `quoted `` identifier`
+mysql	SELECT ```quoted identifier```
+mysql	SELECT 'I'm not fine'
+mysql	SELECT 'I'm fine'
+mysql	SELECT 'I''m fine'
+mysql	SELECT 'I"+chr(92)*2+"'m fine'
+mysql	CREATE TABLE foo (bar_tinyint TINYINT(3), bar_smallint SMALLINT(5), bar_mediumint MEDIUMINT(6), bar_int INT(11), bar_bigint BIGINT(20))
+mysql	CREATE TABLE foo (bar_tinyint TINYINT(3) UNSIGNED, bar_smallint SMALLINT(5) UNSIGNED, bar_mediumint MEDIUMINT(13) UNSIGNED, bar_int INT(11) UNSIGNED, bar_bigint BIGINT(20) UNSIGNED)
+mysql	CREATE TABLE foo (bar_tinyint TINYINT(3) SIGNED, bar_smallint SMALLINT(5) SIGNED, bar_mediumint MEDIUMINT(13) SIGNED, bar_int INT(11) SIGNED, bar_bigint BIGINT(20) SIGNED)
+mysql	CREATE TABLE foo (bar_tinyint TINYINT(3), bar_smallint SMALLINT(5), bar_mediumint MEDIUMINT(13), bar_int INT(11), bar_bigint BIGINT(20))
+mysql	CREATE TABLE foo (bar_decimal DECIMAL UNSIGNED, bar_decimal_prec DECIMAL(10) UNSIGNED, bar_decimal_scale DECIMAL(10,2) UNSIGNED, bar_dec DEC UNSIGNED, bar_dec_prec DEC(10) UNSIGNED, bar_dec_scale DEC(10,2) UNSIGNED, bar_float FLOAT UNSIGNED, bar_float_prec FLOAT(10) UNSIGNED, bar_float_scale FLOAT(10,2) UNSIGNED, bar_double DOUBLE UNSIGNED, bar_double_prec DOUBLE(10) UNSIGNED, bar_double_scale DOUBLE(10,2) UNSIGNED, bar_real REAL UNSIGNED, bar_double_precision DOUBLE PRECISION UNSIGNED)
+mysql	INSERT INTO tasks (title, priority) VALUES ('Test Some Inserts', 1), ('Test Entry 2', 2), ('Test Entry 3', 3)
+mysql	INSERT IGNORE INTO tasks (title, priority) VALUES ('Test Some Inserts', 1)
+mysql	INSERT HIGH_PRIORITY INTO tasks (title, priority) VALUES ('Test Some Inserts', 1)
+mysql	INSERT LOW_PRIORITY INTO tasks (title, priority) VALUES ('Test Some Inserts', 1)
+mysql	INSERT INTO `table` (`date`) VALUES ('2024-01-01') AS `alias`
+mysql	INSERT INTO `table` (`date`) VALUES ('2024-01-01') AS `alias` ()
+mysql	INSERT INTO `table` (`id`, `date`) VALUES (1, '2024-01-01') AS `alias` (`mek_id`, `mek_date`)
+mysql	INSERT INTO tb () VALUES (), ()
+mysql	INSERT INTO tb VALUES (), ()
+mysql	INSERT INTO permission_groups (name, description, perm_create, perm_read, perm_update, perm_delete) VALUES ('accounting_manager', 'Some description about the group', true, true, true, true) ON DUPLICATE KEY UPDATE description = VALUES(description), perm_create = VALUES(perm_create), perm_read = VALUES(perm_read), perm_update = VALUES(perm_update), perm_delete = VALUES(perm_delete)
+mysql	SELECT 123col_$@123abc FROM "table"
+mysql	SELECT t.15to29 FROM my_table AS t
+mysql	SELECT t.15e29 FROM my_table AS t
+mysql	SELECT 15e29 FROM my_table
+mysql	SELECT `15e29` FROM my_table
+mysql	SELECT t.`15e29` FROM my_table AS t
+mysql	SELECT 1db.1table.1column
+mysql	SELECT `1`.`2`.`3`
+mysql	SELECT 123e4, 123col_$@123abc FROM "table"
+mysql	SELECT 1230000, 123col_$@123abc FROM "table"
+mysql	INSERT INTO s1.t1 (123col_$@length123) VALUES (67.654)
+mysql	UPDATE orders AS o JOIN customers AS c ON o.customer_id = c.id SET o.completed = true WHERE c.firstname = 'Peter'
+mysql	UPDATE foo SET bar = false WHERE foo = true ORDER BY foo ASC
+mysql	UPDATE foo SET bar = false WHERE foo = true ORDER BY foo ASC LIMIT 10
+mysql	DELETE FROM customers ORDER BY id DESC
+mysql	DELETE FROM customers LIMIT 100
+mysql	ALTER TABLE tab ADD COLUMN b INT FIRST
+mysql	ALTER TABLE tab ADD COLUMN b INT AFTER foo
+mysql	ALTER TABLE tab ADD COLUMN a TEXT FIRST, ADD COLUMN b INT AFTER foo
+mysql	ALTER TABLE tab DROP PRIMARY KEY
+mysql	ALTER TABLE tab DROP FOREIGN KEY foo_ibfk_1
+mysql	ALTER TABLE orders CHANGE COLUMN description desc TEXT NOT NULL
+mysql	ALTER TABLE orders CHANGE description desc TEXT NOT NULL
+mysql	ALTER TABLE orders CHANGE COLUMN description desc TEXT NOT NULL FIRST
+mysql	ALTER TABLE orders CHANGE COLUMN description desc TEXT NOT NULL AFTER foo
+mysql	ALTER TABLE orders CHANGE description desc TEXT NOT NULL FIRST
+mysql	ALTER TABLE orders CHANGE COLUMN description desc TEXT NOT NULL AFTER total_count
+mysql	ALTER TABLE orders CHANGE description desc TEXT NOT NULL AFTER total_count
+mysql	ALTER TABLE orders MODIFY COLUMN description TEXT NOT NULL
+mysql	ALTER TABLE orders MODIFY description TEXT NOT NULL
+mysql	ALTER TABLE orders MODIFY COLUMN description TEXT NOT NULL FIRST
+mysql	ALTER TABLE orders MODIFY COLUMN description TEXT NOT NULL AFTER foo
+mysql	ALTER TABLE tab ALGORITHM = COPY
+mysql	ALTER TABLE users DROP COLUMN password_digest, ALGORITHM = COPY, RENAME COLUMN name TO username
+mysql	ALTER TABLE `users` ALGORITHM DEFAULT
+mysql	ALTER TABLE `users` ALGORITHM INSTANT
+mysql	ALTER TABLE `users` ALGORITHM INPLACE
+mysql	ALTER TABLE `users` ALGORITHM COPY
+mysql	ALTER TABLE `users` ALGORITHM = DEFAULT
+mysql	ALTER TABLE `users` ALGORITHM = INSTANT
+mysql	ALTER TABLE `users` ALGORITHM = INPLACE
+mysql	ALTER TABLE `users` ALGORITHM = COPY
+mysql	ALTER TABLE tab LOCK = SHARED
+mysql	ALTER TABLE users DROP COLUMN password_digest, LOCK = EXCLUSIVE, RENAME COLUMN name TO username
+mysql	ALTER TABLE `users` LOCK DEFAULT
+mysql	ALTER TABLE `users` LOCK SHARED
+mysql	ALTER TABLE `users` LOCK NONE
+mysql	ALTER TABLE `users` LOCK EXCLUSIVE
+mysql	ALTER TABLE `users` LOCK = DEFAULT
+mysql	ALTER TABLE `users` LOCK = SHARED
+mysql	ALTER TABLE `users` LOCK = NONE
+mysql	ALTER TABLE `users` LOCK = EXCLUSIVE
+mysql	ALTER TABLE tab AUTO_INCREMENT = 42
+mysql	ALTER TABLE `users` AUTO_INCREMENT 42
+mysql	ALTER TABLE orders MODIFY description TEXT NOT NULL FIRST
+mysql	ALTER TABLE orders MODIFY COLUMN description TEXT NOT NULL AFTER total_count
+mysql	ALTER TABLE orders MODIFY description TEXT NOT NULL AFTER total_count
+mysql	SELECT DISTINCT SUBSTRING(description, 0, 1) FROM test
+mysql	SHOW VARIABLES
+mysql	SHOW VARIABLES LIKE 'admin%'
+mysql	SHOW VARIABLES WHERE value = '3306'
+mysql	SHOW GLOBAL VARIABLES
+mysql	SHOW GLOBAL VARIABLES LIKE 'admin%'
+mysql	SHOW GLOBAL VARIABLES WHERE value = '3306'
+mysql	SHOW SESSION VARIABLES
+mysql	SHOW SESSION VARIABLES LIKE 'admin%'
+mysql	SELECT 1 WHERE 'a' RLIKE '^a$'
+mysql	SELECT 1 WHERE 'a' REGEXP '^a$'
+mysql	SELECT 1 WHERE 'a' NOT RLIKE '^a$'
+mysql	SELECT 1 WHERE 'a' NOT REGEXP '^a$'
+mysql	SELECT 'a"+chr(92)*2+"%c' LIKE 'a"+chr(92)*2+"%c'
+mysql	SELECT 'a"+chr(92)*2+"_c' LIKE 'a"+chr(92)*2+"_c'
+mysql	SELECT '%"+chr(92)*2+"_"+chr(92)*2+"%' LIKE '%"+chr(92)*2+"_"+chr(92)*2+"%'
+mysql	SELECT '"+chr(92)*2+"_"+chr(92)*2+"%' LIKE CONCAT('"+chr(92)*2+"_', '"+chr(92)*2+"%')
+mysql	SELECT 'a%c' LIKE 'a$%c' ESCAPE '$'
+mysql	SELECT 'a_c' LIKE 'a#_c' ESCAPE '#'
+mysql	CREATE TABLE foo (`modification_time` DATETIME ON UPDATE CURRENT_TIMESTAMP())
+mysql	SET NAMES utf8mb4
+mysql	SET NAMES utf8mb4 COLLATE bogus
+mysql	set names utf8mb4 collate bogus
+mysql	SET NAMES DEFAULT
+mysql	SELECT id, fname, lname FROM customer LIMIT 10 OFFSET 5
+mysql	SELECT id, fname, lname FROM customer LIMIT 5, 10
+mysql	SELECT * FROM user LIMIT ? OFFSET ?
+mysql	CREATE TABLE tb (id INT, INDEX (id))
+mysql	CREATE TABLE tb (id INT, index USING BTREE (id))
+mysql	CREATE TABLE tb (id INT, INDEX USING BTREE (id))
+mysql	CREATE TABLE tb (id INT, KEY USING HASH (id))
+mysql	CREATE TABLE tb (id INT, key index (id))
+mysql	CREATE TABLE tb (id INT, KEY index (id))
+mysql	CREATE TABLE tb (id INT, INDEX 'index' (id))
+mysql	CREATE TABLE tb (id INT, INDEX index USING BTREE (id))
+mysql	CREATE TABLE tb (id INT, INDEX index USING HASH (id))
+mysql	CREATE TABLE tb (id INT, INDEX (c1, c2, c3, c4,c5))
+mysql	CREATE TABLE tb (id INT, INDEX (c1, c2, c3, c4, c5))
+mysql	CREATE TABLE foo (bar INT, CONSTRAINT constr INDEX index (bar))
+mysql	CREATE TABLE foo (bar INT, INDEX index (bar))
+mysql	CREATE TABLE t (x INT, CONSTRAINT PRIMARY KEY (x))
+mysql	CREATE TABLE t (x INT, PRIMARY KEY (x))
+mysql	CREATE TABLE t (x INT, CONSTRAINT UNIQUE (x))
+mysql	CREATE TABLE t (x INT, UNIQUE (x))
+mysql	CREATE TABLE t (x INT, CONSTRAINT FOREIGN KEY (x) REFERENCES t2(id))
+mysql	CREATE TABLE t (x INT, FOREIGN KEY (x) REFERENCES t2(id))
+mysql	CREATE TABLE t (x INT, CONSTRAINT CHECK (x > 1))
+mysql	CREATE TABLE t (x INT, CHECK (x > 1))
+mysql	CREATE TABLE tb (id INT, FULLTEXT (id))
+mysql	CREATE TABLE tb (id INT, FULLTEXT INDEX (id))
+mysql	CREATE TABLE tb (id INT, FULLTEXT KEY (id))
+mysql	CREATE TABLE tb (id INT, FULLTEXT potato (id))
+mysql	CREATE TABLE tb (id INT, FULLTEXT INDEX potato (id))
+mysql	CREATE TABLE tb (id INT, FULLTEXT KEY potato (id))
+mysql	CREATE TABLE tb (c1 INT, c2 INT, FULLTEXT KEY potato (c1, c2))
+mysql	CREATE TABLE tb (id INT, SPATIAL (id))
+mysql	CREATE TABLE tb (id INT, SPATIAL INDEX (id))
+mysql	CREATE TABLE tb (id INT, SPATIAL KEY (id))
+mysql	CREATE TABLE tb (id INT, SPATIAL potato (id))
+mysql	CREATE TABLE tb (id INT, SPATIAL INDEX potato (id))
+mysql	CREATE TABLE tb (id INT, SPATIAL KEY potato (id))
+mysql	CREATE TABLE tb (c1 INT, c2 INT, SPATIAL KEY potato (c1, c2))
+mysql	SELECT * FROM tb WHERE MATCH (c1) AGAINST ('string')
+mysql	SELECT * FROM tb WHERE MATCH (c1) AGAINST ('string' IN NATURAL LANGUAGE MODE)
+mysql	SELECT * FROM tb WHERE MATCH (c1) AGAINST ('string' IN NATURAL LANGUAGE MODE WITH QUERY EXPANSION)
+mysql	SELECT * FROM tb WHERE MATCH (c1) AGAINST ('string' IN BOOLEAN MODE)
+mysql	SELECT * FROM tb WHERE MATCH (c1) AGAINST ('string' WITH QUERY EXPANSION)
+mysql	SELECT * FROM tb WHERE MATCH (c1, c2, c3) AGAINST ('string')
+mysql	SELECT * FROM tb WHERE MATCH (c1) AGAINST (123)
+mysql	SELECT * FROM tb WHERE MATCH (c1) AGAINST (NULL)
+mysql	SELECT COUNT(IF(MATCH (title, body) AGAINST ('database' IN NATURAL LANGUAGE MODE), 1, NULL)) AS count FROM articles
+mysql	CREATE TABLE tb (c1 INT, CONSTRAINT cons FULLTEXT (c1))
+mysql	VALUES ROW(1, true, 'a')
+mysql	SELECT a, c FROM (VALUES ROW(1, true, 'a'), ROW(2, false, 'b'), ROW(3, false, 'c')) AS t (a, b, c)
+mysql	SELECT _latin1 X'4D7953514C'
+mysql	SELECT _binary 'abc'
+mysql	SELECT _utf8'abc'
+mysql	SELECT _utf8 'abc'
+mysql	SELECT _utf8mb4'abc'
+mysql	SELECT _utf8mb4 'abc'
+mysql	SELECT _binary 'abc', _utf8mb4 'abc'
+mysql	SELECT 5 DIV 2
+mysql	SELECT 5 DIV
+mysql	DROP TEMPORARY TABLE foo
+mysql	SELECT CONVERT('x' USING latin1)
+mysql	SELECT CONVERT(my_column USING utf8mb4) FROM my_table
+mysql	SELECT CONVERT('abc', CHAR(60))
+mysql	SELECT CONVERT(123.456, DECIMAL(5,2))
+mysql	SELECT CONVERT('test', CHAR CHARACTER SET utf8mb4)
+mysql	CREATE TABLE tb (id TEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci)
+mysql	SELECT * FROM JSON_TABLE('[[1, 2], [3, 4]]', '$[*]' COLUMNS(a INT PATH '$[0]', b INT PATH '$[1]')) AS t
+mysql	SELECT * FROM JSON_TABLE(?, '$[*]' COLUMNS(a VARCHAR(20) PATH '$')) AS t
+mysql	SELECT * FROM JSON_TABLE('[1,2]', '$[*]' COLUMNS(x INT PATH '$' ERROR ON ERROR)) AS t
+mysql	SELECT * FROM JSON_TABLE('[1,2]', '$[*]' COLUMNS(x INT PATH '$' ERROR ON EMPTY)) AS t
+mysql	SELECT * FROM JSON_TABLE('[1,2]', '$[*]' COLUMNS(x INT PATH '$' ERROR ON EMPTY DEFAULT '0' ON ERROR)) AS t
+mysql	SELECT * FROM JSON_TABLE('[1,2]', '$[*]' COLUMNS(x INT PATH '$' DEFAULT '0' ON EMPTY NULL ON ERROR)) AS t
+mysql	SELECT true XOR true, false XOR false, true XOR false, false XOR true
+mysql	SELECT B'111'
+mysql	GRANT ALL ON *.* TO 'jeffrey'@'%'
+mysql	REVOKE ALL ON db1.* FROM 'jeffrey'@'%'
+mysql	CREATE ALGORITHM = MERGE VIEW foo AS SELECT 1
+mysql	CREATE ALGORITHM = UNDEFINED VIEW foo AS SELECT 1
+mysql	CREATE ALGORITHM = TEMPTABLE VIEW foo AS SELECT 1
+mysql	CREATE DEFINER = 'jeffrey'@'localhost' VIEW foo AS SELECT 1
+mysql	CREATE SQL SECURITY DEFINER VIEW foo AS SELECT 1
+mysql	CREATE SQL SECURITY INVOKER VIEW foo AS SELECT 1
+mysql	CREATE ALGORITHM = UNDEFINED DEFINER = `root`@`%` SQL SECURITY INVOKER VIEW foo AS SELECT 1
+mysql	CREATE TABLE foo (bar LONGBLOB)
+mysql	CREATE TABLE foo (bar TINYBLOB)
+mysql	CREATE TABLE foo (bar MEDIUMBLOB)
+mysql	CREATE TABLE foo (bar TINYTEXT)
+mysql	CREATE TABLE foo (bar MEDIUMTEXT)
+mysql	CREATE TABLE foo (bar LONGTEXT)
+mysql	CREATE TABLE t (a geometry SRID 4326)
+mysql	CREATE TABLE foo (bar DOUBLE)
+mysql	CREATE TABLE foo (bar DOUBLE(11,0))
+mysql	CREATE TABLE foo (bar DOUBLE(11, 0))
+mysql	UPDATE account SET balance=balance--1 WHERE account_id=5752
+mysql	UPDATE account SET balance = balance - -1 WHERE account_id = 5752
+mysql	UPDATE account SET balance = balance WHERE account_id = 5752
+mysql	CREATE TRIGGER emp_stamp BEFORE INSERT ON emp FOR EACH ROW EXECUTE FUNCTION emp_stamp()
+mysql	CREATE TRIGGER mytrigger BEFORE INSERT ON mytable FOR EACH ROW BEGIN SET NEW.a = 1; SET NEW.b = 2; END
+mysql	CREATE TRIGGER tr AFTER INSERT ON t1 FOR EACH ROW BEGIN INSERT INTO t2 VALUES (NEW.id); END
+mysql	DROP TRIGGER emp_stamp
+mysql	CREATE TABLE customers (id BIGINT, custinfo JSON, INDEX zips ((CAST(custinfo -> '$.zipcode' AS UNSIGNED ARRAY))))
+mysql	CREATE INDEX zips ON customers((CAST(custinfo -> '$.zipcode' AS UNSIGNED ARRAY)))
+mysql	ALTER TABLE customers ADD INDEX zips ((CAST(custinfo -> '$.zipcode' AS UNSIGNED ARRAY)))
+mysql	SELECT tbl.ProjectID FROM surveys.tbl1 AS tbl WHERE MATCH (tbl.ReferenceID) AGAINST ('AAA' IN BOOLEAN MODE)
+mysql	SELECT @price := price, @tax := price * 0.1 FROM products WHERE id = 1
+mysql	UPDATE products SET price = @new_price := price * 1.1 WHERE category = 'Books'
+mysql	SELECT a.*, b.* FROM table_a AS a STRAIGHT_JOIN table_b AS b ON a.b_id = b.id
+mysql	SELECT a.*, b.* FROM table_a STRAIGHT_JOIN table_b AS b ON a.b_id = b.id
+mysql	SELECT DISTINCTROW * FROM employees
+mysql	SELECT DISTINCT * FROM employees
+mysql	SELECT HIGH_PRIORITY DISTINCTROW * FROM employees
+mysql	SELECT DISTINCT HIGH_PRIORITY * FROM employees
+mysql	SELECT STRAIGHT_JOIN * FROM employees e JOIN dept_emp d ON e.emp_no = d.emp_no WHERE d.emp_no = 10001
+mysql	SELECT STRAIGHT_JOIN e.emp_no, d.dept_no FROM employees e JOIN dept_emp d ON e.emp_no = d.emp_no
+mysql	SELECT DISTINCT STRAIGHT_JOIN emp_no FROM employees
+mysql	SELECT * FROM employees
+mysql	SELECT HIGH_PRIORITY * FROM employees
+mysql	SELECT SQL_SMALL_RESULT * FROM employees
+mysql	SELECT SQL_BIG_RESULT * FROM employees
+mysql	SELECT SQL_BUFFER_RESULT * FROM employees
+mysql	SELECT SQL_NO_CACHE * FROM employees
+mysql	SELECT SQL_CALC_FOUND_ROWS * FROM employees
+mysql	SELECT HIGH_PRIORITY STRAIGHT_JOIN SQL_SMALL_RESULT SQL_BIG_RESULT SQL_BUFFER_RESULT SQL_NO_CACHE SQL_CALC_FOUND_ROWS * FROM employees
+mysql	SELECT DISTINCT HIGH_PRIORITY emp_no FROM employees
+mysql	SELECT DISTINCT SQL_CALC_FOUND_ROWS emp_no FROM employees
+mysql	SELECT HIGH_PRIORITY STRAIGHT_JOIN e.emp_no, d.dept_no FROM employees e JOIN dept_emp d ON e.emp_no = d.emp_no
+mysql	SELECT HIGH_PRIORITY DISTINCT * FROM employees
+mysql	SELECT SQL_CALC_FOUND_ROWS DISTINCT HIGH_PRIORITY * FROM employees
+mysql	SELECT DISTINCT HIGH_PRIORITY SQL_CALC_FOUND_ROWS * FROM employees
+mysql	SELECT HIGH_PRIORITY DISTINCT SQL_SMALL_RESULT * FROM employees
+mysql	SELECT DISTINCT HIGH_PRIORITY SQL_SMALL_RESULT * FROM employees
+mysql	SELECT ALL * FROM employees
+mysql	SELECT ALL HIGH_PRIORITY * FROM employees
+mysql	SELECT HIGH_PRIORITY ALL * FROM employees
+mysql	SELECT SQL_CALC_FOUND_ROWS ALL HIGH_PRIORITY * FROM employees
+mysql	SELECT ALL HIGH_PRIORITY SQL_CALC_FOUND_ROWS * FROM employees
+mysql	SELECT HIGH_PRIORITY HIGH_PRIORITY * FROM employees
+mysql	SELECT SQL_CALC_FOUND_ROWS SQL_CALC_FOUND_ROWS * FROM employees
+mysql	SELECT STRAIGHT_JOIN STRAIGHT_JOIN * FROM employees
+mysql	SELECT STRAIGHT_JOIN * FROM employees
+mysql	SELECT SQL_NO_CACHE SQL_NO_CACHE * FROM employees
+mysql	SELECT HIGH_PRIORITY DISTINCT HIGH_PRIORITY * FROM employees
+mysql	SELECT SQL_CALC_FOUND_ROWS DISTINCT SQL_CALC_FOUND_ROWS * FROM employees
+mysql	SELECT DISTINCT SQL_CALC_FOUND_ROWS * FROM employees
+mysql	SELECT SQL_CALC_FOUND_ROWS SQL_NO_CACHE SQL_BUFFER_RESULT SQL_BIG_RESULT SQL_SMALL_RESULT STRAIGHT_JOIN HIGH_PRIORITY * FROM employees
+mysql	SELECT SQL_NO_CACHE DISTINCT SQL_CALC_FOUND_ROWS * FROM employees
+mysql	SELECT DISTINCT SQL_NO_CACHE SQL_CALC_FOUND_ROWS * FROM employees
+mysql	SELECT HIGH_PRIORITY STRAIGHT_JOIN DISTINCT SQL_SMALL_RESULT * FROM employees
+mysql	SELECT DISTINCT HIGH_PRIORITY STRAIGHT_JOIN SQL_SMALL_RESULT * FROM employees
+mysql	SELECT HIGH_PRIORITY ALL STRAIGHT_JOIN * FROM employees
+mysql	SELECT ALL HIGH_PRIORITY STRAIGHT_JOIN * FROM employees
+mysql	SELECT DISTINCT DISTINCT * FROM t
+mysql	SELECT DISTINCTROW DISTINCTROW * FROM t
+mysql	SELECT DISTINCT DISTINCTROW * FROM t
+mysql	SELECT ALL DISTINCT * FROM t
+mysql	SELECT DISTINCT ALL * FROM t
+mysql	SELECT ALL DISTINCTROW * FROM t
+mysql	SELECT ALL ALL * FROM t
+mysql	CREATE TABLE orders (customer_id INT, INDEX idx_customer (customer_id), CONSTRAINT fk_customer FOREIGN KEY idx_customer (customer_id) REFERENCES customers(id))
+mysql	DROP INDEX idx_name ON table_name
+mysql	ALTER TABLE tab DROP INDEX idx_index
+mysql	SHOW CHARACTER SET
+mysql	SHOW CHARACTER SET LIKE 'utf8mb4%'
+mysql	SHOW CHARSET WHERE charset = 'utf8mb4%'
+mysql	SHOW CHARSET LIKE 'utf8mb4%'
+mysql	CREATE INDEX idx_name ON test {using} {columns}
+mysql	CREATE TABLE foo (name VARCHAR(255), age INT, KEY idx_name {using} {columns})
+mysql	ALTER TABLE foo ADD KEY idx_name {using} {columns}
+mysql	CREATE INDEX idx_name ON test{columns} {using}
+mysql	CREATE TABLE foo (name VARCHAR(255), age INT, KEY idx_name {columns} {using})
+mysql	ALTER TABLE foo ADD KEY idx_name {columns} {using}
+mysql	CREATE INDEX idx_name ON t(c1, c2) USING HASH LOCK = SHARED
+mysql	CREATE INDEX idx_name ON t(c1, c2) USING BTREE ALGORITHM = INPLACE
+mysql	CREATE INDEX idx_name ON t(c1, c2) USING BTREE LOCK = EXCLUSIVE ALGORITHM = DEFAULT
+mysql	SELECT /*abc+ text */ 1
+mysql	SELECT /*+ A */ /*x2+ B */ 1
+mysql	SELECT /*+ A */ /* Regular comment */ /*x2+ B */ 1
+mysql	INSERT /*abc+ append */ INTO t2 VALUES (2)
+mysql	UPDATE /*abc+ PARALLEL */ table_name SET column1 = 1
+mysql	DELETE /*abc+ ENABLE_DML */ FROM table_name
+mysql	CREATE DATABASE mydb DEFAULT CHARACTER SET utf8mb4
+mysql	CREATE DATABASE mydb DEFAULT CHARACTER SET = utf8mb4
+mysql	CREATE DATABASE mydb CHARACTER SET utf8mb4
+mysql	CREATE DATABASE mydb CHARSET utf8mb4
+mysql	CREATE DATABASE mydb DEFAULT CHARSET utf8mb4
+mysql	CREATE DATABASE mydb DEFAULT COLLATE utf8mb4_unicode_ci
+mysql	CREATE DATABASE mydb COLLATE utf8mb4_unicode_ci
+mysql	CREATE DATABASE mydb DEFAULT CHARACTER SET utf8mb4 DEFAULT COLLATE utf8mb4_unicode_ci
+mysql	CREATE DATABASE IF NOT EXISTS mydb DEFAULT CHARACTER SET utf16
+mysql	CREATE DATABASE IF NOT EXISTS noria DEFAULT CHARACTER SET = utf16
+mysql	CREATE DATABASE IF NOT EXISTS noria DEFAULT CHARACTER SET utf16
+mysql	CREATE DATABASE mydb DEFAULT CHARACTER SET
+mysql	CREATE DATABASE mydb CHARSET
+mysql	CREATE DATABASE mydb DEFAULT COLLATE
+mysql	CREATE DATABASE mydb CHARACTER SET =
+mysql	CREATE DATABASE mydb DEFAULT COLLATE utf8mb4_unicode_ci DEFAULT CHARACTER SET utf8mb4
+mysql	CREATE DATABASE mydb COLLATE utf8mb4_unicode_ci CHARACTER SET utf8mb4
+mysql	SELECT 'M'
+mysql	SELECT 'MySql'
+mysql	SELECT * FROM tbl GROUP BY col1, col2 WITH ROLLUP
+mysql	SELECT * FROM employees PARTITION (p0, p2)
+mysql	SELECT * FROM employees PARTITION (p0) AS e
+mysql	SELECT * FROM employees PARTITION (p0) JOIN departments PARTITION (p1) ON employees.dept_id = departments.id
+mysql	UPDATE employees PARTITION (p0) SET salary = 1
+mysql	DELETE FROM employees PARTITION (p0) WHERE id = 1
+mysql	SELECT * FROM employees PARTITION

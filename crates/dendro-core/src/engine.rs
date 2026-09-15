@@ -631,6 +631,13 @@ impl Database {
         self.plan_cache.lock().len()
     }
 
+    /// 当前快照的 manifest version（前置1 配套）——L2 计划缓存失效键与
+    /// CatalogCache 换新的执行期读取点（ir-spec 06 §2/§3.5）：一次原子读，
+    /// 且**不滞后**（update_manifest 已回填 commit 返回的新版本号）。
+    pub fn snapshot_version(&self) -> u64 {
+        self.state.load().manifest.version
+    }
+
     pub fn new_session(self: &Arc<Self>) -> Session {
         Session {
             db: self.clone(),
@@ -1091,12 +1098,16 @@ impl Database {
             }
             let t_manifest = std::time::Instant::now();
             match self.manifest_store.commit(ver, m.clone()) {
-                Ok(_new_ver) => {
+                Ok(new_ver) => {
                     self.lat_manifest_cnt.fetch_add(1, Ordering::Relaxed);
                     self.lat_manifest_sum_us
                         .fetch_add(t_manifest.elapsed().as_micros() as u64, Ordering::Relaxed);
-                    // 自发布：commit 的就是我们刚构造的 m（版本号 new_ver），
-                    // 直接作为本进程快照，无需再 LIST 刷新（P1-F：每次发布省 1 LIST）
+                    // 自发布：commit 的就是我们刚构造的 m（P1-F：每次发布省 1 LIST）。
+                    // 前置1（ir-spec 评审 P1-1）：m 是提交前克隆，version 仍是旧值；
+                    // commit() 只改它自己的副本。存入快照前回填新版本号——否则快照
+                    // version 滞后一次写，"读快照取 version"原语不成立（L2 计划缓存
+                    // 失效键与 CatalogCache 换新都依赖此值，见 ir-spec 06）。
+                    m.version = new_ver;
                     self.state.store(Arc::new(DbSnapshot { manifest: m }));
                     return Ok(());
                 }

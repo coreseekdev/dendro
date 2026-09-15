@@ -1,0 +1,2216 @@
+# vendored from apache/datafusion-sqlparser-rs tests (Apache-2.0)
+# postgres+common 测试文件 SQL 字面量（拼接/起始词过滤/去重）——P 层冒烟 B0-a
+# 格式：dialect<TAB>sql（换行已转义）
+pg	CREATE SEQUENCE  name0
+pg	CREATE SEQUENCE name0
+pg	CREATE SEQUENCE  IF NOT EXISTS  name0
+pg	CREATE SEQUENCE IF NOT EXISTS name0
+pg	CREATE TEMPORARY SEQUENCE  IF NOT EXISTS  name0
+pg	CREATE TEMPORARY SEQUENCE IF NOT EXISTS name0
+pg	CREATE TEMPORARY SEQUENCE  name0
+pg	CREATE TEMPORARY SEQUENCE name0
+pg	CREATE TEMPORARY SEQUENCE IF NOT EXISTS name1 AS BIGINT INCREMENT BY 1 MINVALUE 1 MAXVALUE 20 START WITH 10
+pg	CREATE SEQUENCE IF NOT EXISTS name2 AS BIGINT INCREMENT 1 MINVALUE 1 MAXVALUE 20 START WITH 10 CACHE 2 NO CYCLE
+pg	CREATE TEMPORARY SEQUENCE IF NOT EXISTS name3 INCREMENT 1 NO MINVALUE MAXVALUE 20 CACHE 2 CYCLE
+pg	CREATE TEMPORARY SEQUENCE IF NOT EXISTS name3 INCREMENT 1 NO MINVALUE MAXVALUE 20 OWNED BY public.table01
+pg	CREATE TEMPORARY SEQUENCE IF NOT EXISTS name3 INCREMENT 1 NO MINVALUE MAXVALUE 20 OWNED BY NONE
+pg	CREATE SEQUENCE name4 AS BIGINT INCREMENT -15 MINVALUE -2000 MAXVALUE -50 START WITH -60
+pg	CREATE SEQUENCE name5 AS BIGINT INCREMENT +10 MINVALUE +30 MAXVALUE +5000 START WITH +45
+pg	CREATE SEQUENCE foo INCREMENT 1 NO MINVALUE NO
+pg	DROP SEQUENCE IF EXISTS  name0 CASCADE
+pg	DROP SEQUENCE IF EXISTS name0 CASCADE
+pg	DROP SEQUENCE IF EXISTS  name1 RESTRICT
+pg	DROP SEQUENCE IF EXISTS name1 RESTRICT
+pg	DROP SEQUENCE  name2 CASCADE
+pg	DROP SEQUENCE name2 CASCADE
+pg	DROP SEQUENCE  name2
+pg	DROP SEQUENCE name2
+pg	DROP SEQUENCE  name0 CASCADE
+pg	DROP SEQUENCE name0 CASCADE
+pg	DROP SEQUENCE  name1 RESTRICT
+pg	DROP SEQUENCE name1 RESTRICT
+pg	DROP SEQUENCE  name1, name2, name3
+pg	DROP SEQUENCE name1, name2, name3
+pg	CREATE TABLE t (c TEXT DEFAULT (foo())::TEXT)
+pg	CREATE TABLE t (c TEXT DEFAULT (foo())::INT::TEXT)
+pg	CREATE TABLE t (c TEXT DEFAULT (foo())::TEXT NOT NULL)
+pg	CREATE TABLE t ()
+pg	CREATE TABLE t (CONSTRAINT positive CHECK (2 > 1))
+pg	CREATE TABLE t (room INT, CONSTRAINT no_overlap EXCLUDE USING gist (room WITH =))
+pg	CREATE TABLE t (col INT, EXCLUDE (col WITH =))
+pg	CREATE TABLE t (room INT, during INT, EXCLUDE USING gist (room WITH =, during WITH &&))
+pg	CREATE TABLE t (col INT, EXCLUDE USING gist (col WITH =) INCLUDE (col))
+pg	CREATE TABLE t (col INT, EXCLUDE USING gist (col WITH =) WHERE (col > 0))
+pg	CREATE TABLE t (col INT, EXCLUDE USING gist (col WITH =) DEFERRABLE INITIALLY DEFERRED)
+pg	CREATE TABLE t (col INT, EXCLUDE USING gist (col WITH =) NOT DEFERRABLE INITIALLY IMMEDIATE)
+pg	CREATE TABLE t (col INT, EXCLUDE USING btree (col ASC NULLS LAST WITH =))
+pg	CREATE TABLE t (col INT, EXCLUDE USING btree (col DESC NULLS FIRST WITH =))
+pg	CREATE TABLE t (col TEXT, EXCLUDE USING gist (col text_pattern_ops WITH =))
+pg	CREATE TABLE t (name TEXT, EXCLUDE USING gist ((lower(name)) text_pattern_ops WITH =))
+pg	CREATE TABLE t (name TEXT, EXCLUDE USING btree (name COLLATE "C" WITH =))
+pg	CREATE TABLE t (col INT, EXCLUDE USING gist (col WITH OPERATOR(pg_catalog.=)))
+pg	CREATE TABLE t (col INT, CONSTRAINT c EXCLUDE USING gist (col ASC WITH OPERATOR(pg_catalog.=)))
+pg	CREATE TABLE t (CONSTRAINT no_overlap EXCLUDE USING gist (room WITH =, during WITH &&) INCLUDE (id) WHERE (active = true))
+pg	ALTER TABLE t ADD CONSTRAINT no_overlap EXCLUDE USING gist (room WITH =)
+pg	CREATE TABLE t (CONSTRAINT c EXCLUDE USING gist (col))
+pg	CREATE TABLE t (CONSTRAINT c EXCLUDE USING gist ())
+pg	CREATE TABLE t (CONSTRAINT c EXCLUDE USING gist (col WITH))
+pg	CREATE TABLE t (CONSTRAINT c EXCLUDE foo)
+pg	CREATE TABLE t (col INT, EXCLUDE USING gist (col WITH =))
+pg	CREATE TABLE new (LIKE old INCLUDING DEFAULTS)
+pg	CREATE TABLE new (LIKE old EXCLUDING DEFAULTS)
+pg	ALTER TABLE tab RENAME CONSTRAINT old_name TO new_name
+pg	ALTER TABLE t ADD CONSTRAINT b UNIQUE NULLS NOT DISTINCT (c)
+pg	ALTER TABLE t ADD CONSTRAINT b UNIQUE NULLS DISTINCT (c)
+pg	ALTER TABLE t ADD CONSTRAINT b UNIQUE (c)
+pg	ALTER TABLE tab ADD CONSTRAINT c PRIMARY KEY USING INDEX my_index
+pg	ALTER TABLE tab ADD CONSTRAINT c UNIQUE USING INDEX my_index
+pg	ALTER TABLE tab ADD PRIMARY KEY USING INDEX my_index
+pg	ALTER TABLE tab ADD UNIQUE USING INDEX my_index
+pg	ALTER TABLE tab ADD CONSTRAINT c PRIMARY KEY USING INDEX my_index DEFERRABLE
+pg	ALTER TABLE tab ADD CONSTRAINT c UNIQUE USING INDEX my_index NOT DEFERRABLE INITIALLY IMMEDIATE
+pg	ALTER TABLE tab ADD CONSTRAINT c PRIMARY KEY USING INDEX my_index DEFERRABLE INITIALLY DEFERRED
+pg	CREATE TABLE t (id INT, payload TEXT, CONSTRAINT t_pk PRIMARY KEY (id) INCLUDE (payload))
+pg	CREATE TABLE t (id INT, email TEXT, payload TEXT, CONSTRAINT t_uk UNIQUE (email) INCLUDE (payload))
+pg	CREATE TABLE t (a INT, b INT, c INT, d INT, CONSTRAINT t_pk PRIMARY KEY (a, b) INCLUDE (c, d))
+pg	ALTER TABLE t ADD CONSTRAINT t_pk PRIMARY KEY (id) INCLUDE (payload)
+pg	ALTER TABLE t ADD CONSTRAINT t_uk UNIQUE (email) INCLUDE (payload)
+pg	ALTER TABLE t ADD CONSTRAINT t_pk PRIMARY KEY (id) INCLUDE (payload) DEFERRABLE INITIALLY DEFERRED
+pg	ALTER TABLE t ADD CONSTRAINT t_pk PRIMARY KEY (id) INCLUDE (payload, extra)
+pg	ALTER TABLE tab DISABLE ROW LEVEL SECURITY
+pg	ALTER TABLE tab DISABLE RULE rule_name
+pg	ALTER TABLE tab DISABLE TRIGGER ALL
+pg	ALTER TABLE tab DISABLE TRIGGER USER
+pg	ALTER TABLE tab DISABLE TRIGGER trigger_name
+pg	ALTER TABLE tab ENABLE ALWAYS RULE rule_name
+pg	ALTER TABLE tab ENABLE ALWAYS TRIGGER trigger_name
+pg	ALTER TABLE tab ENABLE REPLICA TRIGGER trigger_name
+pg	ALTER TABLE tab ENABLE REPLICA RULE rule_name
+pg	ALTER TABLE tab ENABLE ROW LEVEL SECURITY
+pg	ALTER TABLE tab FORCE ROW LEVEL SECURITY
+pg	ALTER TABLE tab NO FORCE ROW LEVEL SECURITY
+pg	ALTER TABLE tab ENABLE RULE rule_name
+pg	ALTER TABLE tab ENABLE TRIGGER ALL
+pg	ALTER TABLE tab ENABLE TRIGGER USER
+pg	ALTER TABLE tab ENABLE TRIGGER trigger_name
+pg	TRUNCATE TABLE "users", "orders" RESTART IDENTITY RESTRICT
+pg	TRUNCATE users, orders RESTART IDENTITY
+pg	CREATE EXTENSION extension_name
+pg	CREATE EXTENSION extension_name WITH SCHEMA schema_name
+pg	CREATE EXTENSION extension_name WITH VERSION version
+pg	CREATE EXTENSION extension_name WITH CASCADE
+pg	CREATE EXTENSION extension_name WITH SCHEMA schema_name VERSION version CASCADE
+pg	CREATE EXTENSION extension_name WITH SCHEMA schema_name CASCADE
+pg	CREATE EXTENSION extension_name WITH VERSION version CASCADE
+pg	CREATE EXTENSION extension_name WITH SCHEMA schema_name VERSION version
+pg	DROP EXTENSION extension_name
+pg	DROP EXTENSION extension_name CASCADE
+pg	DROP EXTENSION extension_name RESTRICT
+pg	DROP EXTENSION extension_name, extension_name2 CASCADE
+pg	DROP EXTENSION extension_name, extension_name2 RESTRICT
+pg	DROP EXTENSION IF EXISTS extension_name
+pg	DROP EXTENSION IF EXISTS extension_name CASCADE
+pg	DROP EXTENSION IF EXISTS extension_name RESTRICT
+pg	DROP EXTENSION IF EXISTS extension_name1, extension_name2 CASCADE
+pg	DROP EXTENSION IF EXISTS extension_name1, extension_name2 RESTRICT
+pg	CREATE COLLATION test3 (provider = icu, lc_collate = 'en_US.utf8')
+pg	CREATE COLLATION test4 FROM nonsense
+pg	CREATE COLLATION testx (provider = icu, locale = 'nonsense-nowhere')
+pg	ALTER COLLATION test1 RENAME TO test11
+pg	ALTER COLLATION test11 OWNER TO regress_test_role
+pg	ALTER COLLATION test11 SET SCHEMA test_schema
+pg	ALTER COLLATION "en-x-icu" REFRESH VERSION
+pg	DROP COLLATION test0
+pg	DROP COLLATION IF EXISTS test0
+pg	CREATE COLLATION testx (provider = icu, locale = '@colStrength=primary;nonsense=yes')
+pg	DROP COLLATION testx
+pg	CREATE COLLATION test5 FROM test0
+pg	ALTER COLLATION test0 RENAME TO test11
+pg	ALTER COLLATION test1 RENAME TO test22
+pg	ALTER COLLATION test11 OWNER TO nonsense
+pg	DROP COLLATION test0, test_schema.test11, test5
+pg	ALTER TABLE tab ALTER COLUMN is_active TYPE TEXT USING 'text'
+pg	ALTER TABLE tab ALTER COLUMN is_active SET DATA TYPE TEXT USING 'text'
+pg	ALTER TABLE t ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY
+pg	ALTER TABLE t ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY
+pg	ALTER TABLE t ALTER COLUMN id ADD GENERATED AS IDENTITY
+pg	ALTER TABLE t ALTER COLUMN id ADD GENERATED AS IDENTITY ( INCREMENT 1 MINVALUE 1 )
+pg	ALTER TABLE t ALTER COLUMN id ADD GENERATED AS IDENTITY ( )
+pg	ALTER TABLE t ALTER COLUMN id ADD GENERATED ( INCREMENT 1 MINVALUE 1 )
+pg	ALTER TABLE t ALTER COLUMN id ADD GENERATED AS IDENTITY ( INCREMENT )
+pg	ALTER TABLE IF EXISTS ONLY tab ADD COLUMN a TEXT, ADD COLUMN b INT
+pg	ALTER TABLE tab OWNER TO new_owner
+pg	ALTER TABLE tab OWNER TO postgres
+pg	ALTER TABLE tab OWNER TO CREATE
+pg	ALTER TABLE tab OWNER TO "new_owner"
+pg	ALTER TABLE tab OWNER TO CURRENT_USER
+pg	ALTER TABLE tab OWNER TO CURRENT_ROLE
+pg	ALTER TABLE tab OWNER TO SESSION_USER
+pg	ALTER TABLE tab OWNER TO CREATE FOO
+pg	ALTER TABLE tab OWNER TO 4
+pg	ALTER TABLE unlogged1 SET LOGGED
+pg	ALTER TABLE unlogged1 SET UNLOGGED
+pg	CREATE TABLE IF NOT EXISTS uk_cities ()
+pg	CREATE TABLE NOT EXISTS uk_cities ()
+pg	CREATE TABLE IF EXISTS uk_cities ()
+pg	CREATE TABLE IF uk_cities ()
+pg	CREATE TABLE IF NOT uk_cities ()
+pg	CREATE SCHEMA IF NOT EXISTS schema_name
+pg	DROP SCHEMA IF EXISTS schema_name
+pg	COPY bitwise_test FROM STDIN NULL 'null'
+pg	COPY varbit_table FROM STDIN
+pg	COPY bit_table FROM STDIN
+pg	COPY copytest2 (test) FROM STDIN
+pg	COPY copytest3 FROM STDIN CSV HEADER
+pg	COPY copytest4 FROM STDIN (HEADER)
+pg	COPY parted_copytest FROM STDIN
+pg	COPY tab_progress_reporting FROM STDIN
+pg	COPY oversized_column_default FROM STDIN
+pg	COPY x (a, b, c, d, e) FROM STDIN
+pg	COPY header_copytest (c, a) FROM STDIN
+pg	COPY atest5 (two) FROM STDIN
+pg	COPY main_table (a, b) FROM STDIN
+pg	COPY users FROM 'data.csv'
+pg	COPY users FROM 'data.csv' DELIMITER ','
+pg	COPY users FROM 'data.csv' DELIMITER ',' CSV HEADER
+pg	COPY users TO 'data.csv'
+pg	COPY users TO 'data.csv' DELIMITER ','
+pg	COPY users TO 'data.csv' DELIMITER ',' CSV HEADER
+pg	COPY (SELECT 42 AS a, 'hello' AS b) FROM 'query.csv'
+pg	COPY ... FROM does not support query as a source
+pg	COPY country TO STDOUT (DELIMITER '|')
+pg	COPY country TO PROGRAM 'gzip > /usr1/proj/bray/sql/country_data.gz'
+pg	COPY (SELECT 42 AS a, 'hello' AS b) TO 'query.csv'
+pg	COPY users FROM 'data.csv' BINARY DELIMITER ',' NULL 'null' CSV HEADER QUOTE '"' ESCAPE '' FORCE NOT NULL column
+pg	COPY users FROM 'data.csv' DELIMITER AS ',' NULL AS 'null' CSV QUOTE AS '"' ESCAPE AS ''
+pg	COPY users TO 'data.csv' BINARY DELIMITER ',' NULL 'null' CSV HEADER QUOTE '"' ESCAPE '' FORCE QUOTE column
+pg	SET a = b
+pg	SET a = 'b'
+pg	SET a = 0
+pg	SET a = DEFAULT
+pg	SET LOCAL a = b
+pg	SET a.b.c = b
+pg	SET hive.tez.auto.reducer.parallelism=false
+pg	SET hive.tez.auto.reducer.parallelism = false
+pg	SET a TO b
+pg	SET SESSION ROLE NONE
+pg	SET LOCAL ROLE "rolename"
+pg	SET ROLE 'rolename'
+pg	SHOW a a
+pg	SHOW ALL ALL
+pg	DEALLOCATE a
+pg	DEALLOCATE ALL
+pg	DEALLOCATE PREPARE a
+pg	DEALLOCATE PREPARE ALL
+pg	EXECUTE a
+pg	EXECUTE a(1, 't')
+pg	EXECUTE a USING CAST(1337 AS SMALLINT), CAST(7331 AS SMALLINT)
+pg	PREPARE a AS INSERT INTO customers VALUES (a1, a2, a3)
+pg	PREPARE a (INT, TEXT) AS SELECT * FROM customers WHERE customers.id = a1
+pg	SELECT * FROM customers WHERE customers.id = a1
+pg	INSERT INTO distributors (did, dname) VALUES (DEFAULT, 'XYZ Widgets') RETURNING did
+pg	DELETE FROM tasks WHERE status = 'DONE' RETURNING *
+pg	SELECT {}a
+pg	SELECT a{}
+pg	SELECT 'abc' {str_op} '^a'
+pg	SELECT 'abc' {str_op} ANY(ARRAY['^a', 'x'])
+pg	SELECT 'abc' {str_op} 'a_c%'
+pg	SELECT 'abc' {str_op} ALL(ARRAY['a_c%'])
+pg	SELECT foo[0] FROM foos
+pg	SELECT foo[0][0] FROM foos
+pg	SELECT bar[0][
+pg	SELECT (CAST(ARRAY[ARRAY[2, 3]] AS INT[][]))[1][2]
+pg	SELECT ARRAY[]
+pg	CREATE TABLE sal_emp (pay_by_quarter INTEGER ARRAY)
+pg	CREATE TABLE sal_emp (pay_by_quarter INTEGER ARRAY[4])
+pg	CREATE TABLE genome (codons CHAR(3) ARRAY[1000])
+pg	CREATE TABLE t (a VARCHAR(10) ARRAY[2])
+pg	CREATE TABLE genome (codons CHAR(3) ARRAY[1000] NOT NULL)
+pg	CREATE TEMPORARY TABLE arrtest2 (i INTEGER ARRAY[4], f FLOAT8[], n NUMERIC[], t TEXT[], d TIMESTAMP[])
+pg	CREATE TABLE p (e MONEY ARRAY, f MONEY ARRAY[7])
+pg	SELECT CAST(ARRAY[1, 2, 3] AS INTEGER ARRAY)
+pg	SELECT CAST(ARRAY[1, 2, 3] AS INTEGER ARRAY[3])
+pg	SELECT foo::INTEGER ARRAY[3]
+pg	CREATE TABLE t (c currency ARRAY)
+pg	CREATE TABLE t (c public.currency ARRAY)
+pg	ALTER TABLE t ADD COLUMN c currency ARRAY
+pg	CREATE TABLE t (c NUMERIC(10,2) ARRAY)
+pg	CREATE TABLE t (c INT ARRAY DEFAULT ARRAY[]::INT[])
+pg	CREATE INDEX IF NOT EXISTS my_index ON my_table(col1, col2)
+pg	CREATE INDEX ON my_table(col1, col2)
+pg	CREATE INDEX the_index_name ON users USING {expected_index_type} (concat_users_name(first_name, last_name){})
+pg	CREATE INDEX the_index_name ON users USING {expected_index_type} (column_name, concat_users_name(first_name, last_name){})
+pg	CREATE INDEX my_index ON my_table USING HNSW (embedding public.vector_cosine_ops)
+pg	CREATE INDEX bloomidx ON tbloom USING BLOOM (i1, i2, i3) WITH (length = 80, col1 = 2, col2 = 2, col3 = 4)
+pg	CREATE INDEX brin_sensor_data_recorded_at ON sensor_data USING BRIN (recorded_at)
+pg	CREATE TABLE child_table (child_column INT) INHERITS (public.parent_table)
+pg	CREATE TABLE child_table (child_column INT) INHERITS (public.parent_table, pg_catalog.pg_settings)
+pg	CREATE TABLE child_table (child_column INT) INHERITS ()
+pg	CREATE INDEX CONCURRENTLY IF NOT EXISTS my_index ON my_table(col1, col2)
+pg	CREATE INDEX IF NOT EXISTS my_index ON my_table(col1, col2) WHERE col3 IS NULL
+pg	CREATE INDEX IF NOT EXISTS my_index ON my_table(col1, col2) INCLUDE (col3, col4)
+pg	CREATE INDEX IF NOT EXISTS my_index ON my_table(col1, col2) NULLS NOT DISTINCT
+pg	CREATE INDEX IF NOT EXISTS my_index ON my_table(col1, col2) NULLS DISTINCT
+pg	SELECT ARRAY(SELECT 1 UNION SELECT 2)
+pg	SET TRANSACTION SNAPSHOT '000003A1-1'
+pg	SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY, READ WRITE, ISOLATION LEVEL SERIALIZABLE
+pg	SELECT params ->> 'name' FROM events
+pg	SELECT params -> 'name' FROM events
+pg	SELECT info -> 'items' ->> 'product' FROM orders
+pg	SELECT obj -> 42
+pg	SELECT obj -> key
+pg	SELECT obj -> 3 * 2
+pg	SELECT info #> '{a,b,c}' FROM orders
+pg	SELECT info #>> '{a,b,c}' FROM orders
+pg	SELECT info FROM orders WHERE info @> '{"a": 1}'
+pg	SELECT info FROM orders WHERE '{"a": 1}' <@ info
+pg	SELECT info #- ARRAY['a', 'b'] FROM orders
+pg	SELECT info FROM orders WHERE info @? '$.a'
+pg	SELECT info FROM orders WHERE info @@ '$.a'
+pg	SELECT info FROM orders WHERE info ? 'b'
+pg	SELECT info FROM orders WHERE info ?& ARRAY['b', 'c']
+pg	SELECT info FROM orders WHERE info ?| ARRAY['b', 'c']
+pg	SELECT * FROM JSON_TABLE
+pg	SELECT (on_hand.item).name FROM on_hand WHERE (on_hand.item).price > 9
+pg	SELECT (information_schema._pg_expandarray(ARRAY['i', 'i'])).n
+pg	CREATE LOCAL TEMPORARY TABLE table (COL INT)
+pg	CREATE TEMPORARY TABLE table (COL INT) ON COMMIT PRESERVE ROWS
+pg	CREATE TEMPORARY TABLE table (COL INT) ON COMMIT DELETE ROWS
+pg	CREATE TEMPORARY TABLE table (COL INT) ON COMMIT DROP
+pg	SELECT XMLFOREST(a AS x, b)
+pg	SELECT XMLPARSE(CONTENT '')
+pg	SELECT XMLPARSE(CONTENT '<abc>x</abc>')
+pg	SELECT XMLPARSE(DOCUMENT '<abc>x</abc>')
+pg	SELECT XMLPARSE(DOCUMENT col || '</abc>')
+pg	SELECT xml '<foo/>'
+pg	SELECT E's1 \n s1', E's2 \n s2', E's3 "+chr(92)*2+"\n s3', E's4 "+chr(92)*2+"\n s4', E''', E'foo '
+pg	SELECT E''
+pg	SELECT E'"+chr(92)*2+"u0001', E'"+chr(92)*2+"U0010FFFF', E'"+chr(92)*2+"xC', E'"+chr(92)*2+"x25', E'"+chr(92)*2+"2', E'"+chr(92)*2+"45', E'"+chr(92)*2+"445'
+pg	SELECT E'"+chr(92)*2+"u0000'
+pg	SELECT E'"+chr(92)*2+"U00110000'
+pg	SELECT E'"+chr(92)*2+"u{0001}'
+pg	SELECT E'"+chr(92)*2+"xCAD'
+pg	SELECT E'"+chr(92)*2+"080'
+pg	SELECT CURRENT_CATALOG, CURRENT_USER, SESSION_USER, USER
+pg	SELECT * FROM events WHERE relname OPERATOR(database.pg_catalog.~) '^(table)$'
+pg	SELECT * FROM events WHERE relname OPERATOR(pg_catalog.~) '^(table)$'
+pg	SELECT * FROM events WHERE relname OPERATOR(~) '^(table)$'
+pg	SELECT a OPERATOR() b
+pg	CREATE ROLE IF NOT EXISTS mysql_a, mysql_b
+pg	CREATE ROLE abc LOGIN PASSWORD NULL
+pg	CREATE ROLE abc WITH LOGIN PASSWORD NULL
+pg	CREATE ROLE magician WITH SUPERUSER CREATEROLE NOCREATEDB BYPASSRLS INHERIT PASSWORD 'abcdef' LOGIN VALID UNTIL '2025-01-01' IN ROLE role1, role2 ROLE role3 ADMIN role4, role5 REPLICATION
+pg	CREATE ROLE abc WITH USER foo, bar ROLE baz
+pg	CREATE ROLE abc {negatable_kw} NO{negatable_kw}
+pg	ALTER ROLE old_name RENAME TO new_name
+pg	ALTER ROLE role_name WITH SUPERUSER CREATEDB CREATEROLE INHERIT LOGIN REPLICATION BYPASSRLS CONNECTION LIMIT 100 PASSWORD 'abcdef' VALID UNTIL '2025-01-01'
+pg	ALTER ROLE role_name WITH NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOLOGIN NOREPLICATION NOBYPASSRLS PASSWORD NULL
+pg	ALTER ROLE role_name SET maintenance_work_mem FROM CURRENT
+pg	ALTER ROLE role_name IN DATABASE database_name SET maintenance_work_mem = 100000
+pg	ALTER ROLE role_name IN DATABASE database_name SET maintenance_work_mem TO 100000
+pg	ALTER ROLE role_name IN DATABASE database_name SET maintenance_work_mem TO DEFAULT
+pg	ALTER ROLE role_name RESET ALL
+pg	ALTER ROLE role_name IN DATABASE database_name RESET maintenance_work_mem
+pg	ALTER USER old_name RENAME TO new_name
+pg	ALTER ROLE bob WITH SUPERUSER PASSWORD 'x' CONNECTION LIMIT 5
+pg	ALTER USER bob WITH SUPERUSER PASSWORD 'x' CONNECTION LIMIT 5
+pg	ALTER USER bob SET search_path TO public
+pg	ALTER ROLE bob SET search_path TO public
+pg	CREATE TABLE
+pg	ALTER TABLE foo ADD CONSTRAINT
+pg	UPDATE foo SET
+pg	UPDATE test SET name = $1, value = $2, where = $3, create = $4, is_default = $5, classification = $6, sort = $7 WHERE id = $8
+pg	BEGIN\n    IF str1 <> str2 THEN\n        RETURN TRUE;\n    ELSE\n        RETURN FALSE;\n    END IF;\nEND
+pg	BEGIN\n    IF int1 <> 0 THEN\n        RETURN TRUE;\n    ELSE\n        RETURN FALSE;\n    END IF;\nEND
+pg	BEGIN\n    IF a <> b THEN\n        RETURN TRUE;\n    ELSE\n        RETURN FALSE;\n    END IF;\nEND
+pg	BEGIN\n    IF int1 <> int2 THEN\n        RETURN TRUE;\n    ELSE\n        RETURN FALSE;\n    END IF;\nEND
+pg	BEGIN\n        RETURN TRUE;\n    END
+pg	CREATE FUNCTION add(function(struct<a,b> int64), b INTEGER) RETURNS INTEGER LANGUAGE SQL IMMUTABLE STRICT PARALLEL SAFE AS 'select $1 + $2;'
+pg	CREATE FUNCTION add(INTEGER, INTEGER) RETURNS INTEGER LANGUAGE SQL IMMUTABLE STRICT PARALLEL SAFE AS 'select $1 + $2;'
+pg	select $1 + $2
+pg	CREATE OR REPLACE FUNCTION add(a INTEGER, IN b INTEGER = 1) RETURNS INTEGER LANGUAGE SQL IMMUTABLE PARALLEL RESTRICTED RETURN a + b
+pg	CREATE OR REPLACE FUNCTION add(a INTEGER, IN b INTEGER = 1) RETURNS INTEGER LANGUAGE SQL IMMUTABLE RETURNS NULL ON NULL INPUT PARALLEL RESTRICTED RETURN a + b
+pg	CREATE OR REPLACE FUNCTION add(a INTEGER, IN b INTEGER = 1) RETURNS INTEGER LANGUAGE SQL STABLE PARALLEL UNSAFE RETURN a + b
+pg	CREATE OR REPLACE FUNCTION add(a INTEGER, IN b INTEGER = 1) RETURNS INTEGER LANGUAGE SQL STABLE CALLED ON NULL INPUT PARALLEL UNSAFE RETURN a + b
+pg	CREATE OR REPLACE FUNCTION increment(i INTEGER) RETURNS INTEGER LANGUAGE plpgsql AS $$ BEGIN RETURN i + 1; END; $$
+pg	CREATE OR REPLACE FUNCTION no_arg() RETURNS VOID LANGUAGE plpgsql AS $$ BEGIN DELETE FROM my_table; END; $$
+pg	CREATE OR REPLACE FUNCTION return_table(i INTEGER) RETURNS TABLE(id UUID, is_active BOOLEAN) LANGUAGE plpgsql AS $$ BEGIN RETURN QUERY SELECT NULL::UUID, NULL::BOOLEAN; END; $$
+pg	CREATE FUNCTION add(INTEGER, INTEGER DEFAULT 1) RETURNS INTEGER AS 'select $1 + $2;'
+pg	CREATE FUNCTION add(INTEGER, INTEGER = 1) RETURNS INTEGER AS 'select $1 + $2;'
+pg	CREATE FUNCTION get_users() RETURNS SETOF TEXT LANGUAGE sql AS 'SELECT name FROM users'
+pg	CREATE FUNCTION get_ids() RETURNS SETOF INTEGER LANGUAGE sql AS 'SELECT id FROM users'
+pg	CREATE FUNCTION get_all() RETURNS SETOF my_schema.
+pg	CREATE FUNCTION get_rows() RETURNS SETOF RECORD LANGUAGE sql AS 'SELECT * FROM t'
+pg	CREATE FUNCTION get_names() RETURNS SETOF TEXT LANGUAGE sql AS 'SELECT name FROM t'
+pg	CREATE FUNCTION test_fn() RETURNS void LANGUAGE sql SECURITY DEFINER AS $$ SELECT 1 $$
+pg	CREATE FUNCTION test_fn() RETURNS void LANGUAGE sql SECURITY INVOKER AS $$ SELECT 1 $$
+pg	CREATE FUNCTION test_fn() RETURNS void LANGUAGE sql SET search_path = auth, pg_temp, public AS $$ SELECT 1 $$
+pg	CREATE FUNCTION test_fn() RETURNS void LANGUAGE sql SET search_path = public SET statement_timeout = '5s' AS $$ SELECT 1 $$
+pg	CREATE FUNCTION test_fn() RETURNS void LANGUAGE sql SET search_path FROM CURRENT AS $$ SELECT 1 $$
+pg	CREATE FUNCTION add(INTEGER, INTEGER) RETURNS INTEGER LANGUAGE SQL PARALLEL BLAH AS 'select $1 + $2;'
+pg	CREATE FUNCTION cas_in(input cstring) RETURNS cas LANGUAGE c IMMUTABLE PARALLEL SAFE AS 'MODULE_PATHNAME', 'cas_in_wrapper'
+pg	CREATE FUNCTION cas_in(input cstring) RETURNS cas IMMUTABLE PARALLEL SAFE LANGUAGE c AS 'MODULE_PATHNAME', 'cas_in_wrapper'
+pg	DROP FUNCTION IF EXISTS test_func
+pg	DROP FUNCTION IF EXISTS test_func(a INTEGER, IN b INTEGER = 1)
+pg	DROP FUNCTION IF EXISTS test_func1(a INTEGER, IN b INTEGER = 1), test_func2(a VARCHAR, IN b INTEGER = 1)
+pg	DROP DOMAIN IF EXISTS jpeg_domain
+pg	DROP DOMAIN jpeg_domain
+pg	DROP DOMAIN IF EXISTS jpeg_domain CASCADE
+pg	DROP DOMAIN IF EXISTS jpeg_domain RESTRICT
+pg	DROP PROCEDURE IF EXISTS test_proc
+pg	DROP PROCEDURE IF EXISTS test_proc(a INTEGER, IN b INTEGER = 1)
+pg	DROP PROCEDURE IF EXISTS test_proc1(a INTEGER, IN b INTEGER = 1), test_proc2(a VARCHAR, IN b INTEGER = 1)
+pg	DROP PROCEDURE testproc DROP
+pg	DROP PROCEDURE testproc SET NULL
+pg	SELECT $$hello$$, $tag_name$world$tag_name$, $$Foo$Bar$$, $$Foo$Bar$$col_name, $$$$, $tag_name$$tag_name$
+pg	SELECT $x$hello$$
+pg	SELECT $hello$$
+pg	SELECT $$$
+pg	SELECT brand, size, sum(sales) FROM items_sold GROUP BY size, GROUPING SETS ((brand), (size), ())
+pg	SELECT brand, size, sum(sales) FROM items_sold GROUP BY size, ROLLUP (brand, size)
+pg	SELECT brand, size, sum(sales) FROM items_sold GROUP BY size, CUBE (brand, size)
+pg	TRUNCATE db.table_name
+pg	TRUNCATE TABLE ONLY db.table_name RESTART IDENTITY CASCADE
+pg	TRUNCATE TABLE db.table_name, db.other_table_name RESTART IDENTITY CASCADE
+pg	TRUNCATE TABLE t *
+pg	TRUNCATE TABLE ONLY parent, child *, grandchild RESTART IDENTITY
+pg	SELECT REGEXP.REGEXP AS REGEXP FROM REGEXP AS REGEXP WHERE REGEXP.REGEXP
+pg	CREATE TABLE t1 (a INT, b TEXT) PARTITION BY RANGE(a)
+pg	CREATE UNLOGGED TABLE public.unlogged2 (a int primary key)
+pg	CREATE UNLOGGED TABLE public.unlogged2 (a INT PRIMARY KEY)
+pg	CREATE UNLOGGED TABLE pg_temp.unlogged3 (a int primary key)
+pg	CREATE UNLOGGED TABLE pg_temp.unlogged3 (a INT PRIMARY KEY)
+pg	CREATE UNLOGGED TABLE unlogged1 (a int) PARTITION BY RANGE (a)
+pg	CREATE UNLOGGED TABLE unlogged1 (a INT) PARTITION BY RANGE(a)
+pg	CREATE UNLOGGED VIEW v AS SELECT 1
+pg	SELECT * FROM t1 JOIN UNNEST(t1.a) AS f ON c1 = c2
+pg	WITH existing AS (SELECT test_table.id FROM test_tables AS test_table WHERE (a = 12) AND (b = 34)), inserted AS (INSERT INTO test_tables AS test_table (id, a, b, c) VALUES (DEFAULT, 56, 78, 90) ON CONFLICT(a, b) DO UPDATE SET c = EXCLUDED.c WHERE (test_table.c <> EXCLUDED.c)) SELECT c FROM existing
+pg	INSERT INTO test_tables AS test_table (id, a) VALUES (DEFAULT, 123)
+pg	INSERT INTO test_tables AS
+pg	SELECT GREATEST(sections_tbl.*) AS sections FROM sections_tbl
+pg	SELECT ARRAY_AGG(sections_tbl.*) AS sections FROM sections_tbl
+pg	SELECT GREATEST(my_schema.sections_tbl.*) AS sections FROM sections_tbl
+pg	SELECT ARRAY_AGG(my_schema.sections_tbl.*) AS sections FROM sections_tbl
+pg	WITH cte AS MATERIALIZED (SELECT id FROM accounts) SELECT id FROM cte
+pg	WITH cte AS NOT MATERIALIZED (SELECT id FROM accounts) SELECT id FROM cte
+pg	CREATE TABLE t (i INTERVAL)
+pg	CREATE TABLE t (i INTERVAL({p}))
+pg	SELECT '1 second'::INTERVAL({p})
+pg	SELECT CAST('1 second' AS INTERVAL({p}))
+pg	CREATE TABLE t (i INTERVAL {field})
+pg	SELECT '1 second'::INTERVAL {field}
+pg	SELECT CAST('1 second' AS INTERVAL {field})
+pg	CREATE TABLE t (i INTERVAL {field}({p}))
+pg	SELECT '1 second'::INTERVAL {field}({p})
+pg	SELECT CAST('1 second' AS INTERVAL {field}({p}))
+pg	SELECT MAX(interval) FROM tbl
+pg	CREATE TABLE t (c INT) WITH (foo = 'bar', a = 123)
+pg	SELECT * FROM generate_series(1, 10) WITH ORDINALITY AS t
+pg	SELECT * FROM UNNEST([10, 20, 30]) WITH ORDINALITY AS t
+pg	CREATE DOMAIN my_domain AS INTEGER CHECK (VALUE > 0)
+pg	CREATE DOMAIN my_domain AS INTEGER COLLATE "en_US" CHECK (VALUE > 0)
+pg	CREATE DOMAIN my_domain AS INTEGER DEFAULT 1 CHECK (VALUE > 0)
+pg	CREATE DOMAIN my_domain AS INTEGER COLLATE "en_US" DEFAULT 1 CHECK (VALUE > 0)
+pg	CREATE DOMAIN my_domain AS INTEGER CONSTRAINT my_constraint CHECK (VALUE > 0)
+pg	CREATE TRIGGER check_insert BEFORE INSERT ON accounts FOR EACH ROW EXECUTE FUNCTION check_account_insert
+pg	CREATE TRIGGER check_update AFTER UPDATE ON accounts FOR EACH ROW WHEN (NEW.balance > 10000) EXECUTE FUNCTION check_account_update
+pg	CREATE TRIGGER check_delete INSTEAD OF DELETE ON accounts FOR EACH ROW EXECUTE FUNCTION check_account_deletes
+pg	CREATE CONSTRAINT TRIGGER check_multiple_events BEFORE INSERT OR UPDATE OR DELETE ON accounts DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION check_account_changes
+pg	CREATE TRIGGER check_referencing BEFORE INSERT ON accounts REFERENCING NEW TABLE AS new_accounts OLD TABLE AS old_accounts FOR EACH ROW EXECUTE FUNCTION check_account_referencing
+pg	CREATE TRIGGER check_update BEFORE UPDATE ON accounts FUNCTION check_account_update
+pg	CREATE TRIGGER check_update TOMORROW UPDATE ON accounts EXECUTE FUNCTION check_account_update
+pg	CREATE TRIGGER check_update BEFORE SAVE ON accounts EXECUTE FUNCTION check_account_update
+pg	DROP TRIGGER{} check_update ON table_name{}
+pg	DROP TRIGGER check_update ON table_name CASCADE RESTRICT
+pg	DROP TRIGGER check_update ON table_name CASCADE CASCADE
+pg	DROP TRIGGER check_update ON table_name CASCADE CASCADE CASCADE
+pg	BEGIN\n            -- Check that empname and salary are given\n            IF NEW.empname IS NULL THEN\n                RAISE EXCEPTION 'empname cannot be null';\n            END IF;\n            IF NEW.salary IS NULL THEN\n                RAISE EXCEPTION '% cannot have null salary', NEW.empname;\n            END IF;\n\n            -- Who works for us when they must pay for it?\n            IF NEW.salary < 0 THEN\n                RAISE EXCEPTION '% cannot have a negative salary', NEW.empname;\n            END IF;\n\n            -- Remember who changed the payroll when\n            NEW.last_date := current_timestamp;\n            NEW.last_user := current_user;\n            RETURN NEW;\n        END
+pg	CREATE TYPE public.my_type AS ENUM ('label1', 'label2', 'label3', 'label4')
+pg	ALTER TYPE public.my_type RENAME TO my_new_type
+pg	ALTER TYPE public.my_type ADD VALUE IF NOT EXISTS 'label3.5' BEFORE 'label4'
+pg	ALTER TYPE public.my_type ADD VALUE 'label3.5' BEFORE 'label4'
+pg	ALTER TYPE public.my_type ADD VALUE IF NOT EXISTS 'label3.5' AFTER 'label3'
+pg	ALTER TYPE public.my_type ADD VALUE 'label3.5' AFTER 'label3'
+pg	ALTER TYPE public.my_type ADD VALUE IF NOT EXISTS 'label5'
+pg	ALTER TYPE public.my_type ADD VALUE 'label5'
+pg	SELECT B'111'
+pg	CREATE TABLE foo (x VARBIT, y VARBIT(42))
+pg	ALTER TABLE foo REPLICA IDENTITY FULL
+pg	ALTER TABLE foo REPLICA IDENTITY USING INDEX foo_idx
+pg	ALTER TABLE foo REPLICA IDENTITY NOTHING
+pg	ALTER TABLE foo REPLICA IDENTITY DEFAULT
+pg	CREATE TABLE foo (x TSVECTOR)
+pg	CREATE TABLE foo (x TSQUERY)
+pg	ALTER TABLE foo ADD CONSTRAINT bar FOREIGN KEY (baz) REFERENCES other(ref) NOT VALID
+pg	ALTER TABLE foo VALIDATE CONSTRAINT bar
+pg	CREATE SERVER myserver FOREIGN DATA WRAPPER postgres_fdw
+pg	CREATE SERVER IF NOT EXISTS myserver TYPE 'server_type' VERSION 'server_version' FOREIGN DATA WRAPPER postgres_fdw
+pg	CREATE SERVER myserver2 FOREIGN DATA WRAPPER postgres_fdw OPTIONS (host 'foo', dbname 'foodb', port '5432')
+pg	ALTER SCHEMA foo RENAME TO bar
+pg	ALTER SCHEMA foo OWNER TO {}
+pg	CREATE TABLE t (id INT REFERENCES other_table (id) {match_clause})
+pg	CREATE TABLE t (id INT, FOREIGN KEY (id) REFERENCES other_table(id) {match_clause})
+pg	CREATE TABLE orders (order_id INT REFERENCES another_table (id) MATCH FULL ON DELETE CASCADE ON UPDATE RESTRICT, customer_id INT, CONSTRAINT fk_customer FOREIGN KEY (customer_id) REFERENCES customers(customer_id) MATCH SIMPLE ON DELETE SET NULL ON UPDATE CASCADE)
+pg	CREATE OPERATOR myschema.@@ (PROCEDURE = myschema.my_proc, LEFTARG = TIMESTAMP WITH TIME ZONE, RIGHTARG = VARCHAR(255), COMMUTATOR = schema.>, NEGATOR = schema.<=, RESTRICT = myschema.sel_func, JOIN = myschema.join_func, HASHES, MERGES)
+pg	CREATE OPERATOR {op_symbol} (FUNCTION = f)
+pg	CREATE OPERATOR != (FUNCTION = func)
+pg	CREATE OPERATOR <> (FUNCTION = func)
+pg	CREATE OPERATOR {name} (FUNCTION = f)
+pg	CREATE OPERATOR + (FUNCTION = f, COMMUTATOR = OPERATOR(>), NEGATOR = OPERATOR(>=))
+pg	CREATE OPERATOR + (FUNCTION = f, COMMUTATOR = >, NEGATOR = >=)
+pg	CREATE OPERATOR + (FUNCTION = f, {field})
+pg	CREATE OPERATOR + (LEFTARG = INT4)
+pg	CREATE OPERATOR + ()
+pg	DROP OPERATOR ~ (NONE, BIT)
+pg	DROP OPERATOR{} {op} (INTEGER, INTEGER){}
+pg	DROP OPERATOR myschema.@@ (TEXT, TEXT)
+pg	DROP OPERATOR IF EXISTS + (INTEGER, INTEGER), - (INTEGER, INTEGER) CASCADE
+pg	DROP OPERATOR (INTEGER, INTEGER)
+pg	DROP OPERATOR IF EXISTS (INTEGER, INTEGER)
+pg	ALTER OPERATOR {} ({}, {}) OWNER TO {}
+pg	ALTER OPERATOR {} (TEXT, TEXT) SET SCHEMA {}
+pg	ALTER OPERATOR && (TEXT, TEXT) SET (RESTRICT = {}, JOIN = {})
+pg	ALTER OPERATOR {} (INTEGER, INTEGER) SET (COMMUTATOR = {}, NEGATOR = {})
+pg	ALTER OPERATOR {} (INTEGER, INTEGER) SET ({})
+pg	ALTER OPERATOR + (INTEGER, INTEGER) SET (COMMUTATOR = +, NEGATOR = -, HASHES, MERGES)
+pg	ALTER OPERATOR FAMILY integer_ops USING btree ADD OPERATOR 1 < (INT4, INT2)
+pg	ALTER OPERATOR FAMILY text_ops USING btree ADD OPERATOR 1 @@ (TEXT, TEXT) FOR SEARCH
+pg	ALTER OPERATOR FAMILY integer_ops USING btree ADD FUNCTION 1 btint42cmp(INT4, INT2)
+pg	ALTER OPERATOR FAMILY integer_ops USING btree DROP OPERATOR 1 (INT4, INT2)
+pg	ALTER OPERATOR FAMILY integer_ops USING btree DROP FUNCTION 1 (INT4, INT2)
+pg	ALTER OPERATOR FAMILY old_ops USING btree RENAME TO new_ops
+pg	ALTER OPERATOR FAMILY my_ops USING btree OWNER TO joe
+pg	ALTER OPERATOR FAMILY my_ops USING btree SET SCHEMA new_schema
+pg	ALTER OPERATOR FAMILY my_ops ADD OPERATOR 1 < (INT4, INT2)
+pg	ALTER OPERATOR FAMILY my_ops USING btree INVALID_OPERATION
+pg	ALTER OPERATOR FAMILY my_ops USING btree ADD OPERATOR 1 (INT4, INT2)
+pg	ALTER OPERATOR FAMILY my_ops USING btree ADD FUNCTION 1 (INT4, INT2)
+pg	ALTER OPERATOR FAMILY my_ops USING btree DROP OPERATOR 1 INT4, INT2
+pg	ALTER OPERATOR FAMILY my_ops USING btree ADD OPERATOR 1  (INT4, INT2)
+pg	ALTER OPERATOR FAMILY my_ops USING btree ADD OPERATOR 1 @#$ (INT4, INT2)
+pg	ALTER OPERATOR FAMILY my_ops USING btree ADD OPERATOR -1 < (INT4, INT2)
+pg	ALTER OPERATOR FAMILY my_ops USING btree ADD OPERATOR 1.5 < (INT4, INT2)
+pg	ALTER OPERATOR FAMILY my_ops USING btree ADD OPERATOR 1 < ()
+pg	ALTER OPERATOR FAMILY my_ops USING btree ADD OPERATOR 1 < (@#$%, INT2)
+pg	ALTER OPERATOR FAMILY my_ops USING btree ADD OPERATOR 1 < (INT4, INT2) FOR
+pg	ALTER OPERATOR FAMILY my_ops USING btree ADD OPERATOR 1 < (INT4, INT2) FOR INVALID
+pg	ALTER OPERATOR FAMILY my_ops USING btree ADD OPERATOR 1 < (INT4, INT2) FOR ORDER BY
+pg	ALTER OPERATOR FAMILY my_ops USING btree ADD FUNCTION 1 123invalid(INT4, INT2)
+pg	ALTER OPERATOR FAMILY my_ops USING btree ADD FUNCTION -1 func(INT4, INT2)
+pg	ALTER OPERATOR FAMILY my_ops USING btree ADD FUNCTION 1.5 func(INT4, INT2)
+pg	ALTER OPERATOR FAMILY my_ops USING btree ADD FUNCTION 1 func(@#$%, INT2)
+pg	ALTER OPERATOR FAMILY my_ops USING btree DROP OPERATOR 1 (INT4, INT2) FOR SEARCH
+pg	ALTER OPERATOR FAMILY my_ops USING btree DROP FUNCTION 1 (INT4, INT2) func(INT4)
+pg	ALTER OPERATOR FAMILY my_ops USING btree ADD OPERATOR 1 < (INT4, INT2), INVALID_ITEM
+pg	ALTER OPERATOR FAMILY my_ops USING btree DROP OPERATOR 1 (INT4, INT2), INVALID_ITEM
+pg	ALTER OPERATOR FAMILY my_ops USING btree RENAME TO 123invalid
+pg	ALTER OPERATOR FAMILY my_ops USING btree OWNER TO 123invalid
+pg	ALTER OPERATOR FAMILY my_ops USING btree SET SCHEMA 123invalid
+pg	ALTER OPERATOR FAMILY 123invalid.my_ops USING btree ADD OPERATOR 1 < (INT4, INT2)
+pg	ALTER OPERATOR FAMILY USING btree ADD OPERATOR 1 < (INT4, INT2)
+pg	ALTER OPERATOR FAMILY my_ops USING btree ADD OPERATOR 1 < (INT4, INT2) EXTRA
+pg	ALTER OPERATOR FAMILY my_ops USING btree ADD
+pg	ALTER OPERATOR FAMILY my_ops USING btree ADD OPERATOR 999999999999999999999 < (INT4, INT2)
+pg	ALTER OPERATOR FAMILY my_ops USING btree ADD OPERATOR 1 < (INT4, INT2) FOR SEARCH FOR ORDER BY sort_family
+pg	ALTER OPERATOR FAMILY my_ops USING btree ADD OPERATOR 1 < (INT4, INT2) FOR SEARCH EXTRA
+pg	ALTER OPERATOR FAMILY my_ops USING btree ADD OPERATOR 1 < (INT4, INT2) FOR ORDER BY 123invalid
+pg	ALTER OPERATOR FAMILY my_ops USING btree ADD FUNCTION 1 () func
+pg	ALTER OPERATOR FAMILY my_ops USING btree DROP OPERATOR 1 ()
+pg	ALTER OPERATOR FAMILY my_ops USING btree DROP FUNCTION 1 ()
+pg	ALTER OPERATOR CLASS int_ops USING btree RENAME TO integer_ops
+pg	ALTER OPERATOR CLASS int_ops USING btree OWNER TO joe
+pg	ALTER OPERATOR CLASS int_ops USING btree OWNER TO CURRENT_USER
+pg	ALTER OPERATOR CLASS int_ops USING btree SET SCHEMA new_schema
+pg	ALTER OPERATOR CLASS myschema.int_ops USING btree RENAME TO integer_ops
+pg	ALTER OPERATOR CLASS int_ops USING {} RENAME TO integer_ops
+pg	ALTER OPERATOR CLASS int_ops RENAME TO integer_ops
+pg	ALTER OPERATOR CLASS int_ops USING btree INVALID_OPERATION
+pg	ALTER OPERATOR CLASS int_ops USING btree RENAME TO
+pg	ALTER OPERATOR CLASS int_ops USING btree OWNER TO
+pg	ALTER OPERATOR CLASS int_ops USING btree SET SCHEMA
+pg	ALTER OPERATOR CLASS int_ops USING btree RENAME TO 123invalid
+pg	ALTER OPERATOR CLASS int_ops USING btree OWNER TO 123invalid
+pg	ALTER OPERATOR CLASS int_ops USING btree SET SCHEMA 123invalid
+pg	ALTER OPERATOR CLASS USING btree RENAME TO integer_ops
+pg	ALTER OPERATOR CLASS int_ops USING btree RENAME TO integer_ops EXTRA
+pg	ALTER OPERATOR CLASS int_ops USING 123invalid RENAME TO integer_ops
+pg	ALTER OPERATOR CLASS int_ops USING btree ADD OPERATOR 1 < (INT4, INT2)
+pg	ALTER OPERATOR CLASS int_ops USING btree DROP OPERATOR 1 (INT4, INT2)
+pg	ALTER AGGREGATE alt_func1(int) RENAME TO alt_func3
+pg	ALTER AGGREGATE alt_func1(INT) RENAME TO alt_func3
+pg	ALTER AGGREGATE alt_func1(int) OWNER TO regress_alter_generic_user3
+pg	ALTER AGGREGATE alt_func1(INT) OWNER TO regress_alter_generic_user3
+pg	ALTER AGGREGATE alt_func1(int) SET SCHEMA alt_nsp2
+pg	ALTER AGGREGATE alt_func1(INT) SET SCHEMA alt_nsp2
+pg	ALTER AGGREGATE alt_agg1(int) RENAME TO alt_agg2
+pg	ALTER AGGREGATE alt_agg1(INT) RENAME TO alt_agg2
+pg	ALTER AGGREGATE alt_agg1(int) RENAME TO alt_agg3
+pg	ALTER AGGREGATE alt_agg1(INT) RENAME TO alt_agg3
+pg	ALTER AGGREGATE alt_agg2(int) OWNER TO regress_alter_generic_user2
+pg	ALTER AGGREGATE alt_agg2(INT) OWNER TO regress_alter_generic_user2
+pg	ALTER AGGREGATE alt_agg2(int) OWNER TO regress_alter_generic_user3
+pg	ALTER AGGREGATE alt_agg2(INT) OWNER TO regress_alter_generic_user3
+pg	ALTER AGGREGATE alt_agg2(int) SET SCHEMA alt_nsp2
+pg	ALTER AGGREGATE alt_agg2(INT) SET SCHEMA alt_nsp2
+pg	ALTER AGGREGATE alt_order(int ORDER BY text) RENAME TO alt_order2
+pg	ALTER AGGREGATE alt_order(INT ORDER BY TEXT) RENAME TO alt_order2
+pg	ALTER AGGREGATE alt_order_only(ORDER BY int) SET SCHEMA alt_nsp2
+pg	ALTER AGGREGATE alt_order_only(ORDER BY INT) SET SCHEMA alt_nsp2
+pg	ALTER AGGREGATE alt_star(*) OWNER TO regress_alter_generic_user2
+pg	ALTER FUNCTION alt_func1(int) RENAME TO alt_func2
+pg	ALTER FUNCTION alt_func1(INT) RENAME TO alt_func2
+pg	ALTER FUNCTION alt_func1(int) RENAME TO alt_func3
+pg	ALTER FUNCTION alt_func1(INT) RENAME TO alt_func3
+pg	ALTER FUNCTION alt_func2(int) OWNER TO regress_alter_generic_user2
+pg	ALTER FUNCTION alt_func2(INT) OWNER TO regress_alter_generic_user2
+pg	ALTER FUNCTION alt_func2(int) OWNER TO regress_alter_generic_user3
+pg	ALTER FUNCTION alt_func2(INT) OWNER TO regress_alter_generic_user3
+pg	ALTER FUNCTION alt_func2(int) SET SCHEMA alt_nsp1
+pg	ALTER FUNCTION alt_func2(INT) SET SCHEMA alt_nsp1
+pg	ALTER FUNCTION alt_func2(int) SET SCHEMA alt_nsp2
+pg	ALTER FUNCTION alt_func2(INT) SET SCHEMA alt_nsp2
+pg	ALTER FUNCTION alt_func2(int) DEPENDS ON EXTENSION ext1
+pg	ALTER FUNCTION alt_func2(INT) DEPENDS ON EXTENSION ext1
+pg	ALTER FUNCTION alt_func2(int) NO DEPENDS ON EXTENSION ext1
+pg	ALTER FUNCTION alt_func2(INT) NO DEPENDS ON EXTENSION ext1
+pg	ALTER FUNCTION alt_func2 IMMUTABLE
+pg	ALTER FUNCTION alt_func2(int) IMMUTABLE
+pg	ALTER FUNCTION alt_func2(INT) IMMUTABLE
+pg	ALTER FUNCTION alt_func2(int) STABLE
+pg	ALTER FUNCTION alt_func2(INT) STABLE
+pg	ALTER FUNCTION alt_func2(int) VOLATILE
+pg	ALTER FUNCTION alt_func2(INT) VOLATILE
+pg	ALTER FUNCTION alt_func2(int) CALLED ON NULL INPUT
+pg	ALTER FUNCTION alt_func2(INT) CALLED ON NULL INPUT
+pg	ALTER FUNCTION alt_func2(int) RETURNS NULL ON NULL INPUT
+pg	ALTER FUNCTION alt_func2(INT) RETURNS NULL ON NULL INPUT
+pg	ALTER FUNCTION alt_func2(int) STRICT
+pg	ALTER FUNCTION alt_func2(INT) STRICT
+pg	ALTER FUNCTION alt_func2(int) LEAKPROOF
+pg	ALTER FUNCTION alt_func2(INT) LEAKPROOF
+pg	ALTER FUNCTION alt_func2(int) NOT LEAKPROOF
+pg	ALTER FUNCTION alt_func2(INT) NOT LEAKPROOF
+pg	ALTER FUNCTION alt_func2(int) SECURITY DEFINER
+pg	ALTER FUNCTION alt_func2(INT) SECURITY DEFINER
+pg	ALTER FUNCTION alt_func2(int) EXTERNAL SECURITY INVOKER
+pg	ALTER FUNCTION alt_func2(INT) EXTERNAL SECURITY INVOKER
+pg	ALTER FUNCTION alt_func2(int) PARALLEL SAFE
+pg	ALTER FUNCTION alt_func2(INT) PARALLEL SAFE
+pg	ALTER FUNCTION alt_func2(int) PARALLEL RESTRICTED
+pg	ALTER FUNCTION alt_func2(INT) PARALLEL RESTRICTED
+pg	ALTER FUNCTION alt_func2(int) PARALLEL UNSAFE
+pg	ALTER FUNCTION alt_func2(INT) PARALLEL UNSAFE
+pg	ALTER FUNCTION alt_func2(int) COST 3.5
+pg	ALTER FUNCTION alt_func2(INT) COST 3.5
+pg	ALTER FUNCTION alt_func2(int) ROWS 42
+pg	ALTER FUNCTION alt_func2(INT) ROWS 42
+pg	ALTER FUNCTION alt_func2(int) SUPPORT pg_catalog.alt_support
+pg	ALTER FUNCTION alt_func2(INT) SUPPORT pg_catalog.alt_support
+pg	ALTER FUNCTION alt_func2(int) SET work_mem TO DEFAULT
+pg	ALTER FUNCTION alt_func2(INT) SET work_mem = DEFAULT
+pg	ALTER FUNCTION alt_func2(int) SET work_mem FROM CURRENT
+pg	ALTER FUNCTION alt_func2(INT) SET work_mem FROM CURRENT
+pg	ALTER FUNCTION alt_func2(int) SET search_path = pg_catalog, public
+pg	ALTER FUNCTION alt_func2(INT) SET search_path = pg_catalog, public
+pg	ALTER FUNCTION alt_func2(int) RESET work_mem
+pg	ALTER FUNCTION alt_func2(INT) RESET work_mem
+pg	ALTER FUNCTION alt_func2(int) RESET ALL
+pg	ALTER FUNCTION alt_func2(INT) RESET ALL
+pg	ALTER FUNCTION alt_func2(int) IMMUTABLE STRICT PARALLEL SAFE RESTRICT
+pg	ALTER FUNCTION alt_func2(INT) IMMUTABLE STRICT PARALLEL SAFE RESTRICT
+pg	ALTER FUNCTION alt_variadic(VARIADIC int[]) STABLE
+pg	ALTER FUNCTION alt_variadic(VARIADIC INT[]) STABLE
+pg	ALTER AGGREGATE alt_func1(INT) DEPENDS ON EXTENSION ext1
+pg	ALTER AGGREGATE alt_func1(INT) NO DEPENDS ON EXTENSION ext1
+pg	ALTER AGGREGATE alt_func1(OUT INT) OWNER TO joe
+pg	ALTER AGGREGATE alt_func1(INOUT INT) OWNER TO joe
+pg	ALTER AGGREGATE alt_func1(INT = 1) OWNER TO joe
+pg	ALTER AGGREGATE alt_func1(INT) IMMUTABLE
+pg	CREATE TEXT SEARCH DICTIONARY d (template = simple)
+pg	CREATE TEXT SEARCH CONFIGURATION c (copy = english)
+pg	CREATE TEXT SEARCH TEMPLATE t (lexize = dsimple_lexize)
+pg	CREATE TEXT SEARCH PARSER p (start = prsd_start, gettoken = prsd_nexttoken, end = prsd_end, lextypes = prsd_lextype)
+pg	CREATE TEXT SEARCH
+pg	CREATE TEXT SEARCH DICTIONARY d (template)
+pg	ALTER TEXT SEARCH DICTIONARY d (opt = val)
+pg	ALTER TEXT SEARCH DICTIONARY d (opt)
+pg	ALTER TEXT SEARCH CONFIGURATION c OWNER TO some_user
+pg	ALTER TEXT SEARCH TEMPLATE t SET SCHEMA s
+pg	ALTER TEXT SEARCH PARSER p RENAME TO p2
+pg	ALTER TEXT SEARCH TEMPLATE t OWNER TO some_user
+pg	ALTER TEXT SEARCH PARSER p (opt = val)
+pg	ALTER TEXT SEARCH DICTIONARY d RESET foo
+pg	DROP OPERATOR FAMILY{} {} USING {}{}
+pg	DROP OPERATOR FAMILY USING btree
+pg	DROP OPERATOR FAMILY IF EXISTS USING btree
+pg	DROP OPERATOR CLASS{} {} USING {}{}
+pg	DROP OPERATOR CLASS USING btree
+pg	DROP OPERATOR CLASS IF EXISTS USING btree
+pg	CREATE OPERATOR FAMILY my_family USING {index_method}
+pg	CREATE OPERATOR FAMILY myschema.test_family USING {index_method}
+pg	CREATE OPERATOR CLASS {class_name} {default_clause}FOR TYPE INT4 USING btree{family_clause} AS OPERATOR 1 <
+pg	CREATE OPERATOR CLASS CAS_btree_ops DEFAULT FOR TYPE CAS USING btree FAMILY CAS_btree_ops AS OPERATOR 1 <, OPERATOR 2 <=, OPERATOR 3 =, OPERATOR 4 >=, OPERATOR 5 >, FUNCTION 1 cas_cmp(CAS, CAS)
+pg	CREATE OPERATOR CLASS test_ops FOR TYPE INT4 USING gist AS OPERATOR 1 < (INT4, INT4)
+pg	CREATE OPERATOR CLASS test_ops FOR TYPE INT4 USING gist AS OPERATOR 1 < FOR SEARCH
+pg	CREATE OPERATOR CLASS test_ops FOR TYPE INT4 USING gist AS OPERATOR 2 <<-> FOR ORDER BY float_ops
+pg	CREATE OPERATOR CLASS test_ops FOR TYPE INT4 USING btree AS FUNCTION 1 (INT4, INT4) btcmp(INT4, INT4)
+pg	CREATE OPERATOR CLASS test_ops FOR TYPE INT4 USING btree AS FUNCTION 1 my_func()
+pg	CREATE OPERATOR CLASS test_ops FOR TYPE INT4 USING btree AS FUNCTION 1 my_func
+pg	CREATE OPERATOR CLASS gist_ops FOR TYPE geometry USING gist AS OPERATOR 1 <<, FUNCTION 1 gist_consistent(internal, geometry, INT4), STORAGE box
+pg	SHOW search_path; SELECT 1
+pg	SHOW search_path; SHOW ALL; SHOW ALL
+pg	CREATE TABLE measurement_y2006m02 PARTITION OF measurement FOR VALUES FROM ('2006-02-01') TO ('2006-03-01')
+pg	CREATE TABLE orders_old PARTITION OF orders FOR VALUES FROM (MINVALUE) TO ('2020-01-01')
+pg	CREATE TABLE orders_new PARTITION OF orders FOR VALUES FROM ('2024-01-01') TO (MAXVALUE)
+pg	CREATE TABLE orders_us PARTITION OF orders FOR VALUES IN ('US', 'CA', 'MX')
+pg	CREATE TABLE orders_p0 PARTITION OF orders FOR VALUES WITH (MODULUS 4, REMAINDER 0)
+pg	CREATE TABLE orders_default PARTITION OF orders DEFAULT
+pg	CREATE TABLE sales_2023_q1 PARTITION OF sales FOR VALUES FROM ('2023-01-01', 1) TO ('2023-04-01', 1)
+pg	CREATE TABLE p PARTITION OF parent
+pg	CREATE TABLE p PARTITION OF parent WITH (fillfactor = 70)
+pg	CREATE TABLE p PARTITION OF parent FOR VALUES RANGE (1, 10)
+pg	CREATE TABLE p PARTITION OF parent FOR VALUES FROM (1)
+pg	CREATE TABLE p PARTITION OF parent FOR VALUES IN ()
+pg	CREATE TABLE p PARTITION OF parent FOR VALUES FROM () TO (10)
+pg	CREATE TABLE p PARTITION OF parent FOR VALUES FROM (1) TO ()
+pg	ANALYZE t
+pg	ANALYZE t (col1, col2)
+pg	CREATE TABLE t (exclude INT)
+pg	SELECT * FROM t ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 5
+pg	SELECT * FROM t ORDER BY id LIMIT 5 FOR UPDATE SKIP LOCKED
+pg	SELECT * FROM t FOR UPDATE LIMIT 5
+pg	SELECT * FROM t LIMIT 5 FOR UPDATE
+pg	SELECT * FROM t0 INNER JOIN t1 INNER JOIN t2 ON true ON true
+pg	SELECT * FROM t0 INNER JOIN (t1 INNER JOIN t2 ON true) ON true
+pg	SELECT * FROM t0 INNER JOIN t1 INNER JOIN t2 INNER JOIN t3 ON true ON true ON true
+pg	SELECT * FROM t0 INNER JOIN (t1 INNER JOIN (t2 INNER JOIN t3 ON true) ON true) ON true
+pg	SELECT * FROM t0 NATURAL JOIN t1 INNER JOIN t2 ON true
+pg	ALTER TABLE docs ADD CONSTRAINT c CHECK (id > 0) NO INHERIT NOT VALID
+pg	ALTER TABLE docs ADD CONSTRAINT c CHECK (id > 0) NO INHERIT
+pg	SELECT * FROM t WHERE CASE WHEN a = 1 THEN b ELSE c END . 2
+pg	SELECT * FROM tbl_name AS {kw} JOIN tbl_name_2 ON {kw}.id = tbl_name_2.id
+pg	SELECT * FROM tbl_name {kw} JOIN tbl_name_2 ON {kw}.id = tbl_name_2.id
+pg	INSERT INTO BY NAME SELECT 1 AS a
+pg	SELECT 10000
+pg	SELECT 10_000
+pg	SELECT 10__00
+pg	SELECT 10_00_
+pg	SELECT 1._000
+pg	SELECT 1_a
+pg	SELECT 1e_1
+pg	SELECT 1e1_
+pg	SELECT a.b.c.d(1, 2, 3) FROM T
+pg	INSERT customer VALUES (1, 2, 3)
+pg	INSERT INTO customer VALUES (1, 2, 3)
+pg	INSERT INTO customer VALUES (1, 2, 3), (1, 2, 3)
+pg	INSERT INTO public.customer VALUES (1, 2, 3)
+pg	INSERT INTO db.public.customer VALUES (1, 2, 3)
+pg	INSERT INTO public.customer (id, name, active) VALUES (1, 2, 3)
+pg	INSERT INTO t (id, name, active) VALUE (1, 2, 3)
+pg	INSERT INTO customer WITH foo AS (SELECT 1) SELECT * FROM foo UNION VALUES (1)
+pg	INSERT INTO tbl1 SET col1 = 1, col2 = 'abc', col3 = current_date()
+pg	INSERT INTO test_table DEFAULT VALUES
+pg	INSERT INTO test_table DEFAULT VALUES RETURNING test_column
+pg	INSERT INTO test_table DEFAULT VALUES ON CONFLICT DO NOTHING
+pg	INSERT INTO test_table (test_col) DEFAULT VALUES
+pg	INSERT INTO test_table DEFAULT VALUES (some_column)
+pg	INSERT INTO test_table DEFAULT VALUES PARTITION (some_column)
+pg	INSERT INTO test_table DEFAULT VALUES (1)
+pg	INSERT INTO t SELECT 1 RETURNING 2
+pg	INSERT INTO t SELECT x RETURNING x AS y
+pg	INSERT INTO table1 SELECT * FROM table2 RETURNING id
+pg	INSERT INTO t ((SELECT 1))
+pg	INSERT INTO t (((SELECT 1)))
+pg	SELECT 1 AS RETURNING
+pg	INSERT INTO test_table(id) VALUES(1)
+pg	INSERT OR REPLACE INTO test_table(id) VALUES(1)
+pg	INSERT OR ROLLBACK INTO test_table(id) VALUES(1)
+pg	INSERT OR ABORT INTO test_table(id) VALUES(1)
+pg	INSERT OR FAIL INTO test_table(id) VALUES(1)
+pg	INSERT OR IGNORE INTO test_table(id) VALUES(1)
+pg	UPDATE t SET a = 1, b = 2, c = 3 WHERE d
+pg	UPDATE t SET a = 1, a = 2, a = 3
+pg	UPDATE t WHERE 1
+pg	UPDATE t SET a = 1 extrabadstuff
+pg	UPDATE t1 SET name = t2.name FROM (SELECT name, id FROM t1 GROUP BY id) AS t2 WHERE t1.id = t2.id
+pg	UPDATE T SET a = b FROM U, (SELECT foo FROM V) AS W WHERE 1 = 1
+pg	UPDATE users AS u SET u.username = 'new_user' WHERE u.username = 'old_user'
+pg	UPDATE OR REPLACE t SET n = n + 1
+pg	UPDATE OR ROLLBACK t SET n = n + 1
+pg	UPDATE OR ABORT t SET n = n + 1
+pg	UPDATE OR FAIL t SET n = n + 1
+pg	UPDATE OR IGNORE t SET n = n + 1
+pg	SELECT a, b, c FROM lineitem AS l (A, B, C)
+pg	SELECT a, b, c FROM lineitem l (A, B, C)
+pg	ANALYZE TABLE test_table
+pg	ANALYZE test_table
+pg	DELETE FROM "table"
+pg	DELETE "table" WHERE 1
+pg	DELETE schema1.table1, schema2.table2 FROM schema1.table1 JOIN schema2.table2 ON schema2.table2.col1 = schema1.table1.col1 WHERE schema2.table2.col2 = 1
+pg	DELETE FROM schema1.table1, schema2.table2 USING schema1.table1 JOIN schema2.table2 ON schema2.table2.pk = schema1.table1.col1 WHERE schema2.table2.col2 = 1
+pg	DELETE FROM foo WHERE name = 5
+pg	DELETE FROM basket AS a USING basket AS b WHERE a.id < b.id
+pg	SELECT 1
+pg	VALUES (1)
+pg	VALUES ROW(1, NULL, 'a'), ROW(2, NULL, 'b')
+pg	SELECT id, fname, lname FROM customer WHERE id = 1 LIMIT 5
+pg	SELECT * FROM user LIMIT 1
+pg	SELECT * FROM user BY name
+pg	SELECT id FROM customer LIMIT 1
+pg	SELECT 1 LIMIT 5
+pg	SELECT DISTINCT name FROM customer
+pg	SELECT DISTINCT name, id FROM customer
+pg	SELECT DISTINCT (name, id) FROM customer
+pg	SELECT 1 FROM T WHERE a = b (+)
+pg	SELECT 1 FROM T WHERE t1.c1 = t2.c2.d3 (+)
+pg	SELECT 1 FROM T WHERE 1 = 2 (+)
+pg	SELECT DISTINCT ON (album_id) name FROM track ORDER BY album_id, milliseconds
+pg	SELECT DISTINCT ON () name FROM track ORDER BY milliseconds
+pg	SELECT DISTINCT ON (album_id, milliseconds) name FROM track
+pg	SELECT ALL name FROM customer
+pg	SELECT ALL DISTINCT name FROM customer
+pg	SELECT DISTINCT ALL name FROM customer
+pg	SELECT ALL DISTINCT ON(name) name FROM customer
+pg	SELECT * INTO table0 FROM table1
+pg	SELECT * INTO TEMPORARY UNLOGGED TABLE table0 FROM table1
+pg	SELECT a, b INTO foo.bar, bar.baz FROM t
+pg	SELECT a, b, c INTO p, q, r FROM t
+pg	SELECT a, b INTO :h1, :h2 FROM t
+pg	SELECT * INTO table0 asdf FROM table1
+pg	SELECT * FROM foo
+pg	SELECT foo.* FROM foo
+pg	SELECT myschema.mytable.* FROM myschema.mytable
+pg	SELECT * + * FROM foo
+pg	SELECT COUNT(*) FROM Order WHERE id = 10
+pg	SELECT COUNT(Employee.*) FROM Order JOIN Employee ON Order.employee = Employee.id
+pg	SELECT a.col + 1 AS newname FROM foo AS a
+pg	SELECT a.col + 1 newname FROM foo AS a
+pg	SELECT foo.bar.* FROM T
+pg	SELECT foo - bar.* FROM T
+pg	SELECT myfunc().foo.* FROM T
+pg	SELECT 2. * 3 FROM T
+pg	SELECT 2 * 3 FROM T
+pg	SELECT myfunc().* FROM T
+pg	SELECT foo.*.* FROM T
+pg	SELECT myfunc().* EXCEPT (foo) FROM T
+pg	SELECT t.* AS all_cols FROM t
+pg	SELECT t.* all_cols FROM t
+pg	SELECT t.* all_cols, other_col FROM t
+pg	SELECT t.* AS all_cols, other_col FROM t
+pg	SELECT * AS all_cols FROM t
+pg	SELECT * all_cols FROM t
+pg	SELECT a.id, b.* AS b_cols FROM a JOIN b ON (a.id = b.a_id)
+pg	SELECT a.id, b.* b_cols FROM a JOIN b ON (a.id = b.a_id)
+pg	SELECT foo AS
+pg	SELECT 1 FROM foo AS
+pg	SELECT COUNT(*) FROM customer
+pg	SELECT COUNT(DISTINCT +x) FROM customer
+pg	SELECT COUNT(ALL +x) FROM customer
+pg	SELECT COUNT(+x) FROM customer
+pg	SELECT COUNT(ALL DISTINCT + x) FROM customer
+pg	SELECT id FROM customer WHERE NOT salary = ''
+pg	SELECT name COLLATE "de_DE" FROM customer
+pg	SELECT (name) COLLATE "de_DE" FROM customer
+pg	SELECT customer.address.state FROM foo
+pg	SELECT NULL
+pg	SELECT 10e-20, 1e3, 1e+3, 1e3a, 1e, 0.5e2
+pg	SELECT date
+pg	SELECT a {} b
+pg	SELECT JSON_OBJECT('name' : 'value', 'type' : 1)
+pg	SELECT JSON_OBJECT('name' : 'value', 'type' : NULL ABSENT ON NULL)
+pg	SELECT JSON_OBJECT(NULL ON NULL)
+pg	SELECT JSON_OBJECT(ABSENT ON NULL)
+pg	SELECT JSON_OBJECT('name' : 'value', 'type' : JSON_ARRAY(1, 2) ABSENT ON NULL)
+pg	SELECT JSON_OBJECT('name' : 'value', 'type' : JSON_OBJECT('type_id' : 1, 'name' : 'a') NULL ON NULL)
+pg	SELECT * FROM customers WHERE name {}ILIKE '%a'
+pg	SELECT * FROM customers WHERE name {}ILIKE '%a' ESCAPE '^'
+pg	SELECT * FROM customers WHERE name {}ILIKE '%a' IS NULL
+pg	SELECT * FROM customers WHERE name {}LIKE '%a'
+pg	SELECT * FROM customers WHERE name {}LIKE '%a' ESCAPE '^'
+pg	SELECT * FROM customers WHERE name {}LIKE '%a' IS NULL
+pg	SELECT * FROM customers WHERE name {}SIMILAR TO '%a'
+pg	SELECT * FROM customers WHERE name {}SIMILAR TO '%a' ESCAPE '^'
+pg	SELECT * FROM customers WHERE name {}SIMILAR TO '%a' ESCAPE NULL
+pg	SELECT * FROM customers WHERE name {}SIMILAR TO '%a' ESCAPE '^' IS NULL
+pg	SELECT * FROM customers WHERE segment {}IN ('HIGH', 'MED')
+pg	SELECT * FROM customers WHERE segment IN (SELECT segm FROM bar)
+pg	SELECT segm FROM bar
+pg	SELECT * FROM customers WHERE segment IN ((SELECT segm FROM bar) UNION (SELECT segm FROM bar2))
+pg	SELECT * FROM customers WHERE segment {}IN UNNEST(expr)
+pg	SELECT * FROM customers WHERE segment in segment
+pg	SELECT * FROM t WHERE x IN (SELECT y FROM u)
+pg	SELECT a || b
+pg	SELECT 1 << 2, 3 >> 4
+pg	SELECT a = ANY(b)
+pg	SELECT a = ALL(b)
+pg	SELECT * FROM customers WHERE age {}BETWEEN 25 AND 32
+pg	SELECT * FROM t WHERE 1 BETWEEN 1 + 2 AND 3 + 4 IS NULL
+pg	SELECT * FROM t WHERE 1 = 1 AND 1 + x BETWEEN 1 AND 2
+pg	SELECT (1, 2), (1), ('foo', 3, baz)
+pg	select (), 2
+pg	SELECT id, fname, lname FROM customer WHERE id < 5 ORDER BY lname ASC, fname DESC, id
+pg	SELECT id, fname, lname FROM customer ORDER BY lname ASC, fname DESC, id
+pg	SELECT 1 AS lname, 2 AS fname, 3 AS id, 4 ORDER BY lname ASC, fname DESC, id
+pg	SELECT id, fname, lname FROM customer WHERE id < 5 ORDER BY ALL
+pg	SELECT id, fname, lname FROM customer WHERE id < 5 ORDER BY ALL NULLS FIRST
+pg	SELECT id, fname, lname FROM customer WHERE id < 5 ORDER BY ALL NULLS LAST
+pg	SELECT id, fname, lname FROM customer ORDER BY ALL ASC
+pg	SELECT id, fname, lname FROM customer ORDER BY ALL ASC NULLS FIRST
+pg	SELECT id, fname, lname FROM customer ORDER BY ALL ASC NULLS LAST
+pg	SELECT id, fname, lname FROM customer WHERE id < 5 ORDER BY ALL DESC
+pg	SELECT id, fname, lname FROM customer WHERE id < 5 ORDER BY ALL DESC NULLS FIRST
+pg	SELECT id, fname, lname FROM customer WHERE id < 5 ORDER BY ALL DESC NULLS LAST
+pg	SELECT id, ALL FROM customer WHERE id < 5 ORDER BY ALL
+pg	SELECT id, ALL FROM customer ORDER BY ALL ASC NULLS FIRST
+pg	SELECT id, ALL FROM customer ORDER BY ALL DESC NULLS LAST
+pg	SELECT aggfns(DISTINCT a, a, c ORDER BY c USING ~<~, a) FROM t
+pg	SELECT a FROM t ORDER BY a USING OPERATOR(<)
+pg	SELECT a FROM t ORDER BY a USING <
+pg	SELECT a FROM t ORDER BY a USING OPERATOR(pg_catalog.<) NULLS LAST
+pg	SELECT a FROM t ORDER BY a USING OPERATOR()
+pg	SELECT id, fname, lname FROM customer GROUP BY lname, fname
+pg	SELECT id, fname, lname FROM customer GROUP BY (lname, fname)
+pg	SELECT id, fname, lname, SUM(order) FROM customer GROUP BY ALL
+pg	WITH ROLLUP
+pg	WITH CUBE
+pg	WITH TOTALS
+pg	WITH ROLLUP WITH CUBE
+pg	SELECT * FROM t GROUP BY {clause} {modifier}
+pg	SELECT * FROM t GROUP BY x WITH
+pg	SELECT * FROM t GROUP BY x WITH ROLLUP CUBE
+pg	SELECT * FROM t GROUP BY x WITH WITH ROLLUP
+pg	SELECT * FROM t GROUP BY WITH ROLLUP
+pg	SELECT a, b, SUM(c) FROM tab1 GROUP BY a, b GROUPING SETS ((a, b), (a), (b), ())
+pg	SELECT a, b, SUM(c) FROM tab1 GROUP BY a, b GROUPING SETS ((a, b), a, (b), c, ())
+pg	SELECT a, b, SUM(c) FROM tab1 GROUP BY a, b GROUPING SETS ((a, b), (a), (b), (c), ())
+pg	SELECT foo FROM bar GROUP BY foo HAVING COUNT(*) > 1
+pg	SELECT 'foo' HAVING 1 = 1
+pg	SELECT i, p, o FROM qt QUALIFY ROW_NUMBER() OVER (PARTITION BY p ORDER BY o) = 1
+pg	SELECT i, p, o, ROW_NUMBER() OVER (PARTITION BY p ORDER BY o) AS row_num FROM qt QUALIFY row_num = 1
+pg	SELECT id, fname, lname FROM customer WHERE id = 1 LIMIT ALL
+pg	SELECT id, fname, lname FROM customer WHERE id = 1
+pg	SELECT id, fname, lname FROM customer WHERE id = 1 LIMIT ALL OFFSET 1
+pg	SELECT id, fname, lname FROM customer WHERE id = 1 OFFSET 1
+pg	SELECT id, fname, lname FROM customer WHERE id = 1 OFFSET 1 LIMIT ALL
+pg	SELECT CAST(id AS BIGINT) FROM customer
+pg	SELECT CAST(id AS TINYINT) FROM customer
+pg	SELECT CAST(id AS MEDIUMINT) FROM customer
+pg	SELECT CAST(id AS NUMERIC) FROM customer
+pg	SELECT CAST(id AS DEC) FROM customer
+pg	SELECT CAST(id AS DECIMAL) FROM customer
+pg	SELECT CAST(id AS NVARCHAR(50)) FROM customer
+pg	SELECT CAST(id AS CLOB) FROM customer
+pg	SELECT CAST(id AS CLOB(50)) FROM customer
+pg	SELECT CAST(id AS BINARY(50)) FROM customer
+pg	SELECT CAST(id AS VARBINARY(50)) FROM customer
+pg	SELECT CAST(id AS BLOB) FROM customer
+pg	SELECT CAST(id AS BLOB(50)) FROM customer
+pg	SELECT CAST(details AS JSONB) FROM customer
+pg	SELECT TRY_CAST(id AS BIGINT) FROM customer
+pg	SELECT TRY_CAST(id AS NUMERIC) FROM customer
+pg	SELECT TRY_CAST(id AS DEC) FROM customer
+pg	SELECT TRY_CAST(id AS DECIMAL) FROM customer
+pg	SELECT EXTRACT(YEAR FROM d)
+pg	SELECT EXTRACT(year from d)
+pg	SELECT EXTRACT(MONTH FROM d)
+pg	SELECT EXTRACT(WEEK FROM d)
+pg	SELECT EXTRACT(DAY FROM d)
+pg	SELECT EXTRACT(DAYOFWEEK FROM d)
+pg	SELECT EXTRACT(DAYOFYEAR FROM d)
+pg	SELECT EXTRACT(DATE FROM d)
+pg	SELECT EXTRACT(DATETIME FROM d)
+pg	SELECT EXTRACT(HOUR FROM d)
+pg	SELECT EXTRACT(MINUTE FROM d)
+pg	SELECT EXTRACT(SECOND FROM d)
+pg	SELECT EXTRACT(MILLISECOND FROM d)
+pg	SELECT EXTRACT(MICROSECOND FROM d)
+pg	SELECT EXTRACT(NANOSECOND FROM d)
+pg	SELECT EXTRACT(CENTURY FROM d)
+pg	SELECT EXTRACT(DECADE FROM d)
+pg	SELECT EXTRACT(DOW FROM d)
+pg	SELECT EXTRACT(DOY FROM d)
+pg	SELECT EXTRACT(EPOCH FROM d)
+pg	SELECT EXTRACT(ISODOW FROM d)
+pg	SELECT EXTRACT(ISOWEEK FROM d)
+pg	SELECT EXTRACT(ISOYEAR FROM d)
+pg	SELECT EXTRACT(JULIAN FROM d)
+pg	SELECT EXTRACT(MICROSECONDS FROM d)
+pg	SELECT EXTRACT(MILLENIUM FROM d)
+pg	SELECT EXTRACT(MILLENNIUM FROM d)
+pg	SELECT EXTRACT(MILLISECONDS FROM d)
+pg	SELECT EXTRACT(QUARTER FROM d)
+pg	SELECT EXTRACT(TIMEZONE FROM d)
+pg	SELECT EXTRACT(TIMEZONE_ABBR FROM d)
+pg	SELECT EXTRACT(TIMEZONE_HOUR FROM d)
+pg	SELECT EXTRACT(TIMEZONE_MINUTE FROM d)
+pg	SELECT EXTRACT(TIMEZONE_REGION FROM d)
+pg	SELECT EXTRACT(TIME FROM d)
+pg	SELECT EXTRACT(JIFFY FROM d)
+pg	SELECT CEIL(1.5)
+pg	SELECT CEIL(float_column) FROM my_table
+pg	SELECT FLOOR(1.5)
+pg	SELECT FLOOR(float_column) FROM my_table
+pg	SELECT CEIL(1.5, 1)
+pg	SELECT CEIL(float_column, 3) FROM my_table
+pg	SELECT FLOOR(1.5, 1)
+pg	SELECT FLOOR(float_column, 3) FROM my_table
+pg	SELECT CEIL(d, 2)
+pg	SELECT FLOOR(d, 2)
+pg	SELECT CEIL(d TO DAY)
+pg	SELECT CEIL(d to day)
+pg	SELECT CEIL(d TO HOUR) FROM df
+pg	SELECT CEIL(d TO MINUTE) FROM df
+pg	SELECT CEIL(d TO SECOND) FROM df
+pg	SELECT CEIL(d TO MILLISECOND) FROM df
+pg	SELECT CEIL(d TO JIFFY) FROM df
+pg	SELECT FLOOR(d TO DAY)
+pg	SELECT FLOOR(d to day)
+pg	SELECT FLOOR(d TO HOUR) FROM df
+pg	SELECT FLOOR(d TO MINUTE) FROM df
+pg	SELECT FLOOR(d TO SECOND) FROM df
+pg	SELECT FLOOR(d TO MILLISECOND) FROM df
+pg	SELECT FLOOR(d TO JIFFY) FROM df
+pg	SELECT LISTAGG(DISTINCT dateid, ', ' ON OVERFLOW TRUNCATE '%' WITHOUT COUNT)
+pg	SELECT LISTAGG(sellerid) WITHIN GROUP (ORDER BY dateid)
+pg	SELECT LISTAGG(dateid)
+pg	SELECT LISTAGG(DISTINCT dateid)
+pg	SELECT LISTAGG(dateid ON OVERFLOW ERROR)
+pg	SELECT LISTAGG(dateid ON OVERFLOW TRUNCATE N'...' WITH COUNT)
+pg	SELECT LISTAGG(dateid ON OVERFLOW TRUNCATE X'deadbeef' WITH COUNT)
+pg	SELECT ARRAY_AGG(x ORDER BY x) AS a FROM T
+pg	SELECT ARRAY_AGG(x ORDER BY x LIMIT 2) FROM tbl
+pg	SELECT ARRAY_AGG(DISTINCT x ORDER BY x LIMIT 2) FROM tbl
+pg	SELECT ARRAY_AGG(x ORDER BY x, y) AS a FROM T
+pg	SELECT ARRAY_AGG(x ORDER BY x ASC, y DESC) AS a FROM T
+pg	SELECT FIRST_VALUE(x ORDER BY x) AS a FROM T
+pg	SELECT FIRST_VALUE(x ORDER BY x) FROM tbl
+pg	SELECT LAST_VALUE(x ORDER BY x, y) AS a FROM T
+pg	SELECT LAST_VALUE(x ORDER BY x ASC, y DESC) AS a FROM T
+pg	SELECT column1, column2, FIRST_VALUE(column2) OVER (PARTITION BY column1 ORDER BY column2 NULLS LAST) AS column2_first FROM t1
+pg	SELECT column1, column2, FIRST_VALUE(column2) OVER (ORDER BY column2 NULLS LAST) AS column2_first FROM t1
+pg	SELECT col_1, col_2, LAG(col_2) OVER (ORDER BY col_1) FROM t1
+pg	SELECT LAG(col_2, 1, 0) OVER (ORDER BY col_1) FROM t1
+pg	SELECT LAG(col_2, 1, 0) OVER (PARTITION BY col_3 ORDER BY col_1)
+pg	SELECT column1, column2, FIRST_VALUE(column2) IGNORE NULLS OVER (PARTITION BY column1 ORDER BY column2 NULLS LAST) AS column2_first FROM t1
+pg	SELECT column1, column2, FIRST_VALUE(column2) RESPECT NULLS OVER (PARTITION BY column1 ORDER BY column2 NULLS LAST) AS column2_first FROM t1
+pg	SELECT LAG(col_2, 1, 0) IGNORE NULLS OVER (ORDER BY col_1) FROM t1
+pg	SELECT LAG(col_2, 1, 0) RESPECT NULLS OVER (ORDER BY col_1) FROM t1
+pg	SELECT LAG(1 IGNORE NULLS) IGNORE NULLS OVER () FROM t1
+pg	SELECT abc[1].f1 FROM t
+pg	SELECT abc[1].f1.f2 FROM t
+pg	SELECT f1.abc[1] FROM t
+pg	SELECT f1.f2.abc[1] FROM t
+pg	SELECT f1.abc[1].f2 FROM t
+pg	SELECT named_struct('a', 1, 'b', 2).a
+pg	SELECT make_array(1, 2, 3)[1]
+pg	SELECT make_array(named_struct('a', 1))[1].a
+pg	SELECT abc[1][-1].a.b FROM t
+pg	SELECT abc[1][-1].a.b[1] FROM t
+pg	SELECT {expr}
+pg	SELECT -1
+pg	CREATE SEQUENCE name INCREMENT -10 MINVALUE -1000 MAXVALUE 15 START -100
+pg	CREATE TABLE t (a int NOT NULL GARBAGE)
+pg	CREATE TABLE t (a int NOT NULL CONSTRAINT foo)
+pg	CREATE TABLE t (a int UNIQUE {syntax})
+pg	CREATE TABLE t (a INT UNIQUE{expected_clause})
+pg	CREATE TABLE t (a int NOT NULL UNIQUE DEFERRABLE INITIALLY BADVALUE)
+pg	CREATE TABLE t (a int NOT NULL UNIQUE INITIALLY IMMEDIATE DEFERRABLE INITIALLY DEFERRED)
+pg	CREATE TABLE t (a int NOT NULL UNIQUE DEFERRABLE INITIALLY DEFERRED NOT DEFERRABLE)
+pg	CREATE TABLE t (a int NOT NULL UNIQUE DEFERRABLE INITIALLY DEFERRED ENFORCED NOT ENFORCED)
+pg	CREATE TABLE IF NOT EXISTS something (name INT, val {})
+pg	CREATE TABLE IF NOT EXISTS something (name int, val array<int)
+pg	CREATE SCHEMA X
+pg	CREATE SCHEMA a.b.c OPTIONS(key1 = 'value1', key2 = 'value2')
+pg	CREATE SCHEMA IF NOT EXISTS a OPTIONS(key1 = 'value1')
+pg	CREATE SCHEMA IF NOT EXISTS a OPTIONS()
+pg	CREATE SCHEMA IF NOT EXISTS a DEFAULT COLLATE 'und:ci' OPTIONS()
+pg	CREATE SCHEMA a.b.c WITH (key1 = 'value1', key2 = 'value2')
+pg	CREATE SCHEMA IF NOT EXISTS a WITH (key1 = 'value1')
+pg	CREATE SCHEMA IF NOT EXISTS a WITH ()
+pg	CREATE SCHEMA a CLONE b
+pg	CREATE OR REPLACE SCHEMA X
+pg	CREATE OR REPLACE SCHEMA IF NOT EXISTS X
+pg	CREATE SCHEMA AUTHORIZATION Y
+pg	CREATE SCHEMA X AUTHORIZATION Y
+pg	DROP SCHEMA X
+pg	CREATE TABLE t AS SELECT * FROM a
+pg	SELECT * FROM a
+pg	CREATE TABLE t (a INT, b INT) AS SELECT 1 AS b, 2 AS a
+pg	SELECT 1 AS b, 2 AS a
+pg	CREATE TABLE new_table AS TABLE old_table
+pg	CREATE TABLE new_table AS TABLE schema_name.old_table
+pg	CREATE TABLE t ON CLUSTER '{cluster}' (a INT, b INT)
+pg	CREATE TABLE t ON CLUSTER my_cluster (a INT, b INT)
+pg	CREATE OR REPLACE TABLE t (a INT)
+pg	create table X (y_id int references Y (id) {options})
+pg	CREATE TABLE t (c INT) WITH (foo = 'bar', a = 123)
+pg	CREATE OR REPLACE TABLE a CLONE a_tmp
+pg	CREATE TABLE foo (bar int,)
+pg	CREATE TABLE foo (bar INT)
+pg	CREATE TABLE simple_table (id INT, name VARCHAR(100))
+pg	ALTER TABLE tab ADD COLUMN foo TEXT
+pg	ALTER TABLE tab RENAME TO new_tab
+pg	ALTER TABLE tab RENAME AS new_tab
+pg	ALTER TABLE tab RENAME COLUMN foo TO new_foo
+pg	ALTER TABLE tab SET TBLPROPERTIES('classification' = 'parquet')
+pg	ALTER TABLE tab SET (autovacuum_vacuum_scale_factor = 0.01, autovacuum_vacuum_threshold = 500)
+pg	ALTER TABLE t ON CLUSTER 'cluster' ADD CONSTRAINT bar PRIMARY KEY (baz)
+pg	ALTER TABLE t ON CLUSTER cluster_name ADD CONSTRAINT bar PRIMARY KEY (baz)
+pg	ALTER TABLE t ON CLUSTER 123 ADD CONSTRAINT bar PRIMARY KEY (baz)
+pg	ALTER INDEX idx RENAME TO new_idx
+pg	ALTER VIEW myschema.myview AS SELECT foo FROM bar
+pg	SELECT foo FROM bar
+pg	ALTER VIEW v WITH (foo = 'bar', a = 123) AS SELECT 1
+pg	ALTER VIEW v (has, cols) AS SELECT 1, 2
+pg	SELECT 1, 2
+pg	ALTER TABLE tab ADD foo TEXT
+pg	ALTER TABLE tab ADD IF NOT EXISTS foo TEXT
+pg	ALTER TABLE tab ADD COLUMN IF NOT EXISTS foo TEXT
+pg	ALTER TABLE tab ADD {constraint_text}
+pg	CREATE TABLE foo (id INT, {constraint_text})
+pg	DROP COLUMN IF EXISTS is_active
+pg	DROP COLUMN IF EXISTS is_active CASCADE
+pg	DROP COLUMN IF EXISTS is_active RESTRICT
+pg	ALTER TABLE tab DROP COLUMN IF EXISTS is_active CASCADE
+pg	ALTER TABLE tab DROP is_active CASCADE
+pg	ALTER TABLE tbl DROP COLUMN c1, c2, c3
+pg	ALTER TABLE tab {constraint_text}
+pg	ALTER TABLE tab
+pg	ALTER TABLE tab ALTER is_active DROP NOT NULL
+pg	ALTER TABLE tab ALTER COLUMN is_active DROP NOT NULL
+pg	ALTER TABLE tab ALTER COLUMN is_active SET DATA TYPE TEXT
+pg	DROP CONSTRAINT IF EXISTS constraint_name
+pg	DROP CONSTRAINT IF EXISTS constraint_name RESTRICT
+pg	DROP CONSTRAINT IF EXISTS constraint_name CASCADE
+pg	ALTER TABLE tab DROP CONSTRAINT is_active TEXT
+pg	ALTER TABLE tab ADD
+pg	SELECT {function_name}(id) FROM foo
+pg	SELECT sqrt(id) FROM foo
+pg	EXPLAIN test_identifier
+pg	DESCRIBE test_identifier
+pg	DESCRIBE test.table
+pg	DESCRIBE SELECT sqrt(id) FROM foo
+pg	EXPLAIN SELECT sqrt(id) FROM foo
+pg	EXPLAIN VERBOSE SELECT sqrt(id) FROM foo
+pg	EXPLAIN ANALYZE SELECT sqrt(id) FROM foo
+pg	EXPLAIN ANALYZE VERBOSE SELECT sqrt(id) FROM foo
+pg	EXPLAIN ANALYZE FORMAT GRAPHVIZ SELECT sqrt(id) FROM foo
+pg	EXPLAIN ANALYZE VERBOSE FORMAT JSON SELECT sqrt(id) FROM foo
+pg	EXPLAIN ANALYZE VERBOSE FORMAT=JSON SELECT sqrt(id) FROM foo
+pg	EXPLAIN VERBOSE FORMAT TEXT SELECT sqrt(id) FROM foo
+pg	EXPLAIN FORMAT=TEXT SELECT sqrt(id) FROM foo
+pg	EXPLAIN FORMAT=GRAPHVIZ SELECT sqrt(id) FROM foo
+pg	EXPLAIN FORMAT=JSON SELECT sqrt(id) FROM foo
+pg	EXPLAIN FORMAT=TREE SELECT sqrt(id) FROM foo
+pg	EXPLAIN QUERY PLAN SELECT sqrt(id) FROM foo
+pg	EXPLAIN QUERY SELECT sqrt(id) FROM foo
+pg	EXPLAIN ESTIMATE SELECT sqrt(id) FROM foo
+pg	SELECT FUN(a => '1', b => '2') FROM foo
+pg	SELECT FUN(a = '1', b = '2') FROM foo
+pg	SELECT * from mytable WINDOW window1 AS window2
+pg	SELECT * FROM mytable WINDOW window1 AS window2
+pg	SELECT a, COUNT(1), MIN(b), MAX(b) FROM foo GROUP BY a
+pg	SELECT COUNT(* WHERE x > 1) FROM t
+pg	SELECT SUM(x WHERE y > 0) FROM t
+pg	SELECT ARRAY_AGG(x WHERE x > 100 ORDER BY x DESC) FROM t
+pg	SELECT ARRAY_AGG(a WHERE b > 0 AND c < 10) FROM t
+pg	SELECT SUM(salary WHERE dept = 1) FROM emp
+pg	SELECT 1, -10, +20
+pg	SELECT 0.300000000000000004, 9007199254740993.0
+pg	SELECT 'one', N'national string', X'deadBEEF'
+pg	SELECT x'deadBEEF'
+pg	SELECT X'deadBEEF'
+pg	SELECT n'national string'
+pg	SELECT N'national string'
+pg	SELECT n'Tu geres '';'' et ''
+pg	SELECT N'Tu geres '';'' et ''
+pg	SELECT DATE '1999-01-01'
+pg	SELECT TIME '01:23:34'
+pg	SELECT DATETIME '1999-01-01 01:23:34.45'
+pg	SELECT TIMESTAMP '1999-01-01 01:23:34'
+pg	SELECT TIMESTAMPTZ '1999-01-01 01:23:34Z'
+pg	SELECT INTERVAL '1-1' YEAR TO MONTH
+pg	SELECT INTERVAL '01:01.01' MINUTE (5) TO SECOND (5)
+pg	SELECT INTERVAL '1' SECOND (5, 4)
+pg	SELECT INTERVAL '10' HOUR
+pg	SELECT INTERVAL 5 DAY
+pg	SELECT INTERVAL 5 DAYS
+pg	SELECT INTERVAL '10' HOUR (1)
+pg	SELECT INTERVAL '1' SECOND TO SECOND
+pg	SELECT INTERVAL '10' HOUR (1) TO HOUR (2)
+pg	SELECT INTERVAL '1' YEAR
+pg	SELECT INTERVAL '1' MONTH
+pg	SELECT INTERVAL '1' WEEK
+pg	SELECT INTERVAL '1' DAY
+pg	SELECT INTERVAL '1' HOUR
+pg	SELECT INTERVAL '1' MINUTE
+pg	SELECT INTERVAL '1' SECOND
+pg	SELECT INTERVAL '1' YEARS
+pg	SELECT INTERVAL '1' MONTHS
+pg	SELECT INTERVAL '1' WEEKS
+pg	SELECT INTERVAL '1' DAYS
+pg	SELECT INTERVAL '1' HOURS
+pg	SELECT INTERVAL '1' MINUTES
+pg	SELECT INTERVAL '1' SECONDS
+pg	SELECT INTERVAL '1' YEAR TO MONTH
+pg	SELECT INTERVAL '1' DAY TO HOUR
+pg	SELECT INTERVAL '1' DAY TO MINUTE
+pg	SELECT INTERVAL '1' DAY TO SECOND
+pg	SELECT INTERVAL '1' HOUR TO MINUTE
+pg	SELECT INTERVAL '1' HOUR TO SECOND
+pg	SELECT INTERVAL '1' MINUTE TO SECOND
+pg	SELECT INTERVAL 1 YEAR
+pg	SELECT INTERVAL 1 MONTH
+pg	SELECT INTERVAL 1 WEEK
+pg	SELECT INTERVAL 1 DAY
+pg	SELECT INTERVAL 1 HOUR
+pg	SELECT INTERVAL 1 MINUTE
+pg	SELECT INTERVAL 1 SECOND
+pg	SELECT INTERVAL 1 YEARS
+pg	SELECT INTERVAL 1 MONTHS
+pg	SELECT INTERVAL 1 WEEKS
+pg	SELECT INTERVAL 1 DAYS
+pg	SELECT INTERVAL 1 HOURS
+pg	SELECT INTERVAL 1 MINUTES
+pg	SELECT INTERVAL 1 SECONDS
+pg	SELECT '2 years 15 months 100 weeks 99 hours 123456789 milliseconds'::INTERVAL
+pg	SELECT INTERVAL '1 DAY'
+pg	SELECT INTERVAL '1 YEAR'
+pg	SELECT INTERVAL '1 MONTH'
+pg	SELECT INTERVAL '1 HOUR'
+pg	SELECT INTERVAL '1 MINUTE'
+pg	SELECT INTERVAL '1 SECOND'
+pg	SELECT INTERVAL 1 + 1 DAY
+pg	SELECT INTERVAL '1' + '1' DAY
+pg	SELECT INTERVAL '1' + '2' - '3' DAY
+pg	SELECT INTERVAL '1 YEAR' AS one_year
+pg	SELECT INTERVAL '1 YEAR' one_year
+pg	SELECT INTERVAL '1 DAY' > INTERVAL '1 SECOND'
+pg	SELECT FROM_UNIXTIME(0) AT TIME ZONE 'UTC-06:00' FROM t
+pg	SELECT DATE_FORMAT(FROM_UNIXTIME(0) AT TIME ZONE 'UTC-06:00', '%Y-%m-%dT%H') AS
+pg	SELECT BIGNUMERIC '0'
+pg	SELECT BIGNUMERIC '123456'
+pg	SELECT BIGNUMERIC '-3.14'
+pg	SELECT BIGNUMERIC '-0.54321'
+pg	SELECT BIGNUMERIC '1.23456e05'
+pg	SELECT BIGNUMERIC '-9.876e-3'
+pg	SELECT a + b, 2 + a, 2.5 + a, a_f + b_f, 2 + a_f, 2.5 + a_f FROM c
+pg	SELECT a - b, 2 - a, 2.5 - a, a_f - b_f, 2 - a_f, 2.5 - a_f FROM c
+pg	SELECT * FROM TABLE(FUN('1')) AS a
+pg	SELECT * FROM TABLE '1' AS a
+pg	SELECT UNNEST(make_array(1, 2, 3))
+pg	SELECT UNNEST(make_array(1, 2, 3), make_array(4, 5))
+pg	SELECT * FROM UNNEST({}){}{}{}
+pg	WITH OFFSET
+pg	SELECT CASE WHEN bar IS NULL THEN 'null' WHEN bar = 0 THEN '=0' WHEN bar >= 0 THEN '>=0' ELSE '<0' END FROM foo
+pg	SELECT CASE foo WHEN 1 THEN 'Y' ELSE 'N' END
+pg	SELECT * FROM fn(1, 2) AS foo, schema.bar AS bar WITH (NOLOCK)
+pg	SELECT * FROM fn()
+pg	SELECT * FROM t1, t2
+pg	SELECT * FROM t1a NATURAL JOIN t1b, t2a NATURAL JOIN t2b
+pg	SELECT * FROM t1 CROSS JOIN t2
+pg	SELECT * FROM t1 CROSS JOIN t2 ON a = b
+pg	SELECT * FROM t1 CROSS JOIN t2 USING(a)
+pg	SELECT * FROM t1 JOIN t2 AS foo ON c1 = c2
+pg	SELECT * FROM t1 JOIN t2 foo ON c1 = c2
+pg	SELECT * FROM t1 JOIN t2 ON c1 = c2
+pg	SELECT * FROM t1 INNER JOIN t2 ON c1 = c2
+pg	SELECT * FROM t1 LEFT JOIN t2 ON c1 = c2
+pg	SELECT * FROM t1 LEFT OUTER JOIN t2 ON c1 = c2
+pg	SELECT * FROM t1 RIGHT JOIN t2 ON c1 = c2
+pg	SELECT * FROM t1 RIGHT OUTER JOIN t2 ON c1 = c2
+pg	SELECT * FROM t1 SEMI JOIN t2 ON c1 = c2
+pg	SELECT * FROM t1 LEFT SEMI JOIN t2 ON c1 = c2
+pg	SELECT * FROM t1 RIGHT SEMI JOIN t2 ON c1 = c2
+pg	SELECT * FROM t1 ANTI JOIN t2 ON c1 = c2
+pg	SELECT * FROM t1 LEFT ANTI JOIN t2 ON c1 = c2
+pg	SELECT * FROM t1 RIGHT ANTI JOIN t2 ON c1 = c2
+pg	SELECT * FROM t1 FULL JOIN t2 ON c1 = c2
+pg	SELECT * FROM t1 GLOBAL FULL JOIN t2 ON c1 = c2
+pg	SELECT * FROM t1 JOIN t2 AS foo USING(c1)
+pg	SELECT * FROM t1 JOIN t2 foo USING(c1)
+pg	SELECT * FROM t1 JOIN t2 USING(c1)
+pg	SELECT * FROM t1 INNER JOIN t2 USING(c1)
+pg	SELECT * FROM t1 LEFT JOIN t2 USING(c1)
+pg	SELECT * FROM t1 LEFT OUTER JOIN t2 USING(c1)
+pg	SELECT * FROM t1 RIGHT JOIN t2 USING(c1)
+pg	SELECT * FROM t1 RIGHT OUTER JOIN t2 USING(c1)
+pg	SELECT * FROM t1 SEMI JOIN t2 USING(c1)
+pg	SELECT * FROM t1 LEFT SEMI JOIN t2 USING(c1)
+pg	SELECT * FROM t1 RIGHT SEMI JOIN t2 USING(c1)
+pg	SELECT * FROM t1 ANTI JOIN t2 USING(c1)
+pg	SELECT * FROM t1 LEFT ANTI JOIN t2 USING(c1)
+pg	SELECT * FROM t1 RIGHT ANTI JOIN t2 USING(c1)
+pg	SELECT * FROM t1 FULL JOIN t2 USING(c1)
+pg	SELECT * FROM tbl1 AS t1 JOIN tbl2 AS t2 USING(t2.col1)
+pg	SELECT * FROM t1 NATURAL JOIN t2
+pg	SELECT * FROM t1 NATURAL INNER JOIN t2
+pg	SELECT * FROM t1 NATURAL LEFT JOIN t2
+pg	SELECT * FROM t1 NATURAL LEFT OUTER JOIN t2
+pg	SELECT * FROM t1 NATURAL RIGHT JOIN t2
+pg	SELECT * FROM t1 NATURAL RIGHT OUTER JOIN t2
+pg	SELECT * FROM t1 NATURAL FULL JOIN t2
+pg	SELECT * FROM t1 NATURAL JOIN t2 AS t3
+pg	SELECT * FROM t1 natural
+pg	SELECT c1, c2 FROM t1, t4 JOIN t2 ON t2.c = t1.c LEFT JOIN t3 USING(q, c) WHERE t4.c = t1.c
+pg	SELECT * FROM (a NATURAL JOIN b) NATURAL JOIN c
+pg	SELECT * FROM (((a NATURAL JOIN b)))
+pg	SELECT * FROM a NATURAL JOIN (((b NATURAL JOIN c)))
+pg	SELECT * FROM (a NATURAL JOIN b) AS c
+pg	SELECT c1 FROM t1 JOIN t2 USING(c1)
+pg	SELECT c1 FROM t1 INNER JOIN t2 USING(c1)
+pg	SELECT c1 FROM t1 LEFT JOIN t2 USING(c1)
+pg	SELECT c1 FROM t1 LEFT OUTER JOIN t2 USING(c1)
+pg	SELECT c1 FROM t1 RIGHT JOIN t2 USING(c1)
+pg	SELECT c1 FROM t1 RIGHT OUTER JOIN t2 USING(c1)
+pg	SELECT c1 FROM t1 FULL OUTER JOIN t2 USING(c1)
+pg	SELECT c1 FROM t1 FULL JOIN t2 USING(c1)
+pg	SELECT * FROM a OUTER JOIN b ON 1
+pg	SELECT 1 AS foo
+pg	SELECT 2 AS bar
+pg	WITH a AS ({}), b AS ({}) SELECT foo + bar FROM a, b
+pg	SELECT ({with})
+pg	SELECT * FROM ({with})
+pg	CREATE VIEW v AS {with}
+pg	WITH outer_cte AS ({with}) SELECT * FROM outer_cte
+pg	WITH cte (col1, col2) AS (SELECT foo, bar FROM baz) SELECT * FROM cte
+pg	SELECT 1 UNION ALL SELECT val + 1 FROM nums WHERE val < 10
+pg	WITH RECURSIVE nums (val) AS ({cte_query}) SELECT * FROM nums
+pg	WITH x AS (SELECT 1) UPDATE t SET bar = (SELECT * FROM x)
+pg	WITH x AS (SELECT 1)
+pg	WITH t (x) AS (SELECT 9) DELETE FROM q WHERE id IN (SELECT x FROM t)
+pg	WITH t (x) AS (SELECT 9)
+pg	WITH x AS (SELECT 42) INSERT INTO t SELECT foo FROM x
+pg	WITH x AS (SELECT 42)
+pg	SELECT a.x, b.y FROM (SELECT x FROM foo) AS a CROSS JOIN (SELECT y FROM bar) AS b
+pg	SELECT * FROM (((SELECT 1)))
+pg	SELECT * FROM t NATURAL JOIN (((SELECT 1)))
+pg	SELECT * FROM (((SELECT 1) UNION (SELECT 2)) AS t1 NATURAL JOIN t2)
+pg	SELECT 1 UNION SELECT 2
+pg	SELECT 1 UNION ALL SELECT 2
+pg	SELECT 1 UNION DISTINCT SELECT 1
+pg	SELECT 1 EXCEPT SELECT 2
+pg	SELECT 1 EXCEPT ALL SELECT 2
+pg	SELECT 1 EXCEPT DISTINCT SELECT 1
+pg	SELECT 1 INTERSECT SELECT 2
+pg	SELECT 1 INTERSECT ALL SELECT 2
+pg	SELECT 1 INTERSECT DISTINCT SELECT 1
+pg	SELECT 1 UNION SELECT 2 UNION SELECT 3
+pg	SELECT 1 EXCEPT SELECT 2 UNION SELECT 3
+pg	SELECT 1 INTERSECT (SELECT 2 EXCEPT SELECT 3)
+pg	WITH cte AS (SELECT 1 AS foo) (SELECT foo FROM cte ORDER BY 1 LIMIT 1)
+pg	SELECT 1 UNION (SELECT 2 ORDER BY 1 LIMIT 1)
+pg	SELECT 1 UNION SELECT 2 INTERSECT SELECT 3
+pg	SELECT foo FROM tab UNION SELECT bar FROM TAB
+pg	SELECT 1 AS x, 2 AS y EXCEPT BY NAME SELECT 9 AS y, 8 AS x
+pg	SELECT 1 AS x, 2 AS y EXCEPT ALL BY NAME SELECT 9 AS y, 8 AS x
+pg	SELECT 1 AS x, 2 AS y EXCEPT DISTINCT BY NAME SELECT 9 AS y, 8 AS x
+pg	SELECT 1 AS x, 2 AS y INTERSECT BY NAME SELECT 9 AS y, 8 AS x
+pg	SELECT 1 AS x, 2 AS y INTERSECT ALL BY NAME SELECT 9 AS y, 8 AS x
+pg	SELECT 1 AS x, 2 AS y INTERSECT DISTINCT BY NAME SELECT 9 AS y, 8 AS x
+pg	SELECT 1 MINUS SELECT 2
+pg	SELECT 1 MINUS ALL SELECT 2
+pg	SELECT 1 MINUS DISTINCT SELECT 1
+pg	SELECT * FROM (VALUES (1), (2), (3))
+pg	SELECT * FROM (VALUES (1), (2), (3)), (VALUES (1, 2, 3))
+pg	SELECT * FROM (VALUES (1)) UNION VALUES (1)
+pg	SELECT * FROM (VALUES ROW(1, NULL, 'a'), ROW(2, NULL, 'b')) AS t (a, b, c)
+pg	SELECT foo
+pg	SELECT foo FROM baz
+pg	DELETE FROM foo
+pg	INSERT INTO foo VALUES (1)
+pg	CREATE TABLE foo (baz INT); SELECT bar
+pg	CREATE TABLE foo (baz INT)
+pg	SELECT bar
+pg	SELECT SUBSTRING('1')
+pg	SELECT SUBSTRING('1' FROM 1)
+pg	SELECT SUBSTRING('1' FROM 1 FOR 3)
+pg	SELECT SUBSTRING('1', 1, 3)
+pg	SELECT SUBSTRING('1', 1)
+pg	SELECT SUBSTRING('1' FOR 3)
+pg	SELECT SUBSTRING('foo' FROM 1 FOR 2) FROM t
+pg	SELECT SUBSTR('foo' FROM 1 FOR 2) FROM t
+pg	SELECT SUBSTR('foo', 1, 2) FROM t
+pg	SELECT OVERLAY('abccccde' PLACING 'abc' FROM 3)
+pg	SELECT OVERLAY('abccccde' PLACING 'abc' FROM 3 FOR 12)
+pg	SELECT OVERLAY('abccccde' FROM 3)
+pg	SELECT OVERLAY('abcdef' PLACING name FROM 3 FOR id + 1) FROM CUSTOMERS
+pg	SELECT TRIM(BOTH 'xyz' FROM 'xyzfooxyz')
+pg	SELECT TRIM(LEADING 'xyz' FROM 'xyzfooxyz')
+pg	SELECT TRIM(TRAILING 'xyz' FROM 'xyzfooxyz')
+pg	SELECT TRIM('xyz' FROM 'xyzfooxyz')
+pg	SELECT TRIM('   foo   ')
+pg	SELECT TRIM(LEADING '   foo   ')
+pg	SELECT TRIM(FOO 'xyz' FROM 'xyzfooxyz')
+pg	SELECT TRIM('  xyz  ', ' ')
+pg	SELECT TRIM('xyz', 'a')
+pg	SELECT * FROM t WHERE EXISTS (SELECT 1)
+pg	SELECT * FROM t WHERE NOT EXISTS (SELECT 1)
+pg	SELECT * FROM t WHERE EXISTS (WITH u AS (SELECT 1) SELECT * FROM u)
+pg	SELECT EXISTS (SELECT 1)
+pg	SELECT EXISTS (NULL)
+pg	CREATE DATABASE mydb
+pg	CREATE DATABASE mydb CLONE otherdb
+pg	CREATE DATABASE IF NOT EXISTS mydb
+pg	DROP DATABASE mycatalog.mydb
+pg	DROP DATABASE IF EXISTS mydb
+pg	CREATE VIEW myschema.myview AS SELECT foo FROM bar
+pg	CREATE OR ALTER VIEW v AS SELECT 1
+pg	CREATE VIEW v WITH (foo = 'bar', a = 123) AS SELECT 1
+pg	CREATE VIEW v (has, cols) AS SELECT 1, 2
+pg	CREATE TEMPORARY VIEW myschema.myview AS SELECT foo FROM bar
+pg	CREATE OR REPLACE VIEW v AS SELECT 1
+pg	CREATE OR REPLACE MATERIALIZED VIEW v AS SELECT 1
+pg	CREATE MATERIALIZED VIEW myschema.myview AS SELECT foo FROM bar
+pg	CREATE MATERIALIZED VIEW myschema.myview CLUSTER BY (foo) AS SELECT foo FROM bar
+pg	DROP TABLE foo
+pg	DROP TABLE IF EXISTS foo, bar CASCADE
+pg	DROP TABLE
+pg	DROP TABLE IF EXISTS foo, bar CASCADE RESTRICT
+pg	DROP VIEW myschema.myview
+pg	DROP MATERIALIZED VIEW a.b.c
+pg	DROP MATERIALIZED VIEW IF EXISTS a.b.c
+pg	DROP USER u1
+pg	DROP USER IF EXISTS u1
+pg	CREATE WAREHOUSE my_wh
+pg	CREATE OR REPLACE WAREHOUSE IF NOT EXISTS my_wh
+pg	CREATE WAREHOUSE my_wh WAREHOUSE_SIZE='XSMALL' AUTO_SUSPEND=60
+pg	CREATE WAREHOUSE my_wh WITH WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60
+pg	DROP WAREHOUSE my_wh
+pg	DROP WAREHOUSE IF EXISTS my_wh
+pg	SELECT SELECT 1 FROM bar WHERE 1=1 FROM baz
+pg	SELECT foo FROM bar OFFSET 2 ROWS
+pg	SELECT foo FROM bar WHERE foo = 4 OFFSET 2 ROWS
+pg	SELECT foo FROM bar ORDER BY baz OFFSET 2 ROWS
+pg	SELECT foo FROM bar WHERE foo = 4 ORDER BY baz OFFSET 2 ROWS
+pg	SELECT foo FROM (SELECT * FROM bar OFFSET 2 ROWS) OFFSET 2 ROWS
+pg	SELECT 'foo' OFFSET 0 ROWS
+pg	SELECT 'foo' OFFSET 1 ROW
+pg	SELECT 'foo' OFFSET 2
+pg	SELECT foo FROM bar FETCH FIRST 2 ROWS ONLY
+pg	SELECT 'foo' FETCH FIRST 2 ROWS ONLY
+pg	SELECT foo FROM bar FETCH FIRST ROWS ONLY
+pg	SELECT foo FROM bar WHERE foo = 4 FETCH FIRST 2 ROWS ONLY
+pg	SELECT foo FROM bar ORDER BY baz FETCH FIRST 2 ROWS ONLY
+pg	SELECT foo FROM bar WHERE foo = 4 ORDER BY baz FETCH FIRST 2 ROWS WITH TIES
+pg	SELECT foo FROM bar FETCH FIRST 50 PERCENT ROWS ONLY
+pg	SELECT foo FROM bar WHERE foo = 4 ORDER BY baz OFFSET 2 ROWS FETCH FIRST 2 ROWS ONLY
+pg	SELECT foo FROM (SELECT * FROM bar FETCH FIRST 2 ROWS ONLY) FETCH FIRST 2 ROWS ONLY
+pg	SELECT foo FROM (SELECT * FROM bar OFFSET 2 ROWS FETCH FIRST 2 ROWS ONLY) OFFSET 2 ROWS FETCH FIRST 2 ROWS ONLY
+pg	SELECT foo FROM bar FETCH FIRST 10 ROW ONLY
+pg	SELECT foo FROM bar FETCH FIRST 10 ROWS ONLY
+pg	SELECT foo FROM bar FETCH NEXT 10 ROW ONLY
+pg	SELECT foo FROM bar FETCH NEXT 10 ROWS WITH TIES
+pg	SELECT foo FROM bar FETCH FIRST 10 ROWS WITH TIES
+pg	SELECT foo FROM bar FETCH NEXT ROWS WITH TIES
+pg	SELECT foo FROM bar FETCH FIRST ROWS WITH TIES
+pg	SELECT * FROM orders WHERE orders.customer = customer.id LIMIT 3
+pg	SELECT * FROM LATERAL UNNEST ([10,20,30]) as numbers WITH OFFSET
+pg	SELECT * FROM a LEFT JOIN LATERAL (b CROSS JOIN c)
+pg	SELECT * FROM customer LEFT JOIN LATERAL generate_series(1, customer.id)
+pg	BEGIN WORK
+pg	BEGIN TRANSACTION
+pg	BEGIN TRY
+pg	BEGIN CATCH
+pg	SET TRANSACTION READ ONLY, READ WRITE, ISOLATION LEVEL SERIALIZABLE
+pg	SET SOMETHING = '1'
+pg	SET GLOBAL VARIABLE = 'Value'
+pg	SET (a, b, c) = (1, 2, 3)
+pg	SET (a) = (SELECT 22 FROM tbl1)
+pg	SET (a) = ((SELECT 22 FROM tbl1))
+pg	SET (a) = (SELECT 22 FROM tbl1, (SELECT 1 FROM tbl2))
+pg	SET (a) = ((SELECT 22 FROM tbl1, (SELECT 1 FROM tbl2)))
+pg	SET (a, b) = ((SELECT 22 FROM tbl1, (SELECT 1 FROM tbl2)), SELECT 33 FROM tbl3)
+pg	SET (a, b) = ((SELECT 22 FROM tbl1, (SELECT 1 FROM tbl2)), (SELECT 33 FROM tbl3))
+pg	SET (a, b, c) = 1, 2, 3
+pg	SET (a) = ((SELECT 22 FROM tbl1) (SELECT 22 FROM tbl1))
+pg	SET SOMETHING TO '1'
+pg	SET role = 'foobar'
+pg	SELECT '2001-01-01T00:00:00.000Z'::TIMESTAMP AT TIME ZONE 'Europe/Brussels' FROM t
+pg	SET TIMEZONE = 'UTC'
+pg	SET TIME ZONE TO 'UTC'
+pg	COMMIT AND CHAIN
+pg	COMMIT AND NO CHAIN
+pg	COMMIT WORK AND NO CHAIN
+pg	COMMIT TRANSACTION AND NO CHAIN
+pg	COMMIT WORK AND CHAIN
+pg	COMMIT TRANSACTION AND CHAIN
+pg	COMMIT WORK
+pg	COMMIT TRANSACTION
+pg	ROLLBACK
+pg	ROLLBACK AND CHAIN
+pg	ROLLBACK TO SAVEPOINT test1
+pg	ROLLBACK AND CHAIN TO SAVEPOINT test1
+pg	ROLLBACK AND NO CHAIN
+pg	ROLLBACK WORK AND NO CHAIN
+pg	ROLLBACK TRANSACTION AND NO CHAIN
+pg	ROLLBACK WORK AND CHAIN
+pg	ROLLBACK TRANSACTION AND CHAIN
+pg	ROLLBACK WORK
+pg	ROLLBACK TRANSACTION
+pg	ROLLBACK TO test1
+pg	ROLLBACK AND CHAIN TO test1
+pg	SELECT @foo
+pg	CREATE UNIQUE INDEX IF NOT EXISTS idx_name ON test(name, age DESC)
+pg	CREATE UNIQUE INDEX IF NOT EXISTS idx_name ON test USING BTREE (name, age DESC)
+pg	CREATE UNIQUE INDEX title_idx ON films(title) WITH (fillfactor = 70, single_param)
+pg	CREATE INDEX ASYNC my_index ON my_table(col1)
+pg	CREATE UNIQUE INDEX ASYNC my_index ON my_table(col1)
+pg	DROP INDEX idx_a
+pg	CREATE ROLE consultant
+pg	CREATE ROLE IF NOT EXISTS mysql_a, mysql_b
+pg	DROP ROLE abc
+pg	DROP ROLE IF EXISTS def, magician, quaternion
+pg	GRANT SELECT, INSERT, UPDATE (shape, size), USAGE, DELETE, TRUNCATE, REFERENCES, TRIGGER, CONNECT, CREATE, EXECUTE, TEMPORARY, DROP ON abc, def TO xyz, m WITH GRANT OPTION GRANTED BY jj
+pg	GRANT INSERT ON ALL TABLES IN SCHEMA public TO browser
+pg	GRANT USAGE, SELECT ON SEQUENCE p TO u
+pg	GRANT ALL PRIVILEGES ON aa, b TO z
+pg	GRANT ALL ON SCHEMA aa, b TO z
+pg	GRANT USAGE ON ALL SEQUENCES IN SCHEMA bus TO a, beta WITH GRANT OPTION
+pg	GRANT SELECT ON ALL TABLES IN SCHEMA db1.sc1 TO ROLE role1
+pg	GRANT SELECT ON ALL TABLES IN SCHEMA db1.sc1 TO ROLE role1 WITH GRANT OPTION
+pg	GRANT SELECT ON ALL TABLES IN SCHEMA db1.sc1 TO DATABASE ROLE role1
+pg	GRANT SELECT ON ALL TABLES IN SCHEMA db1.sc1 TO APPLICATION role1
+pg	GRANT SELECT ON ALL TABLES IN SCHEMA db1.sc1 TO APPLICATION ROLE role1
+pg	GRANT SELECT ON ALL TABLES IN SCHEMA db1.sc1 TO SHARE share1
+pg	GRANT SELECT ON ALL VIEWS IN SCHEMA db1.sc1 TO ROLE role1
+pg	GRANT SELECT ON ALL MATERIALIZED VIEWS IN SCHEMA db1.sc1 TO ROLE role1
+pg	GRANT SELECT ON ALL EXTERNAL TABLES IN SCHEMA db1.sc1 TO ROLE role1
+pg	GRANT USAGE ON ALL FUNCTIONS IN SCHEMA db1.sc1 TO ROLE role1
+pg	GRANT USAGE ON SCHEMA sc1 TO a:b
+pg	GRANT USAGE ON SCHEMA sc1 TO GROUP group1
+pg	GRANT OWNERSHIP ON ALL TABLES IN SCHEMA DEV_STAS_ROGOZHIN TO ROLE ANALYST
+pg	GRANT OWNERSHIP ON ALL TABLES IN SCHEMA DEV_STAS_ROGOZHIN TO ROLE ANALYST COPY CURRENT GRANTS
+pg	GRANT OWNERSHIP ON ALL TABLES IN SCHEMA DEV_STAS_ROGOZHIN TO ROLE ANALYST REVOKE CURRENT GRANTS
+pg	GRANT OWNERSHIP ON ALL TABLES IN SCHEMA s TO ROLE r WITH GRANT OPTION COPY CURRENT GRANTS
+pg	GRANT USAGE ON DATABASE db1 TO ROLE role1
+pg	GRANT USAGE ON WAREHOUSE wh1 TO ROLE role1
+pg	GRANT OWNERSHIP ON INTEGRATION int1 TO ROLE role1
+pg	GRANT SELECT ON VIEW view1 TO ROLE role1
+pg	GRANT EXEC ON my_sp TO runner
+pg	GRANT UPDATE ON my_table TO updater_role AS dbo
+pg	GRANT SELECT ON [my_table] TO [public]
+pg	GRANT SELECT ON FUTURE SCHEMAS IN DATABASE db1 TO ROLE role1
+pg	GRANT SELECT ON FUTURE TABLES IN SCHEMA db1.sc1 TO ROLE role1
+pg	GRANT SELECT ON FUTURE EXTERNAL TABLES IN SCHEMA db1.sc1 TO ROLE role1
+pg	GRANT SELECT ON FUTURE VIEWS IN SCHEMA db1.sc1 TO ROLE role1
+pg	GRANT SELECT ON FUTURE MATERIALIZED VIEWS IN SCHEMA db1.sc1 TO ROLE role1
+pg	GRANT SELECT ON FUTURE SEQUENCES IN SCHEMA db1.sc1 TO ROLE role1
+pg	GRANT USAGE ON PROCEDURE db1.sc1.foo(INT) TO ROLE role1
+pg	GRANT USAGE ON FUNCTION db1.sc1.foo(INT) TO ROLE role1
+pg	GRANT ROLE role1 TO ROLE role2
+pg	GRANT ROLE role1 TO USER user
+pg	GRANT CREATE SCHEMA ON DATABASE db1 TO ROLE role1
+pg	GRANT SELECT ON t TO PUBLIC
+pg	REVOKE ALL PRIVILEGES ON users, auth FROM analyst
+pg	REVOKE ALL PRIVILEGES ON users, auth FROM analyst CASCADE
+pg	REVOKE GRANT OPTION FOR SELECT ON t FROM r
+pg	REVOKE SELECT ON t FROM r
+pg	REVOKE GRANT OPTION FOR ALL ON t FROM r
+pg	REVOKE GRANT OPTION FOR SELECT ON t FROM r CASCADE
+pg	REVOKE GRANT OPTION FOR SELECT ON t FROM r RESTRICT
+pg	UPDATE is not allowed in a NOT MATCHED merge clause
+pg	DELETE is not allowed in a NOT MATCHED merge clause
+pg	INSERT is not allowed in a MATCHED merge clause
+pg	SELECT * FROM student WHERE id = '1' FOR UPDATE
+pg	SELECT * FROM student WHERE id = '1' FOR SHARE
+pg	SELECT * FROM student WHERE id = '1' FOR UPDATE OF school
+pg	SELECT * FROM student WHERE id = '1' FOR SHARE OF school
+pg	SELECT * FROM student WHERE id = '1' FOR SHARE OF school FOR UPDATE OF student
+pg	SELECT * FROM student WHERE id = '1' FOR UPDATE OF school SKIP LOCKED
+pg	SELECT * FROM student WHERE id = '1' FOR SHARE OF school NOWAIT
+pg	SELECT * FROM student WHERE id = $Id1
+pg	SELECT * FROM student LIMIT $1 OFFSET $2
+pg	SELECT * FROM student WHERE id = ?
+pg	SELECT $fromage_français, :x, ?123
+pg	SELECT foo FROM bar LIMIT 1 OFFSET 2
+pg	SELECT foo FROM bar OFFSET 2 LIMIT 1
+pg	SELECT foo FROM bar LIMIT 2, 1
+pg	SELECT foo FROM bar LIMIT 1 + 2 OFFSET 3 * 4
+pg	SELECT foo FROM bar OFFSET 2
+pg	SELECT foo FROM bar OFFSET 2 OFFSET 2
+pg	SELECT foo FROM bar LIMIT 2 LIMIT 2
+pg	SELECT foo FROM bar OFFSET 2 LIMIT 2 OFFSET 2
+pg	SELECT {func_name}()
+pg	SELECT {func_name}
+pg	SELECT POSITION(foo IN) from bar
+pg	SELECT f FROM foo WHERE field IS TRUE
+pg	SELECT f FROM foo WHERE field IS NOT TRUE
+pg	SELECT f FROM foo WHERE field IS FALSE
+pg	SELECT f FROM foo WHERE field IS NOT FALSE
+pg	SELECT f FROM foo WHERE field IS NORMALIZED
+pg	SELECT f FROM foo WHERE field IS NFC NORMALIZED
+pg	SELECT f FROM foo WHERE field IS NFD NORMALIZED
+pg	SELECT f FROM foo WHERE field IS NOT NORMALIZED
+pg	SELECT f FROM foo WHERE field IS NOT NFKC NORMALIZED
+pg	SELECT f FROM foo WHERE field IS UNKNOWN
+pg	SELECT f FROM foo WHERE field IS NOT UNKNOWN
+pg	SELECT f from foo where field is 0
+pg	SELECT s, s IS XYZ NORMALIZED FROM foo
+pg	SELECT s, s IS NFKC FROM foo
+pg	SELECT s, s IS TRIM(' NFKC ') FROM foo
+pg	SELECT * FROM t WHERE a IS JSON WITH FROM
+pg	SELECT * FROM t WHERE a IS JSON WITH KEYS
+pg	SELECT * FROM t WHERE a IS JSON WITHOUT FROM
+pg	SELECT * FROM t WHERE a IS JSON WITHOUT KEYS
+pg	SELECT * FROM t WHERE a IS NOT JSON WITH FROM
+pg	SELECT * FROM t WHERE a IS JSON VALUE ARRAY
+pg	SELECT * FROM t WHERE a IS JSON OBJECT VALUE
+pg	SELECT * FROM t WHERE a IS JSON WITH UNIQUE EXTRA
+pg	SELECT * FROM t WHERE a IS JSON WITH UNIQUE KEYS EXTRA
+pg	SELECT * FROM t WHERE a IS JSON WITHOUT UNIQUE EXTRA
+pg	SELECT * FROM t WHERE a IS JSON WITHOUT UNIQUE KEYS EXTRA
+pg	SELECT * FROM t WHERE a IS JSON WITH UNIQUE KEYS WITH UNIQUE KEYS
+pg	SELECT * FROM t WHERE a IS JSON WITHOUT UNIQUE KEYS WITHOUT UNIQUE KEYS
+pg	SHOW FUNCTIONS LIKE 'pattern'
+pg	SELECT a, b, c FROM foo
+pg	UPDATE\n\n\n\n\n\n\n\n\n\n{}
+pg	SELECT {}
+pg	SELECT id, user_id FROM test WHERE {where_clause}
+pg	SELECT id, user_id where id IN (select id from t WHERE {where_clause})
+pg	SELECT {}1
+pg	SELECT CAST(x AS {}INT64{})
+pg	SELECT 'I'm fine'
+pg	SELECT 'I''m fine'
+pg	SELECT 'I"m fine'
+pg	SELECT 'Testing: "+chr(92)*2+"0 "+chr(92)*2+" "+chr(92)*2+"% "+chr(92)*2+"_ "+chr(92)*2+"b \n "+chr(92)*2+"r 	 "+chr(92)*2+"Z "+chr(92)*2+"a "+chr(92)*2+"h "+chr(92)*2+" '
+pg	SELECT 'Testing: "+chr(92)*2+"0 "+chr(92)*2+" "+chr(92)*2+"% "+chr(92)*2+"_ "+chr(92)*2+"b \n "+chr(92)*2+"r 	 "+chr(92)*2+"Z "+chr(92)*2+"a "+chr(92)*2+" '
+pg	SELECT * FROM monthly_sales
+pg	SELECT * FROM person
+pg	SELECT * FROM t PIVOT(SUM(1) FOR a.abc IN (1 x, 'two' y, three z))
+pg	SELECT * FROM t PIVOT(SUM(1) FOR a.abc IN (1 AS x, 'two' AS y, three AS z))
+pg	SELECT * FROM t PIVOT(SUM(1) x, COUNT(42) y FOR a.abc IN (1))
+pg	SELECT * FROM t PIVOT(SUM(1) AS x, COUNT(42) AS y FOR a.abc IN (1))
+pg	SELECT * FROM sales AS s
+pg	SELECT * FROM sales
+pg	SELECT * FROM t1 USE INDEX (i1) IGNORE INDEX FOR ORDER BY (i2) ORDER BY a
+pg	SELECT * FROM t1 USE INDEX (i1) USE INDEX (i1, i1)
+pg	SELECT * FROM t1 USE INDEX () IGNORE INDEX (i2) USE INDEX (i1) USE INDEX (i2)
+pg	SELECT * FROM t1 FORCE INDEX FOR JOIN (i2)
+pg	SELECT * FROM t1 IGNORE INDEX FOR JOIN (i2)
+pg	SELECT * FROM t USE INDEX (index1) IGNORE INDEX FOR ORDER BY (index1) IGNORE INDEX FOR GROUP BY (index1) WHERE A = B
+pg	SELECT * FROM T USE LIMIT 1
+pg	SELECT * FROM census AS c
+pg	SELECT a.説明 FROM test.public.inter01 AS a
+pg	SELECT a.説明 FROM inter01 AS a, inter01_transactions AS b WHERE a.説明 = b.取引 GROUP BY a.説明
+pg	SELECT 説明, hühnervögel, garçon, Москва, 東京 FROM inter01
+pg	SELECT 💝 FROM table1
+pg	SELECT album_id, name, FROM track
+pg	SELECT album_id, name FROM track
+pg	SELECT * FROM track ORDER BY milliseconds,
+pg	SELECT * FROM track ORDER BY milliseconds
+pg	SELECT DISTINCT ON (album_id,) name FROM track
+pg	SELECT DISTINCT ON (album_id) name FROM track
+pg	CREATE TABLE employees (name text, age int,)
+pg	CREATE TABLE employees (name TEXT, age INT)
+pg	GRANT USAGE, SELECT, INSERT, ON p TO u
+pg	GRANT USAGE, SELECT, INSERT ON p TO u
+pg	SELECT name, age, from employees
+pg	REVOKE USAGE, SELECT, ON p TO u
+pg	CREATE TYPE mytype
+pg	CREATE TYPE address AS (street VARCHAR(100), city TEXT COLLATE "en_US")
+pg	CREATE TYPE empty AS ()
+pg	CREATE TYPE mood AS ENUM ('happy', 'sad')
+pg	CREATE TYPE int4range AS RANGE (SUBTYPE = INTEGER, CANONICAL = fn1)
+pg	CREATE TYPE textrange AS RANGE (SUBTYPE = TEXT, COLLATION = "en_US", MULTIRANGE_TYPE_NAME = textmultirange)
+pg	CREATE TYPE int4range AS RANGE (SUBTYPE = INTEGER, SUBTYPE_OPCLASS = int4_ops)
+pg	CREATE TYPE int4range AS RANGE (SUBTYPE = INTEGER, SUBTYPE_DIFF = int4range_subdiff)
+pg	CREATE TYPE int4range AS RANGE (SUBTYPE = INTEGER, SUBTYPE_OPCLASS = int4_ops, CANONICAL = int4range_canonical, SUBTYPE_DIFF = int4range_subdiff, MULTIRANGE_TYPE_NAME = int4multirange)
+pg	CREATE TYPE mytype (INPUT = in_fn, OUTPUT = out_fn, INTERNALLENGTH = 16, PASSEDBYVALUE)
+pg	CREATE TYPE mytype (INPUT = in_fn, OUTPUT = out_fn, INTERNALLENGTH = VARIABLE, STORAGE = extended)
+pg	CREATE TYPE t (INPUT = f_in, OUTPUT = f_out, STORAGE = {storage})
+pg	CREATE TYPE t (INPUT = f_in, OUTPUT = f_out, ALIGNMENT = {align})
+pg	CREATE TYPE t (INPUT = f_in, OUTPUT = f_out, RECEIVE = f_recv, SEND = f_send, TYPMOD_IN = f_tmin, TYPMOD_OUT = f_tmout, ANALYZE = f_analyze, SUBSCRIPT = f_sub)
+pg	CREATE TYPE t (INPUT = f_in, OUTPUT = f_out, LIKE = INT, CATEGORY = 'N', PREFERRED = true, DEFAULT = 0, ELEMENT = INTEGER, DELIMITER = ',', COLLATABLE = false)
+pg	DROP TYPE abc
+pg	DROP TYPE IF EXISTS def, magician, quaternion
+pg	DROP TYPE IF EXISTS my_type CASCADE
+pg	CALL my_procedure()
+pg	CALL my_procedure(1, 'a')
+pg	CALL my_procedure(1, 'a', $1)
+pg	CALL my_procedure
+pg	CALL my_procedure('a')
+pg	EXECUTE my_schema.my_stored_procedure N'param1', N'param2'
+pg	EXECUTE dbo.proc1 @ReturnVal = @X OUTPUT
+pg	EXECUTE dbo.proc1 DEFAULT
+pg	EXECUTE ('name')
+pg	EXECUTE IMMEDIATE 'SELECT 1' INTO a USING 1 AS b
+pg	EXECUTE IMMEDIATE 'SELECT 1' INTO a, b USING 1 AS x, y
+pg	EXECUTE IMMEDIATE 'SELECT 1' USING 1 AS x, y
+pg	EXECUTE IMMEDIATE 'SELECT 1' INTO a, b
+pg	EXECUTE IMMEDIATE 'SELECT 1'
+pg	EXECUTE 'SELECT 1'
+pg	EXECUTE IMMEDIATE 'SELECT 1' USING 1 AS, y
+pg	CREATE TABLE tbl (foo INT, bar TEXT COLLATE "de_DE")
+pg	CREATE TABLE tbl (foo INT, bar TEXT CHARACTER SET utf8mb4 COLLATE "de_DE")
+pg	CREATE TABLE tbl (foo INT, bar TEXT COLLATE "de_DE" CHARACTER SET utf8mb4)
+pg	SELECT field+1000 FROM tbl1
+pg	SELECT field + 1000 FROM tbl1
+pg	SELECT tbl1.field+tbl2.field FROM tbl1 JOIN tbl2 ON tbl1.id = tbl2.entity_id
+pg	SELECT tbl1.field + tbl2.field FROM tbl1 JOIN tbl2 ON tbl1.id = tbl2.entity_id
+pg	SELECT field-1000 FROM tbl1
+pg	SELECT field - 1000 FROM tbl1
+pg	SELECT tbl1.field-tbl2.field FROM tbl1 JOIN tbl2 ON tbl1.id = tbl2.entity_id
+pg	SELECT tbl1.field - tbl2.field FROM tbl1 JOIN tbl2 ON tbl1.id = tbl2.entity_id
+pg	SELECT field*1000 FROM tbl1
+pg	SELECT field * 1000 FROM tbl1
+pg	SELECT tbl1.field*tbl2.field FROM tbl1 JOIN tbl2 ON tbl1.id = tbl2.entity_id
+pg	SELECT tbl1.field * tbl2.field FROM tbl1 JOIN tbl2 ON tbl1.id = tbl2.entity_id
+pg	SELECT field/1000 FROM tbl1
+pg	SELECT field / 1000 FROM tbl1
+pg	SELECT tbl1.field/tbl2.field FROM tbl1 JOIN tbl2 ON tbl1.id = tbl2.entity_id
+pg	SELECT tbl1.field / tbl2.field FROM tbl1 JOIN tbl2 ON tbl1.id = tbl2.entity_id
+pg	SELECT field%1000 FROM tbl1
+pg	SELECT field % 1000 FROM tbl1
+pg	SELECT tbl1.field%tbl2.field FROM tbl1 JOIN tbl2 ON tbl1.id = tbl2.entity_id
+pg	SELECT tbl1.field % tbl2.field FROM tbl1 JOIN tbl2 ON tbl1.id = tbl2.entity_id
+pg	SELECT a, b, c FROM T WHERE true
+pg	CREATE TABLE t0 (id INT COMMENT 'comment without equal') COMMENT = 'comment with equal'
+pg	SELECT employee_id, manager_id, title FROM employees
+pg	SELECT prior FROM some_table
+pg	SELECT child, parent FROM t CONNECT BY NOCYCLE parent = PRIOR child
+pg	SELECT 0 FROM t WHERE 1 = 1 CONNECT BY 2 = 2 GROUP BY 3
+pg	SELECT 0 FROM t WHERE 1 = 1 START WITH 'a' = 'a' CONNECT BY 2 = 2 GROUP BY 3
+pg	SELECT 0 FROM t WHERE 1 = 1 CONNECT BY 2 = 2 START WITH 'a' = 'a' GROUP BY 3
+pg	SELECT city, car_model, sum(quantity) AS sum
+pg	SELECT a, b FROM t GROUP BY GROUPING SETS (a, b, c)
+pg	SELECT a, b FROM t GROUP BY GROUPING SETS ((a), (b), (c))
+pg	SELECT a, b FROM t GROUP BY GROUPING SETS ((a, b), c)
+pg	SELECT a, b FROM t GROUP BY GROUPING SETS ((a, b), (c))
+pg	SELECT * FROM XMLTABLE('/root' PASSING data COLUMNS element TEXT)
+pg	SELECT y FROM XMLTABLE('/X' PASSING '<X><y>z</y></X>' COLUMNS y TEXT)
+pg	SELECT y FROM XMLTABLE((SELECT '/X') PASSING (SELECT CAST('<X><y>z</y></X>' AS xml)) COLUMNS y TEXT PATH (SELECT 'y'))
+pg	SELECT y FROM XMLTABLE('/X' PASSING '<X></X>' COLUMNS y TEXT NOT NULL)
+pg	SELECT * FROM XMLTABLE('/root/row' PASSING xmldata COLUMNS id INT PATH '@id', name TEXT PATH 'name/text()', value FLOAT PATH 'value')
+pg	SELECT * FROM XMLTABLE('//ROWS/ROW' PASSING data COLUMNS row_num FOR ORDINALITY, id INT PATH '@id', name TEXT PATH 'NAME' DEFAULT 'unnamed')
+pg	SELECT xmltable.* FROM xmldata, XMLTABLE('//ROWS/ROW' PASSING data COLUMNS id INT PATH '@id', ordinality FOR ORDINALITY, "COUNTRY_NAME" TEXT, country_id TEXT PATH 'COUNTRY_ID', size_sq_km FLOAT PATH 'SIZE[@unit = "sq_km"]', size_other TEXT PATH 'concat(SIZE[@unit!="sq_km"], " ", SIZE[@unit!="sq_km"]/@unit)', premier_name TEXT PATH 'PREMIER_NAME' DEFAULT 'not specified')
+pg	SELECT X.* FROM T1, XMLTABLE('$CUSTLIST/customers/customerinfo' COLUMNS "Cid" BIGINT PATH '@Cid', "Info" XML PATH 'document{.}', "History" XML PATH 'NULL') AS X
+pg	SELECT xmltable.* FROM XMLTABLE(XMLNAMESPACES('http://example.com/myns' AS x, 'http://example.com/b' AS "B"), '/x:example/x:item' PASSING (SELECT data FROM xmldata) COLUMNS foo INT PATH '@foo', bar INT PATH '@B:bar')
+pg	SELECT * FROM my_table MATCH_RECOGNIZE({options})
+pg	SELECT *
+pg	SELECT * FROM my_table MATCH_RECOGNIZE(PATTERN ({pattern}) DEFINE DUMMY AS 1 = 1)
+pg	SELECT * REPLACE (lower(city) AS city) FROM addresses
+pg	SELECT * REPLACE ('widget' AS item_name) FROM orders
+pg	SELECT * REPLACE (quantity / 2 AS quantity, 3 AS order_id) FROM orders
+pg	CREATE TABLE embeddings (data FLOAT[1536])
+pg	CREATE TABLE embeddings (data FLOAT[1536][3])
+pg	SELECT data::FLOAT[1536] FROM embeddings
+pg	INSERT INTO t1 (id, name) (SELECT t2.id, t2.name FROM t2)
+pg	INSERT INTO t1 (SELECT t2.id, t2.name FROM t2)
+pg	INSERT INTO (SELECT employee_id, last_name FROM employees) VALUES (207, 'Gregory')
+pg	INSERT INTO (SELECT foo_t.id, foo_t.val FROM foo_t) SELECT 10, 20 FROM dual
+pg	INSERT INTO (SELECT foo_t.id, foo_t.val FROM foo_t) (id, val) SELECT 10, 20 FROM dual
+pg	SELECT {fn my_func(1, 2)}
+pg	SELECT {fn fna()} AS foo, fnb(1)
+pg	SELECT {fn2 my_func()}
+pg	SELECT * FROM VALUES (1, 2), (2,3) AS tbl (id, val)
+pg	SELECT * FROM (VALUES (1, 2), (2, 3)) AS tbl (id, val)
+pg	SELECT id + 1, name FROM VALUES (1, 'Apple'), (2, 'Banana'), (3, 'Orange') AS fruits (id, name) UNION ALL SELECT 5, 'Strawberry'
+pg	SELECT id + 1, name FROM (VALUES (1, 'Apple'), (2, 'Banana'), (3, 'Orange')) AS fruits (id, name) UNION ALL SELECT 5, 'Strawberry'
+pg	SELECT * EXCEPT (col_a) FROM data
+pg	SELECT * EXCEPT (department_id, employee_id) FROM employee_table
+pg	SELECT * EXCEPT () FROM employee_table
+pg	SELECT count(1) FROM t GROUP BY ()
+pg	SELECT name, count(1) FROM t GROUP BY name, ()
+pg	SELECT EXTRACT(seconds FROM '2 seconds'::INTERVAL)
+pg	SELECT EXTRACT('seconds' FROM '2 seconds'::INTERVAL)
+pg	TRUNCATE TABLE t ON CLUSTER cluster_name
+pg	TRUNCATE TABLE t
+pg	TRUNCATE TABLE t ON CLUSTER
+pg	EXPLAIN (ANALYZE false, VERBOSE true) SELECT sqrt(id) FROM foo
+pg	EXPLAIN (ANALYZE ON, VERBOSE OFF) SELECT sqrt(id) FROM foo
+pg	EXPLAIN (NUM1 10, NUM2 +10.1, NUM3 -10.2) SELECT sqrt(id) FROM foo
+pg	EXPLAIN (ANALYZE, VERBOSE true, WAL OFF, FORMAT YAML, USER_DEF_NUM -100.1) SELECT sqrt(id) FROM foo
+pg	CREATE POLICY my_policy ON my_table
+pg	WITH CHECK (1 = 1)
+pg	CREATE POLICY my_policy
+pg	CREATE POLICY my_policy ON my_table AS
+pg	CREATE POLICY my_policy ON my_table FOR
+pg	CREATE POLICY my_policy ON my_table TO
+pg	CREATE POLICY my_policy ON my_table USING
+pg	CREATE POLICY my_policy ON my_table WITH CHECK
+pg	DROP POLICY IF EXISTS my_policy ON my_table RESTRICT
+pg	DROP POLICY my_policy ON my_table CASCADE
+pg	DROP POLICY my_policy ON my_table
+pg	DROP POLICY my_policy
+pg	DROP POLICY my_policy ON my_table WRONG
+pg	ALTER POLICY old_policy ON my_table RENAME TO new_policy
+pg	ALTER POLICY my_policy ON my_table TO CURRENT_USER
+pg	ALTER POLICY my_policy ON my_table
+pg	ALTER POLICY old_policy ON my_table TO public RENAME TO new_policy
+pg	ALTER POLICY old_policy ON my_table RENAME TO new_policy TO public
+pg	ALTER POLICY old_policy ON my_table RENAME
+pg	ALTER POLICY old_policy ON my_table RENAME TO
+pg	ALTER POLICY my_policy ON my_table USING
+pg	ALTER POLICY my_policy ON my_table WITH CHECK
+pg	CREATE CONNECTOR my_connector
+pg	CREATE CONNECTOR
+pg	DROP CONNECTOR IF EXISTS my_connector
+pg	DROP CONNECTOR my_connector
+pg	DROP CONNECTOR
+pg	ALTER CONNECTOR my_connector SET DCPROPERTIES('user' = 'root', 'password' = 'password')
+pg	ALTER CONNECTOR my_connector SET URL 'jdbc:mysql://localhost:3306/mydb'
+pg	ALTER CONNECTOR my_connector SET OWNER USER 'root'
+pg	ALTER CONNECTOR my_connector SET OWNER ROLE 'admin'
+pg	ALTER CONNECTOR my_connector SET WRONG 'jdbc:mysql://localhost:3306/mydb'
+pg	SELECT * FROM x WHERE a ILIKE ANY '%abc%'
+pg	SELECT * FROM x WHERE a LIKE ANY '%abc%'
+pg	SELECT * FROM x WHERE a ILIKE ANY ('%Jo%oe%', 'T%e')
+pg	SELECT * FROM x WHERE a LIKE ANY ('%Jo%oe%', 'T%e')
+pg	SELECT c1 FROM tbl WHERE c1 = ANY(SELECT c2 FROM tbl)
+pg	SELECT c1 FROM tbl WHERE c1 >= ALL(SELECT c2 FROM tbl)
+pg	SELECT c1 FROM tbl WHERE c1 <> SOME(SELECT c2 FROM tbl)
+pg	SELECT 1 = ANY(WITH x AS (SELECT 1) SELECT * FROM x)
+pg	SELECT some_alias = some_column FROM some_table
+pg	SELECT some_column AS some_alias FROM some_table
+pg	SELECT some_alias = (a*b) FROM some_table
+pg	SELECT (a * b) AS some_alias FROM some_table
+pg	SELECT x = (a * b) FROM some_table
+pg	SELECT LEFT('abc', 1).value('.', 'NVARCHAR(MAX)').value('.', 'NVARCHAR(MAX)') AS T
+pg	SELECT STUFF((SELECT ',' + name FROM sys.objects FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'), 1, 1, '') AS T
+pg	SELECT CAST(column AS XML).value('.', 'NVARCHAR(MAX)') AS T
+pg	SELECT CONVERT(XML, '<Book>abc</Book>').value('.', 'NVARCHAR(MAX)').value('.', 'NVARCHAR(MAX)') AS T
+pg	SHOW CATALOGS
+pg	SHOW DATABASES
+pg	SHOW SCHEMAS
+pg	SHOW TABLES
+pg	SHOW VIEWS
+pg	SHOW TABLES IN db1
+pg	SHOW VIEWS FROM db1
+pg	SHOW MATERIALIZED VIEWS
+pg	SHOW MATERIALIZED VIEWS IN db1
+pg	SHOW MATERIALIZED VIEWS FROM db1
+pg	SHOW CATALOGS LIKE '%abc'
+pg	SHOW DATABASES LIKE '%abc'
+pg	SHOW SCHEMAS LIKE '%abc'
+pg	SHOW TABLES IN db1 'abc'
+pg	SHOW VIEWS IN db1 'abc'
+pg	SHOW VIEWS FROM db1 'abc'
+pg	SHOW MATERIALIZED VIEWS IN db1 'abc'
+pg	SHOW MATERIALIZED VIEWS FROM db1 'abc'
+pg	SELECT ALL * FROM tbl
+pg	SELECT TOP 3 * FROM tbl
+pg	SELECT TOP 3 ALL * FROM tbl
+pg	SELECT TOP 3 DISTINCT * FROM tbl
+pg	SELECT TOP 3 DISTINCT a, b, c FROM tbl
+pg	SELECT !a, !(b > 3)
+pg	SELECT a!
+pg	SELECT a ! b
+pg	SELECT a ! as b
+pg	SELECT !a
+pg	SELECT !a b
+pg	SELECT !a as b
+pg	SELECT a!, (b + c)!
+pg	CREATE TABLE foo (baz INT) SELECT bar
+pg	CREATE TABLE foo (baz INT) AS SELECT bar
+pg	CREATE TABLE foo (baz INT, name STRING) SELECT bar, oth_name FROM test.table_a
+pg	CREATE TABLE foo (baz INT, name STRING) AS SELECT bar, oth_name FROM test.table_a
+pg	SELECT MAX(interval) FROM tbl
+pg	SELECT T.{kw} FROM T
+pg	SELECT SUM(x) OVER (PARTITION BY T.{kw} ORDER BY T.id) FROM T
+pg	SELECT T.{kw}, S.{kw} FROM T, S WHERE T.{kw} = S.{kw}
+pg	SELECT T.interval, T.case FROM T
+pg	CREATE TABLE t (a BIT, b BIT VARYING, c BIT(42), d BIT VARYING(43))
+pg	SELECT f(a).b FROM t WHERE f(a).b IS NOT NULL
+pg	SELECT f(a)."an id"
+pg	SELECT * FROM t WHERE STRUCT(STRUCT(1 AS a, NULL AS b) AS c, NULL AS d).c.a IS NOT NULL
+pg	SELECT STRUCT(STRUCT(1 AS a, NULL AS b) AS c, NULL AS d).c.a
+pg	CREATE TABLE t0 (foo ENUM8('a' = 1, 'b' = 2), bar ENUM16('a' = 1, 'b' = 2), baz ENUM('a', 'b'))
+pg	CREATE TABLE t0 (foo ENUM8('a' = 1, 'b' = ))
+pg	CREATE TABLE t0 (foo ENUM8('a' = 1, 2))
+pg	SELECT * FROM tbl TABLESAMPLE (50) AS t
+pg	SELECT * FROM tbl TABLESAMPLE (50 ROWS) AS t
+pg	SELECT * FROM tbl TABLESAMPLE (50 PERCENT) AS t
+pg	SELECT * FROM tbl AS t TABLESAMPLE BERNOULLI (50)
+pg	SELECT * FROM tbl AS t TABLESAMPLE SYSTEM (50)
+pg	SELECT * FROM tbl AS t TABLESAMPLE SYSTEM (50) REPEATABLE (10)
+pg	SELECT pk FROM tab0 WHERE {where_clause}
+pg	SELECT FROM users
+pg	UPDATE t1 FROM (SELECT name, id FROM t1 GROUP BY id) AS t2 SET name = t2.name WHERE t1.id = t2.id
+pg	UPDATE t1 FROM U, (SELECT id FROM V) AS W SET a = b WHERE 1 = 1
+pg	UPDATE t1 FROM (SELECT name, id FROM t1 GROUP BY id) AS t2 SET name = t2.name FROM (SELECT name from t2) AS t2
+pg	SELECT (DATE '2016-01-10', DATE '2016-02-01') OVERLAPS (DATE '2016-01-20', DATE '2016-02-10')
+pg	CREATE TABLE T (x INT64,)
+pg	CREATE TABLE T (x INT64)
+pg	CREATE TABLE T (x INT64, y INT64, )
+pg	CREATE TABLE T (x INT64, y INT64)
+pg	CREATE VIEW T (x, y, ) AS SELECT 1
+pg	CREATE VIEW T (x, y) AS SELECT 1
+pg	SELECT 1, 2 FROM t,
+pg	SELECT 1, 2 FROM t
+pg	SELECT 1, 2 FROM t1, t2,
+pg	SELECT 1, 2 FROM t1, t2
+pg	SELECT a, FROM b, LIMIT 1
+pg	INSERT INTO a SELECT b FROM c,
+pg	SELECT a FROM b, HAVING COUNT(*) > 1
+pg	SELECT a FROM b, WHERE c = 1
+pg	SELECT 1, 2 FROM (SELECT * FROM t,),
+pg	SELECT 1, 2 FROM (SELECT * FROM t1), (SELECT * FROM t2),
+pg	SELECT 1, 2 FROM (SELECT * FROM t1), (SELECT * FROM t2)
+pg	SELECT CASE a WHEN 1 THEN 2 WHEN 3 THEN 4 ELSE 5 END
+pg	SELECT 1; SELECT 2; SELECT 3
+pg	SELECT 4; SELECT 5
+pg	SELECT 7; SELECT 8
+pg	SELECT 2
+pg	SELECT 3
+pg	SELECT 4
+pg	SELECT 5
+pg	SELECT 6
+pg	SELECT 7
+pg	SELECT 8
+pg	SELECT 9
+pg	WITH test AS (FROM t SELECT a) FROM test SELECT 1
+pg	SELECT x::INT[]
+pg	SELECT STRING_TO_ARRAY('1,2,3', ',')::INT[3]
+pg	SET NAMES 'UTF8'
+pg	SET NAMES 'utf8'
+pg	SET NAMES UTF8 COLLATE bogus
+pg	SELECT * FROM tbl |> AS new_users
+pg	SELECT * FROM tbl |> SELECT id
+pg	SELECT * FROM tbl |> SELECT id, name
+pg	SELECT * FROM tbl |> SELECT id user_id
+pg	SELECT * FROM tbl |> SELECT id AS user_id
+pg	SELECT * FROM tbl |> EXTEND id + 1 AS new_id
+pg	SELECT * FROM tbl |> EXTEND id AS new_id, name AS new_name
+pg	SELECT * FROM tbl |> EXTEND id user_id
+pg	SELECT * FROM tbl |> EXTEND id AS user_id
+pg	SELECT * FROM tbl |> SET id = id + 1
+pg	SELECT * FROM tbl |> SET id = id + 1, name = name + ' Doe'
+pg	SELECT * FROM tbl |> DROP id
+pg	SELECT * FROM tbl |> DROP id, name
+pg	SELECT * FROM tbl |> DROP c |> RENAME a AS x
+pg	SELECT * FROM tbl |> DROP a, b |> SELECT c
+pg	SELECT * FROM tbl |> LIMIT 10
+pg	SELECT * FROM tbl |> LIMIT 10 OFFSET 5
+pg	SELECT * FROM tbl |> LIMIT 10 |> LIMIT 5
+pg	SELECT * FROM tbl |> LIMIT 10 |> WHERE true
+pg	SELECT * FROM tbl |> WHERE id = 1
+pg	SELECT * FROM tbl |> WHERE id = 1 AND name = 'John'
+pg	SELECT * FROM tbl |> WHERE id = 1 OR name = 'John'
+pg	SELECT * FROM tbl |> AGGREGATE COUNT(*)
+pg	SELECT * FROM tbl |> AGGREGATE COUNT(*) total_users
+pg	SELECT * FROM tbl |> AGGREGATE COUNT(*) AS total_users
+pg	SELECT * FROM tbl |> AGGREGATE COUNT(*), MIN(id)
+pg	SELECT * FROM tbl |> AGGREGATE SUM(o_totalprice) AS price, COUNT(*) AS cnt GROUP BY EXTRACT(YEAR FROM o_orderdate) AS year
+pg	SELECT * FROM tbl |> AGGREGATE GROUP BY EXTRACT(YEAR FROM o_orderdate) AS year
+pg	SELECT * FROM tbl |> AGGREGATE GROUP BY EXTRACT(YEAR FROM o_orderdate)
+pg	SELECT * FROM tbl |> AGGREGATE GROUP BY a, b
+pg	SELECT * FROM tbl |> AGGREGATE SUM(c) GROUP BY a, b
+pg	SELECT * FROM tbl |> AGGREGATE SUM(c) ASC
+pg	SELECT * FROM tbl |> ORDER BY id ASC
+pg	SELECT * FROM tbl |> ORDER BY id DESC
+pg	SELECT * FROM tbl |> ORDER BY id DESC, name ASC
+pg	SELECT * FROM tbl |> TABLESAMPLE BERNOULLI (50)
+pg	SELECT * FROM tbl |> TABLESAMPLE SYSTEM (50 PERCENT)
+pg	SELECT * FROM tbl |> TABLESAMPLE SYSTEM (50) REPEATABLE (10)
+pg	SELECT * FROM tbl |> RENAME old_name AS new_name
+pg	SELECT * FROM tbl |> RENAME id AS user_id, name AS user_name
+pg	SELECT * FROM tbl |> RENAME id user_id
+pg	SELECT * FROM tbl |> RENAME id AS user_id
+pg	SELECT * FROM tbl |> UNION ALL (SELECT * FROM admins)
+pg	SELECT * FROM tbl |> UNION DISTINCT (SELECT * FROM admins)
+pg	SELECT * FROM tbl |> UNION (SELECT * FROM admins)
+pg	SELECT * FROM tbl |> UNION ALL (SELECT * FROM admins), (SELECT * FROM guests)
+pg	SELECT * FROM tbl |> UNION DISTINCT (SELECT * FROM admins), (SELECT * FROM guests), (SELECT * FROM employees)
+pg	SELECT * FROM tbl |> UNION (SELECT * FROM admins), (SELECT * FROM guests)
+pg	SELECT * FROM tbl |> UNION BY NAME (SELECT * FROM admins)
+pg	SELECT * FROM tbl |> UNION ALL BY NAME (SELECT * FROM admins)
+pg	SELECT * FROM tbl |> UNION DISTINCT BY NAME (SELECT * FROM admins)
+pg	SELECT * FROM tbl |> UNION BY NAME (SELECT * FROM admins), (SELECT * FROM guests)
+pg	SELECT * FROM tbl |> INTERSECT DISTINCT (SELECT * FROM admins)
+pg	SELECT * FROM tbl |> INTERSECT DISTINCT BY NAME (SELECT * FROM admins)
+pg	SELECT * FROM tbl |> INTERSECT DISTINCT (SELECT * FROM admins), (SELECT * FROM guests)
+pg	SELECT * FROM tbl |> INTERSECT DISTINCT BY NAME (SELECT * FROM admins), (SELECT * FROM guests)
+pg	SELECT * FROM tbl |> EXCEPT DISTINCT (SELECT * FROM admins)
+pg	SELECT * FROM tbl |> EXCEPT DISTINCT BY NAME (SELECT * FROM admins)
+pg	SELECT * FROM tbl |> EXCEPT DISTINCT (SELECT * FROM admins), (SELECT * FROM guests)
+pg	SELECT * FROM tbl |> EXCEPT DISTINCT BY NAME (SELECT * FROM admins), (SELECT * FROM guests)
+pg	SELECT * FROM tbl |> CALL my_function()
+pg	SELECT * FROM tbl |> CALL process_data(5, 'test')
+pg	SELECT * FROM tbl |> CALL namespace.function_name(col1, col2, 'literal')
+pg	SELECT * FROM tbl |> CALL transform_data(col1 + col2)
+pg	SELECT * FROM tbl |> CALL analyze_data('param1', 100, true)
+pg	SELECT * FROM tbl |> CALL tvf1(arg1) AS al
+pg	SELECT * FROM tbl |> CALL process_data(5) AS result_table
+pg	SELECT * FROM tbl |> CALL namespace.func() AS my_alias
+pg	SELECT * FROM tbl |> CALL tvf1(arg1) |> CALL tvf2(arg2, arg3)
+pg	SELECT * FROM tbl |> CALL transform(col1) |> CALL validate() |> CALL process(param)
+pg	SELECT * FROM tbl |> CALL tvf1(arg1) AS step1 |> CALL tvf2(arg2) AS step2
+pg	SELECT * FROM tbl |> CALL preprocess() AS clean_data |> CALL analyze(mode) AS results
+pg	SELECT * FROM tbl |> CALL transform() |> WHERE status = 'active' |> CALL process(param)
+pg	SELECT * FROM tbl |> CALL preprocess() AS clean |> SELECT col1, col2 |> CALL validate()
+pg	SELECT * FROM tbl |> PIVOT(SUM(amount) FOR quarter IN ('Q1', 'Q2', 'Q3', 'Q4'))
+pg	SELECT * FROM tbl |> PIVOT(AVG(revenue) FOR region IN ('North', 'South', 'East', 'West'))
+pg	SELECT * FROM tbl |> PIVOT(SUM(sales) AS total_sales, COUNT(*) AS num_transactions FOR month IN ('Jan', 'Feb', 'Mar'))
+pg	SELECT * FROM tbl |> PIVOT(SUM(amount) FOR product.category IN ('Electronics', 'Clothing'))
+pg	SELECT * FROM tbl |> WHERE year = 2023 |> PIVOT(SUM(revenue) FOR quarter IN ('Q1', 'Q2', 'Q3', 'Q4'))
+pg	SELECT * FROM tbl |> PIVOT(SUM(sales) FOR quarter IN ('Q1', 'Q2')) AS quarterly_sales
+pg	SELECT * FROM tbl |> PIVOT(AVG(price) FOR category IN ('A', 'B', 'C')) AS avg_by_category
+pg	SELECT * FROM tbl |> PIVOT(COUNT(*) AS transactions, SUM(amount) AS total FOR region IN ('North', 'South')) AS regional_summary
+pg	SELECT * FROM tbl |> PIVOT(SUM(sales) FOR quarter IN ('Q1', 'Q2')) quarterly_sales
+pg	SELECT * FROM tbl |> PIVOT(AVG(price) FOR category IN ('A', 'B', 'C')) avg_by_category
+pg	SELECT * FROM tbl |> UNPIVOT(revenue FOR quarter IN (Q1, Q2, Q3, Q4))
+pg	SELECT * FROM tbl |> UNPIVOT(value FOR category IN (A, B, C))
+pg	SELECT * FROM tbl |> UNPIVOT(measurement FOR metric_type IN (cpu, memory, disk))
+pg	SELECT * FROM tbl |> UNPIVOT(amount FOR period IN (jan, feb, mar, apr, may, jun))
+pg	SELECT * FROM tbl |> UNPIVOT(score FOR subject IN (math, science, english, history))
+pg	SELECT * FROM tbl |> WHERE year = 2023 |> UNPIVOT(revenue FOR quarter IN (Q1, Q2, Q3, Q4))
+pg	SELECT * FROM tbl |> UNPIVOT(amount FOR period IN (Q1, Q2)) AS unpivoted_sales
+pg	SELECT * FROM tbl |> UNPIVOT(value FOR category IN (A, B, C)) AS transformed_data
+pg	SELECT * FROM tbl |> UNPIVOT(measurement FOR metric_type IN (cpu, memory)) AS metric_measurements
+pg	SELECT * FROM tbl |> UNPIVOT(amount FOR period IN (Q1, Q2)) unpivoted_sales
+pg	SELECT * FROM tbl |> UNPIVOT(value FOR category IN (A, B, C)) transformed_data
+pg	SELECT * FROM tbl |> JOIN orders ON users.id = orders.user_id
+pg	SELECT * FROM tbl |> INNER JOIN orders ON users.id = orders.user_id
+pg	SELECT * FROM tbl |> LEFT JOIN orders ON users.id = orders.user_id
+pg	SELECT * FROM tbl |> LEFT OUTER JOIN orders ON users.id = orders.user_id
+pg	SELECT * FROM tbl |> RIGHT JOIN orders ON users.id = orders.user_id
+pg	SELECT * FROM tbl |> RIGHT OUTER JOIN orders ON users.id = orders.user_id
+pg	SELECT * FROM tbl |> FULL JOIN orders ON users.id = orders.user_id
+pg	SELECT * FROM tbl |> FULL OUTER JOIN orders ON users.id = orders.user_id
+pg	SELECT * FROM tbl |> CROSS JOIN orders
+pg	SELECT * FROM tbl |> JOIN orders USING (user_id)
+pg	SELECT * FROM tbl |> JOIN orders USING(user_id)
+pg	SELECT * FROM tbl |> LEFT JOIN orders USING (user_id, order_date)
+pg	SELECT * FROM tbl |> LEFT JOIN orders USING(user_id, order_date)
+pg	SELECT * FROM tbl |> JOIN orders o ON users.id = o.user_id
+pg	SELECT * FROM tbl |> LEFT JOIN orders AS o ON users.id = o.user_id
+pg	SELECT * FROM tbl |> JOIN orders ON users.id = orders.user_id AND orders.status = 'active'
+pg	SELECT * FROM tbl |> LEFT JOIN orders ON users.id = orders.user_id AND orders.amount > 100
+pg	SELECT * FROM tbl |> JOIN orders ON users.id = orders.user_id |> JOIN products ON orders.product_id = products.id
+pg	SELECT * FROM tbl |> LEFT JOIN orders ON users.id = orders.user_id |> RIGHT JOIN products ON orders.product_id = products.id
+pg	SELECT * FROM tbl |> JOIN orders ON users.id = orders.user_id |> WHERE orders.amount > 100
+pg	SELECT * FROM tbl |> WHERE users.active = true |> LEFT JOIN orders ON users.id = orders.user_id
+pg	SELECT * FROM tbl |> JOIN orders ON users.id = orders.user_id |> SELECT users.name, orders.amount
+pg	SELECT * FROM tbl |> AGGREGATE SUM(cost) AS total_cost GROUP BY customer_id, state, item_type |> EXTEND COUNT(*) OVER (PARTITION BY customer_id) AS num_orders |> WHERE num_orders > 1 |> AGGREGATE AVG(total_cost) AS average GROUP BY state DESC, item_type ASC
+pg	SELECT * FROM users |> EXCEPT (SELECT * FROM admins)
+pg	SELECT * FROM users |> EXCEPT ALL (SELECT * FROM admins)
+pg	SELECT * FROM users |> EXCEPT BY NAME (SELECT * FROM admins)
+pg	SELECT * FROM users |> EXCEPT ALL BY NAME (SELECT * FROM admins)
+pg	SELECT * FROM users |> INTERSECT (SELECT * FROM admins)
+pg	SELECT * FROM users |> INTERSECT ALL (SELECT * FROM admins)
+pg	SELECT * FROM users |> INTERSECT BY NAME (SELECT * FROM admins)
+pg	SELECT * FROM users |> INTERSECT ALL BY NAME (SELECT * FROM admins)
+pg	SELECT * FROM users |> CALL
+pg	SELECT * FROM users |> CALL my_function
+pg	SELECT * FROM users |> CALL 123 invalid
+pg	SELECT * FROM users |> CALL my_function(,)
+pg	SELECT * FROM users |> CALL my_function() AS
+pg	SELECT * FROM users |> PIVOT SUM(amount) FOR month IN ('Jan')
+pg	SELECT * FROM users |> PIVOT(SUM(amount) month IN ('Jan'))
+pg	SELECT * FROM users |> PIVOT(SUM(amount) FOR month ('Jan'))
+pg	SELECT * FROM users |> PIVOT(SUM(amount) FOR month IN ())
+pg	SELECT * FROM users |> PIVOT(SUM(amount) FOR month IN ('Jan')) AS
+pg	SELECT * FROM users |> UNPIVOT value FOR name IN col1, col2
+pg	SELECT * FROM users |> UNPIVOT(value name IN (col1, col2))
+pg	SELECT * FROM users |> UNPIVOT(value FOR name (col1, col2))
+pg	SELECT * FROM users |> UNPIVOT(FOR name IN (col1, col2))
+pg	SELECT * FROM users |> UNPIVOT(value FOR IN (col1, col2))
+pg	SELECT * FROM users |> UNPIVOT(value FOR name IN ())
+pg	SELECT * FROM users |> UNPIVOT(value FOR name IN (col1, col2)) AS
+pg	SELECT * FROM users |> JOIN ON users.id = orders.user_id
+pg	SELECT * FROM users |> CROSS JOIN orders ON users.id = orders.user_id
+pg	SELECT * FROM users |> CROSS JOIN orders USING (user_id)
+pg	SELECT * FROM users |> JOIN orders USING ()
+pg	SELECT * FROM users |> JOIN orders ON
+pg	SELECT * FROM users |> JOIN orders USING user_id
+pg	SET @a = 1, b = 2
+pg	SET GLOBAL @a = 1, SESSION b = 2, LOCAL c = 3, d = 4
+pg	SET TIME ZONE 'UTC'
+pg	SELECT t1_id, t1_name FROM t1 WHERE t1_id IN (SELECT t2_id FROM t2 WHERE t1_name = t2_name LIMIT 10)
+pg	TRUNCATE TABLE employee, ONLY dept
+pg	CREATE TABLE t (a INT, b INT, c INT, CHECK (a > 0) NOT ENFORCED, CHECK (b > 0) ENFORCED, CHECK (c > 0))
+pg	CREATE TABLE t (x INT CHECK (x > 1) NOT ENFORCED)
+pg	CREATE TABLE t (x INT CHECK (x > 1) ENFORCED)
+pg	CREATE TABLE t (a INT CHECK (a > 0) NOT ENFORCED, b INT CHECK (b > 0) ENFORCED, c INT CHECK (c > 0))
+pg	CREATE TABLE t (a INT, CONSTRAINT c CHECK (a > 0) NO INHERIT)
+pg	CREATE TABLE t (a INT, CHECK (a > 0) NO INHERIT)
+pg	CREATE TABLE t (a INT, CHECK (a > 0) NO INHERIT NOT ENFORCED)
+pg	CREATE TABLE t (x INT CHECK (x > 1) NO INHERIT)
+pg	CREATE TABLE t (x INT CHECK (x > 1) NO INHERIT NOT ENFORCED)
+pg	SELECT * FROM t1 NATURAL JOIN t5 INNER JOIN t0 ON (t0.v1 + t5.v0) > 0 WHERE t0.v1 = t1.v0
+pg	SELECT DISTINCT p.product_id FROM orders AS o INNER JOIN customers AS c INNER JOIN products AS p ON p.customer_id = c.customer_id ON c.order_id = o.order_id
+pg	SELECT DISTINCT p.product_id FROM orders AS o INNER JOIN (customers AS c INNER JOIN products AS p ON p.customer_id = c.customer_id) ON c.order_id = o.order_id
+pg	SELECT DISTINCT p.product_id FROM orders AS o JOIN customers AS c JOIN products AS p ON p.customer_id = c.customer_id ON c.order_id = o.order_id
+pg	SELECT DISTINCT p.product_id FROM orders AS o JOIN (customers AS c JOIN products AS p ON p.customer_id = c.customer_id) ON c.order_id = o.order_id
+pg	SELECT DISTINCT p.product_id FROM orders AS o LEFT JOIN customers AS c LEFT JOIN products AS p ON p.customer_id = c.customer_id ON c.order_id = o.order_id
+pg	SELECT DISTINCT p.product_id FROM orders AS o LEFT JOIN (customers AS c LEFT JOIN products AS p ON p.customer_id = c.customer_id) ON c.order_id = o.order_id
+pg	SELECT DISTINCT p.product_id FROM orders AS o RIGHT JOIN customers AS c RIGHT JOIN products AS p ON p.customer_id = c.customer_id ON c.order_id = o.order_id
+pg	SELECT DISTINCT p.product_id FROM orders AS o RIGHT JOIN (customers AS c RIGHT JOIN products AS p ON p.customer_id = c.customer_id) ON c.order_id = o.order_id
+pg	SELECT DISTINCT p.product_id FROM orders AS o FULL JOIN customers AS c FULL JOIN products AS p ON p.customer_id = c.customer_id ON c.order_id = o.order_id
+pg	SELECT DISTINCT p.product_id FROM orders AS o FULL JOIN (customers AS c FULL JOIN products AS p ON p.customer_id = c.customer_id) ON c.order_id = o.order_id
+pg	CREATE PROCEDURE test_proc LANGUAGE sql AS BEGIN SELECT 1; END
+pg	CREATE PROCEDURE test_proc (IN a INTEGER, OUT b TEXT, INOUT c TIMESTAMP, d BOOL) AS BEGIN SELECT 1; END
+pg	CREATE PROCEDURE test_proc (IN a INTEGER = 1, OUT b TEXT = '2', INOUT c TIMESTAMP = NULL, d BOOL = 0) AS BEGIN SELECT 1; END
+pg	SELECT * EXCLUDE c1 FROM test
+pg	SELECT * EXCLUDE (c1, c2) FROM test
+pg	SELECT * EXCLUDE c1, c2 FROM test
+pg	SELECT *, c1 EXCLUDE c1 FROM test
+pg	SELECT *, c1 EXCLUDE c2 FROM test
+pg	SELECT f.* EXCLUDE (f.account_canonical_id, f.amount) FROM t AS f
+pg	SELECT f.* EXCLUDE (account_canonical_id) FROM t AS f
+pg	SELECT f.* EXCLUDE (col1, col2) FROM t AS f
+pg	SELECT phoneǤЖשचᎯ⻩☯♜🦄⚛🀄ᚠ⌛🌀 AS tbl FROM customers
+pg	SELECT 💝phone AS 💝 FROM customers
+pg	SELECT NULL NOTNULL
+pg	SELECT NULL AS NOTNULL
+pg	SELECT {d '2025-07-17'}, category_name FROM categories
+pg	SELECT {t '14:12:01'}, category_name FROM categories
+pg	SELECT {ts '2025-07-17 14:12:01'}, category_name FROM categories
+pg	SELECT {tt '14:12:01'} FROM foo
+pg	CREATE USER u1
+pg	CREATE OR REPLACE USER u1
+pg	CREATE OR REPLACE USER IF NOT EXISTS u1
+pg	CREATE OR REPLACE USER IF NOT EXISTS u1 PASSWORD='secret'
+pg	CREATE OR REPLACE USER IF NOT EXISTS u1 PASSWORD='secret' MUST_CHANGE_PASSWORD=TRUE
+pg	CREATE OR REPLACE USER IF NOT EXISTS u1 PASSWORD='secret' MUST_CHANGE_PASSWORD=true
+pg	CREATE OR REPLACE USER IF NOT EXISTS u1 PASSWORD='secret' MUST_CHANGE_PASSWORD=true TYPE=SERVICE TAG (t1='v1')
+pg	CREATE OR REPLACE USER IF NOT EXISTS u1 PASSWORD='secret' MUST_CHANGE_PASSWORD=false TYPE=SERVICE WITH TAG (t1='v1', t2='v2')
+pg	CREATE USER user1; SELECT 1
+pg	ALTER USER user1 SET x = 'y'; SELECT 1
+pg	ALTER USER user1 SET TAG t = 'v'; SELECT 1
+pg	DROP STREAM s1
+pg	DROP STREAM IF EXISTS s1
+pg	CREATE VIEW IF NOT EXISTS v AS SELECT 1
+pg	CREATE VIEW v IF NOT EXISTS AS SELECT 1
+pg	CREATE VIEW IF NOT EXISTS AS SELECT 1
+pg	CREATE TABLE t (c INT DEFAULT (1 + 2) + 3)
+pg	CREATE TABLE t (c INT DEFAULT (1 + 2) + 3 NOT NULL)
+pg	CREATE TABLE foo (abc TEXT DEFAULT 'foo' COLLATE 'en_US')
+pg	CREATE TABLE new LIKE old
+pg	CREATE TABLE new (LIKE old)
+pg	CREATE TABLE new (LIKE old INCLUDING DEFAULTS)
+pg	CREATE TABLE new (LIKE old EXCLUDING DEFAULTS)
+pg	COPY dst (c1, c2, c3) FROM 's3://redshift-downloads/tickit/category_pipe.txt' IAM_ROLE 'arn:aws:iam::123456789:role/role1' CSV IGNOREHEADER 1
+pg	COPY dst (c1, c2, c3) FROM 's3://redshift-downloads/tickit/category_pipe.txt' IAM_ROLE DEFAULT CSV IGNOREHEADER AS 1
+pg	COPY dst (c1, c2, c3) FROM 's3://redshift-downloads/tickit/category_pipe.txt' IAM_ROLE DEFAULT CSV IGNOREHEADER 1
+pg	COPY dst (c1, c2, c3) FROM 's3://redshift-downloads/tickit/category_pipe.txt'
+pg	COPY dst (c1, c2, c3) FROM 's3://redshift-downloads/tickit/category_pipe.txt' FORMAT AS CSV
+pg	COPY dst (c1, c2, c3) FROM 's3://redshift-downloads/tickit/category_pipe.txt' CSV
+pg	SELECT * FROM SEMANTIC_VIEW(model)
+pg	SELECT * FROM SEMANTIC_VIEW(model DIMENSIONS dim1, dim2)
+pg	SELECT * FROM SEMANTIC_VIEW(a.b METRICS c.d, c.e)
+pg	SELECT * FROM SEMANTIC_VIEW(model FACTS fact1, fact2)
+pg	SELECT * FROM SEMANTIC_VIEW(model FACTS DATE_PART('year', col))
+pg	SELECT * FROM SEMANTIC_VIEW(model DIMENSIONS dim1 METRICS met1)
+pg	SELECT * FROM SEMANTIC_VIEW(model DIMENSIONS dim1 WHERE x > 0)
+pg	SELECT * FROM SEMANTIC_VIEW(model DIMENSIONS dim1) AS sv
+pg	SELECT * FROM SEMANTIC_VIEW(model DIMENSIONS DATE_PART('year', col))
+pg	SELECT * FROM SEMANTIC_VIEW(model METRICS orders.col, orders.col2)
+pg	SELECT * FROM SEMANTIC_VIEW(model METRICS orders.*)
+pg	SELECT * FROM SEMANTIC_VIEW(model FACTS fact.*)
+pg	SELECT * FROM SEMANTIC_VIEW(model DIMENSIONS dim.* METRICS orders.*)
+pg	SELECT * FROM SEMANTIC_VIEW(model WHERE x > 0 DIMENSIONS dim1)
+pg	SELECT * FROM SEMANTIC_VIEW(model METRICS met1 DIMENSIONS dim1)
+pg	SELECT * FROM SEMANTIC_VIEW(model FACTS fact1 DIMENSIONS dim1)
+pg	SELECT * FROM SEMANTIC_VIEW(model DIMENSIONS dim1 FACTS fact1)
+pg	SELECT * FROM SEMANTIC_VIEW(model DIMENSIONS dim1 INVALID inv1)
+pg	SELECT * FROM SEMANTIC_VIEW(model DIMENSIONS dim1 DIMENSIONS dim2)
+pg	SELECT 'M' 'y' 'S' 'q' 'l'
+pg	SELECT 'MySql'
+pg	SELECT * FROM t WHERE col = 'Hello' \n ' ' 	 'World!'
+pg	SELECT * FROM t WHERE col = 'Hello World!'
+pg	SELECT 'abc' IN ('abc', 'd')
+pg	CREATE TABLE t (foo INT, bar INT INVISIBLE)
+pg	ALTER TABLE t ADD COLUMN bar INT INVISIBLE
+pg	CREATE INDEX idx_name USING BTREE ON table_name (col1)
+pg	CREATE INDEX idx_name ON table_name USING BTREE (col1)
+pg	CREATE INDEX idx_name USING BTREE ON table_name (col1) USING HASH
+pg	CREATE INDEX idx_name ON table_name USING BTREE (col1) USING HASH
+pg	ALTER USER u1
+pg	ALTER USER IF EXISTS u1
+pg	ALTER USER IF EXISTS u1 RENAME TO u2
+pg	ALTER USER IF EXISTS u1 RESET PASSWORD
+pg	ALTER USER IF EXISTS u1 ABORT ALL QUERIES
+pg	ALTER USER IF EXISTS u1 ADD DELEGATED AUTHORIZATION OF ROLE r1 TO SECURITY INTEGRATION i1
+pg	ALTER USER IF EXISTS u1 REMOVE DELEGATED AUTHORIZATION OF ROLE r1 FROM SECURITY INTEGRATION i1
+pg	ALTER USER IF EXISTS u1 REMOVE DELEGATED AUTHORIZATIONS FROM SECURITY INTEGRATION i1
+pg	ALTER USER IF EXISTS u1 ENROLL MFA
+pg	ALTER USER u1 SET DEFAULT_MFA_METHOD PASSKEY
+pg	ALTER USER u1 SET DEFAULT_MFA_METHOD TOTP
+pg	ALTER USER u1 SET DEFAULT_MFA_METHOD DUO
+pg	ALTER USER u1 REMOVE MFA METHOD PASSKEY
+pg	ALTER USER u1 REMOVE MFA METHOD TOTP
+pg	ALTER USER u1 REMOVE MFA METHOD DUO
+pg	ALTER USER u1 MODIFY MFA METHOD PASSKEY SET COMMENT 'abc'
+pg	ALTER USER u1 ADD MFA METHOD OTP
+pg	ALTER USER u1 ADD MFA METHOD OTP COUNT = 8
+pg	ALTER USER u1 SET AUTHENTICATION POLICY p1
+pg	ALTER USER u1 SET PASSWORD POLICY p1
+pg	ALTER USER u1 SET SESSION POLICY p1
+pg	ALTER USER u1 UNSET AUTHENTICATION POLICY
+pg	ALTER USER u1 UNSET PASSWORD POLICY
+pg	ALTER USER u1 UNSET SESSION POLICY
+pg	ALTER USER u1 SET TAG k1='v1'
+pg	ALTER USER u1 SET TAG k1='v1', k2='v2'
+pg	ALTER USER u1 UNSET TAG k1
+pg	ALTER USER u1 UNSET TAG k1, k2, k3
+pg	ALTER USER u1 SET PASSWORD='secret', MUST_CHANGE_PASSWORD=TRUE, MINS_TO_UNLOCK=10
+pg	ALTER USER u1 SET PASSWORD='secret', MUST_CHANGE_PASSWORD=true, MINS_TO_UNLOCK=10
+pg	ALTER USER u1 UNSET PASSWORD
+pg	ALTER USER u1 UNSET PASSWORD, MUST_CHANGE_PASSWORD, MINS_TO_UNLOCK
+pg	ALTER USER u1 SET DEFAULT_SECONDARY_ROLES=('ALL')
+pg	ALTER USER u1 SET DEFAULT_SECONDARY_ROLES=()
+pg	ALTER USER u1 SET DEFAULT_SECONDARY_ROLES=('R1', 'R2', 'R3')
+pg	ALTER USER u1 SET PASSWORD='secret', DEFAULT_SECONDARY_ROLES=('ALL')
+pg	ALTER USER u1 SET DEFAULT_SECONDARY_ROLES=('ALL'), PASSWORD='secret'
+pg	ALTER USER u1 SET WORKLOAD_IDENTITY=(TYPE=AWS, ARN='arn:aws:iam::123456789:r1/')
+pg	ALTER USER u1 SET DEFAULT_SECONDARY_ROLES=('ALL'), PASSWORD='secret', WORKLOAD_IDENTITY=(TYPE=AWS, ARN='arn:aws:iam::123456789:r1/')
+pg	ALTER USER u1 PASSWORD 'AAA'
+pg	ALTER USER u1 ENCRYPTED PASSWORD 'AAA'
+pg	ALTER USER u1 PASSWORD NULL
+pg	ALTER USER u1 WITH PASSWORD 'AAA'
+pg	SELECT {}expr
+pg	SET SESSION AUTHORIZATION DEFAULT
+pg	SET SESSION AUTHORIZATION 'username'
+pg	SET AUTHORIZATION TIME TIME
+pg	SET AUTHORIZATION without a scope modifier (e.g. SESSION) should error
+pg	SELECT DISTINCT (*) FROM table1
+pg	SELECT DISTINCT * FROM table1
+pg	SELECT DISTINCT(*) FROM table1
+pg	SELECT x && y
+pg	SELECT x AND y
+pg	CREATE USER u1 option1='value1' option2='value2'
+pg	SELECT BINARY 1+1
+pg	SELECT CAST(1 + 1 AS BINARY)
+pg	SELECT a:b FROM t
+pg	SELECT a:
+pg	SELECT a:b::INT FROM t
+pg	SELECT a:select, a:from FROM t
+pg	SELECT a:foo.
+pg	SELECT a:foo[0].bar
+pg	SELECT arr[1]
+pg	SELECT arr[:]
+pg	SELECT arr[1:2]
+pg	SELECT arr[1:2:4]
+pg	SELECT arr[1:array_length(arr)]
+pg	SELECT arr[array_length(arr) - 1:array_length(arr)]
+pg	SELECT arr[array_length(arr) - 2:array_length(arr) - 1:array_length(arr)]
+pg	SELECT arr[1][2]
+pg	SELECT arr[:][:]
+pg	SELECT HASH(* EXCLUDE(col1)) FROM t
+pg	SELECT HASH(* EXCLUDE (col1)) FROM t
+pg	SELECT stack(2, 'a', 'b', 'c', 'd') AS (col1, col2)
+pg	SELECT stack(2, 'a', 'b', 'c', 'd') AS (col1, col2) FROM t
+pg	SELECT stack(2, 'a', 'b') AS (col1, col2)
+pg	SELECT xml FROM t
+pg	SELECT foo(a AS x, b)
+pg	SELECT foo('bar' AS x)
+pg	SELECT foo(1 + 2 AS x)
+pg	SELECT foo(lower(a) AS x, b AS y)
+pg	SELECT foo(bar(a AS x) AS y)
+pg	SELECT foo(a AS x)
+pg	SELECT xmlparse(content '<a/>')
+pg	SELECT xmlparse(document '<a/>')
+pg	SELECT xmlparse('<a/>')
+pg	SELECT xmlparse(document x) FILTER (WHERE y > 1)
+pg	SELECT xmlparse(document x) OVER (PARTITION BY y)
+pg	SELECT xmlparse(1)
+pg	SELECT x{body}
+pg	CREATE UNLOGGED TABLE t (a INT)
+pg	ALTER TABLE t SET LOGGED
+pg	ALTER TABLE t SET UNLOGGED
+pg	INSERT INTO target BY NAME SELECT 1 AS a
+pg	INSERT INTO target (a) BY NAME SELECT 1 AS a
+pg	INSERT INTO TABLE target PARTITION (p = 1) BY NAME SELECT 1 AS a
+pg	INSERT INTO target AS t BY NAME SELECT 1 AS a

@@ -1,0 +1,3002 @@
+# vendored sample from duckdb/test .test corpus (MIT), statements=3000 cap
+# DuckDB(PG-ish) real workload - P-layer parse smoke B0-b; format: dialect<TAB>sql
+pg	select a, b, sum(v)::bigint as s from grouping_set_cm group by rollup(a, b) order by a nulls first, b nulls first, s
+pg	WITH src AS ( VALUES (1, NULL) )
+pg	SELECT id, actual
+pg	set allow_unsigned_extensions=false
+pg	SELECT c_pk, c_int, ROW_NUMBER() OVER (ORDER BY c_pk) AS eq_key_1
+pg	CREATE TABLE t1(c0 INT)
+pg	SELECT * FROM t0
+pg	create table test (consumption decimal(14,5))
+pg	SELECT MAP_FROM_ENTRIES(list) FROM t1
+pg	CREATE TABLE t1(a int)
+pg	INSERT INTO t0(c0) VALUES ('a')
+pg	SELECT 2 INTERSECT VALUES([])
+pg	select strptime('2021-04-15 14:55:17.915', '%Y-%m-%d %H:%M:%S.%g')
+pg	SELECT test_named_inspect(a := NULL, c := 3)
+pg	SELECT c6
+pg	EXPLAIN SELECT grd_quart, s['typl'], sum(ipondl) FROM t AS s WHERE catl = '1' GROUP BY ALL
+pg	SELECT generate_series(CAST(ref_0."bigint" AS BIGINT)) AS c1 FROM tbl AS ref_0
+pg	SELECT * FROM t1 LEFT JOIN t0 ON t0.c0=t1.c0
+pg	SELECT parse_filename(file) FROM glob(getvariable('work_dir_localhost') || '/data/*/bad_date_timestamp_mix.csv')
+pg	EXPLAIN SELECT x, EXISTS (SELECT 1 FROM range(1000000000) a(y) WHERE y = o.x)
+pg	SELECT CAST(ROW(1, 2) AS ROW(a INTEGER, b INTEGER))
+pg	SELECT * FROM points
+pg	SELECT * FROM t0 WHERE 0.1 <= c0 ORDER BY 1
+pg	SELECT "/"(42, 84)
+pg	SELECT map_concat(map { 'a': 42 }, 42)
+pg	EXPLAIN SELECT 1 * 2 * col0 + 1 + 2 + col1 FROM test
+pg	SELECT i, (SELECT SUM(i) IS NOT NULL FROM integers i2 WHERE i2.i>i1.i) FROM integers i1 ORDER BY i
+pg	INSERT INTO test VALUES (3, 3, 3)
+pg	SELECT test_named_nullshort(1, 2)
+pg	INSERT INTO t1(c0) VALUES ( X'48656C6C6F')
+pg	INSERT INTO test VALUES(-5361272612100082873)
+pg	EXPLAIN SELECT o.k, d.label, sum(f.v), count(*)
+pg	select count(*) from aaa where name like concat(chr('0xD7FF'),'%')
+pg	set extension_directory='{TEST_DIR}/update_extensions'
+pg	CREATE TABLE t1(c INT)
+pg	INSERT INTO t0(c0) VALUES ((DATE '1969-12-20')), ((TIMESTAMP '1970-01-11 21:25:45')), (DEFAULT), (('1')), (('')), ((TIMESTAMP '1969-12-15 21:35:22'))
+pg	SELECT test_named_inspect()
+pg	SET default_block_size = 16384
+pg	select x from x
+pg	select * from a left join (select a, 20 from b) as x using (a)
+pg	SELECT c0 FROM generate_series(0, 0, NULL) t3(c0)
+pg	CREATE TABLE t4 (c0 BOOLEAN, c1 INT)
+pg	CREATE OR REPLACE VIEW view_18 AS
+pg	CREATE TABLE t0(c0 INT)
+pg	EXPLAIN SELECT count(*) FILTER (WHERE EXISTS (SELECT 1 FROM range(10000000) b(x) WHERE b.x = q.key) OR EXISTS (SELECT 1 FROM range(10000000) c(x) WHERE c.x = q.key)) FROM (SELECT o.k, d.y AS key FROM range(1000000) o(k) LEFT JOIN (SELECT * FROM range(10000000) d(y) WHERE y < 10) d ON d.y = o.k) q
+pg	SELECT 18446743523953736703::REAL::UBIGINT
+pg	CALL enable_logging()
+pg	CREATE TABLE t0 (c0 INT AS (1), c1 INT)
+pg	INSERT INTO t0(c0) VALUES ( NULL)
+pg	SELECT * FROM read_csv_auto(getvariable('work_dir_triple_slash') || '/data/csv/normalize.csv')
+pg	SELECT filename, id
+pg	INSERT INTO person_interest VALUES (1, 1), (2, 1)
+pg	SELECT NULL FROM read_parquet('{TEST_DIR}/test_null_args.parquet', filename = NULL)
+pg	CREATE TABLE t1(c1 INT)
+pg	INSERT INTO t0 VALUES(NULL)
+pg	CREATE TABLE "crash"
+pg	select do_nothing(name) from my_table
+pg	set seed 0.42
+pg	CREATE TABLE c0(test2 tinyint, s1 smallint, s2 integer, test1 bigint, i double, id real, c1 varchar)
+pg	select bitstring_agg(4741::hugeint, 1706::hugeint, -128::hugeint)
+pg	SELECT g::VARCHAR FROM emptymix ORDER BY payload
+pg	CREATE TABLE big_vals(v BIGINT)
+pg	CREATE TABLE t0(c0 DOUBLE)
+pg	CREATE TYPE c AS ENUM('', '')
+pg	SELECT REGEXP_MATCHES(t0.c0, '1') FROM t0
+pg	SELECT my_extract([1, 2, 3, 4], 2)
+pg	WITH prev AS (SELECT * FROM view_19)
+pg	CREATE SEQUENCE qualify_sequence START 1
+pg	CREATE TABLE t1(c0 FLOAT)
+pg	INSERT INTO t1 VALUES (ARRAY[(2, 'a'), (3,'b')])
+pg	SELECT (-1)::{float_type}::{type}
+pg	SELECT 1 FROM t1 GROUP BY 1, ROLLUP (c1) HAVING ((c1 > 1) IS NULL)
+pg	explain SELECT count(*),max(i),min(i) FROM t where i >=2048 and j > 20000
+pg	set custom_extension_repository='{LOCAL_EXTENSION_REPO}'
+pg	SET nested_loop_join_threshold=0
+pg	INSERT INTO t0 VALUES (1) RETURNING rowid c2
+pg	SET explain_output='optimized_only'
+pg	INSERT INTO t0(c0) VALUES(1E200), (0)
+pg	SELECT INTERVAL '-9223372036854775808' MICROSECONDS
+pg	SELECT a, (SELECT a FROM strings i2 WHERE a=(SELECT SUM(a) FROM strings i2 WHERE i2.a>i1.a)) FROM strings i1 ORDER BY 1
+pg	UPDATE tl SET data = [42]
+pg	CREATE TABLE t0(c0 AS (1), c1 INT)
+pg	SELECT b, c
+pg	INSERT INTO c2 VALUES (1, 2)
+pg	SELECT construct_array(*COLUMNS(*)) FROM v00
+pg	CREATE OR REPLACE TABLE integers(i {type})
+pg	SELECT json_contains(NULL::VARCHAR, NULL::VARCHAR)
+pg	DELETE FROM t0
+pg	SELECT ROW()
+pg	CREATE TABLE all_types("varchar" VARCHAR, "double" DOUBLE)
+pg	SELECT count(*), min(i), max(i) FROM '{TEST_DIR}/eager_agg.parquet'
+pg	SELECT * FROM t0 WHERE DATE '2000-01-01' < cast(t0.c0 as date)
+pg	select distinct json_array()
+pg	CREATE TABLE list_str AS
+pg	select * from test where date_trunc('century', d) >= '2000-01-01'
+pg	CREATE VIEW sales_totals AS
+pg	SELECT count(*) OVER () FROM t1
+pg	INSERT INTO t0 VALUES(0.5,NULL)
+pg	SELECT DISTINCT ON ( 'string' ) 'string', GROUP BY CUBE ( 'string', ), 'string' IN ( SELECT 'string' ), HAVING 'string' IN ( SELECT 'string')
+pg	SET disabled_optimizers = 'aggregate_reuse'
+pg	CREATE TABLE  t0(c0 INT, c1 INT)
+pg	select * from (SELECT l2.l_orderkey AS l_orderkey, l2.l_suppkey + l1.l_suppkey AS l_suppkey FROM lineitem l2) AS l3
+pg	create table tbl(i INT)
+pg	CREATE TABLE issue_24806_values(k INTEGER, v INTEGER)
+pg	SELECT test_named_agg_inspect(x, c := 9) FROM (VALUES (5)) t(x)
+pg	SELECT l_orderkey, l_partkey, l_extendedprice FROM read_csv('{DATA_DIR}/csv/real/lineitem_sample.csv', delim='|', columns={'l_orderkey': 'INTEGER','l_partkey': 'INTEGER','l_suppkey': 'INTEGER','l_linenumber': 'INTEGER','l_quantity': 'INTEGER','l_extendedprice': 'SMALLINT','l_discount': 'DECIMAL(15,2)','l_tax': 'DECIMAL(15,2)','l_returnflag': 'VARCHAR','l_linestatus': 'VARCHAR','l_shipdate': 'DATE','l_commitdate': 'DATE','l_receiptdate': 'DATE','l_shipinstruct': 'DATE','l_shipmode': 'VARCHAR','l_comment': 'VARCHAR'}, ignore_errors=true, header = 0)
+pg	CREATE TABLE t AS SELECT * FROM (VALUES (1), (2), (NULL::INTEGER)) v(a)
+pg	SELECT i, (select SUM(i) IS NOT DISTINCT FROM NULL  from integers where j = i1.j) FROM integers i1 ORDER BY 1
+pg	INSERT INTO produce VALUES
+pg	SELECT ROW(42, 'asdf')
+pg	EXECUTE v2(2)
+pg	INSERT INTO BOOLTBL1 (f1) VALUES ('false')
+pg	create table all_types as select * exclude(small_enum, medium_enum, large_enum) from test_all_types()
+pg	SELECT (SELECT 0) c0 WHERE (SELECT c0)
+pg	CREATE TABLE t0 (c0 INT)
+pg	SELECT coalesce(pti.personid, pms.personid) AS personid
+pg	INSERT INTO t0 VALUES(0.85412575301142179551,NULL)
+pg	INSERT INTO sections VALUES (1, 'front'), (2, 'side'), (3, 'back')
+pg	select * from test2 where date_trunc('hour', d) > '2025-11-02T03:30:00+00'::TIMESTAMPTZ
+pg	insert into test values ('2025-01-01 01:01:00+02:10'), ('2025-01-10 19:00:00-06:45')
+pg	SELECT rp.post_id, coalesce(sum(b.class), 0) AS total_badges
+pg	SELECT json_contains(j, j)
+pg	INSERT INTO payload_supplier VALUES (10, 1, 's1', 'a1', '1'), (20, 1, 's2', 'a2', '2'),
+pg	SELECT * FROM v00 WHERE concat(c01 IS NOT NULL, 'string') SIMILAR TO 'string'
+pg	SELECT test_named_nullshort(NULL)
+pg	select strftime(timestamp '2021-04-15 14:55:17.915', '%Y-%m-%d %H:%M:%S.%g')
+pg	SELECT DATE '2021-08-31' + INTERVAL '2' MONTH
+pg	SELECT coalesce(ids.id, nn.k), ids.id, nn.wh,
+pg	SELECT c1 FROM tbl GROUP BY c1 QUALIFY cume_dist() OVER (ROWS BETWEEN c2 PRECEDING AND CURRENT ROW)
+pg	CREATE TABLE t0(c1 INTEGER[])
+pg	CREATE TABLE partsupp AS SELECT (random() * 100)::INT AS c2
+pg	SELECT ref_2.struct_of_arrays AS c3 FROM main.all_types AS ref_0 RIGHT JOIN main.all_types AS ref_1 INNER JOIN main.all_types AS ref_2 ON (ref_1."smallint" = ref_2."smallint") ON (NULL)
+pg	SELECT mad(dec38_10)
+pg	SELECT subq_0.c2 AS c4
+pg	select round(col1, -1) from test
+pg	INSERT INTO test VALUES(1) RETURNING y.y
+pg	SELECT x, z,
+pg	SELECT origin, dest,
+pg	SELECT t0.c0 FROM t0 JOIN t1 ON t0.c0=(t1.c0 IS NULL) WHERE t0.c0 NOT IN (t1.c0)
+pg	INSERT INTO t0 VALUES('1969-12-16','810092761', 0)
+pg	select '256'::hugeint::uint8
+pg	SELECT * FROM v0 ORDER BY 'a'
+pg	SELECT t1.c0, LN(t1.c0) FROM t1 ORDER BY t1.c0
+pg	SELECT year, month
+pg	SELECT struct_extract(row(40, 2), 2)
+pg	INSERT INTO t0(c0) VALUES (5)
+pg	SELECT decode(value) as col
+pg	COPY (SELECT col, ST_AsWKB(geometry::GEOMETRY) as geometry FROM '{WORKING_DIRECTORY}/data/geoparquet/data-point-wkt.csv')
+pg	insert into test values(17953)
+pg	CREATE TABLE t_uid AS
+pg	select t.n+1,t.s+f.n,t.f*f.f::bigint
+pg	CREATE OR REPLACE TABLE  t0(c0 BIT)
+pg	SELECT test_named_varargs(a := 1, b := 2, x := 3)
+pg	CREATE TABLE t0(c1 BIGINT)
+pg	CREATE TABLE s3(t0 INTEGER UNIQUE, a TEXT, b TEXT, UNIQUE (t0, a))
+pg	insert into test values (2.887)
+pg	INSERT INTO payload_part VALUES (1, 15, 'BRASS', 'p1'), (2, 15, 'BRASS', 'p2'), (3, 10, 'STEEL', 'p3')
+pg	CREATE TABLE issue_24806(i INTEGER, g INTEGER, d INTEGER, txt INTEGER, chr INTEGER)
+pg	set disabled_optimizers to ''
+pg	SELECT REGEXP_FULL_MATCH(t0.c0, '1') FROM t0
+pg	CREATE TABLE t2 (c0 DECIMAL)
+pg	SELECT 1 FROM (SELECT sum(i) FROM integers WHERE random() > 0.5) t
+pg	CREATE TABLE t1(c0 INT, c1 INT)
+pg	select b, b, count(*) from strings group by rollup (b, b) order by 1, 2, 3
+pg	select '4294967296'::hugeint::uint32
+pg	CREATE TABLE tm AS
+pg	EXECUTE v1([1, 2, 3])
+pg	SELECT i FROM t OFFSET 5
+pg	INSERT INTO all_types VALUES('🦆🦆🦆🦆🦆🦆',0)
+pg	CREATE TABLE t_constant (id VARCHAR, name VARCHAR, a INTEGER, b INTEGER)
+pg	SELECT lcm(4, 6 :: int128)
+pg	SELECT s.min, s.max, s.has_null, s.has_no_null FROM (SELECT stats(y) s FROM test LIMIT 1)
+pg	CREATE TABLE integers(i INTEGER)
+pg	SELECT typeof(48329048239081049812098409812409812772568), 48329048239081049812098409812409812772568
+pg	EXPLAIN SELECT count(*), sum(payload) FROM outer_fact o WHERE EXISTS (SELECT 1 FROM evidence_a_flag a WHERE a.id = o.id AND a.selected) AND (EXISTS (SELECT 1 FROM evidence_b_flag b WHERE b.id = o.id AND b.selected) OR EXISTS (SELECT 1 FROM evidence_c_flag c WHERE c.id = o.id AND c.selected))
+pg	CREATE INDEX edges_incoming ON edges (to_node_id, label)
+pg	SELECT name FROM which_secret(getvariable('work_dir_localhost') || '/data/csv/hive-partitioning/simple/*/*/test.csv', 'http')
+pg	SELECT p.k, f.cost, f.supplier_id
+pg	INSERT INTO t1(c0,c1) VALUES ('test1',43)
+pg	SELECT col, geometry FROM '{TEST_DIR}/data-point-out-disabled-wkb.parquet'
+pg	CREATE TABLE t2 AS SELECT col, geometry::GEOMETRY as geometry FROM '{WORKING_DIRECTORY}/data/geoparquet/data-point-wkt.csv'
+pg	SELECT ([1, 2, 3])[0:-9223372036854775808]
+pg	CREATE TABLE pts AS
+pg	SELECT id FROM read_parquet('{TEST_DIR}/test_21160_multi.parquet') ORDER BY y ASC NULLS LAST, id ASC LIMIT 10
+pg	SELECT make_time(-1, 64, 157)
+pg	CREATE TABLE t0 (c1 TIMESTAMP)
+pg	ANALYZE test(x, x)
+pg	SELECT 0::{float_type}::{type}
+pg	EXPLAIN SELECT 1 * col0 * 2 + 1 + col1 + 2 FROM test
+pg	drop table t1284791b
+pg	SELECT l_shipinstruct FROM read_csv('{DATA_DIR}/csv/real/lineitem_sample.csv', delim='|', columns={'l_orderkey': 'INTEGER','l_partkey': 'INTEGER','l_suppkey': 'INTEGER','l_linenumber': 'INTEGER','l_quantity': 'INTEGER','l_extendedprice': 'DECIMAL(15,2)','l_discount': 'DECIMAL(15,2)','l_tax': 'DECIMAL(15,2)','l_returnflag': 'VARCHAR','l_linestatus': 'VARCHAR','l_shipdate': 'DATE','l_commitdate': 'DATE','l_receiptdate': 'DATE','l_shipinstruct': 'DATE','l_shipmode': 'VARCHAR','l_comment': 'VARCHAR'})
+pg	SELECT col, geometry FROM '{TEST_DIR}/data-polygon-out.parquet'
+pg	select i, a.i, b.i from a natural full outer join b order by 1
+pg	SELECT COALESCE(products."description", 'all_products') AS "description",
+pg	select bitstring_agg(4741, 1706, -128)
+pg	SELECT sub_point(({'x': 2, 'y': 3})::POINT, ({'x': 3, 'y': 4})::POINT)
+pg	INSERT INTO t VALUES ([1,2,3],[4,5,6]), ([0,1,0],[1,0,0])
+pg	SET warnings_as_errors=true
+pg	SELECT * FROM t0 WHERE t0.c0 > ROUND(0.1, 1000)
+pg	SELECT nextval('seq')
+pg	CREATE TABLE broken_doubles(f DOUBLE)
+pg	EXPLAIN SELECT * FROM date_test WHERE timestamp '2024-06-15 12:00:00' >= d
+pg	SELECT GROUP_CONCAT(col1 ORDER BY col1) AS c1
+pg	CREATE VIEW customer_demographics as SELECT
+pg	EXECUTE v2(1)
+pg	INSERT INTO t1 VALUES(2139975183,0)
+pg	select * from tbl t1 join tbl t2 using (i, j, i) join tbl t3 using (i, i, i, j, i)
+pg	SET logging_level='info'
+pg	SELECT id FROM t WHERE x IS NULL ORDER BY x NULLS {null_order} LIMIT 10
+pg	SELECT c0 FROM t0 WHERE ((c0 + c1) = 2) OFFSET 10
+pg	CREATE TABLE strings(s VARCHAR)
+pg	SELECT id FROM read_parquet('{TEST_DIR}/test_21160_multi.parquet') WHERE y IS NULL ORDER BY x ASC, id ASC LIMIT 10
+pg	SELECT 1 FROM t1 WHERE (decode('\\xC0'::BLOB) IS NULL) IS NULL; --1 row, wrong?
+pg	select 9.2233720368547750E+18::int8
+pg	SET ieee_floating_point_ops=true
+pg	insert into t1284791a values (1,'1')
+pg	SELECT COUNT(*) FROM t GROUP BY x COLLATE NOCASE ORDER BY ALL
+pg	SELECT d FROM date_test WHERE d < timestamp '2024-06-15 12:00:00' ORDER BY d
+pg	SELECT x, z, coalesce(m, false)
+pg	SET disabled_optimizers TO 'build_side_probe_side'
+pg	CREATE TABLE tbl(array_of_structs STRUCT(a INTEGER, b VARCHAR)[])
+pg	SELECT * FROM read_csv_auto(getvariable('work_dir_no_host') || '/data/csv/normalize.csv')
+pg	select distinct item_id from stuff
+pg	SELECT 1000::hugeint<<118::hugeint
+pg	SELECT decode('\\xA0\\x50\\x51\\xA0\\xA0'::BLOB, 'replace')::VARCHAR
+pg	CREATE TABLE t(chunk_id INTEGER, id INTEGER)
+pg	SELECT co.pl_name AS "country.name"
+pg	SELECT (SELECT 1 LIMIT t1.rowid) FROM t1 NATURAL JOIN t0
+pg	SELECT BLOB 't\\xF0\\xC0\\xD3\\x86\\xF1p?\\xCE;\\xC6~H' ORDER BY 1
+pg	CREATE TABLE v00 (c01 INT, c02 STRING)
+pg	CREATE INDEX i1 ON t1((nextval('seq')), c1)
+pg	CREATE TABLE fuu (i INTEGER, j INTEGER)
+pg	DROP TABLE tbl_ProductSales
+pg	SELECT count(x) OVER () FROM (SELECT 1) x(x)
+pg	INSERT INTO t1 VALUES (1)
+pg	select * from test where date_trunc('year', d) >= '2024-01-01'
+pg	SET debug_verify_column_bindings = true
+pg	SELECT type_name, tags['ext:author'] FROM duckdb_types() WHERE tags['ext:name'] = 'loadable_extension_demo' ORDER BY type_name
+pg	INSERT INTO working_strings VALUES ('10'), ('-10'), ('-1329227995784915872903807060280344576'), ('170141183460469231731687303715884105727'), ('-170141183460469231731687303715884105728'), ('1.3'), ('-9223372036854775807.1293813'), ('1e18'), ('1e+18'), ('1.'), ('.1'), ('0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000'), ('1000e-40'), ('10000e-3')
+pg	SELECT * FROM (SELECT 1) JOIN t1 ON random()
+pg	INSERT INTO t0(c0) VALUES (DATE '2000-01-02')
+pg	INSERT INTO strings VALUES (chr(2047)), (chr(2047) || 'abc'), (chr(2048)), ('abc')
+pg	SELECT 0::bigint<<999
+pg	CREATE TABLE t0(c0 INT, c1 INT UNIQUE)
+pg	SELECT subq_0.c3 AS c3 FROM (SELECT ref_1.timestamp_s AS c0, ref_2.date_array AS c1, ref_2.struct_of_arrays AS c2, ref_2."smallint" AS c3 FROM main.all_types AS ref_0 INNER JOIN main.all_types AS ref_1 LEFT JOIN main.all_types AS ref_2 INNER JOIN main.all_types AS ref_3 ON (1) ON ((ref_1.dec_4_1 = ref_2.dec_4_1)) ON ((ref_2."float" IS NOT NULL)) WHERE (ref_3."varchar" !~~* ref_1."varchar")) AS subq_0 , (SELECT subq_0.c1 AS c2, subq_0.c2 AS c5, subq_0.c0 AS c13) AS subq_1
+pg	INSERT INTO t1(c1, c0) VALUES (1, 1)
+pg	select 0,1::bigint
+pg	SET http_proxy = 'some_non_existent_proxy'
+pg	CREATE TABLE t0 (c0 INT, c1 INT)
+pg	insert into infinity_date_test values ('-infinity'), ('2025-01-01'), ('infinity'), (NULL)
+pg	CREATE TABLE plain_strings(s VARCHAR)
+pg	INSERT INTO t1(c1) VALUES(1)
+pg	SELECT * FROM t0, t1 WHERE (t0.rowid IN (0.1))
+pg	EXPLAIN SELECT X+1 FROM test
+pg	INSERT INTO t0 VALUES (1), (-2), (0)
+pg	PREPARE v1 AS SELECT 0 FROM t0 WHERE ? IN (1)
+pg	set extension_directory='{TEST_DIR}/autoloading_types'
+pg	create TABLE {tbl}_struct as select {tbl}_normal {tbl} from {tbl}_normal
+pg	SELECT c1 FROM ((SELECT 1 AS c1) UNION (SELECT id AS c1 FROM t0 limit 1)) A where c1 IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16)
+pg	SELECT test_named_nullshort(a := 1, b := NULL)
+pg	INSERT INTO t0 VALUES('1969-12-18',true)
+pg	SELECT region, product, SUM(amount), COUNT(*) FROM sales GROUP BY CUBE(region, product) ORDER BY ALL
+pg	UPDATE EXTENSIONS (foobar)
+pg	SELECT list_extract([1, 2, 3], 2)
+pg	CREATE VIEW v0(c0, c1) AS SELECT 888938716, '' FROM t0 GROUP BY t0.rowid, t0.rowid, t0.c1 ORDER BY 0.9507538105182436 OFFSET 686929302
+pg	select * from t1284791b
+pg	EXPLAIN SELECT 7
+pg	SELECT grp, subgrp, SUM(d), MIN(s), MAX(s), SUM(f), COUNT(*) FROM measurements GROUP BY ROLLUP(grp, subgrp) ORDER BY ALL
+pg	SELECT json_keys('{"duck": 42}', NULL::VARCHAR[])
+pg	CREATE OR REPLACE TABLE t1 AS (SELECT 1) UNION ALL (SELECT * FROM range(10) ORDER BY 1)
+pg	CREATE TABLE t1 (c0 USMALLINT)
+pg	select typeof(g) from '{TEST_DIR}/test_v2.parquet'
+pg	SELECT * FROM t0, (SELECT 0) as subQuery0 LEFT JOIN (SELECT t0.c0 AS col_1, t1.c0 AS col_2, t2.c1 AS col_3 FROM t1 RIGHT JOIN t2 ON true) as subQuery1 ON true
+pg	CREATE TABLE BOOLTBL1 (f1 bool)
+pg	with recursive aoc6_input(i) as (select E'....#.....\\n.........#\\n..........\\n..#.......\\n.......#..\\n..........\\n.#..^.....\\n........#.\\n#.........\\n......#...\\n'),
+pg	SELECT i+1 FROM foo WHERE i < 2
+pg	insert into test2 values ('2025-03-09T01:05:00'),
+pg	INSERT INTO t1(c0) VALUES (1)
+pg	SELECT id FROM read_parquet('{TEST_DIR}/test_21160_single.parquet') WHERE x IS NULL ORDER BY x NULLS {null_order}
+pg	SELECT COUNT(n) FROM test_vector_types(NULL::INT, all_flat=NULL) t(n)
+pg	SET order_by_non_integer_literal=true
+pg	select sqrt(range) filter (where (range > 3)) from range(5)
+pg	SELECT sum(score) FROM cte2
+pg	select * from cte1
+pg	SELECT (SELECT avg(0)) c0, (SELECT 0 OFFSET c0 + 1)
+pg	SELECT (WITH t2 AS (SELECT 3 WHERE count(*)) SELECT 0 FROM t2)
+pg	select * from test where date_trunc('day', d) < '2025-01-08'
+pg	EXPLAIN SELECT * FROM date_test WHERE d != timestamp '2024-06-15 00:00:00'
+pg	SELECT t0, t1, EXISTS (SELECT * FROM u WHERE u0 != t0 AND u1 < t1) FROM t ORDER BY t0, t1
+pg	CREATE MACRO prefix(a, b) AS false
+pg	SELECT NULL FROM repeat(NULL, -9223372036854775808)
+pg	SELECT v, count(*) FROM tm GROUP BY v ORDER BY ALL
+pg	SELECT count(*) FROM t
+pg	SELECT t2.t_name AS "relatedTag.name"
+pg	INSERT INTO t1 VALUES (5, 'd', 'v', FALSE, 'a')
+pg	ALTER TABLE t0 RENAME TO t1
+pg	EXPLAIN SELECT x, z, coalesce(m2, false)
+pg	SELECT i % 3, COUNT(*) FROM t GROUP BY 1 LIMIT 2
+pg	SELECT count(x) OVER () FROM (SELECT 1) x(x) GROUP BY ALL
+pg	CREATE TABLE payload_part(k INTEGER, size INTEGER, kind VARCHAR, label VARCHAR)
+pg	SELECT NULL AS c1
+pg	INSERT INTO evidence_a VALUES (1), (1), (2), (3), (NULL)
+pg	CREATE OR REPLACE TABLE t1 AS ((SELECT 1) UNION ALL ((SELECT 2) INTERSECT ALL (SELECT 2)))
+pg	with y(y) as (with z(z) as (select 20) select * from z) delete from x using y where x < y
+pg	ALTER TABLE t0 ALTER COLUMN c0 SET DATA TYPE INT
+pg	SELECT i, (select [SUM(i)] from integers where j = i1.j) FROM integers i1 ORDER BY 1
+pg	SELECT pl.posterPersonid as "person1.id"
+pg	insert into "I" values (4, 'quattro')
+pg	WITH t(id, x) AS (VALUES (1, 10), (2, 20))
+pg	SELECT * FROM t0 WHERE '19691' > c0
+pg	CREATE VIEW v0(c0, c1) AS SELECT TIMESTAMP '1970-01-06 13:25:51', t1.c2 FROM t1 OFFSET 1274033658
+pg	SELECT 1 FROM t1 WHERE ('\\x96'::BLOB IN (1)) IS NULL
+pg	select * from lineitem l2
+pg	INSERT INTO BOOLTBL1 (f1) VALUES ('true')
+pg	INSERT INTO t0(c1, c0) VALUES (0, 0)
+pg	EXPLAIN SELECT 1 * col0 * 2 FROM test
+pg	CREATE TABLE t2 (c1 INT, c0 INT)
+pg	SELECT 1 LIMIT 3493690519702624888078795276804013381392711238711408854154521934990547605008475834286773858253643735619391784938186674922945640543537290894084514784093972720748475288610394187481276081350259062592878908961890372712236217855377408.000000%
+pg	INSERT OR REPLACE INTO t2 VALUES (1)
+pg	INSERT INTO integers VALUES (0), (1), (1), (NULL)
+pg	CREATE TABLE t1 AS SELECT 1
+pg	SELECT json_extract('hello world', CAST(NULL AS json)) AS c1
+pg	SELECT id FROM read_parquet('{TEST_DIR}/test_21160_multi.parquet') ORDER BY y ASC, id ASC LIMIT 10
+pg	UPDATE t0 SET c1 = NULL
+pg	CREATE TABLE tbl(bigint BIGINT)
+pg	INSERT INTO t0(c1, c0) VALUES([], '2021-01-01 00:00:00+00')
+pg	SELECT * FROM t0, t1
+pg	CREATE MACRO shadow.count_star() AS 0
+pg	SELECT test_named_nullshort(a := NULL)
+pg	SELECT rowid FROM rowid_test_table
+pg	WITH outer_t(k) AS (VALUES ([1]), ([2])),
+pg	SELECT json_extract_string(false, COALESCE(CASE WHEN (i) THEN (CAST(NULL AS "json")) ELSE NULL END, NULL)) FROM integers
+pg	SELECT ref_0.i,
+pg	ALTER TABLE t0 DROP c0
+pg	SELECT col, geometry FROM '{WORKING_DIRECTORY}/data/geoparquet/data-point-encoding_wkb.parquet'
+pg	SELECT bitstring_agg(uhugeint) FROM all_types
+pg	INSERT INTO t1(c0) VALUES('514332609.12')
+pg	SELECT 0::HUGEINT::VARCHAR
+pg	ROLLBACK
+pg	SELECT make_time(1, 1, 157)
+pg	create table tbl2 (a int)
+pg	CALL json_execute_serialized_sql('test')
+pg	create table infinity_test(d TIMESTAMP)
+pg	WITH outer_t(k) AS (VALUES (1), (2)),
+pg	CREATE VIEW household_demographics as SELECT
+pg	SELECT NULL FROM integers AS t1 RIGHT JOIN integers AS t2 ON (NULL) WHERE EXISTS(SELECT NULL FROM integers AS t3 INNER JOIN integers ON ((t3.i + t1.i)) , (SELECT t2.i AS c0))
+pg	ALTER TABLE test ADD COLUMN k INTEGER
+pg	create secret secret_file_url_tripleslash (TYPE HTTP, scope 'file:///')
+pg	SET VARIABLE work_dir_triple_slash='file:///' || ltrim(replace('{WORKING_DIRECTORY}', '\\', '/'), '/')
+pg	SELECT cr.p_personid AS person_id
+pg	select * from test where date_trunc('day', d) is distinct from '2025-01-10'
+pg	SELECT test_named_overload(1, 'x')
+pg	CREATE TABLE small_vals(v BIGINT)
+pg	SELECT ((SELECT 0) UNION (SELECT t1.c0) OFFSET 2) FROM t1
+pg	EXPLAIN SELECT X='1' FROM test
+pg	select '18446744073709551615'::HUGEINT::UINT64
+pg	CREATE TABLE t0 (c1 TINYINT)
+pg	SELECT grp, subgrp, grp % 2, COUNT(*) FROM measurements GROUP BY CUBE(grp, subgrp, grp % 2) ORDER BY ALL LIMIT 15
+pg	select * from test where date_trunc('hour', d) >= '2025-01-06 03:00:00'
+pg	CREATE INDEX i0 ON t2(c1)
+pg	SET preserve_insertion_order=false
+pg	INSERT INTO t VALUES (1, NULL, NULL)
+pg	WITH c AS MATERIALIZED (SELECT * FROM t) SELECT count(*) FROM t l JOIN c ON l.i + c.i > 1000
+pg	COPY (SELECT col, geometry FROM '{WORKING_DIRECTORY}/data/geoparquet/data-linestring-encoding_wkb.parquet')
+pg	select * from test where date_trunc('second', d) >= '2025-01-08'
+pg	INSERT INTO t0 VALUES (1) RETURNING c0 as rowid
+pg	CREATE OR REPLACE VIEW t1(c0) AS (SELECT (SELECT 1 WHERE FALSE))
+pg	UPDATE SET
+pg	EXPLAIN SELECT * FROM date_test WHERE d < timestamp '2024-06-15 12:00:00'
+pg	SELECT s LIKE '%abc' FROM strings ORDER BY ALL
+pg	CREATE TABLE t_div (id VARCHAR, name VARCHAR, a INTEGER, b INTEGER)
+pg	CREATE INDEX edges_outgoing ON edges (from_node_id, label)
+pg	SELECT x+1
+pg	CREATE TABLE t1 (c0 DECIMAL, CONSTRAINT k1 FOREIGN KEY (c0) REFERENCES t0 (c2))
+pg	SELECT test_named_agg_inspect(b := 2)
+pg	CREATE VIEW catalog_returns as SELECT
+pg	INSERT INTO t1 VALUES(0,0)
+pg	SET memory_limit='300KiB'
+pg	SELECT t0.c0, t0.rowid FROM t0 GROUP BY t0.c0, t0.rowid ORDER BY 2
+pg	INSERT INTO t2(c1,c0) VALUES (235,36), (43,81), (246,187), (28,149), (206,20), (135,11), (170,205), (202,63), (69,78), (160,50), (6,34), (207,28)
+pg	SELECT g::VARCHAR FROM pts WHERE g IS NOT NULL ORDER BY g, payload
+pg	CREATE TABLE t0 AS (SELECT 2)
+pg	SELECT (VALUES(1 != ALL(SELECT 2)))
+pg	CREATE TABLE t2__base (c_pk BIGINT NOT NULL, c_int BIGINT)
+pg	insert into y values (NULL)
+pg	SELECT l_returnflag FROM read_csv('{DATA_DIR}/csv/real/lineitem_sample.csv', delim='|', columns={'l_orderkey': 'INTEGER','l_partkey': 'INTEGER','l_suppkey': 'INTEGER','l_linenumber': 'INTEGER','l_quantity': 'INTEGER','l_extendedprice': 'DECIMAL(15,2)','l_discount': 'DECIMAL(15,2)','l_tax': 'DECIMAL(15,2)','l_returnflag': 'VARCHAR','l_linestatus': 'VARCHAR','l_shipdate': 'DATE','l_commitdate': 'DATE','l_receiptdate': 'DATE','l_shipinstruct': 'DATE','l_shipmode': 'VARCHAR','l_comment': 'VARCHAR'}, header = 0)
+pg	SELECT 1000::bigint<<53::bigint
+pg	CREATE TABLE test(col0 INTEGER, col1 SMALLINT)
+pg	CREATE TABLE test (x INT, y AS(x + 100))
+pg	SELECT p.p_personid AS creatorid
+pg	EXPLAIN FROM the_table WHERE the_id NOT IN [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20]
+pg	CREATE OR REPLACE VIEW view_3 AS
+pg	CREATE TABLE rowid_test_table AS SELECT * FROM range(10) t(id)
+pg	SELECT nextval('s0')
+pg	SELECT multipolygon FROM '{WORKING_DIRECTORY}/test/geoparquet/seattle.parquet'
+pg	ALTER TABLE t0 RENAME rowid TO ups
+pg	explain with cte1 as NOT MATERIALIZED (Select i as j from a) select * from cte1
+pg	INSERT INTO t1 VALUES(1144250857,0)
+pg	CREATE TABLE part AS SELECT concat('this is a long part name', i) AS p_name FROM range(20000) t(i)
+pg	SELECT id FROM t ORDER BY y DESC, id ASC LIMIT 10
+pg	INSERT INTO array_tbl VALUES('[[3, 4], [3, 4]]')
+pg	INSERT INTO t VALUES (1, 100)
+pg	CREATE UNIQUE INDEX i1 ON t2 (c1)
+pg	CREATE OR REPLACE VIEW t1 AS (SELECT 1)
+pg	SELECT * FROM t0 WHERE c0 >= 1 AND c0 <= t0.c1 AND t0.c1 <= 0
+pg	CREATE INDEX i2 ON t4 (c3)
+pg	SELECT id, UNNEST(child_ids)
+pg	SELECT COUNT(*) FROM t WHERE data IS NOT NULL
+pg	CREATE TABLE x(x DECIMAL(38763269, 77914819))
+pg	CREATE TABLE t0 (c0 INT, UNIQUE (c0, c0))
+pg	CREATE TABLE t2_keyed AS
+pg	insert into y values (1)
+pg	SELECT * FROM t0, t1 WHERE (NOT (t0.rowid IN (0.1::REAL)))
+pg	EXPLAIN SELECT CASE WHEN 1 IN (1+1, 2, 3, 4, NULL, 1) THEN (3+4) ELSE 2+2+2 END
+pg	CREATE TEMP SEQUENCE s0
+pg	SELECT NOT (t1.c0<<-1) FROM t1
+pg	SELECT struct_pack(a := 40, b := 2)['b']
+pg	CREATE INDEX i0 ON t2 (c1)
+pg	CREATE TABLE strings(a INTEGER)
+pg	create table b (a integer)
+pg	CREATE TABLE child(i INTEGER)
+pg	SELECT id FROM t ORDER BY x DESC, id ASC LIMIT 10
+pg	EXPLAIN SELECT 1 * 2 * col0  FROM test
+pg	UPDATE t0 SET c0=0
+pg	EXPLAIN SELECT o.k, d.label, sum(f.v)
+pg	select count(*) from (select a, b, sum(v)::bigint as s from grouping_set_cm group by rollup(a, b)) x where a is null
+pg	SELECT id FROM read_parquet('{TEST_DIR}/test_21160_single.parquet') WHERE x IS NULL ORDER BY x NULLS {null_order} LIMIT 10
+pg	EXPLAIN SELECT X+0 FROM test
+pg	WITH prev AS (SELECT * FROM view_4)
+pg	SELECT g::VARCHAR, count(*) FROM emptymix GROUP BY g ORDER BY g::VARCHAR
+pg	SELECT test_named_inspect(1, c := 3, b := 2)
+pg	INSERT INTO sales VALUES
+pg	INSERT INTO t1 VALUES('3.14', '1999-12-31 23:59:59', 3.1415)
+pg	SELECT m_messageid AS psa_threadid
+pg	SELECT {val} = ALL(SELECT {val} UNION ALL SELECT NULL)
+pg	SELECT 4767
+pg	SELECT NULL FROM parquet_scan(NULL, "schema" := NULL)
+pg	SELECT k IS NULL,
+pg	SELECT myalias, COUNT(*) FROM
+pg	INSERT INTO t0 VALUES (1), (2), (3), (NULL)
+pg	SELECT my_specific_string_extract(2)
+pg	INSERT INTO t1 VALUES(0.0)
+pg	CREATE TABLE s1(t0 INTEGER, a TEXT, b TEXT)
+pg	SELECT name FROM which_secret(getvariable('work_dir_triple_slash') || '/data/csv/hive-partitioning/simple/*/*/test.csv', 'http')
+pg	SELECT SUM(-1) FROM t0
+pg	EXPLAIN (FORMAT yaml) SELECT g FROM emptymix ORDER BY payload
+pg	SELECT g, avg(DISTINCT i), avg(i) FILTER (WHERE i > 1) FROM integers GROUP BY g ORDER BY ALL
+pg	SELECT json_extract('{"duck": 42}', NULL::VARCHAR[])
+pg	SET VARIABLE col = 'typl'
+pg	SELECT * FROM total_cost
+pg	CREATE TABLE t (grd_quart INTEGER, typl INTEGER, ipondl INTEGER, catl VARCHAR)
+pg	select * from test2 where date_trunc('hour', d) < '2025-03-09T05:00:00+00'::TIMESTAMPTZ
+pg	SELECT 1 FROM (SELECT 1) t0(c0) WHERE (SELECT 1 LIMIT c0)
+pg	EXPLAIN SELECT * FROM t1, t2, t3 WHERE a = b AND b = c
+pg	EXPLAIN (FORMAT yaml) SELECT g FROM xyz ORDER BY payload
+pg	SELECT *,
+pg	INSERT INTO t2 (t2a, t2b, t2c, t2d, t2e, t2f, t2g, t2h, t2i) VALUES
+pg	SELECT f.f_forumid AS "forum.id"
+pg	SELECT 18446743523953736704::REAL::UBIGINT
+pg	CREATE INDEX i1 ON t1 (c0)
+pg	SELECT * FROM (t1 JOIN t1 t2 USING (c0, c0)), (SELECT 42)
+pg	PREPARE p2 AS UPDATE t1 SET c0 = (SELECT 2) FROM ((SELECT 1) UNION ALL (SELECT 2)) t2(c1)
+pg	SELECT * FROM t0, t1 GROUP BY t0.c0, t1.c0 HAVING t1.c0!=MAX(t1.c0)
+pg	SELECT '' COLLATE NOACCENT.NOCASE='Ʇ'
+pg	select * from test2 where date_trunc('day', d) <= '2025-01-06'
+pg	EXECUTE v2(0)
+pg	UPDATE t0 SET c0 = (~1)
+pg	select * from test where cast(consumption as int) = 17953.0
+pg	CREATE TABLE t0 (c0 TIME)
+pg	INSERT INTO issue_24806 VALUES
+pg	CREATE SCHEMA s1
+pg	SELECT upper(decode('\\xc1\\x81'::BLOB)::VARCHAR)
+pg	INSERT INTO points VALUES (2, ({'x': 1, 'y': 2}), ({'i': 3, 'j': 1}))
+pg	WITH RECURSIVE t1(c0) AS ((SELECT 1, 1 c1) UNION (SELECT 1, 1 FROM (SELECT 1) x(x) JOIN t1 ON FALSE LIMIT 1%)) SELECT 1 FROM t1 JOIN t1 t0 USING (c1)
+pg	INSERT INTO t0 VALUES(NULL,'false', 8)
+pg	SELECT 1 FROM (VALUES ([NULL]::INTEGER[]), ([1])) nested_list_inner(v)
+pg	SELECT 1 FROM (SELECT 1) t1(c0) JOIN t0 ON c1 BETWEEN c0 AND 1
+pg	SELECT make_timestamp("bigint", "bigint", "bigint", "bigint", "bigint", "double")
+pg	SELECT test_named_inspect(1, b := 2)
+pg	SELECT f1 FROM BOOLTBL1 WHERE NOT TRUE = f1
+pg	select i, a.i, b.i, c.i from a natural full outer join b natural full outer join (values (43)) c(i) order by 1
+pg	INSERT INTO t3(c0) VALUES (1)
+pg	EXPLAIN SELECT X AND ((A AND B) OR (A AND C) OR (B AND D)) FROM test
+pg	SELECT SIN(1e1000)
+pg	CREATE VIEW v0 AS SELECT 0, 1 FROM t0 ORDER BY t0.c0
+pg	CREATE TABLE v0 ( v1 INTEGER , v2 INTEGER)
+pg	SELECT t0.c1, x.c0 FROM t0, unnest(t0.c1) AS x(c0) WHERE CAST('x' AS BOOLEAN)
+pg	INSERT INTO t1 VALUES(-2059225173,0)
+pg	SELECT l.id, l.start, l.stop
+pg	select (select 42) as a, (select a)
+pg	SELECT * FROM pragma_table_info('t0')
+pg	EXPLAIN SELECT 1 + col0 + 2 FROM test
+pg	select '65536'::hugeint::uint16
+pg	CREATE TABLE t0(c0 DATE, c1 VARCHAR DEFAULT(CAST('1970-01-16 12:55:22' AS TIMESTAMP)), actual_rowid BIGINT)
+pg	SELECT (*COLUMNS(*)).a FROM v00
+pg	copy (select 1337 as edgy_hacker_number) TO 'azure://non-existent-bucket/test1337.csv'
+pg	CREATE TABLE xyz AS
+pg	select 1 - any(select 1)
+pg	SELECT c0, c1 FROM t0
+pg	insert into t4 select [range, range +1, range + 2, 2e50] from range(1000)
+pg	select * from test where date_trunc('day', d) <= '2025-01-06'
+pg	select * from test where consumption::decimal(6,1) = (17953.2::decimal(10,2))
+pg	select * from duckdb_secrets(redact=NULL)
+pg	CREATE TABLE t0(c0 AS (1), c1 INT NOT NULL)
+pg	create table t1284791b (id2 int, val2 varchar(255))
+pg	INSERT INTO t0 VALUES(NULL,NULL)
+pg	COPY (FROM range(1)) TO '{TEST_DIR}/ordinality_virtual_columns.parquet'
+pg	DELETE FROM t0 USING ((SELECT 1) t1 INNER JOIN (SELECT 2) t2 ON t0.c0)
+pg	SELECT * FROM read_csv_auto(getvariable('work_dir_localhost') || '/data/csv/normalize.csv')
+pg	SELECT * FROM t0 WHERE REGEXP_MATCHES(t0.c0, '1')
+pg	ALTER TABLE t0 ADD COLUMN c1 INT
+pg	INSERT INTO tbl VALUES (0), (255), (NULL)
+pg	select '65535'::HUGEINT::UINT16
+pg	CREATE TABLE t0(c0 VARCHAR NOT NULL DEFAULT(-1981039679), c1 TIMESTAMP)
+pg	CREATE SEQUENCE partition_qualify_sequence START 1
+pg	select list_extract(null, null)
+pg	select 0 AS i
+pg	SELECT test_named_inspect(a := 1, A := 2)
+pg	SELECT t0.c0, t0.c2 FROM t0 WHERE t0.c1 UNION SELECT t0.c0, t0.c2 FROM t0 WHERE (NOT t0.c1) UNION SELECT t0.c0, t0.c2 FROM t0 WHERE ((t0.c1) IS NULL) ORDER BY 1, 2
+pg	SELECT struct_pack(b => 42)::STRUCT(a INT)
+pg	UPDATE EXTENSIONS
+pg	SELECT struct_pack(b => 'hello'::STRING)::STRUCT(b INT)
+pg	select * from state_stuff
+pg	SELECT 1 FROM t2 WHERE currval('t0') BETWEEN TRY_CAST(0 AS TIMESTAMP WITH TIME ZONE) AND 1
+pg	SELECT p::HUGEINT::VARCHAR FROM powers_of_ten
+pg	EXECUTE v2(NULL)
+pg	SELECT upper(decode('\\xF6\\x96\\xB0\\x85'::BLOB)::VARCHAR)
+pg	SELECT * FROM (VALUES ('x', 0, 'x')) AS x(a, b, c)
+pg	SELECT .0
+pg	SELECT list(v ORDER BY v)
+pg	select * from test where date_trunc('day', d) <= '2025-01-10'::TIMESTAMPTZ
+pg	CREATE TABLE test AS
+pg	SELECT col, geometry FROM '{WORKING_DIRECTORY}/data/geoparquet/data-point-wkt.csv'
+pg	select * from test2 where date_trunc('day', d) != '2025-01-10'
+pg	INSERT INTO test_num_data VALUES (2, '-34338492.215397047')
+pg	drop table t1284791a
+pg	INSERT INTO evidence_c_flag SELECT id, true FROM evidence_c
+pg	INSERT INTO tbl VALUES(MAP(['key1', 'key2'], ['🦆🦆🦆🦆🦆🦆', 'goose']))
+pg	CREATE TABLE broken_floats(f FLOAT)
+pg	CALL dbgen(sf=0.0001)
+pg	insert into tbl values ('ö'), ('o'), ('p')
+pg	SELECT f::HUGEINT FROM (SELECT f FROM broken_doubles ORDER BY f LIMIT 1 OFFSET {i}) t1
+pg	SELECT NULL FROM read_csv('{TEST_DIR}/test_null_args.csv', names=NULL)
+pg	SELECT my_specific_list_extract(2)
+pg	SELECT test_named_varargs(1, 2, x := 3, y := 4)
+pg	CREATE INDEX i0 ON t0 USING ART ((c0 + c1))
+pg	SELECT * FROM(VALUES(''::text))
+pg	EXPLAIN SELECT d.label, sum(f.v)
+pg	INSERT INTO window_input VALUES (1, 1, 10), (1, 2, 20), (1, 3, 30), (1, 4, 40)
+pg	SELECT c01 FROM ( v00 AS ta03 ANTI JOIN ( v00 AS ta04 JOIN v00 AS ta05 USING ( c01 ) ) ON 42 )
+pg	SELECT count(DISTINCT g) FROM emptymix
+pg	SELECT tenant, lang, descr, categ FROM v1
+pg	CREATE TABLE t0 (c1 AS (1), c0 INT)
+pg	CREATE MACRO pyfloats_to_floats(x) AS (CAST(string_split(x[2:-2], ',') AS FLOAT4[]))
+pg	SELECT STDDEV_POP(c0) FROM t0
+pg	call dbgen(sf=0.01)
+pg	insert into a values (42)
+pg	SET wal_autocheckpoint='10MB'
+pg	SELECT * FROM t0, t1 GROUP BY t0.c0, t1.c0 HAVING t1.c0!=MAX(t1.c0) UNION ALL SELECT * FROM t0, t1 GROUP BY t0.c0, t1.c0 HAVING NOT t1.c0>MAX(t1.c0) ORDER BY 1, 2
+pg	INSERT INTO t0 VALUES (0, 0), (NULL, 0)
+pg	CREATE TABLE t3 (c1 INT)
+pg	CREATE TABLE t6(c0 DOUBLE, c1 SMALLINT DEFAULT(CAST('1969-12-27' AS DATE)), PRIMARY KEY(c1))
+pg	copy (select 1337 as edgy_hacker_number) TO '{TEST_DIR}/test1337.parquet'
+pg	SELECT test_named_inspect(a := 1)
+pg	SELECT SUM(t0.c1) FROM t0
+pg	set autoload_known_extensions=true
+pg	SET ieee_floating_point_ops=false
+pg	CREATE TABLE t1(c1 INT, CHECK({fun}('seq')))
+pg	SELECT coalesce(g::VARCHAR, 'NULL') FROM pts ORDER BY payload
+pg	SELECT struct_extract_at({'a': 42}, 1)
+pg	EXPLAIN SELECT * FROM t WHERE contains([], a)
+pg	SELECT 1 FROM t1 WHERE '\\x96'::BLOB IN (1)
+pg	INSERT INTO payload_region VALUES (1, 'EUROPE'), (2, 'ASIA')
+pg	drop table test
+pg	CREATE or replace TABLE brands (category VARCHAR, brand_name VARCHAR)
+pg	INSERT INTO t0(c1) VALUES (9223372036854775807)
+pg	CREATE TABLE ts AS
+pg	select * from cte
+pg	SELECT * FROM t0 WHERE c0 < 0
+pg	CREATE TABLE c2(c0 INTEGER, c1 INTEGER UNIQUE, FOREIGN KEY (c0) REFERENCES s1(tz))
+pg	select count(*) from aaa
+pg	CREATE TABLE t2(c1 INT)
+pg	SELECT id, name, score
+pg	CREATE TABLE fk_integers(id INTEGER REFERENCES t0(c1))
+pg	SELECT * FROM t0 WHERE (c1 BETWEEN 3.1 AND c1)
+pg	CREATE VIEW v0(c0, c1, c2) AS SELECT '1', true, t0.c1 FROM t0 ORDER BY -1-2 LIMIT 2
+pg	CREATE VIEW store_returns as SELECT
+pg	DROP SCHEMA s1
+pg	SELECT test_named_inspect(1, 2, 3)
+pg	SELECT count(*) FROM l LEFT JOIN r ON array_cosine_similarity([1.0,2.0,3.0]::FLOAT[3], [4.0,5.0,6.0]::FLOAT[3]) IS NOT NULL
+pg	COPY (FROM t1) TO '{TEST_DIR}/data-point-out-enabled.parquet' (FORMAT PARQUET)
+pg	INSERT INTO t_data VALUES ('mydescr', 'en', 'mytenant', 42, 'mycat', 42)
+pg	INSERT INTO nn VALUES (1, 5), (3, 8)
+pg	DELETE FROM t1 RETURNING 1
+pg	select * from test where date_trunc('hour', d) < '2025-01-06 04:00:00'
+pg	SELECT 2 * (1 << 2)
+pg	SELECT my_extract('1234', 2)
+pg	select '18446744073709551615'::UINT64::HUGEINT
+pg	SELECT rank() OVER (), lag(NULL) OVER ()
+pg	ATTACH '{TEST_DIR}/issue5232.db' AS issue5232 (STORAGE_VERSION 'latest')
+pg	SELECT (*COLUMNS(*))[2] FROM v00
+pg	CREATE TABLE docs(docid) AS FROM range(2)
+pg	INSERT INTO test VALUES (1), (2) RETURNING y
+pg	EXPLAIN SELECT COUNT(*) FROM test GROUP BY YEAR(t)
+pg	CREATE MACRO my_struct_extract_c(my_struct) AS my_struct['c']
+pg	WITH RECURSIVE t1(c0) AS ((SELECT 1, 1 c1) UNION (SELECT 1, 1 FROM (SELECT 1) x(x) JOIN t1 ON FALSE LIMIT 1)) SELECT 1 FROM t1 JOIN t1 t0 USING (c1)
+pg	SELECT l_returnflag FROM read_csv('{DATA_DIR}/csv/real/lineitem_sample.csv', delim='|', columns={'l_orderkey': 'INTEGER','l_partkey': 'INTEGER','l_suppkey': 'INTEGER','l_linenumber': 'INTEGER','l_quantity': 'INTEGER','l_extendedprice': 'DECIMAL(15,2)','l_discount': 'DECIMAL(15,2)','l_tax': 'DECIMAL(15,2)','l_returnflag': 'VARCHAR','l_linestatus': 'VARCHAR','l_shipdate': 'DATE','l_commitdate': 'DATE','l_receiptdate': 'DATE','l_shipinstruct': 'VARCHAR','l_shipmode': 'VARCHAR','l_comment': 'VARCHAR'})
+pg	PREPARE v1 AS SELECT list_extract($1::int[], 1)
+pg	select i, a.i, b.i from a inner join b using (i)
+pg	WITH prev AS (SELECT * FROM view_14)
+pg	SELECT lead(#1) OVER (PARTITION BY 2378 ORDER BY ((c70 BETWEEN c90 AND c19) AND c51) ASC NULLS FIRST RANGE BETWEEN CURRENT ROW AND c7 FOLLOWING)
+pg	INSERT INTO reuse_dim VALUES (10, 'x'), (20, 'b'), (30, 'x'), (40, 'd')
+pg	SELECT struct_pack(a1 => '42'::DOUBLE, a2 => 'asdf'::STRING)::STRUCT(a1 INT, a2 STRING)
+pg	INSERT INTO strings VALUES (chr(127)), (chr(127) || 'abc'), (chr(128)), ('abc')
+pg	SELECT array_distance('asdf', [42]::INTEGER[1])
+pg	SELECT (SELECT 1 WHERE INTERVAL '1' DAY HAVING EXISTS (SELECT 1))
+pg	SELECT my_list_or_string_extract_2({a: 1, b: 2, c: 3, d: 4})
+pg	INSERT INTO t0 VALUES (-10000000)
+pg	INSERT INTO t1 VALUES(15908661,1)
+pg	COPY (select 'POINT(0 1)'::GEOMETRY('GEOGCRS["WGS 84 (CRS84)",ENSEMBLE["World Geodetic System 1984 ensemble",MEMBER["World Geodetic System 1984 (Transit)"],MEMBER["World Geodetic System 1984 (G730)"],MEMBER["World Geodetic System 1984 (G873)"],MEMBER["World Geodetic System 1984 (G1150)"],MEMBER["World Geodetic System 1984 (G1674)"],MEMBER["World Geodetic System 1984 (G1762)"],MEMBER["World Geodetic System 1984 (G2139)"],MEMBER["World Geodetic System 1984 (G2296)"],ELLIPSOID["WGS 84",6378137,298.257223563,LENGTHUNIT["metre",1]],ENSEMBLEACCURACY[2.0]],PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.0174532925199433]],CS[ellipsoidal,2],AXIS["geodetic longitude (Lon)",east,ORDER[1],ANGLEUNIT["degree",0.0174532925199433]],AXIS["geodetic latitude (Lat)",north,ORDER[2],ANGLEUNIT["degree",0.0174532925199433]],USAGE[SCOPE["Not known."],AREA["World."],BBOX[-90,-180,90,180]],ID["DUCKDB","1337"]]') as g) TO '{TEST_DIR}/test_v2.parquet' (FORMAT PARQUET, GEOPARQUET_VERSION 'V2')
+pg	INSERT INTO t2(c1) VALUES (1)
+pg	SELECT c0 FROM generate_series(0, NULL) t3(c0)
+pg	SELECT t0.c0 FROM t0 WHERE NOT (0 BETWEEN 0 AND t0.c0::BOOL)
+pg	select * from test where consumption::decimal(6,1)::varchar = '17953.2'
+pg	SELECT 1 AS cohort_definition_id, 1 AS subject_id, CAST('2017-01-01' AS DATE) AS cohort_start_date,
+pg	EXPLAIN SELECT * FROM date_test WHERE d IS DISTINCT FROM timestamp '2024-06-15 12:00:00'
+pg	INSERT INTO t0 VALUES(0.24714665498347263006,NULL)
+pg	INSERT INTO t0 VALUES(0.0,0.0)
+pg	SELECT bitstring_agg(v, CAST(v AS UBIGINT), CAST(v AS UBIGINT)) FROM tbl
+pg	explain analyze select * from test where date_trunc('day', d) is distinct from '2025-01-08'
+pg	INSERT INTO t0 VALUES (NULL), (0), (1)
+pg	SELECT 1 FROM (SELECT 1) t0(c0) GROUP BY CUBE (1) HAVING (currval('seq') IS NULL)
+pg	SELECT f1 FROM BOOLTBL1 WHERE NOT f1 = TRUE
+pg	create table tbl(c8 UTINYINT)
+pg	DROP TABLE another_T
+pg	create table test(id int, name text)
+pg	select * from test where date_trunc('day', d) < '2025-01-01'::TIMESTAMPTZ
+pg	COPY (SELECT col, geometry FROM '{WORKING_DIRECTORY}/data/geoparquet/data-point-wkt.csv')
+pg	SELECT test_named_agg_inspect(1, 2)
+pg	EXPLAIN SELECT count(*) FILTER (WHERE EXISTS (SELECT 1 FROM range(10000000) b(x) WHERE b.x = q.v) OR EXISTS (SELECT 1 FROM range(10000000) c(x) WHERE c.x = q.v)) FROM (SELECT o.k, (SELECT e.x FROM range(10000000) e(x) WHERE e.x = o.k AND e.x < 10) v FROM range(1000000) o(k)) q
+pg	SELECT 0 c0 FROM t1 GROUP BY ALL HAVING c0 < ALL(SELECT 0 FROM ((SELECT 2) UNION (SELECT 2)) t2 WHERE substr('b', 1, c0) GROUP BY ALL)
+pg	SELECT struct_extract({'a': 42}, 42)
+pg	UPDATE t SET data = {'a': 42}
+pg	INSERT INTO tbl_X VALUES (1,1000),(2,500),(3,323),(4,0)
+pg	SELECT * FROM blobs where b = '\\xaa\\xff\\xaA'
+pg	SELECT percent_rank() OVER (PARTITION BY c21 ORDER BY c37 ASC NULLS FIRST RANGE BETWEEN NULL FOLLOWING AND UNBOUNDED FOLLOWING)
+pg	EXPLAIN SELECT count(*), min(i), max(i) FROM t GROUP BY i
+pg	select * from (select 123 as a) t where a in (select 123 )
+pg	SELECT test_named_overload(b := 'y', a := 1)
+pg	CREATE TABLE planes(tailnum VARCHAR, "year" INTEGER, "type" VARCHAR, manufacturer VARCHAR, model VARCHAR, engines INTEGER, seats INTEGER, speed INTEGER, engine VARCHAR)
+pg	SELECT region, product, SUM(amount), COUNT(*), COUNT(amount), MIN(amount) FROM sales GROUP BY ROLLUP(region, product) ORDER BY ALL
+pg	CREATE TABLE t1 (c0 INT, c2 BIGINT, PRIMARY KEY (c0))
+pg	insert into t1284791b values (1,'2')
+pg	INSERT INTO t1(c0) VALUES (E'\\\\xabcd')
+pg	EXPLAIN SELECT * FROM date_test WHERE timestamp '2024-06-15 12:00:00' = d
+pg	INSERT INTO ts VALUES('294247-01-10 04:00:54.775806')
+pg	SELECT 1 * (1 < 1)
+pg	CREATE TEMP SEQUENCE t1
+pg	select * from test3 where date_trunc('hour', d) <= NULL
+pg	SELECT upper(decode('\\xc1\\x82'::BLOB)::VARCHAR)
+pg	SELECT array_zip() AS c0
+pg	INSERT INTO t0 VALUES ([1])
+pg	set autoinstall_extension_repository='hocus_pocus_this_is_bogus'
+pg	SELECT f1 FROM BOOLTBL1 WHERE f1 = (NOT FALSE)
+pg	CREATE TABLE t2 AS
+pg	call dbgen(sf=0)
+pg	SELECT t1.id, t2.id, round(t1.val::DECIMAL(38,10) * t2.val, 30) FROM test_num_data t1, test_num_data t2 ORDER BY 1, 2
+pg	CREATE TABLE in_right(i INTEGER)
+pg	INSERT INTO integers VALUES (1, 1)
+pg	CREATE TABLE t0(c0 TIMESTAMP)
+pg	select * from test where date_trunc('day', d) <= '2025-01-05'
+pg	INSERT INTO t0 VALUES('1970-01-23','810092761', 7)
+pg	CREATE TABLE t0(c0 DATETIME DEFAULT(0.45428781614730807), c1 DATE, PRIMARY KEY(c1))
+pg	select * from test2 where date_trunc('day', d) > '2025-01-08'
+pg	INSERT INTO struct_tbl (VALUES (CAST(COALESCE(CAST(NULL AS STRUCT(a INTEGER, b VARCHAR)), CAST(NULL AS STRUCT(a INTEGER, b VARCHAR))) AS STRUCT(a INTEGER, b VARCHAR))))
+pg	INSERT INTO t0(c0) VALUES (1), (-5.15965088E8)
+pg	INSERT INTO booleans VALUES(NULL)
+pg	SELECT count_star()
+pg	SELECT c_dbl, c_int
+pg	CREATE TABLE t0(c0 BOOLEAN, c1 INT, PRIMARY KEY(c0, c1))
+pg	SELECT f::HUGEINT FROM (SELECT f FROM broken_strings ORDER BY f LIMIT 1 OFFSET {i}) t1
+pg	INSERT INTO tbl DEFAULT VALUES
+pg	SELECT struct_extract(struct_pack(b => 42)::STRUCT(a INT), 'a')
+pg	EXPLAIN SELECT 1*X FROM test
+pg	SELECT ((SELECT 0) UNION (SELECT t1.c0) ORDER BY 1 NULLS LAST OFFSET 1) FROM t1
+pg	SELECT interest.person_id
+pg	ALTER TABLE t1 ALTER c2 TYPE BOOLEAN
+pg	SELECT a as b, d as c, c as d from integers
+pg	SELECT test_named_overload(a := 1, b := 'x')
+pg	SET disabled_optimizers TO {do}
+pg	SELECT make_time(1, 1, 9999999)
+pg	CREATE TABLE evidence_d(id BIGINT)
+pg	create table tbl as select 42 AS i
+pg	SELECT 1 FROM (SELECT 2) t0, (SELECT 3) t1 WHERE INTERVAL '1' DAYS USING SAMPLE (1 ROWS) REPEATABLE (1)
+pg	INSERT INTO test VALUES (1), (2) RETURNING y, y, y, x
+pg	CREATE TABLE selected_orders(order_id BIGINT, warehouse BIGINT, dim_id BIGINT, cost BIGINT)
+pg	SELECT count(*), sum(b) FROM (SELECT a, sum(b) AS b FROM (SELECT a, sum(b) AS b FROM (SELECT a, b FROM t) GROUP BY a) GROUP BY a) WHERE a > 90
+pg	SELECT x,
+pg	CREATE TABLE test(A BOOLEAN, B BOOLEAN, C BOOLEAN, D BOOLEAN, X BOOLEAN, Y BOOLEAN, Z BOOLEAN)
+pg	explain SELECT
+pg	CREATE TABLE t0 (c0 BLOB PRIMARY KEY)
+pg	insert into infinity_test values ('-infinity'), ('2025-01-01'), ('infinity'), (NULL)
+pg	CREATE TABLE powers_of_ten(p VARCHAR)
+pg	SELECT '-3.4028234663852886e+38'::DECIMAL
+pg	select 2147483648::real::int4
+pg	INSERT INTO t0(c0) VALUES (2)
+pg	select * from test where '2025-01-10' <= date_trunc('day', d)
+pg	CREATE INDEX i0 ON t1 (c1)
+pg	SELECT column_name, tags['ext:name'], tags['ext:column_type'] FROM duckdb_columns() WHERE table_name = 'tagged_table' ORDER BY column_index
+pg	SELECT friend1.interested_id,
+pg	CREATE TABLE stats(num_docs) AS SELECT 1
+pg	SELECT CASE WHEN range % 5 = 4 THEN NULL ELSE (range % 10)::INT END::VARIANT AS v,
+pg	SELECT count(*) c1 HAVING EXISTS (SELECT 1 FROM t1 WHERE c1 BETWEEN c0 AND 0)
+pg	INSERT INTO integers VALUES (0), (1), (2)
+pg	INSERT INTO selected_orders VALUES (1, 1, 10, 100), (1, 2, 10, 150), (2, 1, 10, 200), (3, 1, 20, 300), (4, NULL, 10, 400), (NULL, 1, 10, 500)
+pg	SELECT count(*), sum(payload) FROM outer_fact o WHERE EXISTS (SELECT 1 FROM evidence_a_flag a WHERE a.id = o.id AND a.selected) AND (EXISTS (SELECT 1 FROM evidence_b_flag b WHERE b.id = o.id AND b.selected) OR EXISTS (SELECT 1 FROM evidence_c_flag c WHERE c.id = o.id AND c.selected))
+pg	SELECT col, st_astext(geometry) FROM '{TEST_DIR}/data-point-out-enabled.parquet'
+pg	SELECT my_list_or_string_extract_2([1, 2, 3, 4])
+pg	EXPLAIN SELECT 3
+pg	INSERT INTO t0 VALUES(0.0,-1570504255.0)
+pg	CREATE TABLE t2 (c1 INT, PRIMARY KEY (c1))
+pg	select list_value(distinct([42]))
+pg	VALUES ('2022-01-01'::DATE), ('2022-02-01'::DATE)
+pg	SELECT * FROM v0 WHERE v2 <= 2 AND v2 <= v1 AND v1 < v2 ORDER BY v1 DESC
+pg	INSERT INTO t0 VALUES (1) RETURNING sum(c0) as rowid
+pg	select i, a.i, b.i from a right outer join b using (i)
+pg	INSERT INTO noaccent_strings VALUES ('resume'), ('résumé'), ('é'), ('e')
+pg	EXPLAIN (FORMAT yaml) SELECT count(*) FROM tv GROUP BY v
+pg	INSERT INTO t__base VALUES (1, NULL, NULL, NULL), (2, 1, 0.0, NULL), (3, 2, 1.5, 'a')
+pg	select * from a natural full outer join b natural full outer join c order by 1
+pg	ALTER TABLE t0 ALTER rowidx SET DEFAULT 0
+pg	SELECT lead(c9, c18) OVER (ORDER BY 2399 DESC NULLS FIRST ROWS BETWEEN c2 PRECEDING AND #10 FOLLOWING) FROM (SELECT c4 FROM json_execute_serialized_sql(NULL) AS t5(c1, c2, c3, c4)) AS t6 , (SELECT * FROM (SELECT * FROM (SELECT * FROM (SELECT * FROM (SELECT * FROM (SELECT * FROM (SELECT * FROM (SELECT * FROM (VALUES (3579, 426, main.list_value(), 5272, CAST('290309-12-22 (BC) 00:00:00' AS TIMESTAMP_S), '356f1b18-7a3d-417e-97eb-710eae92f600', NULL, 634), (CAST('290309-12-22 (BC) 00:00:00' AS TIMESTAMP), NULL, 1138, NULL, NULL, 8922, 1726, 5539), (main.list_value(42.0, CAST('nan' AS DOUBLE), 1e1000, -1e1000, NULL, -42.0), 'enum_69999', 'dcf24776-2f79-4878-a175-8daabf453cd0', '9d4c7f67-bdcb-46c5-bd44-1d04be3b94ab', NULL, 9021, 1124, 6294)) AS valueslist) AS valueslist) AS valueslist) AS valueslist) AS valueslist) AS valueslist) AS valueslist) AS valueslist) FULL JOIN lineitem AS t23(c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, c17, c18, c19, c20, c21, c22) ON (c8)
+pg	EXPLAIN SELECT X AND TRUE FROM test
+pg	with y(y) as (select 1) update x set x = 2 from y where x = y
+pg	CREATE TABLE storm_votes(id INTEGER, post_id INTEGER)
+pg	SELECT * FROM t0 WHERE t0.c0 AND (t0.c0<<64)
+pg	SELECT vector_type(42::INTEGER)
+pg	SELECT * FROM (SELECT 1) t0(c0) GROUP BY c0 QUALIFY count(c0) OVER ()
+pg	SELECT COUNT(*) FROM t0 WHERE ((t0.c0)>('!9t'))
+pg	select * from test order by s
+pg	SELECT any_value(NULL ORDER BY c38 ASC) FROM t2
+pg	SELECT upper(decode('\\xC2\\xA3'::BLOB)::VARCHAR)
+pg	INSERT INTO t2 VALUES({'a': NULL, 'b': NULL})
+pg	SELECT * FROM t ORDER BY 1
+pg	SELECT cast(t0.c0 as varchar) SIMILAR TO cast(0 as varchar) FROM t0
+pg	SELECT test_named_ambig(1::INTEGER, 2::INTEGER)
+pg	SELECT 1 alias1 FROM (SELECT 1) t2(c1) GROUP BY ALL HAVING (SELECT alias1)
+pg	select max(i) from cte
+pg	INSERT INTO big_vals SELECT 4000000000000000000::BIGINT FROM range(5) s(i)
+pg	CREATE TABLE t1 AS (VALUES ([], {'a': []}))
+pg	SELECT count(*) FROM emptymix a JOIN emptymix b USING (g)
+pg	create table data as select * from range(0,4000) tbl(col)
+pg	CREATE TABLE all_types AS
+pg	SELECT MIN ( DISTINCT + CAST ( NULL AS INTEGER ) ) * COUNT ( * ) * - + 16 * CASE + + AVG ( ALL 97 ) WHEN ( + NULLIF ( SUM ( CAST ( NULL AS REAL ) ), 6 ) ) THEN 51 * 31 + - 6 WHEN + 48 * - 34 THEN NULL WHEN 91 * + ( SUM ( CAST ( NULL AS INTEGER ) ) ) THEN NULL END * - 4 + - 67
+pg	CREATE TABLE t3(c0 BOOLEAN)
+pg	INSERT INTO evidence_c VALUES (1), (1), (4)
+pg	INSERT INTO t0 VALUES (0)
+pg	SELECT t2.c0 FROM t2 CROSS JOIN t3
+pg	INSERT INTO trains VALUES
+pg	select i, a.i, b.i, c.i from a natural full outer join b natural full outer join c order by 1
+pg	SELECT c0 FROM t0 OFFSET 42949672960
+pg	set extension_directory='{LOCAL_EXTENSION_DIR}'
+pg	INSERT INTO broken_doubles VALUES (1361129467683753853853498429727072845824.0), (-1361129467683753853853498429727072845824.0), (1.0e100), (-1.0e100)
+pg	SELECT 1 FROM t1 GROUP BY 1, ROLLUP (c1) HAVING (NOT (c1 > 1))
+pg	SELECT d, timestamp '2024-06-15 12:00:00' = d AS r FROM date_test ORDER BY d
+pg	SELECT function_name, tags['ext:author'] FROM duckdb_functions() WHERE tags['ext:name'] = 'loadable_extension_demo' ORDER BY function_name
+pg	CREATE TABLE t0(c0 VARCHAR, c2 AS(1), c3 INT, UNIQUE(c0))
+pg	SELECT current_schemas(NULL)
+pg	select strptime('2021-04-15 14:55:17.915000', '%Y-%m-%d %H:%M:%S.%f')
+pg	create table a (a integer)
+pg	SELECT     ref_8.uint AS c0,
+pg	INSERT INTO t1 VALUES
+pg	insert into tbl VALUES
+pg	INSERT INTO t0 VALUES(0.5,0)
+pg	COPY (SELECT * FROM t1) TO '{TEST_DIR}/t1.parquet' (FORMAT 'parquet')
+pg	select i, a.i, b.i, c.i from a full outer join b using (i) full outer join c using (i) order by 1
+pg	SELECT personid AS "person.id"
+pg	SELECT i, j FROM integers WHERE i = 1
+pg	EXPLAIN SELECT NULL::BOOLEAN FROM test
+pg	CREATE TABLE t0(c0 VARCHAR, c1 DOUBLE UNIQUE)
+pg	SELECT struct_pack(a => struct_pack(b => 42)::STRUCT(b INT))::STRUCT(a INT)
+pg	SELECT * FROM t2
+pg	SELECT c1
+pg	CREATE TABLE t3(c0 INT)
+pg	EXPLAIN SELECT * FROM date_test WHERE timestamp '2024-06-15 00:00:00' < d
+pg	EXPLAIN SELECT o.k, d.label, sum(f.w)
+pg	create table all_types as
+pg	SET threads={i}
+pg	WITH t2 AS (SELECT 3 WHERE count(*) FILTER (1)) SELECT 0 FROM t2
+pg	SELECT 256::bigint<<55
+pg	SELECT t0.c1 FROM t0, unnest(t0.c1) AS x(c0) WHERE CAST('true' AS BOOLEAN)
+pg	SELECT test_named_inspect(1, "B" := 2)
+pg	INSERT INTO t0 VALUES (1), (2), (3) RETURNING *, rowid
+pg	INSERT INTO t2
+pg	select * from test where consumption::varchar::decimal(6,1) = 17953.2
+pg	WITH t0 AS (SELECT 2) INSERT INTO t0 (WITH t0 AS (SELECT 2) SELECT 2)
+pg	INSERT INTO t2(c1,c0) VALUES (86,98), (96,107), (237,190), (253,242), (229,9), (6,147)
+pg	SELECT person2_id, person1_id
+pg	SELECT my_extract({a: 1, b: 2, c: 3, d: 4}, 'd')
+pg	SELECT * FROM t0 RIGHT JOIN t1 ON 0 WHERE t0.c0 OR t1.c0 BETWEEN t0.c0 AND 1
+pg	UPDATE properties SET value_int = 5 WHERE elem_id = 1 AND name = 'x'
+pg	set timezone='utc'
+pg	SELECT t0.c0 FROM t0 GROUP BY t0.c0, REVERSE(t0.c0::VARCHAR) ORDER BY 1
+pg	CREATE TABLE broken_strings(f VARCHAR)
+pg	INSERT INTO t VALUES (9, 8536), (9, 8539)
+pg	SELECT REVERSE('S̈a︍')
+pg	INSERT INTO t0 VALUES(-1279354940.9999999999,NULL)
+pg	SELECT make_time(1, 64, 157)
+pg	SELECT * FROM t0, t1 WHERE (t0.rowid IN (0.1::DOUBLE))
+pg	SELECT x, z, m AS m2
+pg	SELECT * FROM t0 WHERE c0 = c0
+pg	delete from y
+pg	SELECT 1000::integer<<21::integer
+pg	SELECT DISTINCT f.friend AS friendid
+pg	SELECT DISTINCT c1, #1, c3, c1, c3, c1, c2 FROM tpch_answers() AS t4(c1, c2, c3) GROUP BY ALL
+pg	set enable_view_dependencies=true
+pg	insert into "E" values (0, 'zero')
+pg	select * from test where date_trunc('day', d) > '2025-01-09'
+pg	SET active_grammar_extensions = ['pipe_query_syntax']
+pg	CREATE TABLE tbl (c01 INT, c02 VARCHAR)
+pg	SELECT rowid c2 FROM t0 GROUP BY ALL ORDER BY (t0.rowid, c2)
+pg	SELECT id FROM t ORDER BY y ASC NULLS FIRST, id ASC LIMIT 10
+pg	DELETE FROM t WHERE chunk_id = 6 AND id BETWEEN 4176 AND 4275
+pg	SELECT * FROM t0 RIGHT JOIN t1 ON(CAST(t1.c1 AS TIMESTAMP) BETWEEN t0.c0 AND t0.c0)
+pg	SELECT encode(s) FROM strings WHERE s LIKE chr(2047) || '%' || 'c' ORDER BY 1
+pg	WITH prev2 AS (SELECT * FROM view_2)
+pg	SELECT t0.*, min(1 ORDER BY COLUMNS(*)) FROM (VALUES ('1')) t0(c0) GROUP BY ALL
+pg	CREATE TABLE t1 AS (SELECT ARRAY[(1, 'x'), (2, 'y'), (4, 's')] AS list)
+pg	select * from test where cast(consumption as int) = 17953
+pg	SELECT DATE '2021-08-31' + INTERVAL '3' MONTH
+pg	CREATE TABLE t0(c0 BOOLEAN UNIQUE, c1 TIMESTAMP, c2 VARCHAR, PRIMARY KEY(c1, c2, c0))
+pg	select ''>'!9t'
+pg	create table foo as select * from range(0, 513) tbl(a)
+pg	SELECT (SELECT nn.wh FROM nn WHERE nn.k = ids.id) AS wh
+pg	SELECT id, parse_filename(filename) FROM read_csv_auto(getvariable('work_dir_localhost') || '/data/csv/hive-partitioning/simple/*/*/test.csv', filename=1) ORDER BY id
+pg	SELECT SUM(-9223372036854775808) AS agg0 FROM (VALUES (0), (1)) t1
+pg	select * from test where date_trunc('day', d) <= '2025-01-07'
+pg	INSERT INTO nullable VALUES (1, 10), (NULL, 20)
+pg	SET delim_join_as_cte = true
+pg	select json_execute_serialized_sql(42) from range(5)
+pg	CREATE INDEX nodes_label ON nodes (label)
+pg	SELECT test_named_varargs(1, 2, 3::SMALLINT)
+pg	insert into t0 VALUES(5)
+pg	SELECT MAX(agg0) FROM (SELECT MAX(t0.c0) AS agg0 FROM t0) as s0
+pg	INSERT INTO dates VALUES('5877642-06-25 (BC)')
+pg	INSERT INTO t1 VALUES(2)
+pg	INSERT INTO other_sales VALUES (1, 1), (1, 2), (2, 2), (4, 2), (NULL, 2)
+pg	create table bar as select a, 1 b from range(0, 513) tbl(a)
+pg	select * from test where date_trunc('day', d) > '2025-01-10'::TIMESTAMPTZ
+pg	insert into "I" values (null, 'this is not null')
+pg	WITH prev3 AS (SELECT * FROM view_3)
+pg	EXPLAIN SELECT 2 * col0  FROM test
+pg	create table t1 as from range(-5000, 5000, 1) t1(a)
+pg	INSERT INTO t0 VALUES(1.0,NULL)
+pg	SELECT current_setting('demo_global_setting')
+pg	SELECT 1 FROM range(1) t2, t0
+pg	CREATE TABLE t(a FLOAT[3], b FLOAT[3])
+pg	CREATE TABLE v0 ( v1 INTEGER )
+pg	EXECUTE v3(NULL)
+pg	create table t as select 123 as a
+pg	INSERT INTO brands (category, brand_name) VALUES ('chocolates', '5-star'), (Null, 'diary milk'), (Null, 'perk'), (Null, 'eclair'), ('Biscuits', 'britannia'), (Null, 'good day'), (Null, 'boost')
+pg	SELECT GROUPING(c1) FROM t0 GROUP BY CUBE(c1) ORDER BY 1
+pg	CREATE TABLE t0 (c1 INT)
+pg	SELECT i, (select sum(i) from integers where j is null and j = i1.j) FROM integers i1 ORDER BY 1
+pg	SET max_memory = '1234kb'
+pg	SELECT percent_rank()
+pg	CREATE TABLE t0(c0 varchar)
+pg	SELECT to_weeks(#4)
+pg	CREATE TABLE ovirt_mac_pool_dedup(id UUID, collected_at TIMESTAMP WITH TIME ZONE, "name" VARCHAR, description VARCHAR, ranges VARCHAR, allow_duplicates BOOLEAN, default_pool BOOLEAN, sig VARCHAR)
+pg	SELECT (SELECT 42 FROM (SELECT c01) POSITIONAL JOIN (SELECT c02))
+pg	SELECT CAST(strftime(TIMESTAMP '1-1-1 0:00:00',340282346638528859811704183484516925440.0) AS DECIMAL(10,2))
+pg	select bitstring_agg(4741, 1706, 1706)
+pg	select * from test where date_trunc('minute', d) >= '2025-01-10 05:11:00'
+pg	SELECT nextval('test') from generate_series(0,20)
+pg	select * from part2, bounds where px<1 or py<1 or px>maxx or py>maxy
+pg	SELECT multilinestring FROM '{WORKING_DIRECTORY}/test/geoparquet/seattle.parquet'
+pg	create table t1 as select range::INT a1, (range + 45)::INT b1, (range)::INT::VARCHAR || '__suffix__' c1 from range(900)
+pg	CREATE MACRO my_specific_struct_extract(field) AS struct_pack(a => 1, b => 2, c => 3, d => 4)[field]
+pg	EXPLAIN SELECT * FROM test WHERE X=NULL
+pg	SELECT #3, first_value(c20) OVER (ORDER BY c40 NULLS LAST ROWS BETWEEN generate_subscripts(c35, -2147483648) PRECEDING AND c14 PRECEDING)
+pg	SELECT * FROM t0, t1 WHERE (t0.rowid IN (0.1::REAL))
+pg	CREATE TABLE tbl(id INTEGER PRIMARY KEY DEFAULT 1, payload INTEGER DEFAULT nextval('seq'))
+pg	SELECT c_pk, c_int
+pg	SELECT * FROM t2 WHERE c1<2
+pg	INSERT INTO broken_strings VALUES ('170141183460469231731687303715884105728'), ('-170141183460469231731687303715884105729'), ('10000000000000000000000000000000000000000000000000000000000000'), ('aaaa'), ('19A'), (''), ('1.A'), ('1.2382398723A'), ('1e++1'), ('1e+1+1'), ('1e+1-1'), ('+'), ('.'), ('.   '), ('10000000000e37')
+pg	select * from test where date_trunc('microsecond', d) >= '2025-01-08'
+pg	SELECT v, count(*), sum(payload) FROM tv GROUP BY v ORDER BY ALL
+pg	CREATE MACRO shadow.prefix(a, b) AS false
+pg	select * from a natural full outer join b, a a1 natural full outer join c order by all
+pg	ATTACH '{TEST_DIR}/eager_agg.duckdb' AS db (ROW_GROUP_SIZE 2048)
+pg	SELECT polygon FROM '{WORKING_DIRECTORY}/test/geoparquet/seattle.parquet'
+pg	CREATE TABLE t0 (c0 int)
+pg	INSERT INTO t2 VALUES (2, 2, 2)
+pg	SELECT NULL FROM main.all_types AS ref_0 INNER JOIN main.all_types AS ref_1 INNER JOIN main.all_types AS ref_2 ON ((SELECT NULL)) INNER JOIN main.all_types ON ((SELECT NULL)) ON (NULL) INNER JOIN main.all_types AS ref_4 ON (ref_4."varchar") INNER JOIN main.all_types AS ref_5 ON (EXISTS(SELECT 79 AS c0 FROM main.all_types AS ref_6 INNER JOIN main.all_types AS ref_7 INNER JOIN main.all_types ON (NULL) ON ((EXISTS(SELECT ref_2.uint AS c0, ref_4."time" AS c1 FROM main.all_types AS ref_9 WHERE (ref_2."varchar" ~~~ ref_5."varchar")) AND (ref_1."varchar" !~~* ref_7."varchar"))) , (SELECT ref_6.utinyint AS c0, (SELECT bit_or(ubigint) FROM main.all_types) AS c1, ref_5.fixed_varchar_array AS c2, ref_10."union" AS c3 FROM main.all_types AS ref_10 WHERE (ref_2."varchar" !~~* ref_0."varchar") LIMIT 159) AS subq_0 WHERE 0 LIMIT 67)) LEFT JOIN main.all_types AS ref_11 ON ((ref_1."time" = ref_11."time")) LIMIT 115
+pg	COPY (SELECT col, geometry FROM '{WORKING_DIRECTORY}/data/geoparquet/data-multilinestring-encoding_wkb.parquet')
+pg	EXPLAIN SELECT *
+pg	INSERT INTO t0 VALUES(NULL,'810092761', 6)
+pg	SELECT upper(decode('\\xF6\\x96\\xB0\\x85'::BLOB, 'strict')::VARCHAR)
+pg	INSERT INTO v00 VALUES (42)
+pg	SELECT name, date FROM ranked WHERE rn = 1 ORDER BY ALL
+pg	INSERT INTO test SELECT range % 5000 FROM range(10000)
+pg	SELECT * FROM t0 WHERE NOT REGEXP_FULL_MATCH(t0.c0, '1')
+pg	COPY (SELECT 42) TO '{TEST_DIR}/parquet_single.parquet'
+pg	SELECT * FROM blobs where b = '\\xAA\\xFF\\xAA'
+pg	select case
+pg	SELECT COUNT(*) FROM tl WHERE data IS NOT NULL
+pg	INSERT INTO t2 VALUES({'a': 42, 'b': '🦆🦆🦆🦆🦆🦆'})
+pg	SELECT ('POINT Z(' || (range % 5) || ' ' || (range % 5) || ' ' || (range % 5) || ')')::GEOMETRY AS g,
+pg	SELECT NULL FROM partsupp AS t6(c1, c2, c3, c4, c5) WHERE (c4 = COLUMNS(* REPLACE (3947 AS c3)))
+pg	SELECT struct_extract(struct_pack(b => 42)::ROW(a INT), 'a')
+pg	DROP SEQUENCE temp.t1
+pg	CREATE TABLE noaccent_strings(s VARCHAR COLLATE NOACCENT)
+pg	SELECT geo_types from parquet_metadata('{TEST_DIR}/test_both.parquet')
+pg	WITH prev AS (SELECT * FROM view_12)
+pg	EXPLAIN SELECT x, z, m
+pg	insert into x default values
+pg	SELECT struct_extract({'a': a}, a) FROM (SELECT a::VARCHAR AS a FROM range(10) tbl(a))
+pg	SELECT test_named_varargs(1, 2, 3, 4, 5)
+pg	SELECT c1, #2 FROM integers GROUP BY ALL
+pg	INSERT INTO t2 VALUES (2), (2)
+pg	EXPLAIN SELECT
+pg	create table infinity_tz_test(d TIMESTAMPTZ)
+pg	UPDATE t0 SET c0 = '1969-12-18'
+pg	INSERT INTO in_left VALUES (1, 1), (2, 8), (11, 8)
+pg	COPY (SELECT 'POINT ZM (0 1 2 3)'::GEOMETRY as geometry) TO '{TEST_DIR}/t1.parquet' (FORMAT 'parquet')
+pg	SELECT point FROM '{WORKING_DIRECTORY}/test/geoparquet/seattle.parquet'
+pg	SELECT 3 AS id, '小熊猫' AS name, '猫' AS category
+pg	INSERT INTO t1(c0) VALUES (0), (0), (1), (-1)
+pg	SELECT count(*) FROM (SELECT id FROM t ORDER BY id OFFSET 7900 LIMIT 50)
+pg	INSERT INTO t1 VALUES (1, 1)
+pg	INSERT INTO t0 VALUES (DATE '2000-01-01')
+pg	CREATE TABLE test (x b)
+pg	INSERT INTO t40(c0) VALUES ('duckdb')
+pg	CREATE OR REPLACE VIEW view_15 AS
+pg	SELECT count(*) OVER (ORDER BY INTERVAL '17768853205' HOUR) FROM t0 GROUP BY ROLLUP (c0)
+pg	insert into tbl2 values (1), (2), (3)
+pg	INSERT INTO points VALUES (3, ({'x': 2, 'y': 3}), ({'i': 5, 'j': 4}))
+pg	SELECT ((SELECT 1::VARCHAR) EXCEPT (SELECT ('\\xF1\\x85\\x96\\xBA'::BLOB)::VARCHAR GROUP BY 1 ORDER BY 1))
+pg	ATTACH '{TEST_DIR}/tmp.duckdb' AS tmp
+pg	INSERT INTO all_types SELECT varchar FROM all_types
+pg	create table tbl(c1 int, c2 int)
+pg	CREATE TABLE t_flag AS SELECT eq_uid_1, 1 AS eq_flag_1 FROM t_uid
+pg	INSERT INTO t1 VALUES(1617540830,1)
+pg	INSERT INTO parent VALUES (1)
+pg	EXPLAIN SELECT count(*), min(i), max(i) FROM t
+pg	INSERT INTO ts VALUES('290309-12-22 (BC) 00:00:00')
+pg	SELECT count(*) FROM duckdb_extensions() WHERE loaded AND extension_name = 'icu'
+pg	CREATE TABLE mytable(i INT)
+pg	select * from test where date_trunc('decade', d) >= '2020-01-01'
+pg	SELECT test_reset_volatile_aggregate()
+pg	SELECT i, (SELECT sum IS NOT NULL FROM (SELECT SUM(i) sum FROM integers i2 WHERE i2.i>i1.i)) t1 FROM integers i1 ORDER BY i
+pg	INSERT INTO t VALUES (9999, 9999)
+pg	INSERT INTO t0 VALUES (4) RETURNING c0 + rowid
+pg	CREATE TABLE t1(c0 INT NOT NULL, c1 AS (1))
+pg	DELETE FROM test WHERE x=2 RETURNING *
+pg	SELECT ROW(NULL)
+pg	CREATE OR REPLACE VIEW view_12 AS
+pg	select * from test3 where date_trunc('hour', d) <> NULL
+pg	select '-1'::hugeint::UINT64
+pg	CREATE TABLE t1(c0 BLOB)
+pg	EXPLAIN SELECT * FROM date_test WHERE d != timestamp '2024-06-15 12:00:00'
+pg	SELECT column_name FROM PRAGMA_STORAGE_INFO('t1') LIMIT 2
+pg	INSERT INTO t2 VALUES (1),(0)
+pg	CREATE TABLE t AS (SELECT * FROM range(8192) _(i), LATERAL (select (i*2) as j))
+pg	SELECT x COLLATE NOCASE FROM t GROUP BY 1
+pg	SELECT (WITH t2 AS (SELECT 3 WHERE count(*) FILTER (1)) SELECT 0 FROM t2)
+pg	explain select * from aaa where name like concat(chr('0x10FFFF'),'%')
+pg	TRUNCATE t0
+pg	CREATE VIEW v0(c0) AS SELECT TAN('1944920781') FROM t90 GROUP BY t90.c0
+pg	EXPLAIN SELECT g, i, sum(i) FROM integers GROUP BY ROLLUP(g, i)
+pg	select date_trunc('day', d) = TIMESTAMP '-infinity',
+pg	CREATE TABLE nocase_strings(s VARCHAR COLLATE NOCASE)
+pg	INSERT INTO test VALUES(1) RETURNING y.*
+pg	CREATE TABLE t1(c0 INT2)
+pg	SELECT coalesce(g::VARCHAR, 'NULL'), count(*) FROM pts GROUP BY g ORDER BY g::VARCHAR NULLS LAST
+pg	insert into t values(null, 21)
+pg	SELECT col, geometry FROM '{TEST_DIR}/data-point-out.parquet'
+pg	INSERT INTO t0(c1, c0) VALUES([], '2023-01-01 00:00:00+00:00'), ([], '2021-01-01 00:00:00+01')
+pg	SELECT 1 FROM t2 JOIN t1 ON (SELECT TRUE FROM t0)
+pg	ANALYZE test(y)
+pg	SELECT CAST(COALESCE(CAST(NULL AS STRUCT(a INTEGER, b VARCHAR)), CAST(NULL AS STRUCT(a INTEGER, b VARCHAR))) AS STRUCT(a INTEGER, b VARCHAR))
+pg	ALTER TABLE t1 ADD c1 INT
+pg	SELECT c0, c0 FROM generate_series(1) t3(c0)
+pg	CREATE TABLE parent(i INTEGER PRIMARY KEY)
+pg	set disabled_optimizers to 'filter_pullup,empty_result_pullup'
+pg	EXPLAIN SELECT 1+1
+pg	SELECT id FROM t ORDER BY y ASC, id ASC LIMIT 10
+pg	SELECT grd_quart, typl, sum(ipondl) AS eft
+pg	select a5, c1 from t1, t5 where b5=b1
+pg	SELECT LN(t1.c0) FROM t0, t1 WHERE LN(t1.c0) < t0.c0
+pg	SELECT DATE '2021-08-31' + INTERVAL '4' MONTH
+pg	ALTER TABLE t1 ALTER c2 SET NOT NULL
+pg	set autoinstall_known_extensions=false
+pg	CREATE TABLE tbl(map MAP(VARCHAR, VARCHAR))
+pg	SELECT struct_extract(struct_pack(a => 42)::STRUCT(a STRING), 'a')
+pg	SELECT l_orderkey, l_partkey, l_extendedprice FROM read_csv('{DATA_DIR}/csv/real/lineitem_sample.csv', delim='|', columns={'l_orderkey': 'INTEGER','l_partkey': 'INTEGER','l_suppkey': 'INTEGER','l_linenumber': 'INTEGER','l_quantity': 'INTEGER','l_extendedprice': 'USMALLINT','l_discount': 'DECIMAL(15,2)','l_tax': 'DECIMAL(15,2)','l_returnflag': 'VARCHAR','l_linestatus': 'VARCHAR','l_shipdate': 'DATE','l_commitdate': 'DATE','l_receiptdate': 'DATE','l_shipinstruct': 'DATE','l_shipmode': 'VARCHAR','l_comment': 'VARCHAR'}, ignore_errors=true, header = 0)
+pg	CREATE TABLE test (x INT, y AS (x + 100))
+pg	CREATE INDEX i0 ON t1 (c0)
+pg	SELECT setseed(0.5)
+pg	SELECT vector_type(COLUMNS(*)) FROM all_types
+pg	CREATE TABLE t0 (c1 INT, c0 INT)
+pg	CREATE OR REPLACE VIEW view_5 AS
+pg	SELECT f.k, min(f.cost) AS cost
+pg	SELECT current_schema() ~~ CAST(NULL AS VARCHAR)
+pg	SELECT (-128)::tinyint<<0::tinyint
+pg	SELECT * FROM person_interest
+pg	INSERT INTO t0(c0) VALUES (-515965088)
+pg	SELECT * FROM t1, t0 WHERE ((t1.c0 AND t0.c0) < 0)
+pg	INSERT INTO array_tbl VALUES('[[1, 2], [1, 2]]')
+pg	SELECT 1 FROM t0, unnest(t0.c1) AS x(c0) WHERE CAST('x' AS BOOLEAN)
+pg	SELECT test_named_inspect(c := 3, b := 2, a := 1)
+pg	CREATE TABLE src(id INTEGER, x INTEGER, keep BOOLEAN)
+pg	INSERT INTO integers VALUES  (1,2)
+pg	SELECT count(*) from test where col_a = 'target_string_we_will_count'
+pg	insert into test2 values ('2025-01-06'), ('2025-01-10')
+pg	SELECT p_personid, ARRAY[]::record[], p_personid
+pg	SELECT t0.rowid, t1.c1, t1.c0 FROM t1, t0 WHERE (((t1.rowid NOT IN (((t1.c1) ::BOOLEAN), ((t1.c0) ::INT1))))AND((false BETWEEN '[' AND t1.c0))) UNION SELECT t0.rowid, t1.c1, t1.c0 FROM t1, t0 WHERE (NOT (((t1.rowid NOT IN (((t1.c1) ::BOOLEAN), ((t1.c0) ::INT1))))AND((false BETWEEN '[' AND t1.c0)))) UNION SELECT t0.rowid, t1.c1, t1.c0 FROM t1, t0 WHERE (((((t1.rowid NOT IN (((t1.c1) ::BOOLEAN), ((t1.c0) ::TINYINT))))AND((false BETWEEN '[' AND t1.c0)))) IS NULL)
+pg	SELECT c15
+pg	SELECT INTERVAL '9223372036854775295' MICROSECONDS
+pg	SELECT v FROM tv ORDER BY payload LIMIT 6
+pg	select '-1'::hugeint::uint8
+pg	SELECT count(DISTINCT order_id), sum(cost) FROM selected_orders o, selected_dim d WHERE o.dim_id = d.id AND d.selected AND EXISTS (SELECT 1 FROM other_sales s WHERE s.order_id = o.order_id AND s.warehouse <> o.warehouse) AND NOT EXISTS (SELECT 1 FROM returned_orders r WHERE r.order_id = o.order_id)
+pg	SELECT col, geometry FROM '{WORKING_DIRECTORY}/data/geoparquet/data-linestring-wkt.csv'
+pg	SELECT 1 AS cohort_definition_id, 'cohort_1' AS cohort_name
+pg	CREATE TABLE t1 (c0 BOOLEAN, c1 BIGINT)
+pg	select * from test where date_trunc('day', d) >= '2025-01-11'
+pg	EXPLAIN SELECT X//1 FROM test
+pg	INSERT INTO date_test VALUES (NULL)
+pg	SELECT NULL FROM repeat('7fb6658b-4f42-44ce-bbd0-b22ba2faf7ad', -32768)
+pg	CREATE TABLE test(X BOOLEAN)
+pg	call dsdgen(sf=0.01, suffix='_normal')
+pg	CREATE TABLE t1 (c1 AS ('abc'), c2 INT)
+pg	SELECT .123456789012345678901234567890::VARCHAR
+pg	SELECT add_point(({'x': 2, 'y': 3})::POINT, ({'x': 3, 'y': 4})::POINT)
+pg	SELECT * FROM t0 NATURAL RIGHT JOIN t1 WHERE (CASE t0.c0 WHEN t0.c0 THEN 1 ELSE NULL END) IS DISTINCT FROM (1 + (CASE t1.c1 WHEN t1.c1 THEN 2 ELSE NULL END))
+pg	SELECT struct_pack(b => '42'::DOUBLE)::STRUCT(a INT, c STRING)
+pg	SELECT col, st_astext(geometry) FROM '{WORKING_DIRECTORY}/data/geoparquet/data-multipolygon-encoding_wkb.parquet'
+pg	SELECT * FROM t1 JOIN t0 ON t0.c0 + t1.c0 < t1.c0 - t0.c0
+pg	EXPLAIN SELECT CASE WHEN 1=0 THEN X+1 ELSE X+2 END FROM test
+pg	SELECT encode("union"::varchar), "double" FROM all_types where "double"
+pg	SELECT "trim"('hello')
+pg	SELECT CASE WHEN range % 5 = 0 THEN 'POINT EMPTY'::GEOMETRY
+pg	create table "E" ("intCol" bigint, "stringCol" varchar)
+pg	EXECUTE p0
+pg	INSERT INTO t0 VALUES(true,'1970-01-01 00:00:00','1970-01-15 02:36:34')
+pg	create schema my_schema
+pg	CREATE TABLE test_num_data (id integer, val decimal(18,10))
+pg	SET disabled_optimizers='deliminator'
+pg	SELECT test_named_agg_inspect(c := 3, b := 2, a := 1)
+pg	SET heap_based_parser={parser_mode}
+pg	CREATE VIEW t1(c1) AS ((SELECT 1) UNION DISTINCT (SELECT 1))
+pg	select TIMESTAMP '-infinity' = date_trunc('day', d),
+pg	SELECT COLUMNS(*) FROM all_types AS t52(c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, c17, c18, c19, c20, c21, c22, c23, c24, c25, c26, c27, c28, c29, c30, c31, c32, c33, c34, c35, c36, c37, c38, c39, c40, c41, c42, c43, c44, c45, c46, c47, c48, c49, c50, c51) GROUP BY ALL HAVING c51
+pg	INSERT INTO t1 (t1a, t1b, t1c, t1d, t1e, t1f, t1g, t1h, t1i) VALUES
+pg	CREATE INDEX i1 ON t0 ((decode('\\x0C\\xE4\\x85\\xF5'::BLOB)::VARCHAR), c1)
+pg	DROP TABLE t1
+pg	CREATE TABLE t2 (c1 INT)
+pg	select a.*, b.*, c.* from a, b natural right outer join c
+pg	INSERT INTO t (id) VALUES (1),(2),(3),(4)
+pg	INSERT INTO test VALUES(false, '{''a'': [NULL, 2, 3], ''b'': [a, NULL, c]}')
+pg	CREATE TABLE v00 ( c01 INTEGER )
+pg	SELECT explicit_schema.dedicated_schema_function()
+pg	SET demo_global_setting = 'bar'
+pg	delete from x
+pg	CREATE TABLE person_interest(person_id BIGINT, tag_id INTEGER)
+pg	SELECT "x-x"."y-y" FROM (SELECT 42) AS "x-x"("y-y")
+pg	create table all_types as select * exclude(small_enum, medium_enum, large_enum) from test_all_types() limit 0
+pg	CREATE TABLE t0 (c1 INT, CHECK (RANDOM() >= 0))
+pg	SELECT * FROM t0 GROUP BY -4.40304405E8 ORDER BY (CASE 1 WHEN 0 THEN 0 ELSE -440304405 END)
+pg	select my_sqrt(distinct range) from range(5)
+pg	INSERT INTO properties (elem_id, name, value_int) VALUES (1, 'x', 5)
+pg	CREATE TABLE selected_dim(id BIGINT, selected BOOLEAN)
+pg	WITH outer_t(k) AS (VALUES (NULL::INTEGER), (2)),
+pg	EXPLAIN SELECT count(*) FROM range(1000000) o(k) LEFT JOIN (SELECT * FROM range(10000000) d(y) WHERE EXISTS (SELECT 1 FROM range(10000000) e(g) WHERE e.g = d.y)) d ON d.y = o.k WHERE o.k < 10 AND EXISTS (SELECT 1 FROM range(10000000) a(x) WHERE a.x = o.k) AND NOT EXISTS (SELECT 1 FROM range(10000000) b(x) WHERE b.x = o.k) AND NOT EXISTS (SELECT 1 FROM range(10000000) c(x) WHERE c.x = o.k)
+pg	select '-1'::hugeint::uint16
+pg	INSERT INTO integers VALUES (1), (2), (3), (NULL)
+pg	CREATE TABLE issue_24711_join (id INTEGER, v INTEGER, ts INTEGER, tag VARCHAR)
+pg	CREATE TABLE other_sales(order_id BIGINT, warehouse BIGINT)
+pg	CREATE INDEX i1 ON t1((get_current_timestamp()), c1)
+pg	select * from test where date_trunc('hour', d) < '2025-01-06 03:00:00'
+pg	INSERT INTO lateral_nested VALUES ({'x': 1, 'y': 2}, 1), ({'x': NULL, 'y': 1}, 2), (NULL, 3), ({'x': 5, 'y': 5}, 4)
+pg	CREATE VIEW t1(c1, c0) AS (SELECT 1, max(c0) FROM t0)
+pg	SELECT id, parse_filename(filename) FROM read_csv_auto(getvariable('work_dir_triple_slash') || '/data/csv/hive-partitioning/simple/*/*/test.csv', filename=1) ORDER BY id
+pg	SELECT {val} = ALL(SELECT {val})
+pg	INSERT INTO t2 SELECT 1 UNION ALL SELECT 2
+pg	SELECT 10::tinyint<<3::tinyint
+pg	SELECT * FROM (SELECT * FROM arrow_scan(NULL, NULL, NULL))
+pg	SELECT 1 FROM (SELECT 2) t0(c0) QUALIFY (count(sum(c0)) OVER())
+pg	SELECT extension_name, install_mode, installed_from, extension_version FROM duckdb_extensions() where installed and extension_name not in ('jemalloc', 'parquet', 'core_functions')
+pg	EXPLAIN SELECT s_name, count(*) AS numwait FROM supplier, lineitem l1, orders, nation WHERE s_suppkey = l1.l_suppkey AND o_orderkey = l1.l_orderkey AND o_orderstatus = 'F' AND l1.l_receiptdate > l1.l_commitdate AND EXISTS (SELECT * FROM lineitem l2 WHERE l2.l_orderkey = l1.l_orderkey AND l2.l_suppkey <> l1.l_suppkey) AND NOT EXISTS (SELECT * FROM lineitem l3 WHERE l3.l_orderkey = l1.l_orderkey AND l3.l_suppkey <> l1.l_suppkey AND l3.l_receiptdate > l3.l_commitdate) AND s_nationkey = n_nationkey AND n_name = 'SAUDI ARABIA' GROUP BY s_name ORDER BY numwait DESC, s_name LIMIT 100
+pg	SELECT t0.c0 AND (t0.c0<<64) FROM t0
+pg	INSERT INTO t0(c0) VALUES (-10)
+pg	INSERT INTO t0 VALUES('19691214 051350'), (1), ('19700118'), (0), ('1969-1214 102704'), ('1969-12-14'), ('1969-12-14 114142'), ('1969-12-30 040325'), ('1969-12-18 044750'), ('1969-12-14 100915')
+pg	EXECUTE v3([1, 2, 3])
+pg	SELECT * FROM t0, t1 WHERE (((t0.rowid IN (0.1::DOUBLE))) IS NULL)
+pg	SELECT count(*)
+pg	CREATE OR REPLACE TABLE t (id INTEGER, x VARCHAR, y DOUBLE)
+pg	SELECT * FROM t0 WHERE t0.c0 <= ROUND(0.1, 1000)
+pg	SELECT ([1, 2, 3])[-9223372036854775808:0]
+pg	INSERT INTO t1 VALUES (ARRAY[(5, NULL), (2, 'T')])
+pg	create table foo as select (random() * 1000)::int a from range(100000)
+pg	select round(col1, 3) from test
+pg	WITH vals(x) AS (VALUES (1))
+pg	EXPLAIN SELECT count(*), sum(payload) FROM outer_fact o LEFT JOIN (SELECT * FROM selected_dim WHERE selected) d ON d.id = o.dim_id WHERE EXISTS (SELECT 1 FROM evidence_a a WHERE a.id = o.id) AND (EXISTS (SELECT 1 FROM evidence_b b WHERE b.id = o.id) OR EXISTS (SELECT 1 FROM evidence_c c WHERE c.id = o.id))
+pg	SELECT * FROM duckdb_constraints()
+pg	SELECT string_agg(s, ',' ORDER BY s COLLATE C)
+pg	SELECT ('str' || (range % 10))::VARCHAR::VARIANT AS v,
+pg	SELECT test_named_inspect(b := 2, c := 3, a := 1)
+pg	SELECT count(*) FROM (SELECT id FROM t ORDER BY id OFFSET 8000 LIMIT 525)
+pg	INSERT INTO flights VALUES
+pg	INSERT INTO t SELECT 0, i FROM range(1, 3650) r(i)
+pg	SELECT 255::{float_type}::UTINYINT
+pg	SELECT CARDINALITY(MAP_FROM_ENTRIES(list)) FROM t1
+pg	EXPLAIN (FORMAT yaml) SELECT v FROM tm ORDER BY payload
+pg	CREATE TABLE s2(t0 INTEGER, a TEXT, b TEXT, UNIQUE (t0, a))
+pg	CREATE TABLE array_tbl(c50 INTEGER[2][])
+pg	CREATE TABLE t0(c0 DOUBLE, c1 TINYINT)
+pg	SELECT count(*) OVER (ORDER BY INTERVAL '17' HOUR) FROM t0 GROUP BY ROLLUP (c0)
+pg	select y+1,substr(r,1,position(E'\\n' in r)-1), substr(r,position(E'\\n' in r)+1)
+pg	CREATE TABLE lateral_nested(a STRUCT(x INTEGER, y INTEGER), k INTEGER)
+pg	UPDATE t0 SET c0=true
+pg	INSERT INTO issue_24711_join VALUES (1, 100, 1, 'a'), (1, 200, 2, 'a')
+pg	INSERT INTO small_vals SELECT (i * 1000000000)::BIGINT FROM range(1000) s(i)
+pg	CREATE TABLE test(i INTEGER, j INTEGER)
+pg	SELECT c0 FROM range(NULL) t3(c0)
+pg	SELECT count(DISTINCT g) FROM pts
+pg	INSERT INTO t6 VALUES(NULL,0)
+pg	CREATE OR REPLACE TABLE t2 (c1 VARCHAR, c2 VARCHAR)
+pg	COPY (SELECT col, geometry::GEOMETRY as geometry FROM '{WORKING_DIRECTORY}/data/geoparquet/data-point-wkt.csv')
+pg	SELECT regexp_extract('foobarbaz', 'B..', 0, NULL)
+pg	Use SET lambda_syntax='ENABLE_SINGLE_ARROW' to revert to the deprecated behavior.
+pg	CREATE TABLE t0(c0 TINYINT)
+pg	INSERT INTO tbl (c01, c02) VALUES (0, 'abc')
+pg	select arg_min(a, a collate noaccent) from tbl
+pg	CREATE TABLE t0(c0 DOUBLE, c1 DOUBLE)
+pg	SELECT o.k, sum(f.v)
+pg	CREATE TABLE nn(k INTEGER, wh INTEGER NOT NULL)
+pg	CREATE OR REPLACE VIEW view_7 AS
+pg	CREATE VIEW web_sales as SELECT
+pg	create view t0 as select * from t where a in (select 123 )
+pg	SELECT * FROM connections ORDER BY source, dest, carrier
+pg	INSERT INTO peers VALUES
+pg	SELECT decode('\\xF0\\x90\\x8D\\x88'::BLOB)::VARCHAR ILIKE '𐍈'
+pg	SELECT 42 OFFSET format_type(NULL, 2515)
+pg	SELECT t1.c0 FROM t1 JOIN t0 ON t1.c0 IN (t0.c0) WHERE t1.c0<=t0.c0
+pg	set autoinstall_known_extensions=true
+pg	INSERT INTO t1 VALUES(-1577416079,1)
+pg	UPDATE t0 SET c1 = 0 FROM t2 JOIN t1 ON (c1)
+pg	SELECT 1 FROM (VALUES (1),(2),(NULL),(4)) t0(c0) WHERE c0 BETWEEN 3 AND (CAST('inf' AS REAL) - 2)
+pg	select * from test2 where date_trunc('day', d) is not distinct from '2025-01-06'
+pg	SELECT 42
+pg	SELECT t1.id, t2.id, t1.val::DECIMAL(38,10) * t2.val FROM test_num_data t1, test_num_data t2 ORDER BY 1, 2
+pg	CREATE TABLE t1 (c0 INT)
+pg	SELECT bitstring_agg(i, 0, 3) FROM range(10) t(i)
+pg	SELECT count(*) OVER w1 WINDOW w1 AS (ORDER BY count(*) OVER w1)
+pg	CREATE TABLE t1(c0 VARCHAR)
+pg	select '012345678901' s
+pg	SELECT a, (SELECT a FROM strings i2 RIGHT JOIN (SELECT SUM(a) sum_a FROM strings i2 WHERE i2.a>i1.a) sq ON i2.a = sq.sum_a) FROM strings i1 ORDER BY 1
+pg	INSERT INTO t1 VALUES (0.9201898334673894), (0)
+pg	with recursive t as (select 1 as x union all select x+1 from t where x < 3) insert into x (select * from t)
+pg	WITH RECURSIVE t(x) AS
+pg	SELECT * FROM tag
+pg	select * from test where date_trunc('day', d) != '2025-01-10'
+pg	CREATE TYPE c AS ENUM('')
+pg	set extension_directory='{LOCAL_EXTENSION_DIR_MALFORMED_INFO}'
+pg	set allow_extensions_metadata_mismatch=true
+pg	set TimeZone='America/St_Johns'
+pg	INSERT INTO t VALUES (1), (2)
+pg	SELECT add_point(point, ({'x': 3, 'y': 4})::POINT) from points
+pg	SELECT t0.c0 FROM t0 GROUP BY t0.c0
+pg	SELECT (SELECT ref_2.i)
+pg	INSERT INTO t1 VALUES (ARRAY[(7,'g'), (NULL, 'Y')])
+pg	UPDATE t0 SET c0 = DEFAULT
+pg	SET delim_join_as_cte = false
+pg	CREATE TABLE working_doubles(f DOUBLE)
+pg	INSERT INTO all_types VALUES('🦆🦆🦆🦆🦆🦆')
+pg	insert into test3 values ('2025-01-06 03:01:00'), ('2025-01-10 05:10:06'), (NULL)
+pg	SELECT col, geometry FROM '{WORKING_DIRECTORY}/data/geoparquet/data-multilinestring-wkt.csv'
+pg	SELECT subq_0.c4 AS c1 FROM (SELECT ref_5.varchar_array AS c4, ref_2.usmallint AS c5 FROM main.all_types AS ref_0 INNER JOIN main.all_types AS ref_1 ON ((ref_1."varchar" !~~* ref_0."varchar")) LEFT JOIN main.all_types AS ref_2 RIGHT JOIN main.all_types AS ref_3 ON ((ref_2."bigint" = ref_3."bigint")) ON ((ref_0.timestamp_tz = ref_2.timestamp_tz)) INNER JOIN main.all_types AS ref_4 ON ((ref_3.dec_18_6 IS NOT NULL)) INNER JOIN main.all_types AS ref_5 ON ((ref_3."varchar" ^@ ref_1."varchar")) WHERE EXISTS(SELECT ref_5.blob AS c0, ref_3.ubigint AS c1 FROM main.all_types AS ref_6 WHERE (ref_2."varchar" !~~* ref_4."varchar") LIMIT 120)) AS subq_0 WHERE EXISTS(SELECT ref_7."map" AS c0, subq_0.c5 AS c1 FROM main.all_types AS ref_7 WHERE (ref_7."varchar" ~~~ ref_7."varchar") LIMIT 118)
+pg	select * from test2 where date_trunc('day', d) is distinct from '2025-01-10'
+pg	SELECT struct_extract(struct_pack(a => '42'::DOUBLE)::STRUCT(a INT), 'a')
+pg	CREATE SEQUENCE t4
+pg	SELECT t96.c0, t0.rowid, t0.c1, t96.c2 FROM t0, t96 WHERE (TIMESTAMP '1969-12-28 13:59:01' LIKE INSTR(t0.c1, t96.c0) ESCAPE RTRIM(DATE '1969-12-23')) UNION ALL SELECT t96.c0, t0.rowid, t0.c1, t96.c2 FROM t0, t96 WHERE (NOT (TIMESTAMP '1969-12-28 13:59:01' LIKE INSTR(t0.c1, t96.c0) ESCAPE RTRIM(DATE '1969-12-23'))) UNION ALL SELECT t96.c0, t0.rowid, t0.c1, t96.c2 FROM t0, t96 WHERE (((TIMESTAMP '1969-12-28 13:59:01' LIKE INSTR(t0.c1, t96.c0) ESCAPE RTRIM(DATE '1969-12-23'))) IS NULL)
+pg	select i, a.i, b.i, c.i from a natural full outer join b natural full outer join (values (44)) c(i) order by 1
+pg	EXPLAIN SELECT NULL::BOOLEAN
+pg	CREATE OR REPLACE VIEW view_10 AS
+pg	INSERT INTO nested_inner VALUES ({'x': NULL, 'y': 1}), ({'x': 1, 'y': 2})
+pg	SELECT .0::VARCHAR
+pg	select '65535'::UINT16::HUGEINT
+pg	CREATE INDEX i0 ON t1 (c2)
+pg	EXPLAIN SELECT 6
+pg	SELECT 255::bigint<<55
+pg	INSERT INTO t VALUES (1, 3650)
+pg	INSERT INTO t0(c1) VALUES (-1)
+pg	CREATE OR REPLACE VIEW view_4 AS
+pg	SELECT f1 FROM BOOLTBL1 WHERE f1 = NOT FALSE
+pg	SELECT 18446744073709550591::DOUBLE::UBIGINT
+pg	USE issue5232_small
+pg	SELECT * FROM t1 JOIN t0 ON t1.c1 WHERE (t1.c0<<-1)
+pg	CREATE TABLE t0(c0 BIT)
+pg	select '-1'::hugeint::uint32
+pg	SELECT count(*), sum(payload) FROM outer_fact o LEFT JOIN (SELECT * FROM selected_dim WHERE selected) d ON d.id = o.dim_id WHERE EXISTS (SELECT 1 FROM evidence_a a WHERE a.id = o.id) AND (EXISTS (SELECT 1 FROM evidence_b b WHERE b.id = o.id) OR EXISTS (SELECT 1 FROM evidence_c c WHERE c.id = o.id))
+pg	SELECT count(*) FILTER (WHERE EXISTS (SELECT 1 FROM range(2) b(x) WHERE b.x = q.v) OR EXISTS (SELECT 1 FROM range(2, 3) c(x) WHERE c.x = q.v)) FROM (SELECT o.k, (SELECT e.x FROM range(6) e(x) WHERE e.x = o.k AND e.x < 3) v FROM range(6) o(k)) q
+pg	CREATE TABLE test(t timestamp)
+pg	WITH prev AS (SELECT * FROM view_6)
+pg	USE nullif_map_issue
+pg	SELECT 1000::smallint<<5::smallint
+pg	CREATE TABLE t0 (c2 INT CONSTRAINT k0 UNIQUE, c0 DECIMAL, CONSTRAINT k1 FOREIGN KEY (c0) REFERENCES t0 (c2))
+pg	INSERT INTO t0(c0) VALUES (''), (0)
+pg	SELECT sub_point(point, NULL::POINT) from points
+pg	SELECT test_named_overload(1, 2)
+pg	SELECT t0.*, min(1 ORDER BY ALL) FROM (VALUES ('1')) t0(c0) GROUP BY ALL
+pg	SET debug_verify_serializer = false
+pg	EXPLAIN (FORMAT yaml) SELECT v FROM td ORDER BY payload
+pg	SELECT TIMESTAMP '2000-01-01 23:59:00' + INTERVAL 1 MINUTE
+pg	SELECT s.min, s.max, s.has_null, s.has_no_null, s.approx_unique FROM (SELECT stats(x) s FROM test LIMIT 1)
+pg	SET enable_logging=true
+pg	SELECT t0.rowid FROM t0, t1 LEFT JOIN v0 ON (1) WHERE t0.c0 >= v0.c0 AND t0.c0 <= v0.c0
+pg	SELECT struct_extract_at({'a': 42}, 0)
+pg	SELECT col, geometry FROM '{WORKING_DIRECTORY}/data/geoparquet/data-multipoint-encoding_wkb.parquet'
+pg	CREATE TABLE t1 (c2 INT, c1 INT)
+pg	SELECT region, product, SUM(amount), COUNT(*) FROM empty_sales GROUP BY ROLLUP(region, product) ORDER BY ALL
+pg	set extension_directory='{TEST_DIR}/install_version'
+pg	CREATE TABLE person_knows(person1_id BIGINT, person2_id BIGINT)
+pg	CREATE TABLE t1 (c0 INT CHECK (current_schema()='main'))
+pg	SELECT id, actual, expected
+pg	SELECT f::HUGEINT::FLOAT FROM working_floats
+pg	SELECT clause without selection list
+pg	WITH prev AS (SELECT * FROM view_13)
+pg	CREATE TABLE t1(c0 NUMERIC, c1 DATE DEFAULT(true), PRIMARY KEY(c1))
+pg	INSERT INTO tbl VALUES (42)
+pg	CREATE VIEW catalog_page as SELECT
+pg	with foo as (with foo as (select 1) select * from foo) select * from foo
+pg	CREATE TABLE pp_test_cohort AS
+pg	create table t1 (i json)
+pg	CREATE VIEW t1 AS SELECT 1 c0
+pg	CREATE TABLE categories (id INTEGER, "description" TEXT)
+pg	SELECT l.a, r.b
+pg	SELECT multiply("interval", "bigint")
+pg	SELECT test_named_overload(b := 2, a := 1)
+pg	SELECT 1 FROM nested_inner
+pg	INSERT INTO t0 VALUES(4, 3)
+pg	SELECT t, z
+pg	WITH c AS MATERIALIZED (SELECT v FROM small_vals) SELECT sum(v) FROM c
+pg	SELECT c0 FROM range(NULL, NULL, NULL) t3(c0)
+pg	SELECT i, (SELECT SUM(i) AND false FROM integers i2 WHERE i2.i>i1.i) FROM integers i1 ORDER BY i
+pg	SELECT c0, exp(c0) IS NULL FROM t1
+pg	select list_extract([1, 2, 3], NULL)
+pg	explain SELECT sum(l_extendedprice) / 7.0 AS avg_yearly FROM lineitem, part WHERE p_partkey = l_partkey AND p_brand = 'Brand#23' AND p_container = 'MED BOX' AND l_quantity < ( SELECT 0.2 * avg(l_quantity) FROM lineitem WHERE l_partkey = p_partkey)
+pg	SELECT d, d IS DISTINCT FROM timestamp '2024-06-15 12:00:00' AS r FROM date_test ORDER BY d
+pg	select * from test where date_trunc('day', d) = '2025-01-06'
+pg	CREATE TABLE evidence_c(id BIGINT)
+pg	explain select a, b, sum(v)::bigint as s from grouping_set_cm group by rollup(a, b)
+pg	SELECT 0.0 + count(*) AS cnt
+pg	SELECT grp, subgrp, grp + subgrp, COUNT(*) FROM measurements GROUP BY ROLLUP(grp, subgrp, grp + subgrp) ORDER BY ALL LIMIT 15
+pg	SELECT GROUPING(g), GROUPING(h), list(v ORDER BY v), list(v ORDER BY v DESC), count(*)
+pg	SELECT * FROM t0 WHERE t0.c0 = ''
+pg	SELECT count(*) c1 HAVING EXISTS (SELECT 1 FROM t1 WHERE c1 = c0)
+pg	select * from test where date_trunc('day', d) is not distinct from '2025-01-06'
+pg	SELECT '552.123242346e+11'::DECIMAL
+pg	SELECT GROUPING(g), g, list(v ORDER BY v)
+pg	SELECT x FROM t GROUP BY 1
+pg	EXPLAIN SELECT o.k, sum(f.v)
+pg	SELECT test_volatile_aggregate(v)
+pg	INSERT INTO blobs VALUES('\\xaa\\xff\\xaa'), ('\\xAA\\xFF\\xAA\\xAA\\xFF\\xAA'), ('\\xAA\\xFF\\xAA\\xAA\\xFF\\xAA\\xAA\\xFF\\xAA')
+pg	CREATE TABLE edges (id BIGINT PRIMARY KEY,from_node_id BIGINT NOT NULL,to_node_id BIGINT NOT NULL,label STRING NOT NULL,UNIQUE (from_node_id, to_node_id, label))
+pg	create view strings as (with recursive t(a) as (select 1 union select a+1 from t where a < 3) select * from t order by a)
+pg	select i + 1 AS i, (from fun()) AS j
+pg	CREATE TABLE nodes (  id BIGINT PRIMARY KEY,  label VARCHAR NOT NULL)
+pg	SELECT count(*) FROM t t1 JOIN t t2 ON array_cosine_similarity(t1.a, t2.a) IS NOT NULL
+pg	SET warnings_as_errors = False
+pg	SELECT 1 FROM t4 JOIN t3 ON 0 WHERE EXISTS (SELECT 1 INTERSECT SELECT 1 FROM t4 JOIN t3 t0(c1) ON 0 WHERE NOT c0)
+pg	SELECT 1 FROM (SELECT 1) t0(c0) WHERE (SELECT (SELECT 1 LIMIT c0))
+pg	SELECT id, wh,
+pg	select * from test where date_trunc('millennium', d) >= '2000-01-01'
+pg	CREATE TABLE strings(b REAL, a INTEGER)
+pg	select * from test2 where date_trunc('day', d) < '2025-01-08'
+pg	SELECT X//0 FROM (VALUES (1)) t(X)
+pg	set Calendar='gregorian'
+pg	INSERT INTO sales VALUES (1, date '2020-03-01', 10), (2, date '2020-03-01', 3), (4, date '2020-03-01', 4), (1, date '2020-03-02', 6), (4, date '2020-03-02', 5), (5, date '2020-03-02', 2), (1, date '2020-03-03', 7), (3, date '2020-03-03', 4), (2, date '2020-03-03', 3), (5, date '2020-03-03', 1), (6, date '2020-03-03', 1)
+pg	select *, * from a, b natural right outer join c
+pg	SELECT CASE WHEN range % 10 = 9 THEN 'LINESTRING(0 0, 1 1)'::GEOMETRY
+pg	SELECT * FROM t0 WHERE (((0.7839485854397868 BETWEEN false AND PRINTF(((0.8341154324178778)NOT SIMILAR TO(t0.c0)), NULL, ((0.9015841357551267) ::VARCHAR), DATE '1969-12-25')))AND(t0.rowid))
+pg	call dbgen(sf=0.1)
+pg	select sqrt(distinct range) from range(5)
+pg	INSERT INTO t0 VALUES(0.3041233556253911674,NULL)
+pg	SELECT i, (select CONCAT(SUM(i), 'hello') from integers where j = i1.j) FROM integers i1 ORDER BY 1
+pg	SELECT test_named_varargs(1)
+pg	INSERT INTO t0(c0) VALUES (NULL)
+pg	CALL checkpoint(NULL)
+pg	SET delim_join_as_cte=true
+pg	CREATE TABLE all_types AS FROM test_all_types()
+pg	select 1 from t0 as {table_alias}(c0)
+pg	create table test as
+pg	CREATE TABLE t96(c0 DATE, c1 BOOLEAN, c2 DATE, PRIMARY KEY(c2))
+pg	SELECT i, (SELECT COUNT(sum) FROM (SELECT SUM(i) sum FROM integers i2 WHERE i2.i>i1.i) t2) t1 FROM integers i1 ORDER BY i
+pg	INSERT INTO t1 VALUES(-790542135,0)
+pg	SELECT extract(YEAR FROM m.m_creationdate) as year
+pg	SELECT 6 OFFSET count(*) FILTER ((SELECT 2 UNION (SELECT 2) OFFSET (SELECT LAST))) OVER ()
+pg	SELECT 1000::integer<<22::integer
+pg	CREATE TABLE t0 (c0 VARCHAR, c1 INT)
+pg	EXPLAIN SELECT * FROM date_test WHERE d = timestamp '2024-06-15 12:00:00'
+pg	VALUES ('A', '2022-01-01'::DATE)
+pg	UPDATE foo SET b = "bar"."b" FROM "bar" WHERE bar.a = foo.a
+pg	SELECT count() as c0 FROM (SELECT 1) t1(c2) HAVING 1 = (SELECT c0 WHERE EXISTS (SELECT 1))
+pg	SELECT c50 FROM array_tbl_three_level GROUP BY ALL USING SAMPLE 3 ORDER BY ALL
+pg	create table y(y int, foreign key (y) references y(y))
+pg	insert into my_table(name) values('Someone')
+pg	SELECT * FROM v0, t0 WHERE ((((v0.c1) ::DATE))=(v0.c0)) UNION SELECT * FROM v0, t0 WHERE (NOT ((((v0.c1) ::DATE))=(v0.c0))) UNION SELECT * FROM v0, t0 WHERE ((((((v0.c1) ::DATE))=(v0.c0))) IS NULL)
+pg	INSERT INTO t1 VALUES(-7730557,0)
+pg	SELECT 1::MINMAX(500, 1000)
+pg	SELECT 65535::{float_type}::USMALLINT
+pg	SELECT v0.c2 FROM v0 WHERE (NOT (v0.c1 IS NOT NULL))
+pg	create table x (x int primary key)
+pg	select sqrt(range order by range) from range(5)
+pg	CREATE TABLE t0 AS VALUES (1), (2), (3)
+pg	INSERT INTO t_multi_ref VALUES
+pg	INSERT INTO t VALUES (NULL)
+pg	INSERT INTO test_num_data VALUES (1, '-0.0')
+pg	SELECT f::HUGEINT FROM (SELECT f FROM broken_floats ORDER BY f LIMIT 1 OFFSET {i}) t1
+pg	create table test as select range i from range(10000)
+pg	INSERT INTO t1 VALUES(-1665756361,0)
+pg	SELECT regexp_extract('foobarbaz', 'B..', 0, 42)
+pg	SELECT count(*), sum(a) FROM (SELECT a, b FROM (SELECT a, b, sum(b) OVER (PARTITION BY a) FROM (SELECT a, b FROM (SELECT a, b, sum(b) OVER (PARTITION BY a) FROM (SELECT a, b FROM t))))) WHERE a < 50
+pg	SELECT ids.id, nn.wh, 0
+pg	SELECT col, geometry::GEOMETRY FROM '{WORKING_DIRECTORY}/data/geoparquet/data-multipoint-wkt.csv'
+pg	SELECT julian(c1)
+pg	SELECT m.m_messageid AS "message.id"
+pg	SELECT c0 FROM t1 WHERE exp(c0) IS NULL
+pg	select arg_max(i, d), arg_max(d, i) from test
+pg	CREATE OR REPLACE TABLE t1 AS (SELECT * FROM range(10) ORDER BY 1) UNION ALL (SELECT * FROM range(10) ORDER BY 1)
+pg	WITH termids(termid) AS (SELECT 1)
+pg	SELECT f::HUGEINT::DOUBLE FROM working_doubles
+pg	SELECT f1 FROM BOOLTBL1 WHERE NOT FALSE = f1
+pg	SELECT group_id, category, COUNT(*) AS cnt
+pg	EXPLAIN SELECT X FROM test
+pg	with y(y) as (select 2) delete from x using (select y) z(z) where x = z
+pg	SELECT l_shipinstruct FROM read_csv('{DATA_DIR}/csv/real/lineitem_sample.csv', delim='|', columns={'l_orderkey': 'INTEGER','l_partkey': 'INTEGER','l_suppkey': 'INTEGER','l_linenumber': 'INTEGER','l_quantity': 'INTEGER','l_extendedprice': 'DECIMAL(15,2)','l_discount': 'DECIMAL(15,2)','l_tax': 'DECIMAL(15,2)','l_returnflag': 'VARCHAR','l_linestatus': 'VARCHAR','l_shipdate': 'DATE','l_commitdate': 'DATE','l_receiptdate': 'DATE','l_shipinstruct': 'DATE','l_shipmode': 'VARCHAR','l_comment': 'VARCHAR'}, ignore_errors=true)
+pg	SELECT t0.c1 FROM t0 WHERE '' = t0.c0
+pg	ALTER TABLE t2 ALTER c1 SET DEFAULT 0
+pg	CREATE TABLE INT8_TBL(q1 int8, q2 int8)
+pg	CREATE INDEX i1 ON t1 (c1)
+pg	CREATE TABLE peers(rid INTEGER, k INTEGER, x INTEGER, keep BOOLEAN)
+pg	INSERT INTO t0 VALUES('2023-10-10 00:00:00+00:00', NULL)
+pg	SELECT 1, 2
+pg	select * from foo
+pg	SELECT * FROM c0 s1 INNER JOIN c0 s2 ON (SELECT s1.s2=s2 FROM c0 WHERE s2.s2=s2) ORDER BY s1.s2
+pg	create macro my_sqrt(x) as sqrt(x)
+pg	SELECT test_named_ambig(y := 2::INTEGER, x := 1::INTEGER)
+pg	SELECT id, name, CEIL(a / b) AS score
+pg	SELECT * FROM t0 WHERE t0.c0::BOOL = true; -- expected: {-1}, actual: {}
+pg	SELECT test_named_inspect(b := 2)
+pg	alter table t2 add column my_col inet
+pg	alter table t1 add column my_col json
+pg	SET disabled_optimizers = 'grouping_sets'
+pg	create table strings (a VARCHAR, b VARCHAR)
+pg	CREATE TABLE t1(c0 FLOAT, c1 TIMESTAMP, c2 FLOAT)
+pg	CREATE TABLE t0(c0 DOUBLE UNIQUE)
+pg	CREATE TABLE payload_fact(k INTEGER, supplier_id INTEGER, cost INTEGER)
+pg	SELECT 1 FROM (SELECT 2) t0(c0) QUALIFY (c0, dense_rank() OVER(), mode(0))
+pg	DELETE FROM strings
+pg	INSERT INTO working_floats VALUES (10.0), (-10.0), (32767.0), (-32767.0), (1.3), (-2.7), (2000000000.0), (-2000000000.0), (4000000000000000000.0), (-4000000000000000000.0), (1329227995784915872903807060280344576.0), (-1329227995784915872903807060280344576.0)
+pg	COPY (SELECT col, geometry FROM '{WORKING_DIRECTORY}/data/geoparquet/data-multipoint-encoding_wkb.parquet')
+pg	INSERT INTO t0 VALUES(-65407698.000000000001,NULL)
+pg	CREATE TABLE t0(c0 BIGINT, c1 SMALLINT, c2 VARCHAR COLLATE NOACCENT)
+pg	INSERT INTO t VALUES (4, 888), (4, 888)
+pg	create table "I" ("intCol" bigint, "stringCol" varchar)
+pg	SELECT struct_pack(b => 'hello'::STRING)::STRUCT(a INT)
+pg	SELECT messageYear, isComment, lengthCategory
+pg	SELECT * FROM t0 WHERE t0.c0::VARCHAR NOT SIMILAR TO 0::VARCHAR
+pg	select * from test where date_trunc('minute', d) >= '2025-01-10 05:10:00'
+pg	SELECT 1 FROM (SELECT 1) t1(c0) GROUP BY ALL HAVING EXISTS (SELECT 1 FROM (SELECT 1) t0(c2) HAVING c0)
+pg	select 1 = all(select 1)
+pg	INSERT INTO t1 VALUES (0,0)
+pg	INSERT INTO t0 VALUES(1974405738.9999999999,NULL)
+pg	SELECT count(*) FROM t t1 JOIN t t2 ON array_cosine_similarity(t1.a, t2.a) IS NULL
+pg	EXPLAIN SELECT s FROM plain_strings WHERE regexp_matches(s, 'A')
+pg	CREATE TABLE t1 (c1 INT, c2 INT)
+pg	CREATE TABLE issue_24806_multiplicity(k INTEGER, g INTEGER)
+pg	INSERT INTO t0(c0) VALUES (1163404482), (0), (488566)
+pg	EXECUTE v1(NULL)
+pg	CREATE TABLE t1(col1 INT, col2 INT)
+pg	SET scalar_subquery_error_on_multiple_rows=false
+pg	ANALYZE test
+pg	SELECT i, (SELECT COUNT(*) FROM (SELECT SUM(i) FROM integers i2 WHERE i2.i>i1.i)) t1 FROM integers i1 ORDER BY i
+pg	INSERT INTO t1 VALUES (42, 'hello')
+pg	EXPLAIN SELECT * FROM date_test WHERE d >= timestamp '2024-06-15 12:00:00'
+pg	SELECT * FROM cost_stats
+pg	SELECT t0, t1, EXISTS (SELECT * FROM u WHERE u0 = t0 AND u1 < t1) FROM t ORDER BY t0, t1
+pg	CREATE UNIQUE INDEX i0 ON t0(c0)
+pg	create table a as select 42 as i, 80 as j
+pg	EXPLAIN SELECT x, z,
+pg	SELECT * FROM df_a WHERE S='a'
+pg	insert into "I" values (2, 'due')
+pg	INSERT INTO test VALUES(1) RETURNING {'i' : x, 'j' : y}
+pg	CREATE TABLE tbl_X (ColID int, NItems int)
+pg	SELECT count(*),max(i),min(i) FROM t where i >=204 and j >=4096
+pg	SELECT 0 FROM t0 WHERE ? IN (1)
+pg	ALTER TABLE t1 ALTER c0 TYPE USMALLINT
+pg	update t1284791a set val1 = (select val2 from t1284791b where id1 = id2) where id1 in (select id2 from t1284791b)
+pg	SELECT test_named_inspect(c := 3, a := 1)
+pg	SELECT dedicated_schema_function()
+pg	EXECUTE v1(1)
+pg	SELECT subq_0.i AS c1
+pg	WITH prev1 AS (SELECT * FROM view_1)
+pg	INSERT INTO left_small VALUES
+pg	EXPLAIN SELECT X::BIGINT='1' FROM test
+pg	SELECT y.c
+pg	CREATE TABLE the_table AS (SELECT range the_id FROM range(2_500_000) ORDER BY RANDOM())
+pg	EXECUTE v1(0)
+pg	create table MY_TABLE(NAME String)
+pg	select f.y, k.c1, count(*) FROM foo f, (Select UNLIST(string_split("x", ', ')) c1) k group by y, k.c1
+pg	SELECT TRY_CAST(i AS TIMESTAMP WITH TIME ZONE[]) FROM integers
+pg	SELECT i, (SELECT sum IS NULL FROM (SELECT SUM(i) sum FROM integers i2 WHERE i2.i>i1.i)) t1 FROM integers i1 ORDER BY i
+pg	ANALYZE test(x)
+pg	CREATE TABLE t(i INTEGER, j INTEGER)
+pg	EXPLAIN SELECT X>NULL FROM test
+pg	SELECT * FROM v0 RIGHT JOIN t1 ON 1
+pg	CREATE MACRO shadow.constant_or_null(a, b) AS false
+pg	SELECT fp_forumid as forumid
+pg	SELECT count() as c0 FROM (SELECT 1) t1(c2) GROUP BY c0 HAVING 1 = (SELECT c0 WHERE EXISTS (SELECT 1))
+pg	INSERT INTO t0(c0) VALUES (1)
+pg	SELECT struct_extract(struct_pack(a := 40, b := 2), 'a')
+pg	SELECT test_named_agg_inspect(c := 3, a := 1)
+pg	SELECT tt.root_tagclassname AS "tagClass.name"
+pg	INSERT INTO payload_fact VALUES (1, 10, 7), (1, 20, 5), (1, 30, 1), (2, 10, 9), (2, 20, 9), (3, 10, 2)
+pg	SELECT '1' LIKE []
+pg	SELECT bitstring_agg(i) FROM integers
+pg	SELECT 1 FROM t1 WHERE decode('\\xC0'::BLOB) IS NULL; --1 row, wrong?
+pg	CREATE TABLE t1(c0 INT, c1 VARCHAR)
+pg	CREATE TABLE t0(c0 VARCHAR COLLATE NOCASE)
+pg	CREATE MACRO my_specific_string_extract(index) AS '1234'[index]
+pg	SELECT contains(loaded_extensions(), 'loadable_extension_demo')
+pg	CREATE TABLE working_strings(f VARCHAR)
+pg	SET default_block_size = 262144
+pg	INSERT INTO t0 VALUES (2)
+pg	INSERT INTO INT8_TBL VALUES
+pg	CREATE VIEW income_band as SELECT
+pg	ALTER TABLE t0 DROP c1
+pg	set autoinstall_extension_repository='{LOCAL_EXTENSION_REPO}'
+pg	EXPLAIN SELECT count(*), sum(payload) FROM outer_fact o WHERE EXISTS (SELECT 1 FROM evidence_a a WHERE a.id = o.id AND EXISTS (SELECT 1 FROM evidence_c c WHERE c.id = a.id)) AND NOT EXISTS (SELECT 1 FROM evidence_b b WHERE b.id = o.id)
+pg	CREATE OR REPLACE VIEW view_2 AS
+pg	SELECT st_astext(st_geomfromwkb(geometry)) FROM '{TEST_DIR}/t1.parquet'
+pg	EXPLAIN SELECT count(*)
+pg	SELECT TRUE WHERE CASE MAP { } WHEN 'abc' [ ('any_string' IN (NULL::VARCHAR)): ] THEN TRUE END
+pg	select min(a) from tbl
+pg	select (select 1) a1, (select 3) as a3, c0
+pg	select x,y,0 from startpos
+pg	SELECT column_name FROM PRAGMA_STORAGE_INFO('t0') LIMIT 2
+pg	SELECT DATE '2021-08-31' - INTERVAL '6' MONTH
+pg	explain SELECT sum(l_extendedprice) / 7.0 AS avg_yearly FROM lineitem, part WHERE p_partkey = l_partkey AND l_quantity < (SELECT 0.2 * avg(l_quantity) FROM lineitem WHERE l_partkey = p_partkey)
+pg	EXPLAIN SELECT CASE WHEN 1=1 THEN X+1 ELSE X+2 END FROM test
+pg	SELECT test_named_agg_inspect(1, c := 3)
+pg	SELECT o.k, d.label, sum(f.v)
+pg	DROP SEQUENCE seq
+pg	INSERT INTO src VALUES (1, 0, true), (2, 100, true), (3, 10, true), (4, 20, false), (5, 30, true)
+pg	create table u(u0 int, u1 int)
+pg	SELECT d FROM date_test WHERE timestamp '2024-06-15 12:00:00' < d ORDER BY d
+pg	SELECT * FROM t1 JOIN t0 ON t1.c1 WHERE NOT (t1.c0<<-1)
+pg	INSERT INTO t_constant VALUES
+pg	SELECT c1 FROM tbl GROUP BY c1 QUALIFY cume_dist() OVER (ROWS BETWEEN c1 PRECEDING AND CURRENT ROW)
+pg	with cte as (select 42 AS a) UPDATE EXTENSIONS
+pg	SELECT SUM(i), SUM(i) FILTER (i%2) FROM range(10) tbl(i)
+pg	select * from test2 where date_trunc('day', d) >= '2025-01-10'
+pg	SELECT DISTINCT TRY_CAST(COLUMNS(*) AS HUGEINT) FROM all_types AS t51(c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, c17, c18, c19, c20, c21, c22, c23, c24, c25, c26, c27, c28, c29, c30, c31, c32, c33, c34, c35, c36, c37, c38, c39, c40, c41, c42, c43, c44, c45, c46, c47, c48, c49, c50) ORDER BY c14 DESC NULLS FIRST
+pg	SELECT col, geometry FROM '{TEST_DIR}/data-multipolygon-out.parquet'
+pg	SELECT count(*) FROM (SELECT x FROM range(200000) c(x) WHERE x < 150000 AND NOT EXISTS (SELECT 1 FROM range(1000000) o(y) WHERE y = x)) t
+pg	SELECT col, geometry FROM '{WORKING_DIRECTORY}/data/geoparquet/data-multipolygon-wkt.csv'
+pg	SELECT psa.psa_threadid AS psa_threadid
+pg	SELECT m.friendid AS "person.id"
+pg	SELECT avg(0) c0, (SELECT 0 OFFSET c0 + 1)
+pg	INSERT INTO t0 VALUES (1), (0), (1)
+pg	CREATE OR REPLACE TABLE produce(item VARCHAR, category VARCHAR, sales INTEGER)
+pg	SELECT CARDINALITY(CAST(NULL AS MAP(VARCHAR, INT)))
+pg	SELECT (decode(value)) as col
+pg	SELECT id, SUM(x) OVER (PARTITION BY p) AS partition_sum
+pg	WITH prev AS (SELECT * FROM view_8)
+pg	select * from test2 where date_trunc('hour', d) >= '2025-11-02T02:30:00+00'::TIMESTAMPTZ
+pg	INSERT INTO t0 VALUES (8)
+pg	SELECT test_named_inspect(NULL)
+pg	select * from test where '2025-01-08' < date_trunc('day', d)
+pg	SELECT test_named_inspect(z := 1)
+pg	SELECT ref_1.fixed_nested_int_array AS c2
+pg	SELECT id, val
+pg	SELECT d, d IS NOT DISTINCT FROM timestamp '2024-06-15 12:00:00' AS r FROM date_test ORDER BY d
+pg	create table test(d TIMESTAMPTZ)
+pg	INSERT INTO t0(c0) VALUES (4)
+pg	SET warnings_as_errors = True
+pg	INSERT INTO t1(c0,c1) VALUES ('test2',52)
+pg	select list_extract(null, 1)
+pg	SELECT count(*) FROM pts a JOIN pts b USING (g)
+pg	SELECT (SELECT 1 WHERE 1 IN (c0) GROUP BY ()) FROM (SELECT 1) t0(c0)
+pg	SELECT t0.rowid, t0.c0, t0.c1 FROM t0 WHERE (t0.c1 IN (true::DOUBLE, 0.478943091545613)) GROUP BY t0.rowid, t0.c0, t0.c1 UNION SELECT t0.rowid, t0.c0, t0.c1 FROM t0 WHERE (NOT (t0.c1 IN (true::DOUBLE, 0.478943091545613))) GROUP BY t0.rowid, t0.c0, t0.c1 UNION SELECT t0.rowid, t0.c0, t0.c1 FROM t0 WHERE (((t0.c1 IN (true::DOUBLE, 0.478943091545613))) IS NULL) GROUP BY t0.rowid, t0.c0, t0.c1 ORDER BY 1, 2, 3
+pg	EXPLAIN SELECT * FROM t WHERE list_has([], a)
+pg	CREATE TABLE nested_outer(s STRUCT(x INTEGER, y INTEGER))
+pg	SELECT d FROM date_test WHERE d != timestamp '2024-06-15 00:00:00' ORDER BY d
+pg	SET wal_autocheckpoint='1MiB'
+pg	SELECT 1 FROM t1 WHERE -9223372036854775808 >= (6892203265207104503 - (-7595956987701092486))
+pg	SELECT t1.c0, t1.c1, t0.c2, t0.c0, t0.c1 FROM t1, t0 WHERE (((CASE ((t1.c0)*(0.537)) WHEN 0.09857124523209415 THEN (0.915585828038032::VARCHAR IN (t0.c2)) ELSE t1.c0 END )) IS NOT NULL) GROUP BY t1.c0, t1.c1, t0.c2, t0.c0, t0.c1 UNION SELECT t1.c0, t1.c1, t0.c2, t0.c0, t0.c1 FROM t1, t0 WHERE (NOT (((CASE ((t1.c0)*(0.537)) WHEN 0.09857124523209415 THEN (0.915585828038032::VARCHAR IN (t0.c2)) ELSE t1.c0 END )) IS NOT NULL)) GROUP BY t1.c0, t1.c1, t0.c2, t0.c0, t0.c1 UNION SELECT t1.c0, t1.c1, t0.c2, t0.c0, t0.c1 FROM t1, t0 WHERE (((((CASE ((t1.c0)*(0.537)) WHEN 0.09857124523209415 THEN (0.915585828038032::VARCHAR IN (t0.c2)) ELSE t1.c0 END )) IS NOT NULL)) IS NULL) GROUP BY t1.c0, t1.c1, t0.c2, t0.c0, t0.c1 ORDER BY 1, 2, 3, 4, 5
+pg	SELECT DISTINCT TRY_CAST(COLUMNS(*) AS UHUGEINT) FROM all_types AS t51(c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, c17, c18, c19, c20, c21, c22, c23, c24, c25, c26, c27, c28, c29, c30, c31, c32, c33, c34, c35, c36, c37, c38, c39, c40, c41, c42, c43, c44, c45, c46, c47, c48, c49, c50) ORDER BY c14 DESC NULLS FIRST
+pg	CREATE VIEW web_returns as SELECT
+pg	SELECT t0.c1 FROM t0, unnest(t0.c1) AS x(c0)
+pg	EXECUTE p (random())
+pg	SELECT id FROM t WHERE x IS NULL ORDER BY y NULLS {null_order}
+pg	INSERT INTO test SELECT
+pg	EXPLAIN SELECT X OR FALSE FROM test
+pg	SELECT count(*), min(i), max(i) FROM t
+pg	INSERT INTO t0 VALUES(0.0,NULL)
+pg	CREATE VIEW warehouse as SELECT
+pg	SELECT * FROM t2 WHERE c1>1
+pg	INSERT INTO t0 VALUES (1), (2), (3), (4)
+pg	SELECT id, name, (a + b) AS score
+pg	SELECT id FROM read_parquet('{TEST_DIR}/test_21160_multi.parquet') ORDER BY y ASC NULLS FIRST, id ASC LIMIT 10
+pg	INSERT INTO t1 VALUES(-613341533,0)
+pg	SELECT p.p_personid AS personid
+pg	INSERT INTO t0 VALUES(NULL,'810092761', 5)
+pg	DROP MACRO prefix
+pg	INSERT INTO t0(c0) VALUES(0), ('')
+pg	SELECT generate_series(9223372036854775805, 9223372036854775807, 1) AS c1
+pg	INSERT INTO reuse_fact VALUES (1, 10, 1), (1, 20, 2), (2, 5, 3), (3, 40, 4), (3, 50, 5), (4, NULL, 6)
+pg	SELECT COLUMNS('v00')
+pg	SET VARIABLE work_dir_localhost='file://localhost/' || ltrim(replace('{WORKING_DIRECTORY}', '\\', '/'), '/')
+pg	EXPLAIN SELECT count(*) FILTER (WHERE EXISTS (SELECT 1 FROM range(10000000) b(x) WHERE b.x = q.key) OR EXISTS (SELECT 1 FROM range(10000000) c(x) WHERE c.x = q.key)) FROM (SELECT o.k AS key, count(*) n FROM range(1000000) o(k) LEFT JOIN (SELECT * FROM range(10000000) d(y) WHERE y < 10) d ON d.y = o.k GROUP BY o.k) q
+pg	SELECT upper(decode('\\xF0\\xDF\\x98\\x84'::BLOB)::VARCHAR)
+pg	select * from test where consumption::decimal(6,1) = 17953.2
+pg	SELECT (DATE '2020-01-01' + INTERVAL (range % 10) DAY)::DATE::VARIANT AS v,
+pg	SET enable_progress_bar=true
+pg	INSERT INTO grouping_set_window VALUES
+pg	INSERT INTO t0 VALUES (1)
+pg	select arg_max(a, a) from tbl
+pg	ALTER TABLE t1 RENAME c1 TO c3
+pg	create table bar as select (random() * 1000)::int a, (random() * 1000)::int b from range(10000)
+pg	SELECT struct_extract(struct_pack(b => '42'::DOUBLE)::STRUCT(a INT), 'a')
+pg	SELECT t0, t1, EXISTS (SELECT * FROM u WHERE u0 != t0 AND u1 = t1) FROM t ORDER BY t0, t1
+pg	select * FROM test_all_types(use_large_bignum := -32768, use_large_enum := NULL)
+pg	INSERT INTO test VALUES (1), (2) RETURNING *, *
+pg	explain analyze select * from test where date_trunc('day', d) != '2025-01-08'
+pg	CREATE TABLE t0 (c0 INT, c1 INT, FOREIGN KEY (c0, c0) REFERENCES t0(c0, c1), UNIQUE (c0, c1))
+pg	SELECT knows.person1_id AS interested_id,
+pg	INSERT INTO t2 VALUES(NULL)
+pg	INSERT INTO ev VALUES (1, 6), (2, 7), (3, 9)
+pg	explain analyze select * from test where date_trunc('day', d) <= '2025-01-08'
+pg	CREATE TABLE t0(c INT)
+pg	SELECT CASE WHEN range % 10 = 9 THEN 'str'::VARCHAR::VARIANT ELSE (range % 10)::INT::VARIANT END AS v,
+pg	SELECT regr_count(1,1) FROM t0
+pg	CREATE TABLE blobs (b BYTEA)
+pg	CREATE TABLE storm_posts(id INTEGER, owner_user_id INTEGER, post_type_id INTEGER, title VARCHAR, creation_date DATE, score INTEGER)
+pg	EXPLAIN SELECT col0 * 1 * 2 + col1 + 1 + 2 FROM test
+pg	SELECT struct_extract(row(40, 2), 3)
+pg	WITH RECURSIVE
+pg	insert into t values(1, 11)
+pg	EXPLAIN WITH c AS MATERIALIZED (SELECT * FROM t) SELECT * FROM t l JOIN c ON l.i + c.i IS NOT NULL
+pg	SELECT installed, loaded FROM duckdb_extensions() WHERE extension_name='icu'
+pg	select sum(f.f/t.f) from t,f where t.n=4 and t.s>0 and t.s=f.n
+pg	INSERT INTO t1 SELECT 1 RETURNING rowid c1
+pg	CREATE TABLE t (id VARCHAR, val VARCHAR)
+pg	SELECT varchar FROM all_types
+pg	EXPLAIN FROM the_table WHERE the_id in [1,42,999,12345,99999,100001]
+pg	select NULL
+pg	SELECT max(i), count(i), min(i) FROM t
+pg	INSERT INTO t0 VALUES(1027001636.9999999999,NULL)
+pg	INSERT INTO test VALUES (1, 1, 1, 1)
+pg	SELECT test_named_varargs(1, 2)
+pg	select '255'::UINT8::HUGEINT
+pg	INSERT INTO t1(c0) VALUES (NULL)
+pg	SELECT * FROM t0 WHERE t0.c0 = true
+pg	INSERT INTO t1 (c1) VALUES (1)
+pg	SELECT [] LIKE 1
+pg	CREATE TABLE reuse_duplicate_owner AS SELECT * FROM reuse_owner UNION ALL SELECT * FROM reuse_owner
+pg	SET variant_minimum_shredding_size = 0
+pg	SELECT * FROM t0, t1 WHERE (NOT (t0.rowid IN (0.1)))
+pg	DELETE FROM t0 USING (SELECT 1) t1
+pg	SELECT c0, exp(c0) FROM t1
+pg	select * from test3 where date_trunc('hour', d) IS DISTINCT FROM NULL
+pg	SELECT map_concat(42, 42)
+pg	CREATE TABLE t0(c0 FLOAT)
+pg	SELECT 1 FROM (SELECT 2) t1(c0) NATURAL RIGHT JOIN (SELECT 2) t0(c0) WHERE (0, t1.c0) NOT LIKE '0'
+pg	SELECT region, product, SUM(amount), COUNT(*) FROM sales GROUP BY GROUPING SETS ((region, product), (region), (region), ()) ORDER BY ALL
+pg	create table t3 as select range c from range (600)
+pg	INSERT INTO t0 VALUES (false, 1)
+pg	SELECT 65536::{float_type}::USMALLINT
+pg	explain SELECT s_name, s_address FROM supplier, nation WHERE s_suppkey IN ( SELECT ps_suppkey FROM partsupp WHERE ps_partkey IN ( SELECT p_partkey FROM part WHERE p_name LIKE 'forest%') AND ps_availqty > ( SELECT 0.5 * sum(l_quantity) FROM lineitem WHERE l_partkey = ps_partkey AND l_suppkey = ps_suppkey AND l_shipdate >= CAST('1994-01-01' AS date) AND l_shipdate < CAST('1995-01-01' AS date))) AND s_nationkey = n_nationkey AND n_name = 'CANADA' ORDER BY s_name
+pg	select * exclude(small_enum, medium_enum, large_enum)
+pg	SELECT id FROM t WHERE x IS NULL ORDER BY y NULLS {null_order} LIMIT 10
+pg	SELECT SUBSTRING(0::VARCHAR, 3, 0)
+pg	SELECT 1 WHERE (1 IS DISTINCT FROM 1) > ANY(SELECT 2)
+pg	SELECT current_schemas(ref_0.bool) AS c4 FROM booleans AS ref_0
+pg	SELECT upper(decode('\\xF0\\x9F\\x98'::BLOB)::VARCHAR)
+pg	SELECT * FROM tbl, LATERAL (SELECT tbl.c01 AS lat_c01) AS subq CROSS JOIN tbl AS t1 RIGHT JOIN tbl AS t2 USING (c02, c01)
+pg	SELECT my_list_or_string_extract_2([1, 2])
+pg	DELETE FROM t0 USING generate_series(1)
+pg	INSERT INTO person_knows VALUES (1, 10), (2, 10)
+pg	SELECT test FROM test
+pg	SELECT c50 FROM array_tbl GROUP BY ALL USING SAMPLE 3
+pg	SELECT loaded FROM duckdb_extensions() WHERE extension_name='iceberg'
+pg	select c0 from t0 as {table_alias}(c0)
+pg	INSERT INTO categories VALUES (1, 'fresh food'), (2, 'dry food'), (3, 'drinks')
+pg	explain SELECT l_returnflag FROM read_csv('{DATA_DIR}/csv/real/lineitem_sample.csv', delim='|', columns={'l_orderkey': 'INTEGER','l_partkey': 'INTEGER','l_suppkey': 'INTEGER','l_linenumber': 'INTEGER','l_quantity': 'INTEGER','l_extendedprice': 'DECIMAL(15,2)','l_discount': 'DECIMAL(15,2)','l_tax': 'DECIMAL(15,2)','l_returnflag': 'VARCHAR','l_linestatus': 'VARCHAR','l_shipdate': 'DATE','l_commitdate': 'DATE','l_receiptdate': 'DATE','l_shipinstruct': 'VARCHAR','l_shipmode': 'VARCHAR','l_comment': 'VARCHAR'})
+pg	EXPLAIN SELECT * FROM date_test WHERE d <= timestamp '2024-06-15 00:00:00'
+pg	SELECT * FROM summary((SELECT col FROM data ORDER BY col))
+pg	with y(y) as (select 1), z(z) as (select 2) insert into x (select (select y + z + 7) from y, z)
+pg	SELECT s LIKE 'abc%' FROM strings ORDER BY ALL
+pg	INSERT INTO products VALUES (1, 1, 1, 'apples', 1.5), (2, 1, 2, 'melons', 4.0), (3, 2, 2, 'peanuts', 2.0), (4, 3, 1, 'water', 1.0), (5, 3, 3, 'wine', 5.0), (6, 2, 3, 'walnuts', 1.5)
+pg	INSERT INTO t1 VALUES(2.71, '1999-12-31 23:59:59', 1.41421356237)
+pg	INSERT INTO t0 VALUES(NULL,'810092761', 4)
+pg	CREATE OR REPLACE VIEW t0 AS (SELECT 1)
+pg	SELECT avg(c1) FROM test_vector_types(CAST(NULL AS TIMESTAMP)) AS test_vector_types(c1)
+pg	SELECT * FROM t0 ORDER BY 1
+pg	SELECT scope, log_level, message FROM duckdb_logs WHERE type = 'CppApiDemo'
+pg	UPDATE parent SET i = i
+pg	create table t1284791a (id1 int, val1 varchar(255))
+pg	INSERT INTO t1(c0) VALUES ( X'123456')
+pg	SELECT (-10)::tinyint<<4::tinyint
+pg	SELECT g, avg(i) FROM integers GROUP BY g ORDER BY ALL
+pg	SELECT count(*), sum(payload) FROM outer_fact o WHERE EXISTS (SELECT 1 FROM evidence_a a WHERE a.id = o.id AND EXISTS (SELECT 1 FROM evidence_c c WHERE c.id = a.id)) AND NOT EXISTS (SELECT 1 FROM evidence_b b WHERE b.id = o.id)
+pg	SELECT 4294967167::REAL::UINTEGER
+pg	CREATE TABLE t1 (c1 INT, c0 INT)
+pg	CREATE TABLE t0(c0 INT UNIQUE, c1 DATE)
+pg	SELECT col, st_astext(geometry) FROM '{WORKING_DIRECTORY}/data/geoparquet/data-point-encoding_wkb.parquet'
+pg	INSERT INTO t0 VALUES(447772980.0,NULL)
+pg	select * from test where date_trunc('millisecond', d) >= '2025-01-08'
+pg	CREATE TABLE t1(c0 INTEGER UNIQUE DEFAULT(802216568), c1 TINYINT DEFAULT(1144250857), PRIMARY KEY(c0))
+pg	create table tbl(z int, i bool, j bool, k uhugeint)
+pg	INSERT INTO t0( c0, c1) VALUES ( -1, -1)
+pg	SELECT extension_version FROM duckdb_extensions() WHERE extension_name = 'cpp_api_demo'
+pg	SELECT (-10000000)::DATE
+pg	ALTER TABLE t4 ADD c1 BLOB
+pg	SELECT t0.*, min(1 ORDER BY *) FROM (VALUES ('1')) t0(c0) GROUP BY ALL
+pg	SELECT DISTINCT OPERATOR ( / ) + ARRAY [ ] :: INTERVAL SECONDS [ ] [ ] :: SETOF NCHAR ARRAY :: FLOAT
+pg	INSERT INTO t0(c0) VALUES (NULL), ('2000-01-01')
+pg	INSERT INTO t0(c1) VALUES(NULL)
+pg	INSERT INTO t0 VALUES (-2041046163), (35016222)
+pg	CREATE TABLE t0 (c0 INT AS (0), c1 INT, CHECK(c1 > 0))
+pg	create table t2 (i inet)
+pg	SELECT struct_extract(struct_pack(a => 42::DOUBLE)::STRUCT(a INT), 'a')
+pg	INSERT INTO t0 VALUES(-1488564537.0,NULL)
+pg	CREATE TABLE t1(c0 INT, c2 INT)
+pg	INSERT INTO t0 VALUES(0.56445951710827568792,NULL)
+pg	SELECT geo_types from parquet_metadata('{TEST_DIR}/test_none.parquet')
+pg	EXPLAIN SELECT count(*), min(i), max(i) FROM t WHERE i > 100
+pg	INSERT INTO ids VALUES (1), (2)
+pg	SELECT name FROM which_secret('{WORKING_DIRECTORY}/data/csv/hive-partitioning/simple/*/*/test.csv', 'http')
+pg	ALTER TABLE t1 ALTER c2 DROP NOT NULL
+pg	INSERT INTO t1 SELECT 1 FROM RANGE(1024)
+pg	SELECT make_date(c1)
+pg	CREATE TABLE test(c2 BOOL, c48 STRUCT(a INTEGER[3], b VARCHAR[3]))
+pg	select max(a collate noaccent) from tbl
+pg	SELECT DATE '2021-08-31' - INTERVAL '18' MONTH
+pg	SELECT 1 FROM t0 NATURAL INNER JOIN (SELECT 8) t1(c0)
+pg	UPDATE test SET x=0 WHERE x = 1 RETURNING *
+pg	EXPLAIN SELECT rowid FROM rowid_test_table
+pg	select 1234 AS i
+pg	SELECT struct_extract(struct_pack(b => 42::DOUBLE)::STRUCT(a INT), 'a')
+pg	INSERT INTO t0(c0, c1) VALUES (0, 0)
+pg	SELECT i, (SELECT SUM(i) OR true FROM integers i2 WHERE i2.i>i1.i) FROM integers i1 ORDER BY i
+pg	SELECT category, list_sort(a_list), list_sort(b_list), list_sort(c_list)
+pg	create table infinity_date_test(d DATE)
+pg	INSERT INTO t1 VALUES (ARRAY[(1, 'x'), (2, 'y'), (4, 's')])
+pg	SELECT t, v2
+pg	ATTACH '{TEST_DIR}/duckdb_fuzzer_4430.db' AS db1
+pg	CREATE TABLE t1(c4 UUID, c0 REAL AS(0))
+pg	insert into "E" values (2, 'two')
+pg	SELECT CASE WHEN c0 THEN 0 ELSE (CASE '0' WHEN c0 THEN '0.6' END) END FROM t0
+pg	EXPLAIN SELECT 0+X FROM test
+pg	SELECT * FROM raw_data WHERE rn = 1
+pg	create table test (col1 double)
+pg	CREATE INDEX i1 ON t1 USING ART (c1)
+pg	DELETE FROM t WHERE chunk_id = 9 AND id = 8536
+pg	CREATE TABLE sections (id INTEGER, "description" TEXT)
+pg	SELECT ''='Ʇ'
+pg	select max(a) from tbl2
+pg	INSERT INTO uuids VALUES('00000000-0000-0000-0000-000000000000')
+pg	SET debug_verify_serializer = true
+pg	create table integers(c1 int, c2 int)
+pg	SELECT "description", CAST(total AS DECIMAL (12,4))
+pg	SELECT 1 AS id, '大熊猫' AS name, '熊' AS category UNION ALL
+pg	SELECT col, geometry FROM '{WORKING_DIRECTORY}/data/geoparquet/data-polygon-wkt.csv'
+pg	CREATE TABLE ids(id INTEGER NOT NULL)
+pg	select i, a.i, b.i, c.i from a natural full outer join b natural full outer join (values (42)) c(i) order by 1
+pg	SET disabled_optimizers='grouping_sets'
+pg	SELECT 1 FROM t1 GROUP BY 1, ROLLUP (c1) HAVING (c1 > 1)
+pg	SELECT count(*) OVER w1 WINDOW w1 AS (ORDER BY count(*) OVER w2), w2 AS (ORDER BY count(*) OVER w1)
+pg	explain SELECT count(*),max(i),min(i) FROM t where i >=2048
+pg	SELECT d FROM date_test WHERE timestamp '2024-06-15 12:00:00' <= d ORDER BY d
+pg	SELECT 1 FROM t0 as {table_alias}(c0) WHERE c0 = 0
+pg	select * from t0
+pg	select * from a natural right outer join b order by 1
+pg	SELECT p.personid AS "person.id"
+pg	INSERT INTO tag VALUES (1, 'Frank_Sinatra')
+pg	INSERT INTO t1(c0) VALUES (1),(2),(3)
+pg	CREATE TABLE t0 (c1 VARCHAR)
+pg	ALTER TABLE t1 RENAME TO t0
+pg	EXPLAIN SELECT 5
+pg	INSERT INTO t_div VALUES
+pg	INSERT INTO t3(c0) VALUES (true)
+pg	SELECT f.startPerson
+pg	CREATE TABLE flights("year" INTEGER, "month" INTEGER, "day" INTEGER, dep_time INTEGER, sched_dep_time INTEGER, dep_delay DOUBLE, arr_time INTEGER, sched_arr_time INTEGER, arr_delay DOUBLE, carrier VARCHAR, flight INTEGER, tailnum VARCHAR, origin VARCHAR, dest VARCHAR, air_time DOUBLE, distance DOUBLE, "hour" DOUBLE, "minute" DOUBLE, time_hour TIMESTAMP)
+pg	SELECT '{}'::JSON
+pg	EXPLAIN SELECT * FROM date_test WHERE d > timestamp '2024-06-15 00:00:00'
+pg	SELECT 1 FROM (SELECT 2) t0(c0) QUALIFY (count(sum(42)) OVER())
+pg	SELECT extension_name, install_mode, installed_from FROM duckdb_extensions() where extension_name = 'parquet'
+pg	SELECT * FROM t1, t0 JOIN LATERAL (SELECT t1.c1 AS col0) _subq ON true
+pg	SELECT lead('1e668c84-6cbc-4d41-843e-970c17446f9e', 8479, 3087) OVER (PARTITION BY 9136)
+pg	CREATE INDEX i0 ON t0 (c0)
+pg	CREATE VIEW call_center as SELECT
+pg	CREATE TABLE t__base (c_pk INTEGER NOT NULL, c_int INTEGER, c_dbl DOUBLE, c_txt VARCHAR)
+pg	CREATE TABLE storm_comments(id INTEGER, post_id INTEGER)
+pg	SELECT '' SIMILAR TO ''
+pg	WITH RECURSIVE t AS
+pg	select * from state_stuff where not once_state2
+pg	SELECT MAX(agg0) FROM (SELECT MAX(v0.c1) AS agg0 FROM v0, t0 WHERE ((((UNICODE('b횐')) IS NOT NULL))AND((- ((0.8179740556303334)*(0.5235330721055326))))) UNION ALL SELECT MAX(v0.c1) AS agg0 FROM v0, t0 WHERE (NOT ((((UNICODE('b횐')) IS NOT NULL))AND((- ((0.8179740556303334)*(0.5235330721055326)))))) UNION ALL SELECT MAX(v0.c1) AS agg0 FROM v0, t0 WHERE ((((((UNICODE('b횐')) IS NOT NULL))AND((- ((0.8179740556303334)*(0.5235330721055326)))))) IS NULL)) as asdf
+pg	select * from test where '2025-01-06' is not distinct from date_trunc('day', d)
+pg	SELECT struct_pack(b => '42'::DOUBLE, c => 'asdf'::STRING)::STRUCT(a1 INT, a2 STRING)
+pg	select * from tbl t1 join tbl t2 using (i, j) join tbl t3 using (i, j)
+pg	select * from test where date_trunc('month', d) > '2025-01-01'
+pg	CREATE INDEX i_index ON v00 USING ART ( NULLIF ( v00, 'string' ) )
+pg	ALTER TABLE t0 ALTER c1 TYPE TIMESTAMP
+pg	SELECT test_named_varargs(x := 5)
+pg	SELECT t0.c1 FROM t0 WHERE CAST('x' AS BOOLEAN)
+pg	SELECT p.id AS post_id, p.title, p.creation_date, p.score,
+pg	SET default_null_order='nulls_first'
+pg	SELECT i / 2 AS group_id, i % 10 AS category, i % 1000 AS value
+pg	SELECT TIMESTAMP '2000-01-01 00:00:00' - INTERVAL 1 MINUTE
+pg	SELECT .1234567890123::VARCHAR
+pg	CREATE TABLE df_a AS
+pg	EXPLAIN SELECT count(*), min(i), max(i) FROM '{TEST_DIR}/eager_agg.parquet' GROUP BY i
+pg	insert into t0 values(1)
+pg	SELECT add_point(point, NULL::POINT) from points
+pg	SELECT * FROM t0 RIGHT JOIN t1 ON t0.c0!=t1.c0
+pg	SELECT count(*) FROM l ANTI JOIN r ON array_cosine_similarity([1.0,2.0,3.0]::FLOAT[3], [4.0,5.0,6.0]::FLOAT[3]) IS NOT NULL
+pg	SELECT i, (SELECT [sum] FROM (SELECT SUM(i) sum FROM integers i2 WHERE i2.i>i1.i)) t1 FROM integers i1 ORDER BY i
+pg	SELECT * FROM t0 WHERE NOT(NULL OR TRUE)
+pg	select '255'::HUGEINT::UINT8
+pg	create table all_types as select hugeint, uhugeint from test_all_types()
+pg	SELECT * FROM t0 RIGHT JOIN t1 on true
+pg	create secret secret_without_file_path (TYPE HTTP)
+pg	SELECT c0 FROM generate_series(NULL) t3(c0)
+pg	SELECT ids.id, n.wh,
+pg	SELECT max(c34) FILTER (WHERE c26) OVER (PARTITION BY c23 ROWS BETWEEN GREATEST(COALESCE(c5, 0), 0) PRECEDING AND CURRENT ROW)
+pg	select * from test where date_trunc('day', d) >= '2025-01-10'
+pg	CREATE TABLE rhs AS SELECT range % 5 i, range j FROM range(10)
+pg	select max(a) from tbl
+pg	SELECT p.personid
+pg	SET current_transaction_invalidation_policy='SYNTACTIC_ERRORS_DO_NOT_INVALIDATE'
+pg	CREATE TABLE t1 (col INT, geom GEOMETRY)
+pg	CREATE OR REPLACE VIEW view_17 AS
+pg	SELECT i FROM t LIMIT 5
+pg	SELECT argmax(c1,c0) FROM t1 group by c0
+pg	insert into x values (NULL)
+pg	SET wal_autocheckpoint='1TB'
+pg	CREATE TABLE t0(c0 INT , c1 VARCHAR)
+pg	SELECT INTERVAL '-9223372036854775807' MICROSECONDS
+pg	SELECT t0.c0 FROM t0 WHERE (((t0.rowid)SIMILAR TO(TIMESTAMP '1970-01-11 11:17:02')) BETWEEN TIMESTAMP '1970-01-11 23:34:33' AND DATE '1970-01-20') UNION ALL SELECT t0.c0 FROM t0 WHERE (NOT (((t0.rowid)SIMILAR TO(TIMESTAMP '1970-01-11 11:17:02')) BETWEEN TIMESTAMP '1970-01-11 23:34:33' AND DATE '1970-01-20')) UNION ALL SELECT t0.c0 FROM t0 WHERE (((((t0.rowid)SIMILAR TO(TIMESTAMP '1970-01-11 11:17:02')) BETWEEN TIMESTAMP '1970-01-11 23:34:33' AND DATE '1970-01-20')) IS NULL)
+pg	INSERT INTO t0 VALUES(false,'1969-12-08 00:00:00','')
+pg	CREATE TYPE f AS M()
+pg	SELECT * FROM prev WHERE rn = 1
+pg	CREATE TABLE t4 (c0 DATE, c3 VARCHAR(10))
+pg	SELECT NOT(NULL OR TRUE)
+pg	INSERT INTO strings VALUES
+pg	explain analyze SELECT rhs.j FROM rhs ANTI JOIN lhs USING (i)
+pg	INSERT INTO points VALUES (4, NULL, NULL)
+pg	INSERT INTO t0 VALUES (NULL), (false)
+pg	EXPLAIN SELECT X OR (X OR (X OR X)) FROM test
+pg	UPDATE t2 SET c2 = 2 RETURNING *
+pg	SELECT id FROM t WHERE y IS NULL ORDER BY x ASC, id ASC LIMIT 10
+pg	INSERT BY NAME cannot be combined with with DEFAULT VALUES
+pg	SELECT f::HUGEINT FROM working_strings
+pg	select * from test where consumption = (17953.2::decimal(18,5))
+pg	ALTER TABLE t1 ADD COLUMN ref INTEGER
+pg	COPY (VALUES (NULL), (NULL)) TO '{TEST_DIR}/test_null_args.parquet' (FORMAT PARQUET)
+pg	EXPLAIN SELECT (X=1 AND Y=1) OR (X=1 AND Z=1) FROM test2
+pg	SELECT * FROM t0 WHERE 0.1 < c0 ORDER BY 1
+pg	SELECT decode('\\xC2\\xA3'::BLOB)::VARCHAR ILIKE '£'
+pg	SELECT count(*) FILTER (WHERE EXISTS (SELECT 1 FROM range(2) b(x) WHERE b.x = q.key) OR EXISTS (SELECT 1 FROM range(2, 3) c(x) WHERE c.x = q.key)) FROM (SELECT o.k, d.y AS key FROM range(6) o(k) LEFT JOIN (SELECT * FROM range(6) d(y) WHERE y < 3) d ON d.y = o.k) q
+pg	INSERT INTO issue_24806_values VALUES (1, 1), (1, 1), (2, 42), (2, 42)
+pg	INSERT INTO t0 VALUES('')
+pg	select do_nothing(NAME) from my_table
+pg	select * from t1
+pg	CREATE SCHEMA shadow
+pg	SELECT reservoir_quantile(1, 1 ORDER BY 1)
+pg	select source_id from pragma_version()
+pg	SELECT lag(c16, COLUMNS(*)) OVER (ROWS BETWEEN 1768 FOLLOWING AND UNBOUNDED FOLLOWING)
+pg	SELECT upper(decode('\\xc0\\x81'::BLOB)::VARCHAR)
+pg	SELECT array_distance('db6d3411-3fe9-4668-bf60-06d94108c0f7', c46) FROM all_types AS t51(c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, c17, c18, c19, c20, c21, c22, c23, c24, c25, c26, c27, c28, c29, c30, c31, c32, c33, c34, c35, c36, c37, c38, c39, c40, c41, c42, c43, c44, c45, c46, c47, c48, c49, c50, c51)
+pg	SELECT r.replyid
+pg	SELECT approx_count_distinct(1 ORDER BY 1) FROM t1
+pg	SELECT productid, sale_day, SUM(units * price) AS total
+pg	INSERT INTO t0(c1) VALUES (NULL), ('a'),('-801673450963')
+pg	SELECT test_named_agg_inspect(1)
+pg	ALTER TABLE t0 ALTER c1 SET NOT NULL
+pg	SELECT v1.a, v2.a, v3.a, v4.a, v5.a, v6.a, v7.a, v8.a
+pg	SELECT linestring FROM '{WORKING_DIRECTORY}/test/geoparquet/seattle.parquet'
+pg	CREATE TABLE t0 (c1 INT PRIMARY KEY)
+pg	INSERT INTO t1 values (4)
+pg	insert into t0 (c0, c1) values (NULL, '2019-11-26')
+pg	SELECT 1 alias1 FROM (SELECT 1) t2(c1) GROUP BY ALL HAVING (SELECT c1)
+pg	CREATE SCHEMA s3
+pg	select * from t2 where len(a) = len(b) and ((xor(a::BITSTRING, b::BITSTRING))::VARCHAR)[0] = '0'
+pg	INSERT INTO t1 VALUES (0)
+pg	SELECT 1 FROM t0 WHERE DATE '2010-1-1' = 2
+pg	SELECT DISTINCT NULL FROM query_table(NULL, NULL) AS t6(c1, c2, c3, c4, c5) , region AS t10(c7, c8, c9) HAVING TRY_CAST(c3 AS STRUCT(a INTEGER, b VARCHAR)[3]) QUALIFY (c3 BETWEEN c8 AND (c4 BETWEEN c4 AND c5))
+pg	insert into t3 (select range, range from range(32700))
+pg	SELECT COUNT(*) FROM '{DATA_DIR}/parquet-testing/internal_5994.parquet' WHERE eventName != 'ListObjects'
+pg	SELECT rid, actual
+pg	select bitstring_agg(1706, 1706, 1706)
+pg	SELECT f.f_forumid      AS "forum.id"
+pg	SELECT DATE '2021-06-30' - INTERVAL '4' MONTH
+pg	EXPLAIN (FORMAT yaml) SELECT g FROM pts ORDER BY payload
+pg	SELECT count(*), sum(payload) FROM outer_fact o, selected_dim d WHERE o.dim_id = d.id AND d.selected AND EXISTS (SELECT 1 FROM evidence_a a WHERE a.id = o.id) AND NOT EXISTS (SELECT 1 FROM evidence_b b WHERE b.id = o.id) AND NOT EXISTS (SELECT 1 FROM evidence_d e WHERE e.id = o.id)
+pg	SELECT r.source, r.dest, 'Rail' AS carrier
+pg	SELECT (SELECT 1 INTERSECT SELECT 1 HAVING true) FROM t0
+pg	SELECT 1 FROM (SELECT 2) t0, (SELECT 3) t1 WHERE (SELECT 1 NOT IN (SELECT 2))
+pg	SELECT geo_types from parquet_metadata('{TEST_DIR}/test_v1.parquet')
+pg	SET disabled_optimizers=''
+pg	SELECT (DATE '-10000-01-01')::VARCHAR
+pg	CREATE TABLE t2(x int, y int, z int, w int)
+pg	CREATE TABLE i_class_id AS
+pg	CREATE TYPE a as BLOB
+pg	INSERT INTO nodes (id, label) SELECT nextval('elems_seq'), 'test'
+pg	INSERT INTO array_tbl_three_level VALUES('[[[42, 43], [44, 45]], [[46, 47], [48, 49]]]')
+pg	CREATE TABLE t1(c2 AS (1) VIRTUAL, c1 TIME WITH TIME ZONE)
+pg	SELECT id FROM read_parquet('{TEST_DIR}/test_21160_multi.parquet') ORDER BY x ASC, id ASC LIMIT 10
+pg	SET explain_output='physical_only'
+pg	select * from test where date_trunc('quarter', d) >= '2025-04-01'
+pg	DELETE FROM t WHERE chunk_id = 8 AND id = 8273
+pg	EXPLAIN SELECT count(*), sum(payload) FROM outer_fact o, selected_dim d WHERE o.dim_id = d.id AND d.selected AND EXISTS (SELECT 1 FROM evidence_a a WHERE a.id = o.id) AND (EXISTS (SELECT 1 FROM evidence_b b WHERE b.id = o.id) OR EXISTS (SELECT 1 FROM evidence_c c WHERE c.id = o.id))
+pg	SELECT INTERVAL '9223372036854775296' MICROSECONDS
+pg	SELECT '+nan'::DOUBLE, '-nan'::DOUBLE
+pg	SELECT person_id AS "person.id"
+pg	EXPLAIN SELECT x,
+pg	INSERT INTO t0 values (5)
+pg	SELECT c0 FROM generate_series(NULL, NULL, NULL) t3(c0)
+pg	INSERT INTO nocase_strings VALUES ('Abc'), ('abc'), ('xA'), ('xa'), ('Axxc')
+pg	EXPLAIN SELECT p.k, f.cost
+pg	CREATE TABLE t40(c0 varchar)
+pg	DROP TABLE tbl_X
+pg	TRUNCATE t2
+pg	CREATE TABLE grouping_set_window(i INT, j INT, k INT)
+pg	select 1 from t1 where (((((t0.c0) AND ((t1.c0 BETWEEN t0.c0 AND t0.c0)))) OR (((t0.c0) AND ((t1.c0 BETWEEN t0.c0 AND t0.c0))))))
+pg	SELECT i FROM (select 1) tbl(i) WHERE ( 2060771621 != i + -2134619525 )
+pg	ALTER TABLE t1 ALTER c1 TYPE TIME USING(c2)
+pg	CREATE OR REPLACE VIEW view_6 AS
+pg	SELECT make_time(1, -1, 157)
+pg	CREATE TABLE t2 (i INTEGER, j INTEGER, id INTEGER)
+pg	insert into "E" values (1, 'one')
+pg	BEGIN TRANSACTION
+pg	SELECT test_alias_hello()
+pg	set allow_extensions_metadata_mismatch=false
+pg	INSERT INTO t0(c1) VALUES (2)
+pg	SELECT 1 FROM t1 WHERE NOT ('\\x96'::BLOB IN (1))
+pg	select (select 5) a where (select (select 3) b where (select b) > (select a))
+pg	select min(name) from test
+pg	EXPLAIN SELECT X OR X FROM test
+pg	SELECT DATE '2021-08-31' + INTERVAL '1' MONTH
+pg	SELECT 18446744073709550592::DOUBLE::UBIGINT
+pg	ANALYZE test(y, x)
+pg	UPDATE t0 SET c1 = 1
+pg	INSERT INTO t0(c0) SELECT 0 from range(22)
+pg	SELECT id, v
+pg	select 1 where 2 + all(select 2)
+pg	EXPLAIN SELECT X=1 AND (Y=1 OR Z=1) FROM test2
+pg	CREATE VIEW v0(c0, c1, c2) AS SELECT DISTINCT t0.c0 AS col_0, t0.c0 AS col_1, t3.c0 AS col_2 FROM t0, t3
+pg	SELECT r.creatorid AS "person.id"
+pg	SELECT bitstring_agg("{type}") FROM all_types
+pg	SELECT v, count(*) FROM ts GROUP BY v ORDER BY ALL
+pg	SELECT 0 FROM (SELECT 8 c0) WHERE (SELECT 1 LIMIT c0)
+pg	EXPLAIN SELECT X-0 FROM test
+pg	SELECT make_time(64, 64, 157)
+pg	SELECT 1 FROM t1 WHERE NOT (-9223372036854775808 >= (6892203265207104503 - (-7595956987701092486)))
+pg	INSERT INTO t2 VALUES (0, 0, 0)
+pg	SELECT EXISTS(SELECT ref_1.array_of_structs AS c1) FROM tbl AS ref_0, tbl AS ref_1
+pg	select '01234567890' s
+pg	SELECT id, id FROM id_mapping
+pg	SELECT l_orderkey, l_partkey, l_extendedprice FROM read_csv('{DATA_DIR}/csv/real/lineitem_sample.csv', delim='|', columns={'l_orderkey': 'INTEGER','l_partkey': 'INTEGER','l_suppkey': 'INTEGER','l_linenumber': 'INTEGER','l_quantity': 'INTEGER','l_extendedprice': 'USMALLINT','l_discount': 'DECIMAL(15,2)','l_tax': 'DECIMAL(15,2)','l_returnflag': 'VARCHAR','l_linestatus': 'VARCHAR','l_shipdate': 'DATE','l_commitdate': 'DATE','l_receiptdate': 'DATE','l_shipinstruct': 'DATE','l_shipmode': 'VARCHAR','l_comment': 'VARCHAR'})
+pg	SELECT CAST(TRY_CAST(c8 AS ENUM('DUCK_DUCK_ENUM', 'GOOSE')) AS VARCHAR[3]) FROM tbl
+pg	SELECT d, d != timestamp '2024-06-15 12:00:00' AS r FROM date_test ORDER BY d
+pg	set allow_parser_override_extension=fallback
+pg	SELECT json_extract('{"duck": 42}', NULL::VARCHAR)
+pg	select * from test3 where date_trunc('hour', d) IS NOT DISTINCT FROM NULL
+pg	EXPLAIN SELECT X*1 FROM test
+pg	select x::smallint,y::smallint,substr(line,x::integer,1)
+pg	DROP TABLE integers
+pg	SELECT .123456::VARCHAR
+pg	EXPLAIN (FORMAT yaml) SELECT * FROM t t1 JOIN t t2 ON array_cosine_similarity(t1.a, t2.a) IS NOT NULL
+pg	DELETE FROM t0 USING ((SELECT 1) t1 INNER JOIN (SELECT 2) t2 ON c0)
+pg	select * from tbl t1 join tbl t2 using (i, i) join tbl t3 using (i, i, i)
+pg	INSERT INTO t0 (VALUES (1, 1),(2, 2),(3, 3))
+pg	COPY t0 FROM '{TEST_DIR}/parquet_single.parquet'
+pg	CREATE VIEW customer as SELECT
+pg	CREATE INDEX i3 ON t4 (c3)
+pg	INSERT INTO t0 VALUES (NULL)
+pg	EXPLAIN SELECT s LIKE '%abc' FROM strings
+pg	EXPLAIN (FORMAT yaml) SELECT g FROM mixed ORDER BY payload
+pg	SELECT '' FROM v0 HAVING STDDEV_SAMP(0.8716885601427876)
+pg	SELECT * FROM t0 WHERE t0.c0 = 2
+pg	INSERT INTO outer_fact VALUES (1, 10, 100), (2, 10, 200), (3, 20, 300), (4, 10, NULL), (NULL, 10, 400)
+pg	SELECT * FROM t0 WHERE 1 > c1
+pg	SELECT test_named_inspect(a := 1, b := 2, c := 3)
+pg	EXPLAIN SELECT 3 + 2 * col0 + col1 FROM test
+pg	SELECT test_named_inspect(1, a := 2)
+pg	INSERT INTO t1(c0) VALUES ((TIMESTAMP '1970-01-25 15:59:18'))
+pg	INSERT INTO t0 VALUES ('aaaaaaaaaaaa')
+pg	CREATE TABLE postings(docid, termid, tf) AS SELECT range, range, 1 FROM range(30)
+pg	select * exclude(small_enum, medium_enum, large_enum) from test_all_types()
+pg	SELECT typeof(x) FROM test
+pg	select TIMESTAMP 'infinity' = date_trunc('day', d),
+pg	insert into integers values (1)
+pg	select strftime(timestamp '2021-04-15 14:55:17.915', '%Y-%m-%d %H:%M:%S.%f')
+pg	SELECT * FROM (SELECT 1) t0(c0) GROUP BY ALL QUALIFY count(c0) OVER ()
+pg	EXPLAIN SELECT * FROM date_test WHERE d >= timestamp '2024-06-15 00:00:00'
+pg	select 0, substr(i,1,position(E'\\n' in i)-1), substr(i,position(E'\\n' in i)+1)
+pg	INSERT INTO test VALUES ('2021-01-01', 1), ('2021-02-01', 2), ('2021-03-01', 3), ('2021-04-01', 4)
+pg	SELECT 1 FROM ((SELECT 2) INTERSECT (SELECT 2)) t2(c3) WHERE "currval"('t4') = EXISTS (SELECT 2)
+pg	EXPLAIN SELECT (X AND B) OR (X AND C) FROM test
+pg	INSERT INTO tbl VALUES([])
+pg	SELECT col, geometry FROM '{TEST_DIR}/data-multipoint-out.parquet'
+pg	SELECT make_time(1, 1, -1)
+pg	SELECT (- 41756167 + '1969-12-11' ::DATE)::VARCHAR
+pg	SELECT name FROM t ORDER BY 1 LIMIT 3
+pg	SELECT t0.rowid, t1.c1, t1.c0 FROM t1, t0 WHERE (((t1.rowid NOT IN (((t1.c1) ::BOOLEAN), ((t1.c0) ::INT1))))AND((false::VARCHAR BETWEEN '[' AND t1.c0::VARCHAR))) UNION SELECT t0.rowid, t1.c1, t1.c0 FROM t1, t0 WHERE (NOT (((t1.rowid NOT IN (((t1.c1) ::BOOLEAN), ((t1.c0) ::INT1))))AND((false::VARCHAR BETWEEN '[' AND t1.c0::VARCHAR)))) UNION SELECT t0.rowid, t1.c1, t1.c0 FROM t1, t0 WHERE (((((t1.rowid NOT IN (((t1.c1) ::BOOLEAN), ((t1.c0) ::TINYINT))))AND((false::VARCHAR BETWEEN '[' AND t1.c0::VARCHAR)))) IS NULL)
+pg	SELECT installed, loaded FROM duckdb_extensions() WHERE extension_name='json'
+pg	CREATE VIEW v0(c0) AS SELECT 1 FROM t0
+pg	CREATE TABLE t1 AS (SELECT 1)
+pg	SELECT * FROM person_knows
+pg	SET autoload_known_extensions = false
+pg	SELECT * FROM t0, t1 WHERE (NOT (t0.rowid IN (0.1::DOUBLE)))
+pg	INSERT INTO t0 VALUES(0.68713929665075657027,NULL)
+pg	SELECT list_contains([NULL], a) FROM (VALUES (1)) t(a)
+pg	INSERT INTO test VALUES(1) RETURNING test
+pg	SELECT test_named_overload(1)
+pg	SELECT 1 WHERE '23:' > ALL(SELECT '0') BETWEEN '0' AND '0:'
+pg	SELECT array_l([1, 2, 3])
+pg	SELECT id, wh, iteration + 1
+pg	SELECT 1 FROM ((SELECT 2) t0(c0) JOIN (SELECT 3) t1(c0) ON TRUE), ((SELECT 4) t2(c0) JOIN ((SELECT 5) t3(c0) CROSS JOIN (SELECT 6) t4(c0)) ON TRUE)
+pg	CREATE OR REPLACE VIEW view_9 AS
+pg	SELECT (TRY_CAST(5572 AS INTEGER[3][3]) BETWEEN json(c48) AND NULL) FROM all_types AS t51(c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, c17, c18, c19, c20, c21, c22, c23, c24, c25, c26, c27, c28, c29, c30, c31, c32, c33, c34, c35, c36, c37, c38, c39, c40, c41, c42, c43, c44, c45, c46, c47, c48, c49, c50)
+pg	SELECT upper(decode('\\xc1\\x80'::BLOB)::VARCHAR)
+pg	COPY (FROM t1) TO '{TEST_DIR}/data-point-out-disabled.parquet' (FORMAT PARQUET)
+pg	ANALYZE t0(c4)
+pg	INSERT INTO t2 VALUES (1)
+pg	INSERT INTO in_right VALUES (1), (2), (11)
+pg	select round+1 from test where round <= 20
+pg	SELECT k, b FROM lateral_nested, LATERAL (SELECT lateral_nested.a) t2(b) WHERE b = b ORDER BY k
+pg	create table test as select range i, range j from range(10)
+pg	CREATE TABLE t2(c0 BOOLEAN)
+pg	SELECT 1 FROM t1 WHERE NOT (decode('\\xC0'::BLOB) IS NULL); --1 row
+pg	CREATE SEQUENCE t1
+pg	SELECT m3.m_creatorid as personid, count(*) as popularityScore
+pg	insert into t1 values (42, true)
+pg	INSERT INTO t1 VALUES(-1412788640,1)
+pg	WITH prev AS (SELECT * FROM view_9)
+pg	DROP SEQUENCE seq CASCADE
+pg	with y(y) as (select 1) insert into x (select y from y)
+pg	CREATE TABLE c2(c0 INTEGER, c1 INTEGER UNIQUE, FOREIGN KEY (c0) REFERENCES s2(t0))
+pg	SELECT MIN(1000::bigint<<t0.rowid) FROM t0 WHERE NOT c0
+pg	DROP TABLE t0
+pg	SET merge_join_threshold=0
+pg	SELECT entropy(1 ORDER BY 1) FROM t1
+pg	SELECT DISTINCT t0.c0 FROM t0 ORDER BY 1
+pg	ALTER TABLE t0 ALTER c0 TYPE DATE
+pg	SELECT 1 FROM t1
+pg	CREATE TABLE t1 (c1 BOOLEAN)
+pg	CREATE OR REPLACE MACRO m(t) AS TABLE
+pg	EXPLAIN SELECT X OR (X AND A) FROM test
+pg	INSERT INTO test VALUES(1) RETURNING test.y
+pg	INSERT INTO t0 VALUES (42)
+pg	CREATE TABLE struct_tbl("struct" STRUCT(a INTEGER, b VARCHAR))
+pg	CREATE TABLE t0(c0 INTEGER, c1 INTEGER)
+pg	SELECT a::ROW(a INT, b STRING) r FROM (VALUES (ROW(1, 'asdf')), (ROW(4, 'fdsa'))) s(a)
+pg	INSERT INTO t_schema VALUES ('hello'), ('WORLD'), ('WoRlD')
+pg	SELECT test_named_inspect(a := 1, a := 2)
+pg	create macro extract_field(my_struct, my_field) as my_struct[my_field]
+pg	INSERT INTO t0(c0) SELECT NULL from range(2)
+pg	EXPLAIN SELECT * FROM date_test WHERE d > timestamp '2024-06-15 12:00:00'
+pg	CREATE TABLE sales (productid INTEGER, sale_day DATE, units INTEGER)
+pg	SELECT x+1, 1
+pg	SELECT array_reverse(NULL::INTEGER[])
+pg	SELECT add_point(pt, pt) from points
+pg	SELECT max(CAST(from_hex(CAST(ref_0.r_name AS VARCHAR)) AS BLOB)) OVER (ORDER BY ref_0.r_name) AS c5,
+pg	EXPLAIN SELECT region, product, SUM(amount) FROM sales GROUP BY ROLLUP(region, product)
+pg	INSERT INTO v00 FROM v00 ORDER BY ALL DESC RETURNING 'abc'
+pg	SELECT * FROM db1.tbl
+pg	CREATE TABLE mixed AS
+pg	WITH RECURSIVE foo(i) AS
+pg	SELECT julian(CAST(ref_0.date AS DATE)) AS c1
+pg	SELECT INTERVAL '17768853205' HOUR
+pg	SELECT extract_field([1, 2, 3], 1)
+pg	create or replace table data_source as select *, (target_time AT TIME ZONE 'UTC')::timestamp::time as time_of_day from
+pg	UPDATE t2 SET c2 = DEFAULT
+pg	select -(-170141183460469231731687303715884105728)::HUGEINT
+pg	CREATE TABLE t2 AS SELECT range b FROM range(500, 100000)
+pg	EXPLAIN SELECT X+2 FROM test
+pg	EXPLAIN SELECT grd_quart, s[getvariable('col')], sum(ipondl) FROM t AS s WHERE catl = '1' GROUP BY ALL
+pg	CREATE TABLE db1.tbl(i INTEGER)
+pg	SELECT test_named_varargs(1, x := 10)
+pg	INSERT INTO working_doubles VALUES (10.0), (-10.0), (32767.0), (-32767.0), (1.3), (-2.7), (2000000000.0), (-2000000000.0), (4000000000000000000.0), (-4000000000000000000.0), (1329227995784915872903807060280344576.0), (-1329227995784915872903807060280344576.0)
+pg	COPY (SELECT 'POINT M (0 1 2)'::GEOMETRY as geometry) TO '{TEST_DIR}/t1.parquet' (FORMAT 'parquet')
+pg	CREATE TABLE window_input(p INTEGER, id INTEGER, x INTEGER)
+pg	SELECT MAD(i.x)
+pg	UPDATE t1 SET c0 = NULL
+pg	ALTER TABLE t0 ALTER rowid TYPE VARCHAR
+pg	SELECT y, UNLIST(string_split("x", ', ')) x, COUNT(*) FROM foo GROUP BY ALL
+pg	SELECT t0, t1, EXISTS (SELECT * FROM u WHERE u0 < t0 AND u1 < t1) FROM t ORDER BY t0, t1
+pg	SELECT sub_point(point, ({'x': 3, 'y': 4})::POINT) from points
+pg	SELECT GROUPING(g), list(v ORDER BY v)
+pg	CREATE SEQUENCE seq
+pg	SELECT avg(0) c0, (SELECT 0 OFFSET c0)
+pg	SELECT s LIKE '%b%' FROM strings ORDER BY ALL
+pg	CREATE MACRO time_to_datetime(date, string) AS
+pg	SELECT struct_pack(a => 'hello'::STRING, b => 'world'::STRING)::STRUCT(a STRING, b INT)
+pg	select round(col1, 0) from test
+pg	CREATE TABLE t0(c0 VARCHAR)
+pg	SELECT 1 FROM t1 WHERE t1.c2 = t1.c1 AND t1.c2 < t1.c1
+pg	INSERT INTO id VALUES('c', NULL)
+pg	SELECT test_named_varargs(1, 2, 3)
+pg	SELECT NULL FROM t0 ORDER BY strptime(NOT(t0.c0 BETWEEN t0.rowid AND t0.rowid), 1407974306)
+pg	CREATE TABLE t(ps_supplycost INT, n_name INT)
+pg	SELECT 1000::hugeint<<117::hugeint
+pg	INSERT INTO t1 VALUES (2, 2)
+pg	select * from a full outer join b using (i) order by 1
+pg	INSERT INTO test VALUES (1, 'Bob')
+pg	EXPLAIN SELECT X//0 FROM test
+pg	SELECT v FROM tv WHERE v IS NOT NULL ORDER BY v, payload LIMIT 4
+pg	select sum(l2.l_orderkey) from lineitem l2
+pg	CREATE TABLE evidence_c_flag(id BIGINT, selected BOOLEAN)
+pg	SELECT COUNT(*) FILTER (cast_part IS NULL)
+pg	select 2147483648::double::int4
+pg	INSERT INTO t1(c0, c1) VALUES (0, 1)
+pg	SELECT {val} = ALL(SELECT {val} FROM range(3000))
+pg	CREATE OR REPLACE VIEW v0(c0) AS SELECT 1 FROM t1, t0 GROUP BY t0.c0
+pg	SELECT x, z, EXISTS (SELECT 1 FROM range(2) a(y) WHERE y = o.x AND y = p.z) AS m
+pg	SELECT 4294967296::DOUBLE::UINTEGER
+pg	DELETE FROM t WHERE chunk_id = 6 AND id BETWEEN 3651 AND 4175
+pg	SELECT t2.c0
+pg	CREATE TABLE t0(c0 TIMESTAMP, c1 VARCHAR[])
+pg	CREATE TABLE t0 (c0 INT, FOREIGN KEY (c0, c0) REFERENCES t0(c0, c0), UNIQUE (c0, c0))
+pg	SELECT col, geometry FROM '{TEST_DIR}/data-multilinestring-out.parquet'
+pg	insert into u values(null, 20)
+pg	EXPLAIN SELECT count(*), sum(payload) FROM (SELECT * FROM selected_dim WHERE selected) d RIGHT JOIN outer_fact o ON d.id = o.dim_id WHERE EXISTS (SELECT 1 FROM evidence_a a WHERE a.id = o.id) AND (EXISTS (SELECT 1 FROM evidence_b b WHERE b.id = o.id) OR EXISTS (SELECT 1 FROM evidence_c c WHERE c.id = o.id))
+pg	SELECT 1000::smallint<<6::smallint
+pg	SELECT id FROM read_parquet('{TEST_DIR}/test_21160_multi.parquet') ORDER BY x DESC, id ASC LIMIT 10
+pg	CREATE VIEW promotion as SELECT
+pg	create table strings(v VARCHAR[])
+pg	SELECT f1 FROM BOOLTBL1 WHERE f1 = (NOT TRUE)
+pg	create table test2(d TIMESTAMPTZ)
+pg	create table t3 (a INT, b INT)
+pg	SELECT t0.c0 FROM t0, t1 WHERE t1.c0 < t0.c0
+pg	INSERT INTO tbl VALUES(-9223372036854775808)
+pg	SELECT x x WHERE x = 0
+pg	SELECT * FROM t0 WHERE t0.c0 = 1
+pg	SELECT upper(decode('\\xF0\\x9F\\x98\\x84\\x00'::BLOB)::VARCHAR)
+pg	SELECT t0.c0::VARCHAR NOT SIMILAR TO 0::VARCHAR FROM t0
+pg	CREATE TABLE properties (  elem_id BIGINT NOT NULL,  name VARCHAR NOT NULL, value_boolean BOOLEAN, value_long BIGINT, value_int INTEGER, value_float FLOAT, value_double DOUBLE, value_string VARCHAR, value_blob BLOB,  PRIMARY KEY (elem_id, name))
+pg	INSERT INTO t1(c0) VALUES (0)
+pg	SELECT lhs.i, rhs.i
+pg	CREATE TABLE evidence_b(id BIGINT)
+pg	CREATE TABLE ev(id INTEGER NOT NULL, wh INTEGER NOT NULL)
+pg	CREATE TABLE foo AS SELECT 'a, b, c' AS "x", '1' AS y
+pg	SELECT * FROM t0 WHERE c0>=(2147483647 + 1 IS NOT NULL)
+pg	INSERT INTO id_mapping (id, child_id)
+pg	INSERT INTO t1(c0) VALUES (CAST('' AS BLOB))
+pg	INSERT INTO integers VALUES  (NULL,1)
+pg	SELECT typeof(483290482390810498120984098124098127725683), 483290482390810498120984098124098127725683
+pg	SELECT g, i, sum(i) FROM integers GROUP BY ROLLUP(g, i) ORDER BY ALL
+pg	INSERT INTO t1 VALUES(-428785526,0)
+pg	select count(*)
+pg	SELECT 1 AS one
+pg	EXPLAIN SELECT * FROM t WHERE list_contains([], a)
+pg	SELECT first_value((1 || mode() WITHIN GROUP (ORDER BY 1)) IGNORE NULLS) OVER () FROM t1
+pg	SELECT upper(decode('\\xc0\\x82'::BLOB)::VARCHAR)
+pg	select * from test where '2025-01-10' != date_trunc('day', d)
+pg	create table t0 as select (UNNEST(['hello', 'duckdb', 'duck LORD', 'lord duck'])) as column0
+pg	select round(col1, 1) from test
+pg	EXPLAIN SELECT 2
+pg	insert into infinity_tz_test values ('-infinity'), ('2025-01-01'), ('infinity'), (NULL)
+pg	create table grouping_set_cm(a integer not null, b varchar not null, v integer)
+pg	select * from differentName
+pg	SELECT '-3.4028234663852886e+16'::DECIMAL(30)
+pg	CREATE TABLE IF NOT EXISTS child(i INTEGER REFERENCES parent)
+pg	INSERT INTO t SELECT 8, i FROM range(8273, 8539) r(i)
+pg	SELECT * FROM tbl, LATERAL (SELECT tbl.c01 AS lat_c01) AS subq CROSS JOIN tbl AS t1 RIGHT JOIN tbl AS t2 USING (c02)
+pg	CALL dbgen(sf=0.01)
+pg	set extension_directory='{LOCAL_EXTENSION_DIR_INFO_INCORRECT_VERSION}'
+pg	select * from test where date_trunc('hour', d) <= '2025-01-06 03:00:00'
+pg	INSERT INTO right_small VALUES
+pg	SELECT 1 AS x
+pg	WITH prev AS (SELECT * FROM view_11)
+pg	CREATE TABLE s3.integers(i INTEGER)
+pg	SET disabled_optimizers = ''
+pg	SELECT map_concat(map { 'a': 42 }, NULL)
+pg	SELECT value_boolean, value_long, value_int, value_float, value_double, value_string, CAST(value_blob AS VARCHAR) FROM properties WHERE elem_id = 1 AND name = 'x'
+pg	SELECT NULL FROM (VALUES (0, 1, 2, 3, 4)) AS _("0", "1", "2", "3", "4") INNER JOIN (SELECT NULL LIMIT rank_dense() OVER (PARTITION BY #4, NULL, NULL, NULL ROWS BETWEEN c83 PRECEDING AND CURRENT ROW)) USING (c19)
+pg	CREATE TABLE reuse_owner(k INTEGER, dim_id INTEGER)
+pg	CREATE TABLE t0(c0 INT, c1 VARCHAR)
+pg	insert into all_types select * exclude(small_enum, medium_enum, large_enum) from test_all_types()
+pg	SELECT * EXCLUDE(small_enum, medium_enum, large_enum) FROM test_all_types() LIMIT 0
+pg	WITH prev AS (SELECT * FROM view_7)
+pg	INSERT INTO test2 VALUES (-9223372036854775807, 1), (-1, 2), (1, 3), (9223372036854775807, 4)
+pg	INSERT INTO tbl VALUES([{'a': 42, 'b': '🦆🦆🦆🦆🦆🦆'}])
+pg	CREATE TABLE all_types AS SELECT * EXCLUDE(small_enum, medium_enum, large_enum)
+pg	INSERT INTO t VALUES (2, 'b', 2.0), (3, 'a', 1.0), (4, NULL, NULL), (5, 'c', NULL), (6, NULL, 3.0)
+pg	SELECT c0, c1, ((t0.c0)::varchar!~(((t0.c0)/(t0.c1)))::varchar) FROM t0
+pg	INSERT INTO plain_strings VALUES ('A'), ('a'), ('É'), ('é'), ('e')
+pg	CREATE VIEW issue_24711 AS
+pg	explain analyze SELECT rhs.j FROM rhs SEMI JOIN lhs USING (i)
+pg	CREATE TABLE test(a BIGINT)
+pg	EXPLAIN SELECT s LIKE '%b%' FROM strings
+pg	select count(*) from aaa where name like '红%'
+pg	select * from tbl t1 join tbl t2 using (i) join tbl t3 using (i)
+pg	SELECT 1e100::real*0
+pg	insert into "E" values (null, null)
+pg	CREATE TABLE booleans(bool BOOLEAN)
+pg	SELECT * FROM t0 LEFT JOIN t1 ON t0.c0 <= t1.c0
+pg	create table test3(d TIMESTAMP)
+pg	SELECT col, geometry FROM '{TEST_DIR}/data-point-out-enabled.parquet'
+pg	select * from test where date_trunc('week', d) >= '2025-01-01'
+pg	select count(*) from aaa where name like concat(chr('0x10FFFF'),'%')
+pg	insert into a values (1)
+pg	INSERT INTO integers VALUES (1, 1), (1, NULL), (2, 3), (2, 3)
+pg	SELECT 1 FROM range((SELECT 1) - 0)
+pg	SELECT unnest(distinct [42, 42])
+pg	SELECT count(*), sum(payload) FROM outer_fact o, selected_dim d WHERE o.dim_id = d.id AND d.selected AND EXISTS (SELECT 1 FROM evidence_a a WHERE a.id = o.id) AND (EXISTS (SELECT 1 FROM evidence_b b WHERE b.id = o.id) OR EXISTS (SELECT 1 FROM evidence_c c WHERE c.id = o.id))
+pg	SELECT extension_name, install_mode from duckdb_extensions() where extension_name='json'
+pg	CREATE VIEW v0(c0) AS SELECT t1.c0 FROM t1, t0
+pg	SELECT cs1.product_name,
+pg	CREATE TABLE partsupp(ps_partkey INTEGER, ps_suppkey INTEGER, ps_availqty INTEGER, ps_supplycost DECIMAL(15,2), ps_comment VARCHAR)
+pg	SELECT min_by(DISTINCT c23, c22)
+pg	SELECT * FROM top_posts ORDER BY post_id
+pg	CREATE TABLE pp_test_cohort_set AS
+pg	SELECT my_list_or_string_extract_2('1234')
+pg	SELECT DISTINCT f.friendid
+pg	WITH prev AS (SELECT * FROM view_5)
+pg	INSERT INTO t1 VALUES(10000.0)
+pg	SELECT -0::DOUBLE, 0::DOUBLE
+pg	WITH RECURSIVE r(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM r WHERE i < 10)
+pg	CREATE TABLE measurements (grp INTEGER, subgrp INTEGER, d DECIMAL(18,3), s VARCHAR, f DOUBLE)
+pg	SELECT DISTINCT ON (target_time)
+pg	EXPLAIN SELECT count(*), min(i), max(i) FROM '{TEST_DIR}/eager_agg.parquet' WHERE i > 100
+pg	SELECT k, a, b FROM lateral_nested, LATERAL (SELECT lateral_nested.a) t2(b) ORDER BY k
+pg	insert into t3 (select -2147483645, 2147483647 from range(500000))
+pg	INSERT INTO t VALUES (1, 2, 100, '1'), (1, 2, 200, '1')
+pg	explain analyze select * from test where date_trunc('day', d) > '2025-01-08'
+pg	SELECT c1 FROM ((SELECT 1 AS c1) UNION (SELECT id AS c1 FROM t0 limit 1)) A where c1 IN (1, 2, 3, 4)
+pg	INSERT INTO t0 VALUES (1), (0), (NULL)
+pg	CREATE TABLE t AS SELECT range a, range % 10 b FROM range(100)
+pg	explain SELECT s_acctbal, s_name, n_name, p_partkey, p_mfgr, s_address, s_phone, s_comment FROM part, supplier, partsupp, nation, region WHERE p_partkey = ps_partkey AND s_suppkey = ps_suppkey AND p_size = 15 AND p_type LIKE '%BRASS' AND s_nationkey = n_nationkey AND n_regionkey = r_regionkey AND r_name = 'EUROPE' AND ps_supplycost = ( SELECT min(ps_supplycost) FROM partsupp, supplier, nation, region WHERE p_partkey = ps_partkey AND s_suppkey = ps_suppkey AND s_nationkey = n_nationkey AND n_regionkey = r_regionkey AND r_name = 'EUROPE') ORDER BY s_acctbal DESC, n_name, s_name, p_partkey LIMIT 100
+pg	EXPLAIN (FORMAT yaml) SELECT v FROM tv ORDER BY payload
+pg	INSERT INTO t2 VALUES (1, 1, 1)
+pg	CREATE TABLE test2(X INTEGER, Y INTEGER, Z INTEGER)
+pg	INSERT INTO t1 AS t0(c0) VALUES(4)
+pg	SELECT t0.actual_rowid, t6.c0, t0.c0 FROM t0 RIGHT JOIN t6 ON ((t0.actual_rowid)>=(((((t6.c0)<=(t6.c0))) IS NOT NULL)::INTEGER)) GROUP BY t0.actual_rowid, t6.c0, t0.c0 order by 1, 2, 3
+pg	SELECT t0.c1 FROM t0, unnest(t0.c1) AS x(c0) WHERE CAST('x' AS BOOLEAN)
+pg	INSERT INTO t0 VALUES(NULL,'', 9)
+pg	CREATE TABLE t_data(descr VARCHAR, lang VARCHAR, tenant VARCHAR, lev BIGINT, categ VARCHAR, _ingested_on_utc BIGINT)
+pg	SELECT 1 FROM (SELECT 1), (SELECT 1)
+pg	CREATE TABLE t0(i INT)
+pg	SELECT bitstring_agg(i, 42, i) FROM range(10) t(i)
+pg	CREATE TABLE source AS SELECT * FROM (VALUES ('part_a', 1), ('part_b', 2)) v(filename, id)
+pg	EXPLAIN SELECT count(*), min(i), max(i) FROM '{TEST_DIR}/eager_agg.parquet'
+pg	SELECT mode(t0."varchar") OVER (PARTITION BY t0."double") AS c18 FROM all_types AS t0
+pg	PREPARE v2 AS SELECT list_extract([1, 2, 3], $1)
+pg	SELECT * FROM t0 WHERE c0 LIKE '' AND c0 < true::VARCHAR
+pg	SELECT c0>=(2147483647 + 1 IS NOT NULL) FROM t0
+pg	SELECT '-10' SIMILAR TO '0'
+pg	SELECT 1 WHERE '23:' > ALL(SELECT '0') BETWEEN false AND true
+pg	set default_collation = 'EN_US'
+pg	SELECT 1 FROM t1 WHERE (-9223372036854775808 >= (6892203265207104503 - (-7595956987701092486))) IS NULL
+pg	CREATE TABLE t1(c0 DOUBLE NOT NULL, c1 BOOLEAN)
+pg	SELECT ids.id, nn.wh
+pg	SELECT * FROM t1, t2, t0 WHERE CONCAT(t1.c0) OR t0.c0
+pg	SELECT 1, 1
+pg	SELECT (SELECT 1 OFFSET c0) FROM (VALUES(1)) c0
+pg	select * from a, b natural right outer join c
+pg	INSERT INTO t1 VALUES(1,0)
+pg	INSERT INTO t2 SELECT 2 UNION ALL SELECT 2
+pg	DELETE FROM properties WHERE elem_id = 1 AND name = 'x'
+pg	INSERT INTO t1 VALUES(-449051989,0)
+pg	CREATE SEQUENCE elems_seq
+pg	SELECT t0.c0, t1.c0, (t1.c0)>=(CAST(t0.c0 AS BLOB)) FROM t0, v0, t1 WHERE ((t1.c0)>=(CAST(t0.c0 AS BLOB))) ORDER BY ALL
+pg	CREATE VIEW item as SELECT
+pg	SELECT x+1, 2
+pg	CREATE TABLE nested_inner(s STRUCT(x INTEGER, y INTEGER))
+pg	SELECT COLUMNS('c01')
+pg	EXPLAIN SELECT left(s, 3) = 'abc' FROM strings
+pg	INSERT INTO t1 VALUES (NULL)
+pg	CREATE TABLE t (id int primary key, val text)
+pg	INSERT INTO t1 VALUES(3,0)
+pg	COPY (SELECT col, geometry FROM '{WORKING_DIRECTORY}/data/geoparquet/data-multipolygon-encoding_wkb.parquet')
+pg	select date_trunc('day', d) = TIMESTAMP 'infinity',
+pg	create table all_types as select * exclude(small_enum, medium_enum, large_enum)
+pg	SELECT extension_version FROM duckdb_extensions() WHERE extension_name = 'loadable_extension_demo'
+pg	SELECT my_struct_extract_c({a: 1, b: 2, d: 4})
+pg	INSERT INTO t0(c0) VALUES (BLOB '\\x00a'), (BLOB '')
+pg	SELECT COALESCE(sections."description", 'all_sections') AS section,
+pg	explain analyze select * from test where date_trunc('day', d) = '2025-01-08'
+pg	EXPLAIN FROM the_table WHERE the_id in [1,2,3]
+pg	INSERT INTO t0(c1) VALUES (0)
+pg	SELECT NULL OR TRUE
+pg	CREATE TABLE t0(c0 INT, c INT UNIQUE)
+pg	set extension_directory='{TEST_DIR}/install_and_load'
+pg	SELECT person1_id, person2_id
+pg	create table t5 as select (range + 1000) a5, range b5, (range + 50)::INT::VARCHAR || '__suffix__' c5 from range(50)
+pg	SELECT (SELECT 2) c0 WHERE (SELECT (SELECT (SELECT c0)))
+pg	set threads=4
+pg	SELECT 2 AS id, '大熊猫' AS name, '猫' AS category UNION ALL
+pg	SELECT TRY_CAST(p_name AS STRUCT(a INTEGER[], b VARCHAR[])) FROM part USING SAMPLE 81.0% (Reservoir)
+pg	SET prefer_range_joins=false
+pg	with y(y) as (select 2) delete from x using y where x = y
+pg	select * from test where date_trunc('day', d) >= '2025-01-06'
+pg	SELECT id, name, CEIL(1 / 2) AS score
+pg	SELECT au.p_personid AS "person.id"
+pg	CREATE TABLE t0 (c2 AS (c0) VIRTUAL, c0 INT)
+pg	SELECT id FROM read_parquet('{TEST_DIR}/test_21160_single.parquet') WHERE x IS NULL ORDER BY y NULLS {null_order}
+pg	CREATE TABLE all_types("varchar" VARCHAR)
+pg	EXPLAIN SELECT * FROM date_test WHERE d < timestamp '2024-06-15 00:00:00'
+pg	CREATE TABLE test(d DATE, i INTEGER)
+pg	INSERT INTO t96 VALUES('1970-01-10',true,'1969-12-31')
+pg	SELECT c1 FROM t1 GROUP BY 'hello', ROLLUP (c1) ORDER BY 1
+pg	CREATE INDEX i0 ON t0 (c0, (BLOB '\\xE7\\x1F\\x8B&\\xF0'))
+pg	select * from test where date_trunc('hour', d) <= '2025-01-06 04:00:00'
+pg	INSERT INTO issue_24806_multiplicity VALUES (1, 1), (1, 1), (1, 1), (2, 1), (2, 1)
+pg	select 1,lv-1,1::bigint from (values(1),(2))s(lv)
+pg	SELECT ROUND(0.1, 1000)
+pg	CREATE TABLE in_left(i INTEGER, j INTEGER)
+pg	delete from t1
+pg	EXPLAIN SELECT 1 FROM (SELECT sum(i) FROM integers WHERE random() > 0.5) t
+pg	CREATE TABLE payload_supplier(id INTEGER PRIMARY KEY, region_id INTEGER, name VARCHAR, address VARCHAR, phone VARCHAR)
+pg	CREATE MACRO my_extract(my_nested_type, index_or_field) AS my_nested_type[index_or_field]
+pg	SELECT {val} > ANY(SELECT {val} FROM range(3000))
+pg	INSERT INTO t1 VALUES(2135670965,0)
+pg	DELETE FROM t0 WHERE c0 = 0 RETURNING rowid
+pg	CREATE VIEW store_sales as SELECT
+pg	select round(col1, 4) from test
+pg	SELECT * FROM t1
+pg	UPDATE test SET c1 = 2, c2 = 2, c3 = 2, c4 = 2
+pg	CREATE TABLE t_load_runs(run_id INTEGER PRIMARY KEY, ingestion_key BIGINT, ingestion_status INTEGER, transform_status INTEGER)
+pg	EXPLAIN SELECT * FROM t WHERE list_contains(NULL::INTEGER[], a)
+pg	create or replace table aaa(name varchar)
+pg	CREATE TABLE returned_orders(order_id BIGINT)
+pg	CREATE TEMP TABLE t0 AS (SELECT 1)
+pg	select (select count(*) from part1pos) as part1,
+pg	SELECT * FROM t0 WHERE cast(t0.c0 as varchar) SIMILAR TO '.'
+pg	EXPLAIN SELECT X=NULL FROM test
+pg	SELECT t1.c02, t2.c02, ta04.c02
+pg	CREATE TABLE evidence_a_flag(id BIGINT, selected BOOLEAN)
+pg	SELECT multipoint FROM '{WORKING_DIRECTORY}/test/geoparquet/seattle.parquet'
+pg	EXPLAIN SELECT * FROM date_test WHERE d = timestamp '2024-06-15 00:00:00'
+pg	PREPARE v2 AS SELECT $1 FROM t0 WHERE $1 IN (1)
+pg	SELECT t0.c0, t0.c1 FROM t0 WHERE REVERSE((CASE 0.020672069925445347 WHEN (((DATE '1970-01-18')+(t0.c1)) NOT BETWEEN t0.c0 AND DATE '1970-01-10') THEN t0.c1 ELSE t0.c1 END )) GROUP BY t0.c0, t0.c1 UNION SELECT t0.c0, t0.c1 FROM t0 WHERE (NOT REVERSE((CASE 0.020672069925445347 WHEN (((DATE '1970-01-18')+(t0.c1)) NOT BETWEEN t0.c0 AND DATE '1970-01-10') THEN t0.c1 ELSE t0.c1 END ))) GROUP BY t0.c0, t0.c1 UNION SELECT t0.c0, t0.c1 FROM t0 WHERE ((REVERSE((CASE 0.020672069925445347 WHEN (((DATE '1970-01-18')+(t0.c1)) NOT BETWEEN t0.c0 AND DATE '1970-01-10') THEN t0.c1 ELSE t0.c1 END ))) IS NULL) GROUP BY t0.c0, t0.c1
+pg	INSERT INTO t1(c0) VALUES ('2119350449')
+pg	INSERT INTO t0 VALUES('1970-01-11','810092761', 2)
+pg	EXPLAIN SELECT 42
+pg	WITH prev AS (SELECT * FROM view_17)
+pg	CREATE TABLE t1(c0 TINYINT, c1 VARCHAR, c2 TIMESTAMP)
+pg	CREATE VIEW t2 AS
+pg	CREATE TABLE sales (region VARCHAR, product VARCHAR, amount INTEGER)
+pg	SELECT 1 FROM t1 t2(c1) NATURAL LEFT JOIN t0, t2 t1(c0) WHERE t2.c2 >= c0
+pg	CREATE TABLE tbl AS SELECT 'thisisastring42' AS r_name
+pg	SELECT points, centroid(points)
+pg	INSERT INTO t0 VALUES(false)
+pg	CREATE TABLE outer_fact(id BIGINT, dim_id BIGINT, payload BIGINT)
+pg	SET autoinstall_known_extensions = false
+pg	SELECT test_named_inspect("C" := 3, "A" := 1)
+pg	EXPLAIN SELECT s FROM nocase_strings WHERE regexp_matches(s, 'A')
+pg	CREATE OR REPLACE VIEW view_13 AS
+pg	SELECT DISTINCT
+pg	SELECT * FROM nodes
+pg	SELECT EXISTS(SELECT sum(x) FROM t t2 WHERE t1.x > 2) FROM t t1
+pg	SELECT * FROM t0 WHERE c0 >= 0.1 ORDER BY 1
+pg	SELECT v, count(*) FROM td GROUP BY v ORDER BY ALL
+pg	EXPLAIN SELECT x, NOT EXISTS (SELECT 1 FROM range(1000000000) a(y) WHERE y = o.x)
+pg	select array_length(null)
+pg	CREATE TABLE t0 (c2 INT CONSTRAINT k0 UNIQUE)
+pg	CREATE TABLE t2 AS SELECT 1
+pg	CREATE OR REPLACE VIEW view_11 AS
+pg	SELECT vector_type(i), vector_type(j) FROM fuu
+pg	CREATE TABLE date_test(d DATE)
+pg	SELECT i * 0 FROM integers ORDER BY ALL
+pg	SELECT variant_typeof(v), count(*) FROM tv GROUP BY ALL ORDER BY ALL
+pg	select NAME from my_table
+pg	SELECT x FROM t_schema GROUP BY x
+pg	SELECT struct_extract(struct_pack(a := 40), 'c')
+pg	SELECT t1.x + t2.x + t3.x AS x
+pg	explain with cte1 as (Select i as j from a) select * from cte1
+pg	SELECT "last"(c1) FROM t0
+pg	CREATE TABLE t1(c1 BOOLEAN)
+pg	select * from "E" left outer join "I" on "E"."intCol" = "I"."intCol" or ("E"."intCol" is null and  "I"."intCol" is null) ORDER BY 1
+pg	SELECT col, st_astext(geometry) FROM '{WORKING_DIRECTORY}/data/geoparquet/data-multilinestring-encoding_wkb.parquet'
+pg	SELECT d FROM date_test WHERE timestamp '2024-06-15 00:00:00' = d ORDER BY d
+pg	SELECT x*2
+pg	select * from a
+pg	CREATE TABLE tbl(v UBIGINT)
+pg	SELECT mode(1) FILTER (0)
+pg	SET enable_geoparquet_conversion = true
+pg	SELECT extension_name, install_mode, parse_filename(installed_from), extension_version FROM duckdb_extensions() where installed and extension_name not in ('jemalloc', 'parquet', 'core_functions')
+pg	create table all_types(c1 BOOL, c9 SMALLINT, c10 UINTEGER, c36 VARCHAR[])
+pg	INSERT INTO t1 VALUES(802216568,0)
+pg	CREATE OR REPLACE VIEW view_14 AS
+pg	SELECT "id"
+pg	INSERT INTO returned_orders VALUES (2), (2), (NULL)
+pg	SELECT * FROM blobs
+pg	SELECT * FROM test
+pg	insert into test values(17953.2)
+pg	CREATE TABLE t2(c INT)
+pg	CREATE INDEX i1 ON t0 (c1, CAST('c' AS INT))
+pg	CREATE TABLE t1(c0 DOUBLE)
+pg	select * from t1, t2 where a = b and a in (select c from t3)
+pg	CREATE INDEX i0 ON t1 (c1, (decode('\\x81\\x5C\\xE5'::BLOB)::VARCHAR))
+pg	INSERT INTO evidence_a_flag SELECT id, true FROM evidence_a
+pg	SELECT * FROM v0
+pg	INSERT INTO t SELECT 6, i FROM range(3651, 7953) r(i)
+pg	CREATE TYPE alias as BLOBL
+pg	INSERT INTO points VALUES (5, ({'x': 54, 'y': 23}), ({'i': 10, 'j': 100}))
+pg	select (select 1) a where (select (select 3) b where (select b) > (select a))
+pg	CREATE OR REPLACE TABLE t2 AS (SELECT -54124033386577348004002656426531535114 FROM t2 LIMIT 70%)
+pg	CREATE TABLE t0 (c0 INT, c1 INT, FOREIGN KEY (c0, c1) REFERENCES t0(c0, c1), UNIQUE (c0, c1))
+pg	SELECT i, (SELECT (SELECT SUM(i) IS NOT NULL) FROM integers i2 WHERE i2.i>i1.i) FROM integers i1 ORDER BY i
+pg	SELECT i % 3, COUNT(*) FROM t GROUP BY 1 ORDER BY 1 OFFSET 1
+pg	SELECT test_named_ambig(1::INTEGER, 2::BIGINT)
+pg	UPDATE t0 SET c1 = c0
+pg	CREATE TABLE evidence_b_flag(id BIGINT, selected BOOLEAN)
+pg	SELECT (0 IS DISTINCT FROM 2) = 0
+pg	SELECT region, product, SUM(amount) FROM sales GROUP BY GROUPING SETS ((region), (product)) ORDER BY ALL
+pg	select typeof(g) from '{TEST_DIR}/test.parquet'
+pg	INSERT INTO t0 VALUES(0.5,1)
+pg	SELECT (SELECT 0 WHERE CAST(c0 AS VARCHAR) LIKE '1' INTERSECT (SELECT 1)) FROM t2
+pg	select * from cte3
+pg	CREATE TABLE reuse_dim(id INTEGER, label VARCHAR)
+pg	EXPLAIN SELECT * FROM date_test WHERE d <= timestamp '2024-06-15 12:00:00'
+pg	SELECT o.name, o.address, o.phone, o.k, o.label, o.cost
+pg	INSERT INTO t1 VALUES (1), (1)
+pg	INSERT INTO t0(c1) VALUES (5)
+pg	SELECT c FROM id WHERE strings_with_null=a
+pg	CREATE MACRO shadow.suffix(a, b) AS false
+pg	EXPLAIN SELECT count(*), sum(payload) FROM outer_fact o, selected_dim d WHERE o.dim_id = d.id AND d.selected AND EXISTS (SELECT 1 FROM evidence_a a WHERE a.id = o.id) AND NOT EXISTS (SELECT 1 FROM evidence_b b WHERE b.id = o.id) AND NOT EXISTS (SELECT 1 FROM evidence_d e WHERE e.id = o.id)
+pg	SELECT * FROM t1, t0 INNER JOIN (SELECT t1.c1 AS col0) ON true
+pg	SELECT 1 WHERE (1 IS DISTINCT FROM 1) IS NULL
+pg	select * from test where '2025-01-08' > date_trunc('day', d)
+pg	SELECT generate_series(-9223372036854775808, 9223372036854775807, 1) AS c1
+pg	select name from test where id = 1
+pg	SELECT f.k, sum(f.cost) AS cost
+pg	SELECT NULL FROM (SELECT ref_0."int" AS c3 FROM main.all_types AS ref_0 RIGHT JOIN main.all_types AS ref_1 INNER JOIN main.all_types AS ref_2 ON ((ref_1."int" = ref_2."int")) INNER JOIN main.all_types AS ref_3 ON ((ref_2.tinyint = ref_3.tinyint)) ON ((ref_2."varchar" ~~* ref_3."varchar")) WHERE (ref_2."smallint" IS NOT NULL)) AS subq_0
+pg	SELECT currval('seq')
+pg	SELECT col, st_astext(geometry) FROM '{WORKING_DIRECTORY}/data/geoparquet/data-polygon-encoding_wkb.parquet'
+pg	SELECT upper(decode('\\xF0\\x9F\\x98\\x84'::BLOB)::VARCHAR)
+pg	SELECT a FROM test ORDER BY 1
+pg	COPY (VALUES (NULL), (NULL)) TO '{TEST_DIR}/test_null_args.csv' (FORMAT CSV)
+pg	CREATE TABLE integers(i INTEGER, j INTEGER)
+pg	SELECT json_valid(NULL)
+pg	INSERT INTO evidence_d VALUES (4)
+pg	SELECT c01 FROM ( v00 AS ta03 SEMI JOIN ( v00 AS ta04 JOIN v00 AS ta05 USING ( c01 ) ) ON 42 )
+pg	SELECT DIALECT_DEMO
+pg	select * from aaa where name like '绿%'
+pg	CREATE TABLE t1 AS SELECT col, geometry::GEOMETRY as geometry FROM '{WORKING_DIRECTORY}/data/geoparquet/data-point-wkt.csv'
+pg	CREATE TABLE another_T (col1 INT, col2 INT, col3 INT, col4 INT, col5 INT, col6 INT, col7 INT, col8 INT)
+pg	SELECT NULL LIMIT array_reverse(TRY_CAST(5722 AS TIMESTAMP WITH TIME ZONE[]))
+pg	select * from test where date_trunc('day', date_add(d, INTERVAL 1 day)) >= '2025-01-12'
+pg	SELECT CAST(SUM(TotalSales) as BIGINT) AS TotalSales FROM tbl_ProductSales
+pg	CREATE OR REPLACE VIEW view_16 AS
+pg	set autoload_known_extensions=false
+pg	DROP TABLE t1 CASCADE
+pg	SELECT test_named_nullshort(1)
+pg	explain analyze select * from test where date_trunc('day', d) >= '2025-01-08'
+pg	SELECT * FROM t0 WHERE CASE WHEN c0 THEN 0 ELSE CASE '0.1' WHEN c0 THEN '' END END
+pg	EXPLAIN SELECT CASE WHEN NULL>3 THEN X+1 ELSE X+2 END FROM test
+pg	CREATE TABLE t0(c0 DATE, c1 SMALLINT)
+pg	CREATE TABLE t1(c0 DATE)
+pg	SELECT 4294967168::REAL::UINTEGER
+pg	SELECT typeof(48329048239081049812098409812409812772), 48329048239081049812098409812409812772
+pg	INSERT INTO t0(c0) VALUES ( 1)
+pg	select max(name) from test
+pg	select * from '{TEST_DIR}/test1337.parquet'
+pg	SELECT bitstring_agg(hugeint) FROM all_types
+pg	SELECT g::VARCHAR FROM emptymix ORDER BY g, payload
+pg	INSERT INTO t0 VALUES(NULL,'810092761', 3)
+pg	SET VARIABLE work_dir_no_host='file:/' || ltrim(replace('{WORKING_DIRECTORY}', '\\', '/'), '/')
+pg	CREATE VIEW store as SELECT
+pg	SELECT i, (SELECT (SELECT [SUM(i)]) FROM integers i2 WHERE i2.i>i1.i) FROM integers i1 ORDER BY i
+pg	SELECT 1 FROM t0 GROUP BY -4.40304405E8 ORDER BY (CASE 1 WHEN 0 THEN 0 ELSE -440304405 END)
+pg	SELECT extract(year from m_creationdate) AS messageYear
+pg	select * from test2 where date_trunc('day', d) = '2025-01-06'
+pg	CREATE TABLE t2 AS SELECT 1 c1, 1 c2
+pg	UPDATE test SET name = 'Alice' Where id = 1
+pg	INSERT INTO t0(c0) VALUES (3)
+pg	INSERT INTO t0(c0) VALUES (0)
+pg	CREATE TABLE t1 AS SELECT range a FROM range(100000)
+pg	create table t(t0 int, t1 int)
+pg	EXPLAIN SELECT CASE WHEN 1 IN (1+1, 2, 3, 4) THEN 3 ELSE 5 END
+pg	INSERT INTO integers VALUES (1, 1), (2, 2), (3, 3)
+pg	create macro array_l(my_arr) as array_length(my_arr)
+pg	CREATE TABLE emptymix AS
+pg	EXPLAIN SELECT col0 + 1 + 2 FROM test
+pg	SET delim_join_as_cte={cte_mode}
+pg	SET preserve_insertion_order=true
+pg	SELECT  c01 from values('string') as _(c01), LATERAL ( WITH ta02 AS MATERIALIZED ( SELECT 'string' ) ( SELECT 'string' ) INTERSECT ALL ( SELECT 'string' ) )
+pg	SELECT ((SELECT 1) EXCEPT (SELECT c0 LIMIT 0)) FROM VALUES (0), t0(c0)
+pg	SELECT decode('\\xA0ABCDEFGHIJKL'::BLOB, 'ignore')::VARCHAR
+pg	SELECT * FROM t0, t1 WHERE (((t0.rowid IN (0.1))) IS NULL)
+pg	SELECT 1 c0, (SELECT 0 OFFSET c0 - 1)
+pg	CREATE VIEW date_dim as SELECT
+pg	INSERT INTO t1 VALUES (TRUE), (FALSE), (NULL)
+pg	CREATE TABLE t0(c0 BOOL UNIQUE)
+pg	SELECT * FROM t0 WHERE NOT REGEXP_MATCHES(t0.c0, '1')
+pg	INSERT INTO t0 VALUES (1) RETURNING c0, rowid
+pg	CREATE INDEX i0 ON t0(c0)
+pg	create or replace macro do_nothing(input) as input
+pg	CREATE TABLE t0 (c1 INT, CHECK (CURRENT_TIME >= TIME '00:00:00'))
+pg	SELECT p, id, x, SUM(x) OVER (PARTITION BY p) AS partition_sum
+pg	SELECT c1 c2, ROW(t0.c1, c2) FROM t0 GROUP BY ALL
+pg	INSERT INTO tbl VALUES(NULL)
+pg	EXPLAIN SELECT col0 * 1 * 2 FROM test
+pg	SELECT id, parse_filename(filename) FROM read_csv_auto(getvariable('work_dir_no_host') || '/data/csv/hive-partitioning/simple/*/*/test.csv', filename=1) ORDER BY id
+pg	SELECT * FROM (SELECT NULL LIMIT rank_dense() OVER ())
+pg	select i from test order by struct_pack(a:=0, i) desc
+pg	insert into x values (1)
+pg	INSERT INTO measurements SELECT i % 3, i % 7, i * 0.001, 'str_' || i, i * 0.5 FROM range(1000) t(i)
+pg	SELECT id FROM t WHERE y IS NULL ORDER BY y ASC, id ASC
+pg	SELECT (SELECT 1 FROM range((SELECT 1) - 0))
+pg	SELECT list_zip()
+pg	EXPLAIN (FORMAT yaml) SELECT v FROM ts ORDER BY payload
+pg	SELECT NULL IS DISTINCT FROM (1 + t1.c1) FROM t1 NATURAL LEFT JOIN t0
+pg	select 9.2233720368547758E+18::real::int8
+pg	INSERT INTO t SELECT 7, i FROM range(7961, 8273) r(i)
+pg	CREATE VIEW web_site as SELECT
+pg	CREATE TABLE t0 (c1 INT, c0 INT CONSTRAINT k1 REFERENCES t0(c0) UNIQUE)
+pg	SELECT upper(decode('\\xc0\\x80'::BLOB)::VARCHAR)
+pg	SELECT test_named_inspect(1)
+pg	SELECT {val} >= ANY(SELECT {val} FROM range(3000))
+pg	INSERT INTO t2 VALUES (0), (0)
+pg	SELECT TRY_CAST(uuid AS STRUCT(b VARCHAR[3])) FROM uuids
+pg	ALTER TABLE t1 ALTER c0 SET DEFAULT 0
+pg	SELECT * FROM t0 WHERE c0 > 0.1 ORDER BY 1
+pg	select * from test where date_trunc('minute', d) > '2025-01-10 05:09:00'
+pg	drop table bar
+pg	select 1 where 2 > any(select 2)
+pg	INSERT INTO t1 VALUES(1.61803, '1970-01-01 00:00:00', 1.61803)
+pg	SELECT typeof(arg_min({foo: 'bar'}::JSON, 1))
+pg	set allow_parser_override_extension=strict
+pg	CREATE TABLE test (c1 UTINYINT, c2 USMALLINT, c3 UINTEGER, c4 UBIGINT)
+pg	SET threads=8
+pg	SELECT test_named_inspect(a => 1, c => 3)
+pg	SELECT 1 LIMIT CAST('NaN' AS REAL)%
+pg	SET demo_global_setting = 'foo'
+pg	EXPLAIN SELECT * FROM date_test WHERE timestamp '2024-06-15 12:00:00' < d
+pg	select test.round
+pg	INSERT INTO tbl VALUES(MAP([], []))
+pg	SELECT 1 FROM t1 t2(c1) NATURAL RIGHT JOIN t0, t2 t1(c0) WHERE t2.c2 >= c0
+pg	SELECT d FROM date_test WHERE timestamp '2024-06-15 12:00:00' > d ORDER BY d
+pg	create table lineitem (l_orderkey int, l_suppkey int, l_partkey int)
+pg	select min(a collate noaccent) from tbl
+pg	INSERT INTO reuse_owner VALUES (1, 10), (2, 20), (3, 30), (4, 40)
+pg	SELECT count(*) FILTER (WHERE EXISTS (SELECT 1 FROM range(2) b(x) WHERE b.x = q.key) OR EXISTS (SELECT 1 FROM range(2, 3) c(x) WHERE c.x = q.key)) FROM (SELECT o.k AS key, count(*) n FROM range(6) o(k) LEFT JOIN (SELECT * FROM range(6) d(y) WHERE y < 3) d ON d.y = o.k GROUP BY o.k) q
+pg	EXPLAIN SELECT * FROM date_test WHERE timestamp '2024-06-15 12:00:00' > d
+pg	SELECT t1.payload, t1.v, t2.v
+pg	CREATE TABLE ObjectAttributes AS SELECT
+pg	INSERT INTO t0 VALUES('2025-12-25 12:00:00+02:00', []), ('2004-07-27 10:00:00+02', [])
+pg	SELECT .123456
+pg	SELECT parse_filename(file) FROM glob(getvariable('work_dir_no_host') || '/data/*/bad_date_timestamp_mix.csv')
+pg	SELECT SUM(-9223372036854775808)::DOUBLE AS agg0 FROM (VALUES (0), (1)) t1
+pg	select '4294967295'::HUGEINT::UINT32
+pg	SELECT date, name FROM ranked WHERE rn = 1 ORDER BY ALL
+pg	SELECT my_list_or_string_extract_2('12')
+pg	SELECT t0.c0 FROM t0, v0
+pg	SELECT today_target_time,
+pg	EXPLAIN SELECT X OR X OR X OR X FROM test
+pg	INSERT INTO t1(c0) VALUES (X'41')
+pg	INSERT INTO all_types VALUES('goose',1)
+pg	SELECT d, d = timestamp '2024-06-15 12:00:00' AS r FROM date_test ORDER BY d
+pg	ALTER TABLE t0 DROP COLUMN rowid
+pg	SELECT i, (select SUM(i) IS DISTINCT FROM NULL  from integers where j = i1.j) FROM integers i1 ORDER BY 1
+pg	CREATE TABLE strings (a INTEGER DEFAULT -1, b INTEGER DEFAULT -2, t0 INTEGER DEFAULT -3)
+pg	SELECT owner_user_id FROM storm_posts WHERE id = rp.post_id
+pg	SELECT ((t0.c0)>('!9t')) FROM t0
+pg	SELECT ids.id, nn.wh,
+pg	SELECT * FROM t ORDER BY x, y
+pg	CREATE TEMP TABLE t2 AS (SELECT 1)
+pg	CREATE TABLE t0(c0 BOOLEAN DEFAULT(1168904737), c1 BOOLEAN DEFAULT(DATE '1969-12-28'), c2 DATE, PRIMARY KEY(c1, c2, c0))
+pg	CREATE TABLE t AS SELECT 'Til Ærø' AS name
+pg	CREATE TABLE t AS SELECT range i FROM range(100)
+pg	INSERT INTO all_types VALUES({'a': NULL, 'b': NULL}, -32768)
+pg	SELECT t0.rowid FROM t0 WHERE t0.rowid ORDER BY CASE ((t0.c0) ::BOOL) WHEN 1 THEN t0.rowid END
+pg	SELECT col, geometry FROM '{TEST_DIR}/data-linestring-out.parquet'
+pg	CREATE VIEW catalog_sales as SELECT
+pg	SELECT i, (select SUM(i) OR true from integers where j = i1.j) FROM integers i1 ORDER BY 1
+pg	CREATE TABLE c2(c0 INTEGER, c1 INTEGER UNIQUE, FOREIGN KEY (c0) REFERENCES s3(t0))
+pg	CREATE TABLE t0(c0 VARCHAR UNIQUE)
+pg	insert into lineitem values (1,1,42),(1,2,43),(3,3,44),(4,5,45),(5,5,46),(6,5,47)
+pg	SELECT * FROM test_num_data ORDER BY id
+pg	select arg_max([a], a collate noaccent) from tbl
+pg	CREATE TABLE payload_unproven_part AS SELECT * FROM payload_part UNION ALL SELECT * FROM payload_part
+pg	INSERT INTO t0 VALUES(0.57829020330205271882,NULL)
+pg	SELECT LEFT(t0.c0::VARCHAR, -1) FROM t0
+pg	select 0 as i, 0 as j
+pg	SELECT 256::{float_type}::UTINYINT
+pg	INSERT INTO t1 VALUES(-1699690429,0)
+pg	SELECT first_value(c40) OVER (PARTITION BY c42 ROWS BETWEEN GREATEST(COALESCE(#4, 0), 0) FOLLOWING AND UNBOUNDED FOLLOWING)
+pg	CREATE TABLE t0(c0 BIGINT)
+pg	INSERT INTO t1(c0, c2, c1) VALUES(2.71828, 2.345, '1995-05-23 08:45:00'), ('1308880808', 12.34, '2021-01-01 15:30:45')
+pg	SELECT abs({type}) FROM numerics
+pg	CREATE TABLE l(x INTEGER)
+pg	SELECT NULL AS c3
+pg	CREATE OR REPLACE VIEW view_1 AS
+pg	INSERT INTO t2 VALUES (42)
+pg	create sequence test INCREMENT BY -1 MINVALUE -9223372036854775808 MAXVALUE -9223372036854775800 CYCLE
+pg	CREATE TABLE all_types AS SELECT varchar FROM test_all_types()
+pg	SELECT c0 FROM range(1, NULL) t3(c0)
+pg	SELECT d FROM date_test WHERE timestamp '2024-06-15 00:00:00' < d ORDER BY d
+pg	SELECT v FROM tm ORDER BY payload LIMIT 3
+pg	SELECT d.label, sum(f.v)
+pg	SELECT * FROM t2, v0 INNER JOIN ( SELECT t2.c1 AS col_0 WHERE v0.c2) as subQuery0 ON v0.c2
+pg	CREATE TABLE empty_sales (region VARCHAR, product VARCHAR, amount INTEGER)
+pg	INSERT INTO t1 VALUES(-2120629165,0)
+pg	INSERT INTO t2 SELECT 2 FROM range(10)
+pg	INSERT INTO t1 VALUES(0)
+pg	EXPLAIN SELECT * FROM date_test WHERE timestamp '2024-06-15 12:00:00' <= d
+pg	SELECT tc.tc_tagclassid AS root_tagclassid
+pg	select * from test using sample 100
+pg	EXPLAIN SELECT * FROM t WHERE array_contains([], a)
+pg	CREATE INDEX i1 ON t0(c0)
+pg	SELECT (*COLUMNS(*) IS NOT NULL) FROM v00
+pg	select avg(0) AS c0, (SELECT c0)
+pg	SELECT ((SELECT 0) UNION (SELECT t1.c0) ORDER BY 1 NULLS FIRST OFFSET 1) FROM t1
+pg	EXPLAIN SELECT 3 + col0  FROM test
+pg	CREATE TABLE t90(c0 VARCHAR)
+pg	SELECT strptime(NULL,'p') IS DISTINCT FROM DATE '-543572-1-1'
+pg	INSERT INTO strings VALUES (['42', NULL, '84', 'hello world', '100'])
+pg	CREATE TABLE t0(c0 BOOLEAN, c1 TINYINT, PRIMARY KEY(c1, c0))
+pg	select * from test where cast(consumption as int) = 17953::decimal(18,5)
+pg	select array_pop_front(i) from tbl
+pg	SELECT vector_type(NULL::INTEGER)
+pg	INSERT INTO t0 VALUES(0.0,1.0)
+pg	INSERT INTO t_load_runs VALUES (42, 42, 42, 42)
+pg	SELECT COUNT(*) FROM t0 WHERE NOT((t0.c0)>('!9t'))
+pg	CREATE TABLE t0(c0 BOOLEAN DEFAULT(true), c1 VARCHAR)
+pg	create table tbl (i integer[])
+pg	SELECT 1 + count() FILTER (WHERE EXISTS (SELECT EXISTS (SELECT 1)))
+pg	CREATE TABLE t2 (c1 INT PRIMARY KEY)
+pg	CREATE TABLE df_b AS
+pg	SELECT c0, count(c0) over () AS count_window FROM (SELECT 1) t0(c0) GROUP BY c0 QUALIFY count_window
+pg	SELECT l.i, r.i, r.j FROM t l, LATERAL (SELECT * FROM t r WHERE r.i + l.i IS NOT NULL ORDER BY r.i + l.i LIMIT 2) r
+pg	select * from test where date_trunc('day', d) < '2025-01-07'
+pg	select * from test where date_trunc('day', d) < '2025-01-06'
+pg	SELECT current_setting('current_dialect') IS NULL
+pg	SELECT COUNT((NOT IFNULL((CASE ((t0.rowid)+(0.250079098209133)) WHEN '0.3133638032049081' THEN t0.rowid WHEN t0.rowid THEN (((- t0.rowid)) IS NULL) ELSE (('1654422017')||((t0.rowid IN (false, '6㹬', TIMESTAMP '1970-01-25 20:11:23')))) END ), DATE '1970-01-12'))) FROM t0
+pg	SELECT [] LIKE []
+pg	INSERT INTO t SELECT 2, i FROM range(3651, 3954) r(i)
+pg	INSERT INTO tbl VALUES(9223372036854775807)
+pg	select * from
+pg	SELECT UPPER(region), product || '!', SUM(amount) FROM sales GROUP BY ROLLUP(UPPER(region), product || '!') ORDER BY ALL
+pg	SELECT .1234567890123
+pg	EXPLAIN SELECT s LIKE 'abc%' FROM strings
+pg	SELECT my_specific_list_extract('c')
+pg	SELECT CASE 8 WHEN(0 IS DISTINCT FROM 0) THEN 2 END
+pg	CREATE INDEX i1 ON t1((random()), c1)
+pg	SELECT TRY_CAST(v AS INTEGER[]) FROM strings
+pg	INSERT INTO t SELECT 5, i FROM range(3651, 3917) r(i)
+pg	INSERT INTO t VALUES (3, 1), (3, 1)
+pg	SELECT trim('hello')
+pg	CREATE TABLE t1 (c2 INT)
+pg	EXPLAIN SELECT CASE WHEN 1 IN (1, 2, 3, 4) THEN 3 ELSE 5 END
+pg	select arg_min(i, d), arg_min(d, i) from test
+pg	CREATE TABLE reuse_fact(k INTEGER, v INTEGER, w INTEGER)
+pg	DELETE FROM t2
+pg	DELETE FROM t WHERE chunk_id = 7 AND id BETWEEN 7961 AND 8017
+pg	VALUES((0, 0) = ALL(SELECT 2))
+pg	SELECT dayofweek(CAST(ref_0.date AS DATE)) AS c9 FROM dates AS ref_0
+pg	select i, a.i, b.i from a left outer join b using (i)
+pg	CREATE TABLE t1 (c01 INT)
+pg	select 9.2233720368547758E+18::int8
+pg	SELECT d FROM date_test WHERE d <= timestamp '2024-06-15 12:00:00' ORDER BY d
+pg	CREATE MACRO my_specific_list_extract(index) AS list_value(1, 2, 3, 4)[index]
+pg	insert into grouping_set_cm values (1, 'aa', 10), (1, 'bb', 20), (2, 'aa', 30)
+pg	UPDATE EXTENSIONS (json)
+pg	SELECT id FROM t WHERE x IS NULL ORDER BY x NULLS {null_order}
+pg	CREATE TABLE products (id INTEGER, categoryid int, sectionid INTEGER, "description" TEXT, price DECIMAL(6,2))
+pg	SELECT 10::tinyint<<4::tinyint
+pg	ALTER TABLE t0 ALTER c0 SET NOT NULL
+pg	SELECT 1 FROM (SELECT 1) t0(c0) WHERE ((VALUES(1), (c0) LIMIT 1) INTERSECT (SELECT 1))
+pg	SELECT setseed('{val}'::{type})
+pg	SELECT i % 3, COUNT(*) FROM t GROUP BY 1 LIMIT 2 OFFSET 1
+pg	create table b as select 43 as i, 84 as k
+pg	INSERT INTO nested_outer VALUES ({'x': NULL, 'y': 1}), ({'x': 1, 'y': 2}), ({'x': 9, 'y': 9})
+pg	UPDATE t1 SET x=0 WHERE x = 1
+pg	CREATE TABLE t2(c0 INT)
+pg	INSERT INTO t0(c0) VALUES ('a'), ('A')
+pg	INSERT INTO test VALUES ('duckdb')
+pg	INSERT OR IGNORE INTO tbl DEFAULT VALUES
+pg	SELECT test_named_inspect(1, c := 3)
+pg	SELECT i, (select SUM(i) AND false from integers where j = i1.j) FROM integers i1 ORDER BY 1
+pg	SELECT list_transform([1], x -> x + 1)
+pg	INSERT INTO t0(c0) VALUES (-2)
+pg	SELECT JSON_EXTRACT_STRING(x, '$') AS id
+pg	CREATE VIEW ship_mode as SELECT
+pg	SELECT struct_extract_at(struct_pack(a := 40, b := 2), 1)
+pg	SELECT * FROM (t1 JOIN t1 t2 USING (c0)), (SELECT 42)
+pg	SELECT {'a': 42} = ALL(SELECT {'a': '42'})
+pg	CREATE TABLE t1 (c01 INT, c02 INT)
+pg	INSERT INTO t0 VALUES('',NULL)
+pg	INSERT INTO selected_dim VALUES (10, true), (20, false)
+pg	SELECT * FROM t1 JOIN t1 t2 USING (c0, c0)
+pg	SELECT p::HUGEINT FROM powers_of_ten
+pg	SELECT encode(s) FROM strings WHERE s LIKE chr(127) || '%' || 'c' ORDER BY 1
+pg	CALL disable_logging()
+pg	create secret secret_file_url_localhost (TYPE HTTP, scope 'file://localhost/')
+pg	SELECT region, product, SUM(amount) FROM sales GROUP BY ROLLUP(region, product) HAVING SUM(amount) > 5 ORDER BY ALL
+pg	SELECT f1 FROM BOOLTBL1 WHERE NOT f1 = FALSE
+pg	select date_trunc('day', d) is not distinct from TIMESTAMP 'infinity',
+pg	SELECT 1 FROM (SELECT 1 ORDER BY ALL LIMIT 514322393620248226) USING SAMPLE SYSTEM (36%)
+pg	create table test (consumption decimal(14,0))
+pg	WITH RECURSIVE r(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM r WHERE i < 10) SELECT i FROM r WHERE i > 5 ORDER BY i
+pg	SET search_path = 'shadow,main'
+pg	WITH l(a) AS (VALUES (1), (1)),
+pg	SELECT test_named_nullshort(b := NULL, a := 1)
+pg	SELECT 1 WHERE 1 < ANY(SELECT 2 FROM test)
+pg	SELECT l.c_pk, l.c_int, l.c_dbl, l.c_txt
+pg	SELECT COLUMNS(list_filter(*, (lambda c43: try_strptime('c29', 'c24'))))
+pg	CREATE TABLE numerics AS SELECT tinyint, smallint, int, bigint, hugeint FROM test_all_types()
+pg	EXPLAIN SELECT X=1::BIGINT FROM test
+pg	SELECT min(date_col)::VARCHAR
+pg	SELECT (SELECT 1 INTERSECT SELECT 1 HAVING false) FROM t0
+pg	CREATE TABLE uuids(uuid UUID)
+pg	SELECT ( SELECT to_centuries ( v1 ) FROM v0 WHERE fmod ( fmod ( v1 , 3.100000 ) , 3.100000 ) OVER( ORDER BY v1 ) = 70000 ) AS century_result
+pg	SELECT ROW(NULL, NULL)
+pg	SELECT t_name as "tag.name"
+pg	select * from a full outer join b using (i) full outer join c using (i) order by 1
+pg	EXPLAIN SELECT COUNT(*) FROM test GROUP BY EXTRACT(year from t)
+pg	SELECT CASE WHEN range % 7 = 6 THEN NULL ELSE ('POINT(' || (range % 4) || ' ' || (range % 3) || ')')::GEOMETRY END AS g,
+pg	COPY (SELECT 1 AS id, NULL::VARCHAR AS x, NULL::DOUBLE AS y) TO '{TEST_DIR}/test_21160_single.parquet' (FORMAT parquet)
+pg	INSERT INTO t1 VALUES(783586315,0)
+pg	INSERT INTO t0(c0) VALUES (0.1)
+pg	SELECT * FROM t1 JOIN t0 ON t1.c0 < t1.c0 - t0.c0 WHERE t0.c0 <= t1.c0
+pg	set disabled_optimizers to 'expression_rewriter'
+pg	select * from t where a in (select 123 )
+pg	SELECT 1 FROM t0 JOIN (SELECT 8) t1(c0) USING (c0)
+pg	SELECT * FROM categories GROUP BY ()
+pg	EXPLAIN SELECT count(*) FILTER (WHERE EXISTS (SELECT 1 FROM range(10000000) b(x) WHERE b.x = q.k) OR EXISTS (SELECT 1 FROM range(10000000) c(x) WHERE c.x = q.k)) FROM (SELECT o.k, (SELECT e.x FROM range(10000000) e(x) WHERE e.x = o.k AND e.x < 10) v FROM range(1000000) o(k)) q
+pg	WITH tbl1 AS (SELECT NULL AS u) SELECT UNION_EXTRACT(CAST(u AS JSON), 'a') FROM tbl1
+pg	SELECT '" \\'' "'
+pg	select l_orderkey from lineitem l2
+pg	SELECT grd_quart, s[getvariable('col')], sum(ipondl) AS eft
+pg	INSERT INTO evidence_b VALUES (2), (4), (NULL)
+pg	INSERT INTO date_test VALUES ('2024-01-01'), ('2024-06-15'), ('2025-01-01')
+pg	insert into test values ('2025-01-06 00:00:00'), ('2025-01-06 03:01:00'), ('2025-01-10 05:10:06')
+pg	EXPLAIN WITH c AS MATERIALIZED (SELECT * FROM t) SELECT * FROM t l JOIN c ON l.i + c.i > 1000
+pg	SELECT id FROM read_parquet('{TEST_DIR}/test_21160_multi.parquet') ORDER BY y DESC, id ASC LIMIT 10
+pg	set extension_directory='{TEST_DIR}/install_extension'
+pg	CREATE TABLE t0(c0 VARCHAR, c1 VARCHAR)
+pg	SELECT 1 FROM (SELECT 1) t0(c0) WHERE (SELECT (SELECT 1 ORDER BY c0))
+pg	SELECT max(i), count(i), min(i) FROM '{TEST_DIR}/eager_agg.parquet'
+pg	SELECT c1 FROM t0 WHERE (c0 + c1) = 2
+pg	INSERT INTO all_types VALUES({'a': [42, 999, NULL, NULL, -42], 'b': ['🦆🦆🦆🦆🦆🦆', 'goose', NULL, ]}, 32767)
+pg	SELECT t1.g, median(t3.i)
+pg	SELECT my_struct_extract_c({a: 1, b: 2, c: 3, d: 4})
+pg	SELECT CAST((((1!) << CASE WHEN 1 THEN 1 WHEN 1 THEN 1 END) IS NULL) AS USMALLINT)
+pg	CREATE INDEX i0 ON t0(rowid, c0)
+pg	SELECT 1 FROM t1 JOIN (SELECT t1.c1) t0(c0) ON 1 = CAST(72837647112 AS UINTEGER)
+pg	SELECT t0.c1 FROM t0 WHERE (((1/(t0.c1))) IS NULL)
+pg	WITH c AS MATERIALIZED (SELECT v FROM big_vals) SELECT sum(v) FROM c
+pg	SELECT DISTINCT ON ('string') 'x' AS c02
+pg	SELECT struct_pack(a => [1, 2, 3])::STRUCT(a INT)
+pg	CREATE VIEW t0 AS SELECT 1 FROM t1 GROUP BY c1
+pg	insert into u values(1, 10)
+pg	INSERT INTO test VALUES (1), (2) RETURNING y + y, x + y
+pg	SELECT id FROM read_parquet('{TEST_DIR}/test_21160_single.parquet') WHERE x IS NULL ORDER BY y NULLS {null_order} LIMIT 10
+pg	CREATE TABLE t1 AS SELECT 1 c1
+pg	CREATE VIEW reason as SELECT
+pg	SELECT * FROM t0 WHERE 'a' BETWEEN c0::VARCHAR AND c1 COLLATE NOACCENT.NOCASE
+pg	SELECT struct_extract(struct_pack(a => 42)::ROW(a INT), 'a')
+pg	CREATE VIEW v0 AS SELECT 0 FROM t0, t1 WHERE t0.c0 = t1.c0
+pg	drop macro sum
+pg	SELECT NULL AS v
+pg	SELECT upper(decode('\\xED\\xB8\\x8D'::BLOB)::VARCHAR)
+pg	CREATE TABLE test (x INT)
+pg	SELECT decode('\\xA0\\x50\\x51\\xA0\\xA0'::BLOB, 'ignore')::VARCHAR
+pg	SELECT 1 LIMIT 3493690519702624888078795276804013381392711238711408854154521934990547605008475834286773858253643735619391784938186674922945640543537290894084514784093972720748475288610394187481276081350259062592878908961890372712236217855377408.000000
+pg	SELECT test_named_inspect(A := 1, B := 2)
+pg	EXPLAIN SELECT * FROM t l, LATERAL (SELECT * FROM t r WHERE r.i + l.i IS NOT NULL ORDER BY r.i + l.i LIMIT 2)
+pg	SELECT avg(i) FROM integers WHERE i IS NULL
+pg	insert into test values (1, 'a'), (2, 'b'), (3, 'c'), (4, 'A'), (5, 'G'), (6, 'd')
+pg	SELECT current_setting('current_dialect')
+pg	create table t4 as select [2e304, 2e305, 2e306, 2e307] a from range(10000)
+pg	INSERT INTO t0 VALUES(159735076.0,NULL)
+pg	INSERT INTO t1 VALUES (2, 1), (1, 2)
+pg	SELECT * FROM t1, t0 WHERE NOT ((t1.c0 AND t0.c0) < 0)
+pg	WITH cs_ui AS
+pg	SELECT CAST('1' COLLATE "nocase" AS INT)
+pg	create table x (x int)
+pg	set threads=1
+pg	SET null_on_division_by_zero=true
+pg	select * from test2 where date_trunc('hour', d) > '2025-11-02T02:30:00+00'::TIMESTAMPTZ
+pg	UPDATE t0 SET c0 = 5 WHERE c0 = 0 RETURNING rowid
+pg	select count(*) from t3
+pg	select arg_max(a, a collate noaccent) from tbl
+pg	select * from test where '2025-01-06' = date_trunc('day', d)
+pg	COPY (select 'POINT(0 1)'::GEOMETRY('OGC:CRS84') as g) TO '{TEST_DIR}/test.parquet'
+pg	insert into tbl (i, j, k) values (true, 'true', 3), (NULL, NULL, NULL), (false, 'false', 1)
+pg	INSERT INTO test VALUES (1), (2) RETURNING *
+pg	CALL enable_logging('Iceberg')
+pg	INSERT INTO t
+pg	CREATE TABLE evidence_a(id BIGINT)
+pg	SELECT id FROM t ORDER BY x ASC, id ASC LIMIT 10
+pg	SELECT 1
+pg	create table integers(i INT[])
+pg	INSERT INTO t0 VALUES(true)
+pg	CREATE TABLE t2 AS SELECT * FROM '{TEST_DIR}/t1.parquet'
+pg	SELECT c_pk, c_int, c_dbl, c_txt, ROW_NUMBER() OVER (ORDER BY c_pk) AS eq_uid_1
+pg	SET current_dialect = 'loadable_dialect_extension_demo'
+pg	SELECT test_named_inspect(1, 2)
+pg	SELECT upper(decode('\\xE0\\x9F\\x98\\x84'::BLOB)::VARCHAR)
+pg	INSERT INTO t0(c0) VALUES(-1)
+pg	create index i2 ON t1(c1) WHERE c1 != TRUE
+pg	CREATE TABLE nullable(i INTEGER, j INTEGER)
+pg	CREATE UNIQUE INDEX i_index ON integers(i)
+pg	SELECT * FROM t0 WHERE (('NN')<((t0.rowid NOT IN (t0.c1))))
+pg	select * from test where '2025-01-10' is distinct from date_trunc('day', d)
+pg	SET enable_geoparquet_conversion = false
+pg	CREATE TABLE c2(c0 INTEGER, c1 INTEGER UNIQUE, FOREIGN KEY (c0) REFERENCES s1(t0))
+pg	ALTER TABLE t1 ADD c0 INT
+pg	SELECT (*COLUMNS(*) IS NULL) FROM v00
+pg	SELECT 4294967295::DOUBLE::UINTEGER
+pg	CREATE OR REPLACE TABLE t0 AS ((SELECT 1) UNION ALL ((SELECT 2) INTERSECT ALL (SELECT 2)))
+pg	INSERT INTO t0 VALUES (DEFAULT)
+pg	set custom_extension_repository='{LOCAL_EXTENSION_REPO_UPDATED}'
+pg	INSERT INTO t1 VALUES(715464291,1)
+pg	SELECT count(*) FROM duckdb_extensions() WHERE extension_name = 'cpp_api_demo_fail' AND installed
+pg	SELECT k,
+pg	SELECT geo_types from parquet_metadata('{TEST_DIR}/test_v2.parquet')
+pg	SELECT c0 FROM t0
+pg	CREATE TABLE dates(date DATE)
+pg	SELECT p.k, p.label, f.cost, s.name, s.address, s.phone
+pg	CREATE TABLE t AS (SELECT 'hello' AS x UNION ALL SELECT 'WORLD' AS x UNION ALL SELECT 'WoRlD' AS x)
+pg	SELECT typeof(4832904823908104981209840981240981277), 4832904823908104981209840981240981277
+pg	CREATE TABLE t(x INTEGER)
+pg	SELECT 1 FROM (SELECT 1) t0(c0) WHERE (SELECT (SELECT c0))
+pg	CREATE TABLE t0 (c1 USMALLINT)
+pg	CREATE TABLE tag(id INTEGER, name VARCHAR)
+pg	SELECT 1000::bigint<<54::bigint
+pg	SELECT struct_extract(struct_pack(a := i + 1, b := i * 2), 'b') FROM range(3) tbl(i) ORDER BY ALL
+pg	CREATE TABLE t0(c0 REAL)
+pg	COPY (SELECT * FROM t1) TO '{TEST_DIR}/t1.parquet' (FORMAT 'parquet', RETURN_STATS)
+pg	INSERT INTO t0 VALUES('1970-01-15','810092761', 1)
+pg	SELECT NULL FROM repeat(1050, -128)
+pg	SELECT RIGHT(t0.c0::VARCHAR, -1) FROM t0
+pg	CREATE OR REPLACE VIEW view_8 AS
+pg	CREATE TABLE t0(c0 DATE, c1 VARCHAR)
+pg	SELECT region, product, SUM(amount) FILTER (region = 'eu') FROM sales GROUP BY ROLLUP(region, product) ORDER BY ALL
+pg	SELECT NOT (*COLUMNS(*)) FROM v00
+pg	WITH prev AS (SELECT * FROM view_15)
+pg	SELECT i % 3, COUNT(*) FROM t GROUP BY 1 OFFSET 1
+pg	SELECT (*COLUMNS(*))[2:1:0] FROM v00
+pg	SET debug_verify_column_bindings = false
+pg	SELECT t0.c1, (1/t0.c1) IS NULL FROM t0
+pg	SELECT col, st_astext(geometry) FROM '{WORKING_DIRECTORY}/data/geoparquet/data-linestring-encoding_wkb.parquet'
+pg	ALTER TABLE t0 ALTER c0 TYPE VARCHAR USING ''
+pg	select '4294967295'::UINT32::HUGEINT
+pg	SELECT t0, t1, EXISTS (SELECT * FROM u WHERE u0 != t0 AND u1 != t1) FROM t ORDER BY t0, t1
+pg	CREATE TABLE all_types(struct_of_arrays STRUCT(a INTEGER[], b VARCHAR[]), "smallint" SMALLINT)
+pg	PREPARE v4 AS SELECT array_length($1)
+pg	CREATE TABLE t1 (i INTEGER, j INTEGER)
+pg	INSERT INTO t1(c1) VALUES (1)
+pg	ANALYZE t0
+pg	drop table foo
+pg	EXPLAIN SELECT count(DISTINCT order_id), sum(cost) FROM selected_orders o, selected_dim d WHERE o.dim_id = d.id AND d.selected AND EXISTS (SELECT 1 FROM other_sales s WHERE s.order_id = o.order_id AND s.warehouse <> o.warehouse) AND NOT EXISTS (SELECT 1 FROM returned_orders r WHERE r.order_id = o.order_id)
+pg	TRUNCATE t1
+pg	INSERT INTO t2(c0) VALUES (true)
+pg	SELECT d FROM date_test WHERE d >= timestamp '2024-06-15 12:00:00' ORDER BY d
+pg	select * from test where date_trunc('day', d) >= '2025-01-01'::TIMESTAMPTZ
+pg	SELECT .123456789012345678901234567890
+pg	SELECT * FROM t0 WHERE t0.c0 = true::varchar
+pg	WITH prev AS (SELECT * FROM view_18)
+pg	CREATE TABLE points(i INTEGER, point POINT, pt STRUCT(i INTEGER, j INTEGER))
+pg	SELECT abs({type}) FROM numerics WHERE {type} > 0
+pg	CREATE TABLE t0(c0 BOOLEAN)
+pg	DROP INDEX i0
+pg	SELECT list_extract([1, 2, 3], 1)
+pg	SELECT t0.c
+pg	SELECT COUNT(*) FROM ranked
+pg	INSERT INTO evidence_b_flag SELECT id, true FROM evidence_b
+pg	CREATE VIEW
+pg	select round(col1, 2) from test
+pg	SELECT hash(main.list_value(main.list_value(), main.list_value(42, 999, NULL, NULL, -42), NULL, main.list_value(), main.list_value(42, 999, NULL, NULL, -42))) FROM all_types
+pg	SELECT fp_forumid AS forumid
+pg	EXPLAIN SELECT i * 0 FROM integers
+pg	INSERT INTO t1 VALUES (0, 0)
+pg	WITH prev AS (SELECT * FROM view_16)
+pg	SELECT c.v
+pg	set allow_parser_override_extension=default
+pg	SELECT MIN(1000::bigint<<t0.rowid) FROM t0
+pg	CREATE OR REPLACE VIEW view_19 AS
+pg	select n+1,f*(n+1)::bigint from f where n<45
+pg	CREATE TEMP TABLE t AS
+pg	INSERT INTO t1 VALUES (1,1)
+pg	SELECT bitstring_agg(i, i, 42) FROM range(10) t(i)
+pg	CREATE TABLE td AS
+pg	SELECT * FROM t0, t1 WHERE (((t0.rowid IN (0.1::REAL))) IS NULL)
+pg	SELECT NULL
+pg	SELECT key, (decode(value)) as col
+pg	select arg_min(i, d), arg_min(d, i) from test2
+pg	SELECT p.p_personid AS "person.id"
+pg	SELECT c0 FROM t0 WHERE (((CASE t0.c0 WHEN t0.c0 THEN t0.c0 END ) BETWEEN 1 AND t0.c0)AND(t0.c0 <= 0))
+pg	SELECT unnest([42, 42]) FILTER (WHERE (x > 3))
+pg	CREATE TABLE test(X INTEGER)
+pg	insert into aaa values('绿色'),(chr('0x10FFFF')),(chr('0xD7FF'))
+pg	INSERT INTO t90(c0) VALUES ('1'), ('2'), ('3'), ('4'), ('5'), ('6'), (0.4501927109298812), (0.55577448732208)
+pg	SELECT extension_name, extension_version, install_mode, installed_from from duckdb_extensions() where installed
+pg	select l_partkey from lineitem l2
+pg	EXPLAIN SELECT X::BIGINT=1::INTEGER FROM test
+pg	SELECT y, UNLIST(string_split("x", ', ')) alias, COUNT(*) FROM foo GROUP BY y, alias ORDER BY alias
+pg	SELECT region, product, GROUPING(region), GROUPING(product), GROUPING(region, product), SUM(amount) FROM sales GROUP BY ROLLUP(region, product) ORDER BY ALL
+pg	CREATE TABLE integers (a INT)
+pg	Table does not contain column "CURRENT_TIME"
+pg	SELECT 1 FROM (SELECT 1) t0(c0) WHERE (SELECT c0)
+pg	SELECT extension_version FROM duckdb_extensions() where extension_name = 'parquet'
+pg	EXPLAIN SELECT NULL>X FROM test
+pg	SELECT t0.c0, t0.rowid FROM t0 WHERE ((((t0.c0) ::REAL))/(t0.rowid)) GROUP BY t0.c0, t0.rowid UNION SELECT t0.c0, t0.rowid FROM t0 WHERE (NOT ((((t0.c0) ::FLOAT4))/(t0.rowid))) GROUP BY t0.c0, t0.rowid UNION SELECT t0.c0, t0.rowid FROM t0 WHERE ((((((t0.c0) ::REAL))/(t0.rowid))) IS NULL) GROUP BY t0.c0, t0.rowid ORDER BY 2
+pg	SELECT GROUPING(categoryid) AS category_aggregates,
+pg	SELECT add_point(point, point) from points
+pg	SELECT tt.root_tagclassid
+pg	select * from test where '2025-01-06' >= date_trunc('day', d)
+pg	select '18446744073709551616'::hugeint::UINT64
+pg	CREATE MACRO my_list_or_string_extract_2(my_list_or_string) AS my_list_or_string[3]
+pg	EXPLAIN SELECT 1 + 2 + col0  FROM test
+pg	INSERT INTO v00 (c01, c02) VALUES (0, 'abc')
+pg	select pyfloats_to_floats('[1.000000, 2.000000, 3.000000]')
+pg	INSERT INTO t0 VALUES (TIMESTAMP '91288-5-25 0:5:30'),(TIMESTAMP '253915-8-21 3:7:0')
+pg	SET disabled_optimizers = 'partial_aggregate_pushdown'
+pg	EXPLAIN (FORMAT yaml) SELECT * FROM t t1 JOIN t t2 ON array_cosine_similarity(t1.a, t2.a) IS NULL
+pg	SELECT generate_series(-9223372036854775806, -9223372036854775808, -1) AS c1
+pg	INSERT INTO strings VALUES ('abc'), ('cab'), (NULL)
+pg	SELECT parse_filename(file) FROM glob(getvariable('work_dir_triple_slash') || '/data/*/bad_date_timestamp_mix.csv')
+pg	SELECT c02
+pg	select arg_min(a, a) from tbl
+pg	SELECT strftime(TIMESTAMP '2608-11-25 3:4:35',coalesce('a', 'b')) FROM t0
+pg	SELECT d FROM date_test WHERE d = timestamp '2024-06-15 00:00:00' ORDER BY d
+pg	CREATE TABLE t0()
+pg	create table t0(id int)
+pg	use my_schema
+pg	SELECT decode('\\xF6\\x96\\xB0\\x85'::BLOB)::VARCHAR ILIKE '1'
+pg	CREATE TABLE test2(d BIGINT, i INTEGER)
+pg	SELECT d FROM date_test WHERE timestamp '2024-06-15 12:00:00' >= d ORDER BY d
+pg	INSERT INTO t0 VALUES(611790088.0,1873546286.9999999999)
+pg	SELECT geo_types from parquet_metadata('{TEST_DIR}/test_default.parquet')
+pg	INSERT ( id, name, description, ranges, allow_duplicates, default_pool, sig, _valid_from, _valid_until, _is_current)
+pg	explain select count(*)
+pg	select * from cte2
+pg	CREATE TABLE test (col_a TEXT)
+pg	SELECT d FROM date_test WHERE d > timestamp '2024-06-15 12:00:00' ORDER BY d
+pg	select case when s then px+dx else px end, case when s then py+dy else py end, case when s then pd else (pd+1)%4 end
+pg	INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)
+pg	SELECT id,
+pg	CREATE TABLE integers(i INTEGER, j integer)
+pg	SELECT f.k, min(f.cost) AS minimum, max(f.cost) AS maximum
+pg	CREATE TABLE array_tbl_three_level(c50 INTEGER[2][2][])
+pg	select typeof(g) from '{TEST_DIR}/test_unknown_projjson_crs.parquet'
+pg	set extension_directory='{TEST_DIR}/duckdb_extensions'
+pg	SELECT (1, 0, 0) < ANY(SELECT 1, 0,  )
+pg	INSERT INTO t0(c0) VALUES ('duckdb')
+pg	CREATE TABLE t0(c1 INT)
+pg	SELECT nullif(ref_2."map", ref_2."map") FROM tbl AS ref_2 ORDER BY rowid
+pg	EXPLAIN SELECT * FROM t WHERE list_contains([1, NULL, 2], a)
+pg	SELECT my_specific_struct_extract('c')
+pg	INSERT INTO t1(c0) VALUES(92857950), (840458867)
+pg	SELECT test_named_inspect(1, 2, c := 3)
+pg	SELECT 1 alias1 FROM (SELECT 1) t2(c1) GROUP BY c1 HAVING (SELECT c1)
+pg	USE issue5232
+pg	INSERT INTO t0(c1) VALUES (1)
+pg	SELECT my_specific_struct_extract(2)
+pg	create table test(d TIMESTAMP)
+pg	select * from test where date_trunc('minute', d) > '2025-01-10 05:10:00'
+pg	SELECT DISTINCT * FROM t0 ORDER BY 1
+pg	select ''<='!9t'
+pg	SELECT t1a,
+pg	SELECT test_named_varargs(1, 2, z := 30, w := 40, m := 50)
+pg	CREATE TABLE t1(c0 BOOLEAN)
+pg	select 42
+pg	SELECT my_specific_string_extract('c')
+pg	SELECT col, geometry FROM '{TEST_DIR}/data-point-out-disabled.parquet'
+pg	SELECT d FROM date_test WHERE d IS NOT DISTINCT FROM timestamp '2024-06-15 00:00:00' ORDER BY d
+pg	create table y (y int references x(x))
+pg	select name from my_table
+pg	CREATE TABLE t2 AS (SELECT 42)
+pg	EXPLAIN WITH c AS MATERIALIZED (SELECT * FROM nullable) SELECT * FROM t l JOIN c ON l.i + c.i IS NOT NULL
+pg	INSERT INTO t1 SELECT CASE WHEN i%2=0 THEN NULL ELSE 0 END FROM range(3000) t(i)
+pg	SELECT BLOB '\\x27'
+pg	SELECT unnest([42, 42] ORDER BY x)
+pg	CREATE TABLE t0(c0 BOOL)
+pg	CREATE TABLE ts("timestamp" TIMESTAMP)
+pg	CALL enable_logging('ThisLogTypeDoesNotExist')
+pg	CREATE TABLE storm_badges(user_id INTEGER, class INTEGER)
+pg	select * from test where date_trunc('day', d) > '2025-01-08'
+pg	CREATE TABLE t0(c0 DATE, c1 BOOLEAN)
+pg	SELECT typeof(483290482390810498120984098124098127725), 483290482390810498120984098124098127725
+pg	SELECT row_number() OVER (PARTITION BY categ, tenant, lev, lang ORDER BY _ingested_on_utc DESC) AS rn, *
+pg	create table test(a int, i int)
+pg	SELECT CARDINALITY(HISTOGRAM(val)) FROM src AS t(k, val)
+pg	INSERT INTO t0(c0) VALUES (10000000000)
+pg	create table t1 as select range a from range(300)
+pg	CREATE TABLE t2(c38 STRUCT(a INTEGER, b VARCHAR))
+pg	set extension_directory='{TEST_DIR}/update_extensions_ci_fresh'
+pg	INSERT INTO t0(c0) VALUES (TRUE)
+pg	EXPLAIN SELECT * FROM t WHERE list_contains([NULL], a)
+pg	ALTER TABLE IF EXISTS t0 ADD COLUMN c1 INT
+pg	EXPLAIN SELECT * FROM test WHERE 1=0
+pg	SELECT grd_quart, s['typl'], sum(ipondl) AS eft
+pg	SELECT test_volatile_aggregate_calls()
+pg	select min(a) from tbl2
+pg	EXPLAIN SELECT o.k, d.label, max(f.v)
+pg	SELECT mode((c0, 0)) FROM (SELECT 1 c0), (SELECT 2)
+pg	select decode(value) from parquet_kv_metadata('{TEST_DIR}/test.parquet')
+pg	select (select 5) a, (select 7) c where (select (select 3) b where (select a) > (select b) and (select c) > (select a))
+pg	WITH prev AS (SELECT * FROM view_10)
+pg	INSERT INTO ts VALUES(NULL)
+pg	INSERT INTO integers VALUES ([42, 999, NULL, NULL, -42])
+pg	SELECT typeof(4832904823908104981209840981240981277256), 4832904823908104981209840981240981277256
+pg	select * from test where date_trunc('day', d) > '2025-01-10'
+pg	EXPLAIN SELECT count(*) FROM t WHERE x * 0 = 1
+pg	CREATE INDEX i1 ON t2 (c1)
+pg	select * FROM test_all_types(use_large_bignum := NULL)
+pg	INSERT INTO tbl_ProductSales VALUES (1,'Game','Mobo Game',200),(2,'Game','PKO Game',400),(3,'Fashion','Shirt',500),(4,'Fashion','Shorts',100)
+pg	SELECT arg_min(CAST(ref_5."varchar" AS VARCHAR), CAST(ref_4."varchar" AS VARCHAR)) OVER (PARTITION BY ref_5."bit")
+pg	CREATE TABLE t0(c0 INTEGER)
+pg	select * from test3 where date_trunc('hour', d) >= NULL
+pg	set extension_directory='{TEST_DIR}/autoloading_log_types'
+pg	SET storage_compatibility_version = 'latest'
+pg	SELECT 1000::bigint<<55
+pg	SELECT count(*) FROM nested_outer
+pg	SELECT i, (select {'a': SUM(i)} from integers where j = i1.j) FROM integers i1 ORDER BY 1
+pg	create table t2 as select range b from range(500)
+pg	SELECT count(*) FROM (VALUES ([NULL]::INTEGER[]), ([1]), ([2])) nested_list_outer(v)
+pg	set allow_parser_override_extension=doesnotexist
+pg	INSERT INTO t0 SELECT 1 FROM RANGE(1024)
+pg	SELECT sub_point(pt, pt) from points
+pg	select arg_max(i, d), arg_max(d, i) from test2
+pg	SELECT count(*) OVER() = ANY(SELECT * FROM t0 t1 WHERE(c0 = t0.c0)) FROM t0
+pg	SELECT categoryid, sectionid, SUM(units * price) AS total
+pg	SELECT UNNEST(NULL::JSON[]) AS x
+pg	INSERT INTO t1 VALUES(NULL)
+pg	CREATE VIEW time_dim as SELECT
+pg	SELECT count(*) FROM range(6) o(k) LEFT JOIN (SELECT * FROM range(6) d(y) WHERE EXISTS (SELECT 1 FROM range(6) e(g) WHERE e.g = d.y)) d ON d.y = o.k WHERE o.k < 4 AND EXISTS (SELECT 1 FROM range(6) a(x) WHERE a.x = o.k) AND NOT EXISTS (SELECT 1 FROM range(1) b(x) WHERE b.x = o.k) AND NOT EXISTS (SELECT 1 FROM range(2, 3) c(x) WHERE c.x = o.k)
+pg	SELECT 1 FROM t2 WHERE currval('t0') BETWEEN TRY_CAST(0 AS TIMESTAMP WITH TIME ZONE) AND -156587962151166338620429995158284936977
+pg	SELECT query,
+pg	INSERT INTO t0 VALUES(0.20733323620582655433,NULL)
+pg	SELECT unnest(distinct([42, 42]))
+pg	select struct_pack(row_id := 42)
+pg	explain analyze select * from test where date_trunc('day', d) < '2025-01-08'
+pg	INSERT INTO t0 (c) VALUES (1)
+pg	INSERT INTO "crash"
+pg	SELECT t.t_name
+pg	INSERT INTO t0 VALUES(-2135422585.9999999999,NULL)
+pg	SELECT NULL::VARCHAR j
+pg	CREATE TABLE tv AS
+pg	CREATE TABLE t (x INT)
+pg	INSERT INTO t0 VALUES(0.68074926568589144704,NULL)
+pg	INSERT INTO BOOLTBL1 (f1) VALUES (cast('true' AS boolean))
+pg	SELECT bitstring_agg("{small_type}") FROM all_types
+pg	SELECT current_schemas(false)
+pg	EXPLAIN SELECT X AND (B OR C) FROM test
+pg	SELECT DISTINCT v FROM tv ORDER BY ALL
+pg	EXPLAIN SELECT (1+1+1)*2
+pg	CREATE OR REPLACE TABLE  t1(c0 BLOB)
+pg	SELECT l_orderkey, l_partkey, l_extendedprice FROM read_csv('{DATA_DIR}/csv/real/lineitem_sample.csv', delim='|', columns={'l_orderkey': 'INTEGER','l_partkey': 'INTEGER','l_suppkey': 'INTEGER','l_linenumber': 'INTEGER','l_quantity': 'INTEGER','l_extendedprice': 'SMALLINT','l_discount': 'DECIMAL(15,2)','l_tax': 'DECIMAL(15,2)','l_returnflag': 'VARCHAR','l_linestatus': 'VARCHAR','l_shipdate': 'DATE','l_commitdate': 'DATE','l_receiptdate': 'DATE','l_shipinstruct': 'DATE','l_shipmode': 'VARCHAR','l_comment': 'VARCHAR'})
+pg	SELECT upper(decode('\\xED\\xA0\\xBD'::BLOB)::VARCHAR)
+pg	INSERT INTO broken_floats VALUES (170141183460469231731687303715884105729.0), (-170141183460469231731687303715884105729.0)
+pg	INSERT INTO test VALUES(3877673001272535186)
+pg	EXPLAIN SELECT 1 IN (1+1, 2, 3, 4, NULL)
+pg	COPY t0 (c1) FROM '{TEST_DIR}/parquet_single.parquet'
+pg	SET disabled_optimizers = {do}
+pg	create table tbl (a varchar)
+pg	INSERT INTO s3 VALUES (1, 'a', 'b')
+pg	SELECT o.k, o.cost FROM outer_rows o JOIN minimum_cost m ON o.k = m.k AND o.cost = m.cost
+pg	SELECT first_value(1) OVER ()
+pg	CREATE TABLE t1 (c1 INT)
+pg	SELECT f1 FROM BOOLTBL1 WHERE f1 = NOT TRUE
+pg	CREATE TABLE t_schema(x VARCHAR COLLATE NOCASE)
+pg	SELECT count() c0 FROM (SELECT 1) t1(c2) HAVING c0 = 1
+pg	SELECT name FROM properties WHERE elem_id = 1
+pg	INSERT INTO array_tbl_three_level VALUES('[[[12, 13], [14, 15]], [[16, 17], [18, 19]]]')
+pg	CREATE TABLE t1(c0 INT8, c1 DOUBLE)
+pg	SELECT (WITH RECURSIVE t1 AS (SELECT 1 UNION SELECT 1 FROM t1 WHERE c2 < 3) SELECT 2 FROM t1) FROM (SELECT 1 c2) t1
+pg	SELECT * FROM t0 WHERE (('NN')<((t0.rowid NOT IN (t0.c1)))::VARCHAR)
+pg	ALTER TABLE t0 ALTER c1 TYPE INT
+pg	SELECT * FROM ( SELECT 'apple' as fruit UNION ALL SELECT 'banana' ) a JOIN ( SELECT 'apple' as fruit UNION ALL SELECT 'banana' ) b ON a.fruit=b.fruit LEFT JOIN ( SELECT 1 as isyellow ) c ON b.fruit='banana' ORDER BY 1, 2, 3
+pg	explain select * from aaa where name like concat(chr('0xD7FF'),'%')
+pg	SELECT filename, parse_filename(file_path), id
+pg	INSERT INTO t2__base VALUES (1, 5), (2, -7), (3, 0)
+pg	SELECT 1 WHERE 1 < ANY(SELECT 2 LIMIT 0%)
+pg	SELECT v FROM td ORDER BY payload LIMIT 3
+pg	create table integers(i int)
+pg	SET http_proxy = ''
+pg	SELECT 1, random()
+pg	SELECT (SELECT 1 INTERSECT SELECT 1 HAVING t0.rowid) FROM t0
+pg	CREATE MACRO shadow.combine_aggr(a) AS false
+pg	SELECT c.source, r.dest, 'Rail' AS carrier
+pg	SELECT t0.c0 FROM t0 WHERE -1 BETWEEN t0.c0::VARCHAR::INTEGER AND 1
+pg	select try_cast('nan'::double as decimal(18,2))
+pg	CREATE TABLE t0(c0 DATE)
+pg	EXPLAIN SELECT o.k, d.label, count(DISTINCT f.w)
+pg	SELECT DISTINCT nth_value(NULL, (c2 IS NOT NULL)::BIGINT) OVER (PARTITION BY 1585 ROWS BETWEEN CURRENT ROW AND CURRENT ROW)
+pg	COPY (SELECT 'POINT(1 2)'::GEOMETRY as geometry)
+pg	INSERT INTO t0(c0, c1) VALUES (534898561, 1156365055), (524523641, '0.46680525959210206')
