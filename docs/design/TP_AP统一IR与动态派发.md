@@ -196,8 +196,73 @@ R6 P0 教训）、I-H1 差分、I-C4 段退休界。
 |------|------|------|
 | VDBE | 完整 SQLite opcode 兼容 | Embed API 只需语义层兼容；opcode 兼容锁死指令集演进 |
 | VDBE | 栈式机/全局 DB 锁 | 寄存器式已选；并发靠 dendro 两段式提交 |
-| Arrow | 把 Arrow 当查询引擎（Acero 直接嵌入） | 快照/分支/时间旅行语义进不了 Acero 的数据源契约；只取数据层 |
+| Arrow | 把 Arrow 当查询引擎（Acero 直接嵌入） | Acero = Arrow 官方 C++ 流式执行引擎（ExecPlan/ExecNode：Source/Sink/Filter/Project/Aggregate/HashJoin，批间异步推拉，**官方标注 experimental、API 不稳**）。不嵌入的理由：① 快照/分支/时间旅行语义进不了其 SourceNode 契约；② C++ 链接/维护负担；③ dendro 自家 BatchFlow 方言只需几十个内核组合，Arrow compute kernels 已够。可取之处：它的 ExecNode 接口划分与 Substrait 对接是 BatchFlow 方言节点集的对照物 |
 | Arrow | dictionary/RLE 全编码集进入 IR | IR 只记逻辑类型；编码是 CBF 存储层私事（footer 决定） |
+
+## 8. dVBE 重定义（无 SQLite 兼容约束，ISA 自主设计）
+
+> 授权（2026-09-15）：dendro 不要求 SQLite 兼容——dVBE 的指令集可以
+> 完全按自家语义重新定义。VDBE 只取**架构思想**（寄存器/游标/prepare
+> 绑定/EXPLAIN/coroutine），不取其指令集与编码。
+
+### 8.1 重定义解锁了什么
+
+| 约束解除 | 设计红利 |
+|---------|---------|
+| 无 opcode 兼容包袱 | 指令集按 dendro 三层游标 + 两段式提交 + watermark 语义从零设计（如 Overlay/MergeTail、WatermarkCheck 可为一等指令，VDBE 里根本没有对应物） |
+| 无 SQLite 类型系统 | 寄存器直接承载 SqlValue 值格（Date32/TimestampMs/Bytes 一等公民，无 AFFINITY 强转机制） |
+| 无 VDBE Op 结构兼容 | 指令编码自选：**定宽 64 位**（LuaJIT 风格：op:16 + a:16 + b:16 + imm:16 或 op:8+三寄存器+常量池索引），解释循环可用跳表 |
+| 无单线程假设 | 超时/取消（deadline_check/cancel_token）作为显式 Checkpoint 指令落在循环边界，而非散布在 C 代码 |
+
+### 8.2 ISA 骨架（v0，目标 ~40 条核心指令 + builtin 表）
+
+```
+── 游标族（放置层多态：同一指令，三个游标实现）──
+Open      dst=cursor(tier, table, range|keys)   ; tier ∈ {Delta, Main, History}
+Seek      cur, reg_pk                            ; 定位
+Next      cur                                    ; 前进（段/批/节点流自适应）
+Column    reg_dst, cur, col_idx                  ; 值格读
+Close     cur
+
+── 寄存器族 ──
+LoadI / LoadF / LoadS / LoadN                  ; 常量/NULL → reg
+Cmp / Arith(op) / Like(id) / Cast(type)         ; 值格运算（Like/builtin 走表）
+
+── 控制族 ──
+Jump / JumpIf / JumpIfNot / Halt
+CoroutineInit / CoroutineYield                  ; 子查询（VDBE 模式）
+
+── 聚合族 ──
+AggInit(slot, func) / AggStep(slot, reg) / AggFinal(slot, reg)
+
+── 边界族（跨方言唯一通道，§7.4）──
+GatherBatch  dst=batch, cur, [pred]             ; 寄存器流 → 批（AP 方言入口）
+UnwindRow    reg_dst, batch, i                  ; 批 → 寄存器（LIMIT/返回）
+MergeTail    cur_main, cur_delta, out           ; Main+Delta 归并（一等指令！）
+
+── 会话族 ──
+Checkpoint  deadline_check / cancel / mem_guard ; 超时/取消/内存守卫落点
+ResultRow   regs[..]                            ; 行输出（dVBE 出口）
+```
+
+设计纪律：
+1. **核心 ISA 封闭**（游标/寄存器/控制/聚合/边界/会话六族），函数类需求
+   （字符串/时间/JSON）一律 `Builtin(id, args)` 走表——VDBE 数百条 opcode
+   的膨胀教训不重蹈；
+2. **MergeTail 是一等指令**而非伪指令序列：三层放置模型的核心操作
+   （§2 派发算法-2）值得 ISA 级支撑，其游标多态实现归并/去重细节；
+3. 指令流**可序列化**（定宽 + 常量池）→ embed API 的 prepared 语句、
+   wire 协议的预编译缓存、EXPLAIN 打印三者同一表示；
+4. 每条指令声明**内存/时间上界**（对齐 S-3 会话守卫），Checkpoint 族
+   指令由编译器按循环回边自动插入。
+
+### 8.3 与 v2c-1 的关系（防止过度设计）
+
+v2c-1 **不实现字节码**：计划树解释器 + 三层 Cursor（dVBE-0）已满足行为
+等价重构；ISA 是 dVBE-0 的"形状承诺"——树解释器的节点划分（六族）与
+未来指令一一对应，拍平（dVBE-1）时只是把树遍历换成线性 PC 推进，
+逻辑 IR 与语义零改动。**触发条件**：profiling 显示计划树遍历/虚分派
+占 TP 点查 p50 的 >15% 时启动 dVBE-1。
 
 ### 7.6 降低规则（派发的第二半）
 
