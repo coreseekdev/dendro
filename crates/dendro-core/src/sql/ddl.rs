@@ -69,7 +69,7 @@ pub(crate) fn exec_create_table(
         col_segments: Vec::new(),
         col_deletes: Vec::new(),
         col_rows: 0,
-        owner: sess.user.clone(),
+        owner: crate::sql::privs::norm_user(&sess.user),
         acl: std::collections::HashMap::new(),
     };
     // schema chunk 先写
@@ -213,6 +213,19 @@ pub(crate) fn catalog_commit(
 ) -> Result<()> {
     let b = db.branch(&sess.branch)?;
     let _g = b.commit_mu.lock();
+    catalog_commit_locked(db, sess, changes, message, &_g)
+}
+
+/// 同上，调用方已持 commit_mu（GRANT/REVOKE 的读改写原子段——
+/// resolve → mutate → commit 必须同锁，否则并发授权互相覆盖）
+pub(crate) fn catalog_commit_locked(
+    db: &Database,
+    sess: &Session,
+    changes: Vec<(String, Option<TableEntry>)>,
+    message: &str,
+    _g: &parking_lot::MutexGuard<'_, ()>,
+) -> Result<()> {
+    let b = db.branch(&sess.branch)?;
     let mut session_chunks: HashSet<Hash> = HashSet::new();
     let catalog = crate::versioned::Versioned::new(db.store.clone());
     let head = b.head.load_full();

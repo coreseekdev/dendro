@@ -176,6 +176,9 @@ fn cast_name(t: &PD) -> Result<&'static str> {
         PD::Varchar(None) => "text",
         PD::Double(sqlparser::ast::ExactNumberInfo::None) => "double",
         PD::Boolean => "boolean",
+        // 评审 P2：常见可执行 cast 原映射缺失 → print Err → EXPLAIN 退化
+        PD::Date => "date",
+        PD::Timestamp(None, sqlparser::ast::TimezoneInfo::None) => "timestamp",
         _ => return Err(bad("未知 cast 类型（文本 IR v1 未覆盖）")),
     })
 }
@@ -196,6 +199,9 @@ fn json_escape(s: &str) -> String {
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
             c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            // `;` 是行注释起始符（strip_comment 不辨引号内外）——转义
+            // 出文本域（评审 P1：含分号常量 print 成功 parse 失败）
+            ';' => out.push_str("\\u003b"),
             c => out.push(c),
         }
     }
@@ -223,7 +229,11 @@ pub fn parse_scalar(text: &str) -> Option<ScalarProgram> {
     }
     let mut p = ScalarProgram::default();
     let mut closed = false;
-    for line in lines {
+    // fail-closed 收紧（评审 P2）：属性恰好一次且先于步；闭括号后无内容
+    let mut seen_cols = false;
+    let mut seen_ncols = false;
+    let mut seen_nregs = false;
+    for line in lines.by_ref() {
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -232,7 +242,14 @@ pub fn parse_scalar(text: &str) -> Option<ScalarProgram> {
             closed = true;
             break;
         }
+        if closed {
+            return None; // 闭括号后仍有内容（嵌套第二块等）
+        }
         if let Some(rest) = line.strip_prefix("cols = [") {
+            if seen_cols || !p.steps.is_empty() {
+                return None; // 重复属性 / 属性行不得在步之后
+            }
+            seen_cols = true;
             let inner = rest.strip_suffix(']')?;
             if !inner.is_empty() {
                 p.col_names = split_json_strings(inner)?;
@@ -240,10 +257,18 @@ pub fn parse_scalar(text: &str) -> Option<ScalarProgram> {
             continue;
         }
         if let Some(n) = line.strip_prefix("n_cols = ") {
+            if seen_ncols || !p.steps.is_empty() {
+                return None;
+            }
+            seen_ncols = true;
             p.n_cols = n.parse().ok()?;
             continue;
         }
         if let Some(n) = line.strip_prefix("n_regs = ") {
+            if seen_nregs || !p.steps.is_empty() {
+                return None;
+            }
+            seen_nregs = true;
             p.n_regs = n.parse().ok()?;
             continue;
         }
@@ -251,6 +276,10 @@ pub fn parse_scalar(text: &str) -> Option<ScalarProgram> {
         p.steps.push(s);
     }
     if !closed {
+        return None;
+    }
+    // `}` 后遗留非空内容拒绝（break 后未消费的行）
+    if lines.any(|l| !l.trim().is_empty()) {
         return None;
     }
     verify(&p).ok()?;
@@ -313,6 +342,9 @@ fn json_unescape(s: &str) -> Option<String> {
             'f' => out.push('\u{c}'),
             'u' => {
                 let hex: String = it.by_ref().take(4).collect();
+                if hex.len() != 4 {
+                    return None; // 短转义 fail-closed（评审 P2）
+                }
                 let cp = u32::from_str_radix(&hex, 16).ok()?;
                 out.push(char::from_u32(cp)?);
             }
@@ -436,10 +468,14 @@ fn parse_assign(dst: u16, body: &str, p: &mut ScalarProgram) -> Option<ScalarSte
         });
     }
     if let Some(t) = core.strip_prefix("param $") {
-        let n: u16 = t.parse().ok()?;
+        let n: u32 = t.parse().ok()?;
+        let idx = n.checked_sub(1)?;
+        if idx > u16::MAX as u32 {
+            return None; // $65536+ 越界（评审 P2）
+        }
         return Some(Param {
             dst,
-            idx: n.checked_sub(1)?,
+            idx: idx as u16,
         });
     }
     for (prefix, is_cmp) in [("cmp.", true), ("arith.", false)] {
@@ -531,6 +567,8 @@ fn parse_assign(dst: u16, body: &str, p: &mut ScalarProgram) -> Option<ScalarSte
             "text" => PD::Varchar(None),
             "double" => PD::Double(sqlparser::ast::ExactNumberInfo::None),
             "boolean" => PD::Boolean,
+            "date" => PD::Date,
+            "timestamp" => PD::Timestamp(None, sqlparser::ast::TimezoneInfo::None),
             _ => return None,
         };
         let ty = p.casts.len() as u16;
@@ -658,10 +696,16 @@ pub fn verify(p: &ScalarProgram) -> Result<()> {
             | IsNotNull { dst, src }
             | IsTrue { dst, src }
             | IsFalse { dst, src }
-            | Cast { dst, src, .. }
             | Mov { dst, src } => {
                 chk!(dst, "dst 越界");
                 chk!(src, "src 越界");
+            }
+            Cast { dst, src, ty } => {
+                chk!(dst, "dst 越界");
+                chk!(src, "src 越界");
+                if (*ty as usize) >= p.casts.len() {
+                    return Err(bad("cast 池索引越界"));
+                }
             }
             Between { dst, v, lo, hi, .. } => {
                 chk!(dst, "dst 越界");
@@ -889,6 +933,98 @@ mod tests {
             parse_scalar(&good.replace("n_regs = 1", "n_regs = 0")).is_none(),
             "verifier：寄存器越界必须拒"
         );
+    }
+
+    /// 评审修复回归：含 `;` 的字符串/列名 round-trip（原 strip_comment
+    /// 引号内截断 → parse 失败）
+    #[test]
+    fn semicolon_in_strings_roundtrips() {
+        let names = vec!["a;b".to_string(), "v".to_string()];
+        let cols = |n: &str| names.iter().position(|c| c == n);
+        let strv = |t: &str| {
+            Expr::Value(sqlparser::ast::ValueWithSpan {
+                value: sqlparser::ast::Value::SingleQuotedString(t.into()),
+                span: sqlparser::tokenizer::Span::empty(),
+            })
+        };
+        // 谓词常量含分号 + 注释样式内容
+        let e = Expr::BinaryOp {
+            left: Box::new(Expr::Identifier(Ident::new("v"))),
+            op: BO::Eq,
+            right: Box::new(strv("x;y ; z")),
+        };
+        let cp = crate::sql::scalar::compile_predicate_named(&e, &cols, 2, &names).unwrap();
+        let text = print_scalar("pred", &cp.prog).unwrap();
+        assert!(text.contains("\\u003b"), "分号必须转义出文本域：{text}");
+        let p2 = parse_scalar(&text).unwrap();
+        assert_eq!(cp.prog.steps, p2.steps);
+        assert_eq!(cp.prog.consts, p2.consts);
+        assert_eq!(p2.col_names, names);
+    }
+
+    /// 评审修复回归：常量折叠截 consts 池（原孤儿池项破坏全字段相等）
+    #[test]
+    fn fold_truncates_const_pool() {
+        let names = vec!["id".to_string(), "v".to_string()];
+        let cols = |n: &str| names.iter().position(|c| c == n);
+        // -5 = UnaryOp Minus(5) → 折叠后池应只含 [-5]（原 [5, -5]）
+        let e = Expr::BinaryOp {
+            left: Box::new(Expr::Identifier(Ident::new("v"))),
+            op: BO::Gt,
+            right: Box::new(Expr::UnaryOp {
+                op: sqlparser::ast::UnaryOperator::Minus,
+                expr: Box::new(num("5")),
+            }),
+        };
+        let cp = crate::sql::scalar::compile_predicate_named(&e, &cols, 2, &names).unwrap();
+        assert_eq!(cp.prog.consts.len(), 1, "折叠后池不得留孤儿：{:?}", cp.prog.consts);
+        let text = print_scalar("pred", &cp.prog).unwrap();
+        let p2 = parse_scalar(&text).unwrap();
+        assert_eq!(cp.prog.steps, p2.steps);
+        assert_eq!(cp.prog.consts, p2.consts);
+    }
+
+    /// 评审修复回归：fail-closed 收紧（闭括号后内容/重复属性/属性后置）
+    #[test]
+    fn fail_closed_structure_tightened() {
+        let good = "dendro.ir v1\nscalar @p {\n  n_cols = 1\n  n_regs = 1\n  %r0 = col 0\n  qual %r0\n}\n";
+        assert!(parse_scalar(good).is_some());
+        // 闭括号后多余内容
+        assert!(parse_scalar(&format!("{good}scalar @x {{\n}}\n")).is_none());
+        // 重复 n_cols
+        let dup = good.replace("n_regs = 1", "n_cols = 1\n  n_regs = 1");
+        assert!(parse_scalar(&dup).is_none());
+        // 属性出现在步之后
+        let late = good.replace("qual %r0", "qual %r0\n  n_cols = 9");
+        assert!(parse_scalar(&late).is_none());
+        // 短 \u 转义
+        let bad_u = good.replace("col 0", "const str \"a\\u0\"");
+        assert!(parse_scalar(&bad_u).is_none());
+    }
+
+    /// 评审修复回归：date/timestamp cast 的 print/parse（原映射缺失）
+    #[test]
+    fn cast_date_timestamp_prints() {
+        let names = vec!["id".to_string(), "v".to_string()];
+        let cols = |n: &str| names.iter().position(|c| c == n);
+        for dt in [
+            sqlparser::ast::DataType::Date,
+            sqlparser::ast::DataType::Timestamp(None, sqlparser::ast::TimezoneInfo::None),
+        ] {
+            let e = Expr::Cast {
+                kind: sqlparser::ast::CastKind::Cast,
+                expr: Box::new(Expr::Identifier(Ident::new("v"))),
+                data_type: dt.clone(),
+                format: None,
+                array: false,
+            };
+            let cp =
+                crate::sql::scalar::compile_predicate_named(&e, &cols, 2, &names).unwrap();
+            let text = print_scalar("pred", &cp.prog).unwrap();
+            let p2 = parse_scalar(&text).unwrap();
+            assert_eq!(cp.prog.steps, p2.steps, "{text}");
+            assert_eq!(cp.prog.casts, p2.casts, "{text}");
+        }
     }
 
     /// verifier 负测试（构造侧；§4 共用）

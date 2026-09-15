@@ -59,7 +59,8 @@ impl Accum {
                     && !self
                         .distinct
                         .get_or_insert_with(std::collections::HashSet::new)
-                        .insert(expr::to_text(val.clone()))
+                        // 带类型标签（同组键理由：to_text 跨类型碰撞）
+                        .insert(format!("{val:?}"))
                 {
                     return Ok(()); // DISTINCT 重复——不参与任何累加
                 }
@@ -158,7 +159,9 @@ pub fn group_aggregate(
         let mut keyvals = Vec::with_capacity(group_exprs.len());
         for g in group_exprs {
             let v = expr::eval(g, row, &colfn)?;
-            hashkey.push(expr::to_text(v.clone()));
+            // 组键带类型标签（评审 P1：原 to_text 使 NULL 与 '' 同键、
+            // Int64(1) 与 Utf8("1") 同键——混型列分组错误合并）
+            hashkey.push(format!("{v:?}"));
             keyvals.push(v);
         }
         let g = groups.entry(hashkey.clone()).or_insert_with(|| {

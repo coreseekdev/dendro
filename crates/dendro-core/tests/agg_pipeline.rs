@@ -179,3 +179,52 @@ fn nested_paren_column_group_is_eligible() {
     let r = c.query("SELECT (grp), count(*) FROM g GROUP BY (grp)").unwrap();
     assert_eq!(r.row_count(), 3);
 }
+
+// ---------- 评审修复回归（P1 组键类型碰撞 / P2 min-max 错误传播） ----------
+
+#[test]
+fn p1_group_key_null_vs_empty_string_distinct() {
+    let mut c = setup();
+    c.execute(
+        "INSERT INTO g VALUES (7,'',NULL,NULL,NULL),(8,NULL,NULL,NULL,NULL)",
+    )
+    .unwrap();
+    // NULL 与 '' 是两个组（原 to_text 同键合并——评审 P1）
+    for force in ["row", "pipeline"] {
+        let r = run(
+            &mut c,
+            force,
+            "SELECT grp, count(*) FROM g GROUP BY grp ORDER BY 1 NULLS LAST",
+        );
+        let groups: Vec<String> = r
+            .1
+            .iter()
+            .map(|row| match &row[0] {
+                SqlValue::Utf8(s) => format!("'{s}'"),
+                SqlValue::Null => "NULL".into(),
+                other => format!("{other:?}"),
+            })
+            .collect();
+        assert!(groups.contains(&"''".to_string()), "空串组：{groups:?}");
+        assert!(groups.contains(&"NULL".to_string()), "NULL 组：{groups:?}");
+    }
+}
+
+#[test]
+fn p1_distinct_mixed_types_not_merged() {
+    let mut c = setup();
+    // UNION 产混型列：Int64(1) 与 Utf8("1") 不得判重合并（原 to_text 同键）
+    let r = run(
+        &mut c,
+        "row",
+        "SELECT count(DISTINCT x) FROM (SELECT id AS x FROM g UNION ALL SELECT '1') u",
+    );
+    // id 1..6（Int64）+ '1'（Utf8）→ 7 个不同值（原 to_text 同键合并成 6）
+    assert_eq!(r.1[0][0], SqlValue::Int64(7), "{:?}", r.1);
+    let r = run(
+        &mut c,
+        "pipeline",
+        "SELECT count(DISTINCT x) FROM (SELECT id AS x FROM g UNION ALL SELECT '1') u",
+    );
+    assert_eq!(r.1[0][0], SqlValue::Int64(7), "{:?}", r.1);
+}

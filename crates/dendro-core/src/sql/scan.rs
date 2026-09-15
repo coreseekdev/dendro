@@ -1022,7 +1022,6 @@ fn try_ap_scan(
             pk_range = extract_pk_range(sel, &pk_name);
         }
     }
-    let pkc = schema.pk[0] as usize;
     // 归并源（v2c-4，ir-spec 04 §4 MainPlusDelta）：段（旧→新，新者覆盖）
     // + memtx overlay + 显式事务写，三路按 pk 惰性归并（exec::source 流式
     // 化——替换 v2c-2 的全量 BTreeMap 物化；语义不变量逐条搬运）：
@@ -1051,7 +1050,6 @@ fn try_ap_scan(
             &pk_range,
         )?);
     }
-    let _ = pkc;
     // memtx overlay（覆盖段源；None=墓碑删除）
     let b = db.branch(&sess.branch)?;
     let overlay = b.mem.table(entry.id).snapshot_rows(snapshot);

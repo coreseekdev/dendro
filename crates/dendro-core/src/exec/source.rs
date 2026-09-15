@@ -263,7 +263,11 @@ impl Iterator for MainPlusDeltaSource {
                 // 段键严格更小：段侧产出（堆序保证首个弹出即最新段；
                 // 其余同键条目 = 旧段副本，丢弃）
                 (Some(sk), _) => {
-                    let (k, row) = self.pop_heap()?;
+                    // let-else 而非 `?`（评审 P2：`?` 会静默终止迭代并丢弃
+                    // 当次已累积批；不可达路径也按防御写法收口）
+                    let Some((k, row)) = self.pop_heap() else {
+                        break;
+                    };
                     if let Some(e) = self.pending_err.take() {
                         self.done = true;
                         return Some(Err(e));

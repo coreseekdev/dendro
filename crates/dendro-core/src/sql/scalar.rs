@@ -217,6 +217,9 @@ pub fn compile_predicate_named(
             c.prog.steps.len()
         )));
     }
+    // 构造期校验（spec 09 §4：与 parse 共用 verifier；曾因文件恢复丢失，
+    // 评审 P2 复查发现）
+    crate::ir::text::verify(&c.prog)?;
     Ok(CompiledPredicate { prog: c.prog })
 }
 
@@ -229,6 +232,15 @@ pub fn compile_expr(
     let mut c = Ctx::new(n_cols);
     let r = c.expr(e, cols)?;
     c.emit(ScalarStep::Out { src: r });
+    // 构造期校验（spec 09 §4：与 parse 共用 verifier；评审 P2——
+    // 该出口原缺步数上限与校验）
+    if c.prog.steps.len() > SCALAR_STEP_CAP {
+        return Err(SqlError::not_supported(format!(
+            "expression too large ({} steps > {SCALAR_STEP_CAP})",
+            c.prog.steps.len()
+        )));
+    }
+    crate::ir::text::verify(&c.prog)?;
     Ok(c.prog)
 }
 
@@ -324,6 +336,9 @@ impl Ctx {
                     UO::Plus => self.expr(expr, cols),
                     UO::Not | UO::Minus => {
                         let mark = self.prog.steps.len();
+                        // consts 池水位（评审 P1：折叠截步不截池 → 孤儿
+                        // 池项破坏文本 IR 全字段 round-trip）
+                        let const_mark = self.prog.consts.len();
                         let src = self.expr(expr, cols)?;
                         // 常量折叠（R3）：仅当子式是编译期常量且运算**成功**——
                         // 折叠失败（如 Not(Null) 报错）保留原步，运行期同错。
@@ -337,6 +352,7 @@ impl Ctx {
                             };
                             if let Ok(fv) = folded {
                                 self.prog.steps.truncate(mark);
+                                self.prog.consts.truncate(const_mark);
                                 return Ok(self.konst(fv));
                             }
                         }
@@ -353,6 +369,7 @@ impl Ctx {
             }
             Expr::BinaryOp { left, op, right } => {
                 let mark = self.prog.steps.len();
+                let const_mark = self.prog.consts.len(); // 同上：池水位
                 let a = self.expr(left, cols)?;
                 let b = self.expr(right, cols)?;
                 // 常量折叠（03 §2：编译期一次；仅折叠**无错**运算——
@@ -364,6 +381,7 @@ impl Ctx {
                 ) {
                     if let Ok(v) = crate::sql::expr::binop(op.clone(), l, r) {
                         self.prog.steps.truncate(mark);
+                        self.prog.consts.truncate(const_mark);
                         return Ok(self.konst(v));
                     }
                 }

@@ -411,7 +411,9 @@ pub trait WireSession: Send {
 
 impl WireSession for Session {
     fn set_user(&mut self, user: &str) {
-        self.user = user.to_string();
+        // 标识符折叠小写（PG；与 ACL 键/grantee 同口径——评审 P2 大小写
+        // 不匹配致授权静默失效）
+        self.user = crate::sql::privs::norm_user(user);
     }
     fn cancel_token(&self) -> Arc<std::sync::atomic::AtomicBool> {
         self.cancel_token.clone()
@@ -1235,9 +1237,15 @@ impl Database {
         // 账本 #27：删除键累积对混合/纯删除两分支统一——原仅"纯删除"
         // 分支累积，混合增量（行 + 删除同窗口）checkpoint 后旧段里的
         // 已删行在 AP 路径复活（行路径不可见；streaming_source 差分暴露）
-        for d in delta_deletes {
-            if !ne.col_deletes.contains(&d) {
-                ne.col_deletes.push(d);
+        // 判重走 HashSet（评审 P2：Vec contains 在 #27 扩到混合分支后
+        // 是 O(|col_deletes|×|delta|)，稳态最坏 1e8 次比较/checkpoint）
+        if !delta_deletes.is_empty() {
+            let seen: std::collections::HashSet<String> =
+                ne.col_deletes.iter().cloned().collect();
+            for d in delta_deletes {
+                if !seen.contains(&d) {
+                    ne.col_deletes.push(d);
+                }
             }
         }
         ne.col_rows = ne.col_segments.iter().map(|s| s.rows).sum();

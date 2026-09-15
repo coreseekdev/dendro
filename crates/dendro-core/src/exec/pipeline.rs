@@ -566,7 +566,9 @@ mod operator_tests {
                 )),
             };
             let cols = |n: &str| (n == "k").then_some(2usize); // 键前置后 k 在索引 2
-            crate::sql::scalar::compile_predicate(&e, &cols, 2)
+            // n_cols 必须覆盖键列（verify 拒绝 Col idx ≥ n_cols 的装配——
+            // 原测试声明 2 与 cols 解析 2 矛盾，构造期校验接线后暴露）
+            crate::sql::scalar::compile_predicate(&e, &cols, 3)
                 .unwrap()
                 .prog
         });
@@ -682,7 +684,9 @@ impl AggAccum {
                     return Ok(()); // NULL 不参与聚合
                 }
                 if self.distinct {
-                    let key = crate::sql::expr::to_text(val.clone());
+                    // 带类型标签（评审 P1：to_text 跨类型碰撞——
+                    // Int64(1) 与 Utf8("1") 判重合并）
+                    let key = format!("{val:?}");
                     if !self.seen.as_mut().unwrap().insert(key) {
                         return Ok(()); // DISTINCT 重复
                     }
@@ -697,30 +701,27 @@ impl AggAccum {
                         other => self.sum_i += crate::sql::expr::as_i64(other)?,
                     }
                 }
+                // 评审 P2：比较错误传播（原 unwrap_or(false) 吞 42804——
+                // 混型列下行式报错、管线静默取首见值的路径分歧）
                 if self.func == AggFunc::Min {
-                    let less = self
-                        .min
-                        .as_ref()
-                        .map(|m| {
-                            crate::sql::expr::cmp_values(&val, m)
-                                .map(|o| o == std::cmp::Ordering::Less)
-                                .unwrap_or(false)
-                        })
-                        .unwrap_or(true);
+                    let less = match self.min.as_ref() {
+                        None => true,
+                        Some(m) => {
+                            matches!(crate::sql::expr::cmp_values(&val, m)?, std::cmp::Ordering::Less)
+                        }
+                    };
                     if less {
                         self.min = Some(val.clone());
                     }
                 }
                 if self.func == AggFunc::Max {
-                    let greater = self
-                        .max
-                        .as_ref()
-                        .map(|m| {
-                            crate::sql::expr::cmp_values(&val, m)
-                                .map(|o| o == std::cmp::Ordering::Greater)
-                                .unwrap_or(false)
-                        })
-                        .unwrap_or(true);
+                    let greater = match self.max.as_ref() {
+                        None => true,
+                        Some(m) => matches!(
+                            crate::sql::expr::cmp_values(&val, m)?,
+                            std::cmp::Ordering::Greater
+                        ),
+                    };
                     if greater {
                         self.max = Some(val);
                     }
@@ -786,7 +787,8 @@ impl PipeOp<Vec<Vec<SqlValue>>> for AggOp {
             let mut keyvals = Vec::with_capacity(self.group_col_indices.len());
             for &gi in &self.group_col_indices {
                 let v = row.get(gi).cloned().unwrap_or(SqlValue::Null);
-                hashkey.push(crate::sql::expr::to_text(v.clone()));
+                // 带类型标签（与 agg.rs group_aggregate 同口径——评审 P1）
+                hashkey.push(format!("{v:?}"));
                 keyvals.push(v);
             }
             let specs = self.calls.clone();

@@ -166,3 +166,104 @@ fn prepared_statement_gated() {
     let e = bob.prepare("p2", "INSERT INTO t VALUES (1)", &[]).unwrap_err();
     assert_eq!(e.state, "42501", "{e:?}");
 }
+
+// ---------- 评审修复回归（P0 绕过面 / P1 / P2） ----------
+
+#[test]
+fn p0_derived_subquery_bypass_closed() {
+    let mut c = setup();
+    c.set_user("bob");
+    // 派生表（原走查遗漏 → 全量绕过）
+    let e = c
+        .execute("SELECT * FROM (SELECT * FROM t) x")
+        .err()
+        .unwrap_or_else(|| panic!("派生表绕过必须关闭"));
+    assert!(denied(&e, "t"), "{e:?}");
+    // 授权后通
+    c.set_user("dendro");
+    c.execute("GRANT SELECT ON t TO bob").unwrap();
+    c.set_user("bob");
+    let r = c.query("SELECT count(*) FROM (SELECT * FROM t) x").unwrap();
+    assert_eq!(r.rows.len(), 1);
+}
+
+#[test]
+fn p0_view_two_step_chain_closed() {
+    let mut c = setup();
+    c.execute("CREATE VIEW v AS SELECT * FROM t").unwrap();
+    // bob 查视图 → 展开视图体 → t 无权限 → 拒（原两步绕过）
+    c.set_user("bob");
+    let e = c
+        .execute("SELECT * FROM v")
+        .err()
+        .unwrap_or_else(|| panic!("视图两步链绕过必须关闭"));
+    assert!(denied(&e, "t"), "{e:?}");
+    // 建视图本身也要走查底层表（原 CREATE VIEW 无检查）
+    let e = c
+        .execute("CREATE VIEW v2 AS SELECT * FROM t")
+        .err()
+        .unwrap_or_else(|| panic!("CREATE VIEW 走查缺失"));
+    assert!(denied(&e, "t"), "{e:?}");
+    // 授权后：查视图 & 建视图都通
+    c.set_user("dendro");
+    c.execute("GRANT SELECT ON t TO bob").unwrap();
+    c.set_user("bob");
+    c.execute("SELECT count(*) FROM v").unwrap();
+    c.execute("CREATE VIEW v2 AS SELECT v FROM t").unwrap();
+}
+
+#[test]
+fn p0_drop_alter_owner_gate() {
+    let mut c = setup();
+    c.set_user("bob");
+    // 非属主 DROP / ALTER 他人表 → 拒
+    let e = c.execute("DROP TABLE t").unwrap_err();
+    assert!(denied(&e, "t"), "{e:?}");
+    let e = c.execute("ALTER TABLE t ADD COLUMN x INT").unwrap_err();
+    assert!(denied(&e, "t"), "{e:?}");
+    // 属主可操作自己的表
+    c.execute("CREATE TABLE mine (id BIGINT PRIMARY KEY)").unwrap();
+    c.execute("ALTER TABLE mine ADD COLUMN x INT").unwrap();
+    c.execute("DROP TABLE mine").unwrap();
+    // 非表对象 DROP（视图）非超户拒（v1 无视图属主追踪）
+    let e = c.execute("DROP VIEW anything").unwrap_err();
+    assert_eq!(e.state, "42501", "{e:?}");
+}
+
+#[test]
+fn p1_column_level_grant_rejected_not_flattened() {
+    let mut c = setup();
+    // 列级清单 → 诚实拒绝（原静默展平为全表权限）
+    let e = c.execute("GRANT SELECT (v) ON t TO bob").unwrap_err();
+    assert!(
+        e.message.contains("column-level"),
+        "必须显式拒绝：{e:?}"
+    );
+    let e = c.execute("GRANT UPDATE (v) ON t TO bob").unwrap_err();
+    assert!(e.message.contains("column-level"), "{e:?}");
+}
+
+#[test]
+fn p2_user_name_case_folding() {
+    let mut c = setup();
+    // PG 标识符折叠：GRANT TO "Alice"（存 alice）→ 连接 "ALICE"/"Alice" 生效
+    c.execute("GRANT SELECT ON t TO Alice").unwrap();
+    c.set_user("ALICE");
+    c.execute("SELECT count(*) FROM t").unwrap();
+    c.set_user("Alice");
+    c.execute("SELECT count(*) FROM t").unwrap();
+    // 反向：未授权的大写变体不误判超户
+    c.set_user("DENDRO_EX");
+    assert!(c.execute("SELECT * FROM t").is_err());
+}
+
+#[test]
+fn p2_explain_inner_statement_gated() {
+    let mut c = setup();
+    c.set_user("bob");
+    let e = c
+        .execute("EXPLAIN SELECT * FROM t")
+        .err()
+        .unwrap_or_else(|| panic!("EXPLAIN 内层必须走查"));
+    assert!(denied(&e, "t"), "{e:?}");
+}

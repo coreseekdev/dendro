@@ -20,6 +20,19 @@
   ④ GRANT/REVOKE 表级 ACL（单点权限门 enforce，exec+prepare 双卡口；
   超户缺省行为不变）。门禁：clippy 0 / 420 测试 / 30 slt 全过。
   下一步：优化器（基于既有逻辑 IR 与 dispatch 纯函数展开）。
+- **2026-09-16 评审轮（3 agent 并行）**：修复 **3×P0 权限绕过面**
+  （派生表子查询、视图两步链 CREATE VIEW→SELECT v、DROP/ALTER 无
+  属主检查——require_owner 原写未接线）；P1：GRANT 读改写竞态
+  （commit_mu 内 RMW，catalog_commit_locked）、列级权限静默展平为
+  全表（改诚实拒绝）、聚合组键 to_text 跨类型碰撞（NULL 与 '' 同组、
+  Int64(1) 与 Utf8("1") 判重合并——两路径同步 typed 键）、文本 IR
+  含 `;` 常量 parse 失败（\u003b 转义）、常量折叠孤儿 consts 池项；
+  P2×9：EXPLAIN 内层走查、用户名 PG 式小写折叠、resolve 瞬态错误
+  不吞、compile 出口 verify 接线（曾因文件恢复丢失——构造期校验
+  首次真实拦截了测试的元数据不一致装配）、date/timestamp cast
+  文本映射、parse fail-closed 收紧（闭括号后内容/重复属性/短 \u）、
+  Param $65536 边界、管线 min/max 比较错误传播（与行式口径一致）、
+  #27 判重 O(n²)→HashSet。门禁：clippy 0 / 432 测试 / 30 slt。
 - **2026-09-15 v2b+v2c 全量完成**：26 条账本缺陷全闭环（#1-#26，每条
   有永久检测机制）；ScalarStep 标量层 + ChunkPlane 执行层 + coverage
   派发器 + MainPlusDelta 归并源 + SortOp/ProjectOp 算子群 + ORDER BY

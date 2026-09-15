@@ -144,9 +144,9 @@ impl Connection {
     }
 
     /// 查询 SQL（SELECT；返回完整结果集）
-    /// 切换会话用户（S-4 测试面/嵌入式多用户；权限门主体）
+    /// 切换会话用户（S-4 测试面/嵌入式多用户；权限门主体；小写折叠）
     pub fn set_user(&mut self, user: &str) {
-        self.sess.user = user.to_string();
+        self.sess.user = crate::sql::privs::norm_user(user);
     }
 
     pub fn query(&mut self, sql: &str) -> Result<QueryResult> {
@@ -231,9 +231,9 @@ impl Transaction<'_> {
         let outputs = self.sess.exec(sql)?;
         Ok(count_affected(&outputs))
     }
-    /// 切换会话用户（S-4 测试面/嵌入式多用户；权限门主体）
+    /// 切换会话用户（S-4 测试面/嵌入式多用户；权限门主体；小写折叠）
     pub fn set_user(&mut self, user: &str) {
-        self.sess.user = user.to_string();
+        self.sess.user = crate::sql::privs::norm_user(user);
     }
 
     pub fn query(&mut self, sql: &str) -> Result<QueryResult> {
