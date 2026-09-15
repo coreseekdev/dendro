@@ -1,0 +1,230 @@
+# 027: 语义修复回归（v2b/v2c 期间账本 #20-23、#26 的 slt 固化）
+
+# ===== #20: NOT IN 点查下推修复 =====
+statement ok
+CREATE TABLE t20 (id BIGINT PRIMARY KEY, v INT)
+
+statement ok
+INSERT INTO t20 VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)
+
+query I
+SELECT id FROM t20 WHERE id NOT IN (1, 2) ORDER BY id
+----
+3
+4
+5
+
+query I
+SELECT id FROM t20 WHERE id NOT IN (5) ORDER BY id
+----
+1
+2
+3
+4
+
+# IN（非 negated）不受修复影响
+query I
+SELECT id FROM t20 WHERE id IN (2, 4) ORDER BY id
+----
+2
+4
+
+# ===== #21: LEFT JOIN NULL 键不互相匹配 =====
+statement ok
+CREATE TABLE a21 (aid INT PRIMARY KEY, k1 INT)
+
+statement ok
+CREATE TABLE b21 (bid INT PRIMARY KEY, k2 INT)
+
+statement ok
+INSERT INTO a21 VALUES (1, NULL)
+
+statement ok
+INSERT INTO b21 VALUES (1, NULL)
+
+# NULL = NULL 不成立 → LEFT 无匹配 → NULL 延展（曾互相匹配）
+query II
+SELECT aid, bid FROM a21 LEFT JOIN b21 ON k1 = k2
+----
+1 NULL
+
+# ===== #21: 跨类型不碰撞 =====
+statement ok
+CREATE TABLE a21t (aid BIGINT PRIMARY KEY, kt BIGINT)
+
+statement ok
+CREATE TABLE b21t (bid BIGINT PRIMARY KEY, ks TEXT)
+
+statement ok
+INSERT INTO a21t VALUES (1, 7)
+
+statement ok
+INSERT INTO b21t VALUES (1, 'x')
+
+# Int64(7) 与 Utf8("x") 不得匹配
+query II
+SELECT aid, bid FROM a21t LEFT JOIN b21t ON kt = ks
+----
+1 NULL
+
+# ===== #22: JOIN ON AND 链中非等值合取生效 =====
+statement ok
+CREATE TABLE a22 (aid INT PRIMARY KEY, av INT)
+
+statement ok
+CREATE TABLE b22 (bid INT PRIMARY KEY, bv INT)
+
+statement ok
+INSERT INTO a22 VALUES (1, 1), (2, 5)
+
+statement ok
+INSERT INTO b22 VALUES (1, 1), (2, 5)
+
+# INNER：残留 v>1 过滤（曾静默丢弃）
+query I
+SELECT aid FROM a22 JOIN b22 ON aid = bid AND av > 1 ORDER BY aid
+----
+2
+
+# LEFT：残留不成立 = 无匹配 → NULL 延展（曾输出匹配行）
+query II
+SELECT aid, bid FROM a22 LEFT JOIN b22 ON aid = bid AND av > 1 ORDER BY aid
+----
+1 NULL
+2 2
+
+# ===== #23: 恒假谓词 + 全局聚合 → 单行零聚合 =====
+statement ok
+CREATE TABLE t23 (id BIGINT PRIMARY KEY)
+
+statement ok
+INSERT INTO t23 VALUES (1), (2), (3)
+
+# 恒假常量短路不跳过聚合——count=0 一行
+query I
+SELECT count(*) FROM t23 WHERE 1 = 0
+----
+0
+
+# 恒 NULL 谓词同语义
+query I
+SELECT count(*) FROM t23 WHERE NULL
+----
+0
+
+# 等价逐行路径一致
+query I
+SELECT count(*) FROM t23 WHERE id > 99
+----
+0
+
+# 非聚合恒假仍空集（区别于聚合）
+query I
+SELECT id FROM t23 WHERE 1 = 0
+----
+
+# ===== #26: 引号串恒为 text（不再数值化）=====
+statement ok
+CREATE TABLE t26 (id BIGINT PRIMARY KEY, k TEXT)
+
+statement ok
+INSERT INTO t26 VALUES (1, 'x'), (2, '1'), (3, '1.5'), (4, 'true')
+
+# 数字串在 TEXT 列保持文本（曾变 Int64/Float64/Bool）
+query IT
+SELECT id, k FROM t26 ORDER BY id
+----
+1 x
+2 1
+3 1.5
+4 true
+
+# INSERT 按列采纳：'42' → BIGINT = 42（PG unknown-literal）
+statement ok
+CREATE TABLE t26n (id BIGINT PRIMARY KEY, v BIGINT)
+
+statement ok
+INSERT INTO t26n VALUES (1, '42'), (2, '100')
+
+query II
+SELECT id, v FROM t26n ORDER BY id
+----
+1 42
+2 100
+
+# 非法值报 22P02
+statement error invalid input syntax
+INSERT INTO t26n VALUES (3, 'xyz')
+
+# 反向：数值 → TEXT 列文本化
+statement ok
+CREATE TABLE t26s (id BIGINT PRIMARY KEY, k TEXT)
+
+statement ok
+INSERT INTO t26s VALUES (1, 7), (2, 3.14)
+
+query IT
+SELECT id, k FROM t26s ORDER BY id
+----
+1 7
+2 3.14
+
+# 表达式语境：SELECT '1' 是 text
+query T
+SELECT '1' || '_text'
+----
+1_text
+
+# ===== ORDER BY SortOp 管线（v2c-2 接线）=====
+statement ok
+CREATE TABLE t27 (id BIGINT PRIMARY KEY, cat TEXT, score INT)
+
+statement ok
+INSERT INTO t27 VALUES (1, 'b', 30), (2, 'a', 50), (3, 'b', 10), (4, 'a', 40), (5, NULL, 20)
+
+# ASC：null-last
+query IT
+SELECT id, cat FROM t27 ORDER BY cat, id
+----
+2 a
+4 a
+1 b
+3 b
+5 NULL
+
+# DESC：null-first
+query IT
+SELECT id, cat FROM t27 ORDER BY cat DESC, id
+----
+5 NULL
+1 b
+3 b
+2 a
+4 a
+
+# ORDER BY + LIMIT
+query I
+SELECT id FROM t27 ORDER BY score DESC LIMIT 2
+----
+2
+4
+
+# ORDER BY + OFFSET
+query I
+SELECT id FROM t27 ORDER BY score ASC OFFSET 2 LIMIT 2
+----
+1
+4
+
+# ORDER BY 序数
+query II
+SELECT id, score FROM t27 ORDER BY 2 DESC LIMIT 1
+----
+2 50
+
+# ORDER BY 表达式
+query II
+SELECT id, score FROM t27 WHERE score > 15 ORDER BY score * -1 LIMIT 2
+----
+2 50
+4 40
