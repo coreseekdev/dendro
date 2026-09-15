@@ -1,9 +1,9 @@
 {
   "suite": "plan_cache",
   "rows": [
-  {"name": "plan_cache_hit_point_select", "value": 250799.222, "unit": "txn/s"},
-  {"name": "plan_cache_hit_p50_us", "value": 3.837, "unit": "us"},
-  {"name": "plan_cache_miss_point_select", "value": 104026.868, "unit": "txn/s"},
-  {"name": "plan_cache_miss_p50_us", "value": 7.915, "unit": "us"}
+  {"name": "plan_cache_hit_point_select", "value": 175517.889, "unit": "txn/s"},
+  {"name": "plan_cache_hit_p50_us", "value": 5.440, "unit": "us"},
+  {"name": "plan_cache_miss_point_select", "value": 72211.385, "unit": "txn/s"},
+  {"name": "plan_cache_miss_p50_us", "value": 11.181, "unit": "us"}
   ]
 }

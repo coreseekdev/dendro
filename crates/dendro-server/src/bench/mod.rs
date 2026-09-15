@@ -147,6 +147,138 @@ pub fn bench_tp(n_insert: usize, n_select: usize) -> BenchResult {
     }
 }
 
+/// v2c-3 验收件：存储字节比（ir-spec 02 §3——"TP ≪ AP"从口号到数字）。
+/// 行式（prolly chunk + WAL 段）vs 列式（col/ 段），同表同数据；
+/// Delta 尾巴占比（checkpoint 后 overlay 行数 / 总可见行数）。
+pub fn bench_storage_bytes() -> BenchResult {
+    use dendro_core::StoreConfig;
+    let dir = std::env::temp_dir().join(format!("dendro-bench-bytes-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let db = Database::open(DbOptions {
+        store: StoreConfig::LocalDir(dir.clone()),
+        durability: Durability::NoWait,
+        wal_flush_interval_ms: 1,
+        ..Default::default()
+    })
+    .unwrap();
+    db.set_columnar(Arc::new(dendro_columnar::integrate::CbfColumnar {
+        row_group_rows: 4096,
+    }));
+    let mut s = db.new_session();
+    let n = 200_000usize;
+    s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, region TEXT, amount DOUBLE)")
+        .unwrap();
+    for batch in (0..n).step_by(10_000) {
+        let vals: Vec<String> = (batch..batch + 10_000)
+            .map(|i| {
+                format!(
+                    "({i}, 'region-{}-order-{}', {}.5)",
+                    i % 64,
+                    i * 7919 % 100000,
+                    i
+                )
+            })
+            .collect();
+        s.exec(&format!("INSERT INTO t VALUES {}", vals.join(",")))
+            .unwrap();
+    }
+    // 尾巴基线：先 checkpoint（Main 建立后测尾巴占比才有意义）
+    s.exec("CHECKPOINT").unwrap();
+    let tail_rows: usize = 5_000;
+    for batch in (0..tail_rows).step_by(1000) {
+        let vals: Vec<String> = (batch..batch + 1000)
+            .map(|i| format!("({}, 'tail-{}', 1.5)", (n + i) as u64, i))
+            .collect();
+        s.exec(&format!("INSERT INTO t VALUES {}", vals.join(",")))
+            .unwrap();
+    }
+    let total_rows = (n + tail_rows) as u64;
+    let tail_pct = tail_rows as f64 * 100.0 / total_rows as f64;
+
+    // 按前缀量字节：objects/（prolly chunk）· col/（CBF 段）· wal/（段）。
+    // ObjStore::list_prefix 只列文件不列目录（LocalDir 语义），无法走查
+    // 中间层——本 bench 恒用 LocalDir，直接 std::fs 递归（跨后端量字节
+    // 需 ObjStore 增 walk 接口，届时替换此实现）
+    fn fs_bytes(root: &std::path::Path, sub: &str) -> u64 {
+        fn walk(p: &std::path::Path) -> u64 {
+            match std::fs::read_dir(p) {
+                Ok(rd) => rd
+                    .filter_map(|e| e.ok())
+                    .map(|e| {
+                        let pt = e.path();
+                        if pt.is_dir() {
+                            walk(&pt)
+                        } else {
+                            std::fs::metadata(&pt).map(|m| m.len()).unwrap_or(0)
+                        }
+                    })
+                    .sum(),
+                Err(_) => 0,
+            }
+        }
+        walk(&root.join(sub))
+    }
+    let bytes_of = |prefix: &str| -> u64 { fs_bytes(&dir, prefix) };
+    let row_bytes = bytes_of("objects/");
+    let col_bytes = bytes_of("col/");
+    let wal_bytes = bytes_of("wal/");
+    let ratio = if col_bytes > 0 {
+        row_bytes as f64 / col_bytes as f64
+    } else {
+        0.0
+    };
+    let mut rows = Vec::new();
+    rows.push(BenchRow {
+        name: "storage_row_bytes".into(),
+        value: row_bytes as f64,
+        unit: "B",
+    });
+    rows.push(BenchRow {
+        name: "storage_col_bytes".into(),
+        value: col_bytes as f64,
+        unit: "B",
+    });
+    rows.push(BenchRow {
+        name: "storage_wal_bytes".into(),
+        value: wal_bytes as f64,
+        unit: "B",
+    });
+    rows.push(BenchRow {
+        name: "storage_row_over_col_ratio".into(),
+        value: ratio,
+        unit: "x",
+    });
+    rows.push(BenchRow {
+        name: "storage_total_rows".into(),
+        value: total_rows as f64,
+        unit: "rows",
+    });
+    rows.push(BenchRow {
+        name: "storage_delta_tail_pct".into(),
+        value: tail_pct,
+        unit: "%",
+    });
+    // 正确性哨兵：尾巴行必须可见（Main+Delta 归并）
+    let r = s.exec("SELECT count(*) AS n FROM t").unwrap();
+    let cnt: f64 = match &r[0] {
+        dendro_core::types::Output::Rows(rs) => rs.text_rows()[0][0]
+            .as_deref()
+            .and_then(|t| t.parse().ok())
+            .unwrap_or(0.0),
+        _ => 0.0,
+    };
+    rows.push(BenchRow {
+        name: "storage_visible_rows".into(),
+        value: cnt,
+        unit: "rows",
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+    BenchResult {
+        suite: "storage_bytes".into(),
+        rows,
+    }
+}
+
 /// P2-6 v2a 计划缓存 A/B：同一文本（命中，免解析）vs 唯一字面量
 /// （未命中：hash+锁+插入缓存+解析）。两臂执行器工作量相同
 /// （同为 ~1000 行表上的主键点查），差值即解析开销。
@@ -521,6 +653,14 @@ pub fn run_all(out_dir: &PathBuf) {
     }
     eprintln!("[bench] plan_cache starting...");
     let s = bench_plan_cache(50_000);
+    let path = out_dir.join(format!("{}.json", s.suite));
+    std::fs::write(&path, s.to_json()).unwrap();
+    println!("wrote {}", path.display());
+    for r in &s.rows {
+        println!("  {:<48} {:>12.3} {}", r.name, r.value, r.unit);
+    }
+    eprintln!("[bench] storage_bytes starting...");
+    let s = bench_storage_bytes();
     let path = out_dir.join(format!("{}.json", s.suite));
     std::fs::write(&path, s.to_json()).unwrap();
     println!("wrote {}", path.display());

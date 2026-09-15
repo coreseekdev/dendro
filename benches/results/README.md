@@ -140,3 +140,25 @@ P2-6 v2a 落地：`hash(SQL)+dialect → 已解析 AST`（4096 条满即清空�
 仅 hash+锁+缓存插入（≈0.1µs 级），不劣化于无缓存版本；上限搅动为
 摊销 O(1)。正确性不变式见 docs/VERIFICATION.md I-E4（纯 AST 缓存，
 执行期实时绑定，DDL 漂移免疫）。JSON：`plan_cache.json`。
+
+## 存储字节比（2026-09-15，v2c-3 验收件，200k 行 + 5k 尾巴）
+
+| 指标 | 值 |
+|------|-----|
+| 行式（prolly objects/） | 13.99 MB |
+| 列式（col/ CBF 段） | **3.89 MB** |
+| **行:列 比** | **3.60×**（列存省 72%） |
+| WAL 段 | 16.78 MB（段预分配口径，非有效数据量——勿直接比） |
+| Delta 尾巴占比 | 2.44%（5k/205k） |
+
+同表同数据（id BIGINT pk + region TEXT ~30B + amount DOUBLE，200k 行，
+row_group 4096，checkpoint 后）。口径说明：objects/ 与 col/ 都只含
+checkpoint 过的 200k 行（5k 尾巴在 WAL+memtx，未入两者）——**同基
+公平比**。列存收益来自 FSST（region 高基数文本）+ DELTA（id/amount
+有序数值）。
+
+**对 ir-spec 02 §3 论点的裁决**："TP ≪ AP（<1/10）"指 **Delta 工作集
+vs Main 体量**——本夹具尾巴 2.4% 与论点同向；行:列 3.6× 是**放置层
+形态收益**（同一份数据两种编码），与"两份副本"（TiFlash 模式 2×+同步）
+不同——dendro 只有一份列存 Main + 小行式尾巴。JSON：
+`storage_bytes.json`。
