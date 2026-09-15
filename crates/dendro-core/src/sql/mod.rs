@@ -38,8 +38,9 @@ pub fn agg_display(e: &sqlparser::ast::Expr) -> String {
     e.to_string()
 }
 
-/// 计划缓存条目上限（每库）；防未参数化客户端撑爆内存
+/// 计划缓存总上限（每库）；分 16 桶后每桶 256——S-3 有界性不变
 const PLAN_CACHE_CAP: usize = 4096;
+const PLAN_CACHE_SHARD_CAP: usize = PLAN_CACHE_CAP / 16;
 
 /// P 层解析冒烟入口（ir-spec B0-a/b/c 与工具用）：与执行路径完全一致的
 /// SQL→AST 行为（parse_batch + 时间旅行方言回退同源）。返回 AST 的
@@ -148,16 +149,17 @@ pub(crate) fn exec_batch(db: &Database, sess: &mut Session, sql: &str) -> Result
         let stmts = {
             let key = xxhash_rust::xxh3::xxh3_64(raw.as_bytes())
                 ^ (sess.dialect as usize as u64).rotate_left(32);
-            let hit = db.plan_cache.lock().get(&key).cloned();
+            let shard = db.plan_shard(key);
+            let hit = shard.lock().get(&key).cloned();
             match hit {
                 Some(cached) => cached.as_ref().clone(),
                 None => {
                     let parsed = parse_batch(&raw, sess.dialect)?;
-                    let mut cache = db.plan_cache.lock();
-                    // 有界缓存（S-3 同源）：满即整体清空。
-                    // 攻击面是拼接字面量的海量唯一 SQL（未参数化客户端），
-                    // LRU 的常数开销在此场景不划算，clear 是 O(n) 且罕见。
-                    if cache.len() >= PLAN_CACHE_CAP {
+                    let mut cache = shard.lock();
+                    // 有界缓存（S-3 同源，分桶后按桶清）：拼接字面量的海量
+                    // 唯一 SQL（未参数化客户端）只冲垮自己的桶（Q15——
+                    // 全局 clear 会连带清空全体会话的计划）。
+                    if cache.len() >= PLAN_CACHE_SHARD_CAP {
                         cache.clear();
                     }
                     cache.insert(key, Arc::new(parsed.clone()));
@@ -720,6 +722,7 @@ pub(crate) fn exec_statement(
             }
             let query_text = cv.query.to_string();
             db.update_manifest(|m| {
+                m.schema_version += 1; // DDL 白名单（B3）
                 if m.views.contains_key(&name) && !cv.or_replace {
                     return Err(SqlError::duplicate_table(format!(
                         "view \"{name}\" already exists"
@@ -756,6 +759,7 @@ pub(crate) fn exec_statement(
                     )));
                 }
                 db.update_manifest(|m| {
+                    m.schema_version += 1; // DDL 白名单（B3）
                     m.views.remove(&name);
                     Ok(true)
                 })?;
@@ -957,6 +961,8 @@ pub(crate) fn prepare(
         name.to_string(),
         Prepared {
             sql: branch_sql,
+            bound_schema_version: db.schema_version(),
+            bound_branch: sess.branch.clone(),
             stmt,
             param_types: meta.param_types.clone(),
             result_columns: meta.result_columns.clone(),
@@ -1186,6 +1192,32 @@ pub(crate) fn exec_prepared(
     name: &str,
     params: &[SqlValue],
 ) -> Result<Output> {
+    // B3/评审 M1——执行期重校验：模板化绑定产物的失效义务。schema DDL 或
+    // 分支切换后旧绑定（列偏移/表存在性）可能陈旧 = 串列/错表。不等即从
+    // p.sql 透明重编译（SQLite prepare_v2 自动重编译同语义）；重编译失败
+    // （如表已删）按错误如实上抛。
+    {
+        let cur_sv = db.schema_version();
+        let need_rebuild = {
+            let Some(stored) = sess.prepared.get(name) else {
+                return Err(SqlError::new("26000", "prepared statement does not exist"));
+            };
+            stored.bound_schema_version != cur_sv || stored.bound_branch != sess.branch
+        };
+        if need_rebuild {
+            let Some(stored) = sess.prepared.get_mut(name) else {
+                return Err(SqlError::new("26000", "prepared statement does not exist"));
+            };
+            if branch_sql_kind(&stored.sql).is_none() {
+                let mut stmts = parse_batch(&stored.sql, sess.dialect)?;
+                let stmt = stmts.remove(0);
+                // param_types/result_columns 是展示层元数据，重建只换 AST 绑定
+                stored.stmt = stmt;
+            }
+            stored.bound_schema_version = cur_sv;
+            stored.bound_branch = sess.branch.clone();
+        }
+    }
     let p = sess
         .prepared
         .get(name)

@@ -36,6 +36,13 @@ pub struct BranchHead {
     pub wal_first_seg: u64,
 }
 
+/// schema 代数（v2b B3 / ir-spec 06 §3）：**仅 DDL 白名单推进**——
+/// create/drop/alter/truncate table、create/drop view、create/merge branch。
+/// checkpoint / GC 压缩 / DROP BRANCH 墓碑**不推进**（高频数据路径，
+/// 推进会打爆 L2 绑定缓存与 prepared 重校验的命中率）。manifest version
+/// 是发布计数（数据路径也推进），两者职责分离。serde default：旧
+/// manifest 反序列化为 0，首个 DDL 起开始计数。
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TableMeta {
     pub id: u32,
@@ -56,6 +63,12 @@ pub struct TableMeta {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Manifest {
+    /// schema 代数（v2b B3 / ir-spec 06 §3）：仅 DDL 白名单推进（DDL 语句
+    /// 的 update_manifest 闭包内 +=1）——checkpoint/GC/DROP BRANCH 不推进。
+    /// 与 manifest version（发布计数，数据路径也推进）职责分离：前者是
+    /// L2 绑定缓存与 prepared 重校验的失效键。serde default=0 向后兼容。
+    #[serde(default)]
+    pub schema_version: u64,
     pub version: u64,
     /// 乐观提交的不确定写消解凭证（SPEC 01 §3）：commit 时生成、写入 payload；
     /// PUT 结果不确定时 GET 反查该字段判定"是否其实已成功"
@@ -91,6 +104,7 @@ impl Manifest {
         refs.insert("main".to_string(), BranchHead::default());
         Self {
             version,
+            schema_version: 0,
             format_version: 1,
             writer_putid: None,
             refs,

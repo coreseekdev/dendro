@@ -109,6 +109,7 @@ pub(crate) fn exec_create_table(
     let covered = ck.seq_covered;
     let bname = sess.branch.clone();
     db.update_manifest(|m| {
+        m.schema_version += 1; // DDL 白名单（B3）：catalog 变更
         let h = m
             .refs
             .get_mut(&bname)
@@ -257,6 +258,7 @@ pub(crate) fn catalog_commit(
     let covered = ck.seq_covered;
     let bname = sess.branch.clone();
     db.update_manifest(|m| {
+        m.schema_version += 1; // DDL 白名单（B3）：catalog 变更
         let h = m
             .refs
             .get_mut(&bname)

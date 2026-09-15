@@ -376,6 +376,11 @@ pub struct PrepareMeta {
 pub struct Prepared {
     pub sql: String,
     pub stmt: sqlparser::ast::Statement,
+    /// 编译时的 (schema_version, branch)——exec 入口重校验（B3/评审 M1：
+    /// 长生命周期绑定产物首次引入失效义务；不等即透明重编译，
+    /// SQLite prepare_v2 同语义）。任一不等=绑定可能陈旧。
+    pub bound_schema_version: u64,
+    pub bound_branch: String,
     pub param_types: Vec<crate::types::ColType>,
     pub result_columns: Vec<crate::types::ColumnMeta>,
 }
@@ -493,10 +498,14 @@ pub struct Database {
     pub(crate) branches: RwLock<HashMap<String, Arc<Branch>>>,
     /// 连接数守卫（S-3）：两协议共享
     pub conn_guard: Arc<ConnGuard>,
-    /// SQL 计划缓存（P2-6 v2a）：SQL hash+dialect → 已解析 AST
-    /// 命中时 clone 返回（结构性拷贝 << tokenize+parse 开销）
-    pub(crate) plan_cache:
+    /// SQL 计划缓存（P2-6 v2a / B3 分桶 Q15）：SQL hash+dialect → 已解析 AST。
+    /// **16 分片**（评审 O5/MySQL query cache 教训）：此前单 db 级 Mutex——
+    /// 每语句热路径全局串行 + 单桶满即整体 clear（未参数化客户端风暴清空
+    /// 全体会话计划）。分片后锁竞争 1/16，风暴只清自己的桶。每桶上限
+    /// PLAN_CACHE_SHARD_CAP，总界 4096 不变（S-3）。
+    pub(crate) plan_cache: Vec<
         parking_lot::Mutex<std::collections::HashMap<u64, Arc<Vec<sqlparser::ast::Statement>>>>,
+    >,
     /// 每-名字打开互斥（branch 创建 / reopen 驱逐串行化）
     open_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     pub(crate) session_seq: AtomicU64,
@@ -590,7 +599,9 @@ impl Database {
         let (ver, manifest) = manifest_store.load_latest().map_err(SqlError::from)?;
         crate::recovery::recover_branches(&obj, &manifest)?;
         let conn_guard = Arc::new(ConnGuard::new(opts.max_connections));
-        let plan_cache = parking_lot::Mutex::new(std::collections::HashMap::new());
+        let plan_cache = (0..16)
+            .map(|_| parking_lot::Mutex::new(std::collections::HashMap::new()))
+            .collect();
         let db = Arc::new(Database {
             opts,
             obj,
@@ -628,7 +639,16 @@ impl Database {
 
     /// 计划缓存条数（观测/测试用；S-3 有界性验证）
     pub fn plan_cache_len(&self) -> usize {
-        self.plan_cache.lock().len()
+        self.plan_cache.iter().map(|s| s.lock().len()).sum()
+    }
+
+    pub(crate) fn plan_shard(
+        &self,
+        key: u64,
+    ) -> &parking_lot::Mutex<std::collections::HashMap<u64, Arc<Vec<sqlparser::ast::Statement>>>>
+    {
+        // key 已含 dialect 混合位；取低 4 位分片
+        &self.plan_cache[(key as usize) & (self.plan_cache.len() - 1)]
     }
 
     /// 当前快照的 manifest version（前置1 配套）——L2 计划缓存失效键与
@@ -636,6 +656,12 @@ impl Database {
     /// 且**不滞后**（update_manifest 已回填 commit 返回的新版本号）。
     pub fn snapshot_version(&self) -> u64 {
         self.state.load().manifest.version
+    }
+
+    /// 当前 schema 代数（v2b B3）：L2 绑定缓存与 prepared 重校验的失效键。
+    /// 一次原子读；DDL 白名单推进（见 Manifest::schema_version 注释）。
+    pub fn schema_version(&self) -> u64 {
+        self.state.load().manifest.schema_version
     }
 
     pub fn new_session(self: &Arc<Self>) -> Session {
@@ -860,6 +886,7 @@ impl Database {
         };
         self.update_manifest(|m| {
             // 权威上限复查（CAS 重试时以最新 manifest 评估；并发越限在此拦截）
+            m.schema_version += 1; // DDL 白名单（B3）：分支加入目录
             if max_b > 0 && m.refs.len() >= max_b {
                 return Err(SqlError::new(
                     "54000",
@@ -891,6 +918,19 @@ impl Database {
 
     /// MERGE BRANCH src INTO dst（SPEC 03 §6）
     pub fn merge_branches(&self, src: &str, dst: &str) -> Result<String> {
+        let out = self.merge_branches_inner(src, dst)?;
+        // DDL 白名单（B3）：merge 可把源分支目录变更带入 dst（表集变化）。
+        // merge 走 head.store 而非 update_manifest，成功后单写 bump。
+        if let Err(e) = self.update_manifest(|m| {
+            m.schema_version += 1;
+            Ok(true)
+        }) {
+            tracing::warn!("schema_version bump after merge failed: {e}");
+        }
+        Ok(out)
+    }
+
+    fn merge_branches_inner(&self, src: &str, dst: &str) -> Result<String> {
         if src == dst {
             return Err(SqlError::syntax("cannot merge a branch into itself"));
         }
