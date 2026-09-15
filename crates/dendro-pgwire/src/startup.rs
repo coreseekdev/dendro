@@ -45,7 +45,7 @@ const PARAM_STATUS: &[(&str, &str)] = &[
 pub fn handshake<T: io::Read + io::Write>(
     pg: &mut PgStream<T>,
     cfg: &PgConfig,
-) -> io::Result<Option<StartupParams>> {
+) -> io::Result<Option<(StartupParams, i32)>> {
     // SSL/GSS 协商可能重复出现（客户端在收到 'N' 后发真正的 startup）
     loop {
         let Some(pkt) = pg.read_startup()? else {
@@ -57,8 +57,9 @@ pub fn handshake<T: io::Read + io::Write>(
                 pg.write_raw(b"N");
                 pg.flush()?;
             }
-            StartupPacket::CancelRequest { .. } => {
-                // SPEC 06 §2.2：v1 直接关闭连接
+            StartupPacket::CancelRequest { pid, secret: _ } => {
+                // S-3 语句取消：查注册表设目标连接的取消令牌
+                crate::cancel_by_pid(pid);
                 return Ok(None);
             }
             StartupPacket::Startup { protocol, params } => {
@@ -104,17 +105,19 @@ pub fn handshake<T: io::Read + io::Write>(
                 for (name, value) in PARAM_STATUS {
                     pg.send(&BeMessage::ParameterStatus { name, value });
                 }
-                pg.send(&BeMessage::BackendKeyData {
-                    pid: crate::next_backend_pid(),
-                    secret: crate::next_backend_secret(),
-                });
+                let pid = crate::next_backend_pid();
+                let secret = crate::next_backend_secret();
+                pg.send(&BeMessage::BackendKeyData { pid, secret });
                 pg.send(&BeMessage::ReadyForQuery(b'I'));
                 pg.flush()?;
-                return Ok(Some(StartupParams {
-                    protocol,
-                    user,
-                    params,
-                }));
+                return Ok(Some((
+                    StartupParams {
+                        protocol,
+                        user,
+                        params,
+                    },
+                    pid,
+                )));
             }
         }
     }

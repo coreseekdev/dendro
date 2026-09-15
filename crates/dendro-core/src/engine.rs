@@ -384,6 +384,10 @@ pub struct Prepared {
 /// PreparedMeta/Output 语义见 spec/10。
 pub trait WireSession: Send {
     fn exec(&mut self, sql: &str) -> Result<Vec<Output>>;
+    /// 取消令牌引用（S-3 语句取消；默认返回 dummy 供 mock 使用）
+    fn cancel_token(&self) -> Arc<std::sync::atomic::AtomicBool> {
+        Arc::new(std::sync::atomic::AtomicBool::new(false))
+    }
     fn prepare(
         &mut self,
         name: &str,
@@ -399,6 +403,9 @@ pub trait WireSession: Send {
 }
 
 impl WireSession for Session {
+    fn cancel_token(&self) -> Arc<std::sync::atomic::AtomicBool> {
+        self.cancel_token.clone()
+    }
     fn exec(&mut self, sql: &str) -> Result<Vec<Output>> {
         Session::exec(self, sql)
     }

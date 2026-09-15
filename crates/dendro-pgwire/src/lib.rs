@@ -56,6 +56,37 @@ impl PgConfig {
     }
 }
 
+/// CancelRequest 注册表（S-3 语句取消）：pid → 取消令牌
+fn cancel_registry() -> std::sync::MutexGuard<
+    'static,
+    std::collections::HashMap<i32, std::sync::Arc<std::sync::atomic::AtomicBool>>,
+> {
+    static REGISTRY: std::sync::OnceLock<
+        std::sync::Mutex<
+            std::collections::HashMap<i32, std::sync::Arc<std::sync::atomic::AtomicBool>>,
+        >,
+    > = std::sync::OnceLock::new();
+    REGISTRY
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+        .lock()
+        .unwrap()
+}
+
+pub fn register_cancel(pid: i32, token: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+    cancel_registry().insert(pid, token);
+}
+
+pub fn cancel_by_pid(pid: i32) -> bool {
+    cancel_registry().get(&pid).map_or(false, |t| {
+        t.store(true, Ordering::SeqCst);
+        true
+    })
+}
+
+fn unregister_cancel(pid: i32) {
+    cancel_registry().remove(&pid);
+}
+
 static NEXT_BACKEND_PID: AtomicI32 = AtomicI32::new(1);
 static SECRET_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -148,9 +179,12 @@ pub fn handle_connection<T: Read + Write>(
     let mut pg = PgStream::new(stream);
 
     // startup + 认证（SPEC 06 §2.1）；None = 连接应关闭（已发错误或对端断开）
-    let Some(_params) = startup::handshake(&mut pg, &cfg)? else {
+    let Some((_params, backend_pid)) = startup::handshake(&mut pg, &cfg)? else {
         return Ok(());
     };
+    // 注册取消令牌（S-3）：pid → Session 的 cancel_token
+    let token = sess.cancel_token();
+    crate::register_cancel(backend_pid, token);
 
     let mut ext = extended::ExtendedState::default();
     // 定点豁免 while-let 建议：此循环内含 `?` 错误传播与多出口 break，
@@ -158,6 +192,7 @@ pub fn handle_connection<T: Read + Write>(
     #[allow(clippy::while_let_loop)]
     loop {
         let Some(msg) = pg.read_message()? else {
+            unregister_cancel(backend_pid);
             break; // 客户端干净断开
         };
         match msg {
@@ -166,7 +201,10 @@ pub fn handle_connection<T: Read + Write>(
                 // 简单查询完成 = 扩展协议错误跳过态结束
                 ext.in_error = false;
             }
-            FeMessage::Terminate => break,
+            FeMessage::Terminate => {
+                unregister_cancel(backend_pid);
+                break;
+            }
             msg => match extended::handle_message(&mut pg, sess.as_mut(), &mut ext, msg)? {
                 extended::Flow::Continue => {}
                 extended::Flow::Close => break,
