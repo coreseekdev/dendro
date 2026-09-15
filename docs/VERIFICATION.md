@@ -7,6 +7,19 @@
 
 ## 0. 状态
 
+- **2026-09-16 v2 后大阶段（执行层收口）**：四方向全绿——
+  ① AggOp/ProjectOp 接线 eval_select（聚合/投影消除双路径；伴生修复
+  count(文本列) 报错、SUM(DISTINCT) 不去重、混合 int/float 列丢整数
+  三处两路径语义缺陷；SET dendro.force_agg 差分轴）；
+  ② Source 流式化（MainPlusDelta 三路惰性归并游标，全量 BTreeMap
+  物化消除；**账本 #27**：混合增量 checkpoint 丢弃删除键 → AP 复活
+  已删行，差分暴露即修；Q-14 事务写在 AP 路径首次有活事务断言）；
+  ③ 文本 IR dendro.ir v1（标量方言 print/parse/verifier 同文件，
+  P1 全字段 round-trip + P2 字节恒等 + golden 文件；伴生修复编译器
+  opidx 对 And/Or/Concat 的 binops 池污染）；
+  ④ GRANT/REVOKE 表级 ACL（单点权限门 enforce，exec+prepare 双卡口；
+  超户缺省行为不变）。门禁：clippy 0 / 420 测试 / 30 slt 全过。
+  下一步：优化器（基于既有逻辑 IR 与 dispatch 纯函数展开）。
 - **2026-09-15 v2b+v2c 全量完成**：26 条账本缺陷全闭环（#1-#26，每条
   有永久检测机制）；ScalarStep 标量层 + ChunkPlane 执行层 + coverage
   派发器 + MainPlusDelta 归并源 + SortOp/ProjectOp 算子群 + ORDER BY
