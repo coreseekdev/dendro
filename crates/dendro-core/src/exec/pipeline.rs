@@ -941,7 +941,7 @@ mod agg_tests {
             sink.rows[0][1],
             SqlValue::Int64(2),
             "count DISTINCT: {:?}",
-            &sink.rows
+            sink.rows
         );
     }
 
