@@ -83,10 +83,11 @@ OR 对偶。**禁止**引入"null 当 false"之类的近似——I-H1 红线。
 - DDL（CREATE/DROP/ALTER/TRUNCATE）推进 catalog_version ⇒ 自动 miss；
 - 有界：与 v2a 同池不同表，或独立 LRU（上限 1024）——06 定稿。
 
-## 7. EXPLAIN
+## 7. EXPLAIN 与文本表示
 
-步列表反汇编打印（`EXPLAIN` 输出第二段：表达式部分），对标 PG
-`EXPLAIN (VERBOSE)`。格式示例：
+步列表的**规范文本形式 = 09 号 spec 的标量方言**（SSA 名 + 标签 +
+版本头，round-trip/确定性/golden 测试三合同），EXPLAIN 输出其二段。
+此处示例为简式（规范格式以 09 为准）：
 
 ```
 expr:
