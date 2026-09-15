@@ -13,14 +13,14 @@ pub fn optimize(e: &Expr) -> Expr {
             let r = optimize(right);
             fold_binary(op, &l, &r).unwrap_or(Expr::BinaryOp {
                 left: Box::new(l),
-                op: op.clone(),
+                op: *op,
                 right: Box::new(r),
             })
         }
         Expr::UnaryOp { op, expr } => {
             let inner = optimize(expr);
             fold_unary(*op, &inner).unwrap_or(Expr::UnaryOp {
-                op: op.clone(),
+                op: *op,
                 expr: Box::new(inner),
             })
         }
@@ -77,7 +77,7 @@ fn int_expr(v: i64) -> Expr {
 }
 
 /// 布尔简化（短路恒等）
-fn fold_bool(op: BinOp, l: &Expr, r: &Expr) -> Option<Expr> {
+fn fold_bool(op: &BinOp, l: &Expr, r: &Expr) -> Option<Expr> {
     match op {
         BinOp::And => {
             if is_true(l) {

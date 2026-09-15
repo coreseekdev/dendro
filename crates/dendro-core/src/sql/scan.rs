@@ -143,7 +143,7 @@ pub(crate) fn eval_query(
     let selection = select
         .selection
         .as_ref()
-        .map(|w| crate::sql::optimize::optimize(w));
+        .map(crate::sql::optimize::optimize);
     if let Some(w) = selection.as_ref() {
         // 常量短路（Q-1 优化器）：WHERE 表达式不含列引用时单次求值——
         // false/NULL → 跳过扫描直接返回空集（免全表遍历+行解码）；
