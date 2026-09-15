@@ -591,3 +591,395 @@ mod operator_tests {
         PipeCtx::new(vec![], None, Arc::new(AtomicBool::new(false)))
     }
 }
+
+// ---------------------------------------------------------------------------
+// v2c-2：AggOp（聚合算子——第三个 breaker，与 SortOp 同型）
+// ---------------------------------------------------------------------------
+
+/// 聚合算子：push 缓冲组哈希 + 累加器；finish() 按首见序吐组行。
+/// 语义 = group_aggregate 逐字节（首见序、组键 to_text 哈希、NULL 跳过
+/// 累加、无分组空输入全局聚合仍出一行、Accum 状态机）——**不含**投影/
+/// HAVING（装配层职责，与 group_aggregate 调用方一致）。
+pub struct AggOp {
+    /// 组表达式列（列索引——由装配层从 group_exprs 解析）
+    pub group_col_indices: Vec<usize>,
+    /// 聚合调用
+    pub calls: Vec<AggSpec>,
+    /// 组状态：hashkey → 累加器行
+    groups: std::collections::HashMap<Vec<String>, Vec<AggAccum>>,
+    /// 首见序
+    order: Vec<(Vec<String>, Vec<SqlValue>)>,
+    done: bool,
+}
+
+/// 管线侧聚合调用描述（装配层从 AggCall 翻译）
+#[derive(Clone, Debug)]
+pub struct AggSpec {
+    pub func: AggFunc,
+    /// 参数列索引（None = count(*)）
+    pub arg_col: Option<usize>,
+    pub distinct: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AggFunc {
+    Count,
+    Sum,
+    Avg,
+    Min,
+    Max,
+}
+
+/// 累加器（= agg.rs Accum 的管线侧镜像——语义逐字节一致）
+#[derive(Clone)]
+pub struct AggAccum {
+    pub count: u64,
+    pub sum_f: f64,
+    pub sum_i: i64,
+    pub is_float: bool,
+    pub min: Option<SqlValue>,
+    pub max: Option<SqlValue>,
+    pub distinct: Option<std::collections::HashSet<String>>,
+}
+
+impl AggAccum {
+    fn new(distinct: bool) -> Self {
+        Self {
+            count: 0,
+            sum_f: 0.0,
+            sum_i: 0,
+            is_float: false,
+            min: None,
+            max: None,
+            distinct: if distinct {
+                Some(std::collections::HashSet::new())
+            } else {
+                None
+            },
+        }
+    }
+
+    fn push(&mut self, v: Option<SqlValue>) {
+        match v {
+            None => self.count += 1, // count(*) 路径
+            Some(val) => {
+                if val.is_null() {
+                    return; // NULL 不参与聚合
+                }
+                let key = crate::sql::expr::to_text(val.clone());
+                if let Some(ds) = &mut self.distinct {
+                    if !ds.insert(key) {
+                        return; // DISTINCT 重复
+                    }
+                }
+                self.count += 1;
+                match val {
+                    SqlValue::Int32(i) => self.sum_i += i as i64,
+                    SqlValue::Int64(i) => self.sum_i += i,
+                    SqlValue::Float64(f) => {
+                        self.is_float = true;
+                        self.sum_f += f;
+                    }
+                    _ => {}
+                }
+                let less = self
+                    .min
+                    .as_ref()
+                    .map(|m| {
+                        crate::sql::expr::cmp_values(&val, m)
+                            .map(|o| o == std::cmp::Ordering::Less)
+                            .unwrap_or(false)
+                    })
+                    .unwrap_or(true);
+                if less {
+                    self.min = Some(val.clone());
+                }
+                let greater = self
+                    .max
+                    .as_ref()
+                    .map(|m| {
+                        crate::sql::expr::cmp_values(&val, m)
+                            .map(|o| o == std::cmp::Ordering::Greater)
+                            .unwrap_or(false)
+                    })
+                    .unwrap_or(true);
+                if greater {
+                    self.max = Some(val);
+                }
+            }
+        }
+    }
+
+    fn finish(&self, func: AggFunc) -> SqlValue {
+        match func {
+            AggFunc::Count => SqlValue::Int64(self.count as i64),
+            AggFunc::Sum => {
+                if self.count == 0 {
+                    SqlValue::Null
+                } else if self.is_float {
+                    SqlValue::Float64(self.sum_f + self.sum_i as f64)
+                } else {
+                    SqlValue::Int64(self.sum_i)
+                }
+            }
+            AggFunc::Avg => {
+                if self.count == 0 {
+                    SqlValue::Null
+                } else {
+                    SqlValue::Float64((self.sum_f + self.sum_i as f64) / self.count as f64)
+                }
+            }
+            AggFunc::Min => self.min.clone().unwrap_or(SqlValue::Null),
+            AggFunc::Max => self.max.clone().unwrap_or(SqlValue::Null),
+        }
+    }
+}
+
+impl AggOp {
+    pub fn new(group_col_indices: Vec<usize>, calls: Vec<AggSpec>) -> Self {
+        Self {
+            group_col_indices,
+            calls,
+            groups: std::collections::HashMap::new(),
+            order: Vec::new(),
+            done: false,
+        }
+    }
+}
+
+impl PipeOp<Vec<Vec<SqlValue>>> for AggOp {
+    fn push(
+        &mut self,
+        _cx: &mut PipeCtx,
+        batch: Vec<Vec<SqlValue>>,
+        _out: &mut dyn Sink<Vec<Vec<SqlValue>>>,
+    ) -> FlowControl {
+        for row in &batch {
+            let mut hashkey = Vec::with_capacity(self.group_col_indices.len());
+            let mut keyvals = Vec::with_capacity(self.group_col_indices.len());
+            for &gi in &self.group_col_indices {
+                let v = row.get(gi).cloned().unwrap_or(SqlValue::Null);
+                hashkey.push(crate::sql::expr::to_text(v.clone()));
+                keyvals.push(v);
+            }
+            let accums = self.groups.entry(hashkey.clone()).or_insert_with(|| {
+                self.order.push((hashkey.clone(), keyvals.clone()));
+                vec![AggAccum::new(false); self.calls.len()]
+            });
+            // distinct 按需挂载（Accum::new(false) 后按 spec 补）
+            for (ai, spec) in self.calls.iter().enumerate() {
+                if spec.distinct && accums[ai].distinct.is_none() {
+                    accums[ai].distinct = Some(std::collections::HashSet::new());
+                }
+            }
+            for (ai, spec) in self.calls.iter().enumerate() {
+                let v = if let Some(col) = spec.arg_col {
+                    row.get(col).cloned()
+                } else {
+                    None // count(*)
+                };
+                accums[ai].push(v);
+            }
+        }
+        FlowControl::Continue
+    }
+
+    fn finish(&mut self, _cx: &mut PipeCtx, out: &mut dyn Sink<Vec<Vec<SqlValue>>>) -> FlowControl {
+        if self.done {
+            return FlowControl::Continue;
+        }
+        self.done = true;
+
+        let mut result_rows: Vec<Vec<SqlValue>> = Vec::with_capacity(self.order.len());
+        for (hk, kv) in &self.order {
+            if let Some(accums) = self.groups.get(hk) {
+                let mut row = kv.clone(); // 组键值
+                for (ai, spec) in self.calls.iter().enumerate() {
+                    row.push(accums[ai].finish(spec.func));
+                }
+                result_rows.push(row);
+            }
+        }
+
+        // **无分组 + 空输入 → 全局聚合仍出一行**（零值聚合——ir-spec 02
+        // §1 算子合同，#23 修复后的唯一语义）
+        if self.group_col_indices.is_empty() && result_rows.is_empty() {
+            let row: Vec<SqlValue> = self
+                .calls
+                .iter()
+                .map(|spec| {
+                    let a = AggAccum::new(false);
+                    a.finish(spec.func)
+                })
+                .collect();
+            result_rows.push(row);
+        }
+
+        if result_rows.is_empty() {
+            return FlowControl::Continue; // D3：零行不推
+        }
+        out.push(_cx, result_rows)
+    }
+}
+
+/// AggOp 测试：分组/全局/空输入/DISTINCT/NULL 语义
+#[cfg(test)]
+mod agg_tests {
+    use super::*;
+
+    fn rows(pairs: &[(i64, i64)]) -> Vec<Vec<SqlValue>> {
+        pairs
+            .iter()
+            .map(|(g, v)| vec![SqlValue::Int64(*g), SqlValue::Int64(*v)])
+            .collect()
+    }
+
+    fn agg_ctx() -> PipeCtx {
+        PipeCtx::new(vec![], None, Arc::new(AtomicBool::new(false)))
+    }
+
+    #[test]
+    fn group_by_first_seen_order_and_agg() {
+        // 组序 = 首见序（3 在 1 之前出现）
+        let data = rows(&[(3, 30), (1, 10), (3, 40), (1, 20)]);
+        let mut agg = AggOp::new(
+            vec![0], // group by 列 0
+            vec![AggSpec {
+                func: AggFunc::Sum,
+                arg_col: Some(1),
+                distinct: false,
+            }],
+        );
+        let mut sink = CollectSink::new(None);
+        let src: Vec<Result<Vec<Vec<SqlValue>>>> = vec![Ok(data)];
+        let mut it = src.into_iter();
+        let mut cx = agg_ctx();
+        drive(&mut cx, &mut it, &mut agg, &mut sink).unwrap();
+        // 首见序：组 3 先出现
+        assert_eq!(sink.rows.len(), 2, "{:?}", sink.rows);
+        assert_eq!(sink.rows[0][0], SqlValue::Int64(3), "首见序");
+        assert_eq!(sink.rows[0][1], SqlValue::Int64(70), "sum(30+40)");
+        assert_eq!(sink.rows[1][0], SqlValue::Int64(1));
+        assert_eq!(sink.rows[1][1], SqlValue::Int64(30), "sum(10+20)");
+    }
+
+    #[test]
+    fn global_agg_empty_input_one_row() {
+        // 无分组 + 空输入 → 单行零值聚合（#23 修复后的唯一语义）
+        let mut agg = AggOp::new(
+            vec![],
+            vec![
+                AggSpec {
+                    func: AggFunc::Count,
+                    arg_col: None,
+                    distinct: false,
+                },
+                AggSpec {
+                    func: AggFunc::Sum,
+                    arg_col: Some(0),
+                    distinct: false,
+                },
+            ],
+        );
+        let mut sink = CollectSink::new(None);
+        let src: Vec<Result<Vec<Vec<SqlValue>>>> = vec![];
+        let mut it = src.into_iter();
+        let mut cx = agg_ctx();
+        drive(&mut cx, &mut it, &mut agg, &mut sink).unwrap();
+        assert_eq!(sink.rows.len(), 1, "空输入全局聚合单行：{:?}", sink.rows);
+        assert_eq!(sink.rows[0][0], SqlValue::Int64(0), "count=0");
+        assert_eq!(sink.rows[0][1], SqlValue::Null, "sum=NULL");
+    }
+
+    #[test]
+    fn null_skips_aggregation() {
+        let data = vec![
+            vec![SqlValue::Int64(1), SqlValue::Null],
+            vec![SqlValue::Int64(1), SqlValue::Int64(5)],
+        ];
+        let mut agg = AggOp::new(
+            vec![0],
+            vec![
+                AggSpec {
+                    func: AggFunc::Count,
+                    arg_col: Some(1),
+                    distinct: false,
+                },
+                AggSpec {
+                    func: AggFunc::Sum,
+                    arg_col: Some(1),
+                    distinct: false,
+                },
+            ],
+        );
+        let mut sink = CollectSink::new(None);
+        let src: Vec<Result<Vec<Vec<SqlValue>>>> = vec![Ok(data)];
+        let mut it = src.into_iter();
+        let mut cx = agg_ctx();
+        drive(&mut cx, &mut it, &mut agg, &mut sink).unwrap();
+        assert_eq!(sink.rows[0][1], SqlValue::Int64(1), "count 跳过 NULL");
+        assert_eq!(sink.rows[0][2], SqlValue::Int64(5), "sum 跳过 NULL");
+    }
+
+    #[test]
+    fn distinct_dedup() {
+        let data = rows(&[(1, 10), (1, 10), (1, 20), (1, 10)]);
+        let mut agg = AggOp::new(
+            vec![0],
+            vec![AggSpec {
+                func: AggFunc::Count,
+                arg_col: Some(1),
+                distinct: true,
+            }],
+        );
+        let mut sink = CollectSink::new(None);
+        let src: Vec<Result<Vec<Vec<SqlValue>>>> = vec![Ok(data)];
+        let mut it = src.into_iter();
+        let mut cx = agg_ctx();
+        drive(&mut cx, &mut it, &mut agg, &mut sink).unwrap();
+        assert_eq!(
+            sink.rows[0][1],
+            SqlValue::Int64(2),
+            "count DISTINCT: {:?}",
+            &sink.rows
+        );
+    }
+
+    #[test]
+    fn min_max_across_groups() {
+        let data = rows(&[(2, 20), (1, 15), (2, 10), (1, 25)]);
+        let mut agg = AggOp::new(
+            vec![0],
+            vec![
+                AggSpec {
+                    func: AggFunc::Min,
+                    arg_col: Some(1),
+                    distinct: false,
+                },
+                AggSpec {
+                    func: AggFunc::Max,
+                    arg_col: Some(1),
+                    distinct: false,
+                },
+                AggSpec {
+                    func: AggFunc::Avg,
+                    arg_col: Some(1),
+                    distinct: false,
+                },
+            ],
+        );
+        let mut sink = CollectSink::new(None);
+        let src: Vec<Result<Vec<Vec<SqlValue>>>> = vec![Ok(data)];
+        let mut it = src.into_iter();
+        let mut cx = agg_ctx();
+        drive(&mut cx, &mut it, &mut agg, &mut sink).unwrap();
+        // 首见序：组 2 先
+        assert_eq!(sink.rows[0][0], SqlValue::Int64(2));
+        assert_eq!(sink.rows[0][1], SqlValue::Int64(10), "min");
+        assert_eq!(sink.rows[0][2], SqlValue::Int64(20), "max");
+        match &sink.rows[0][3] {
+            SqlValue::Float64(f) => assert!((f - 15.0).abs() < 1e-9, "avg"),
+            other => panic!("avg 应为 float：{other:?}"),
+        }
+    }
+}
