@@ -78,6 +78,8 @@ pub struct RelNode<T: RelNodeType, D: RelAttrType> {
   4. **行业平行证据**：`datafusion-jit`（DataFusion 官方实验 crate，v23.0.0，2023-04 后消亡未进主线）；cranelift-jit 反向依赖 118 个中无任何 readyset/noria 系。
 
   > 方法论教训（账本精神）：本次"曾用后移除"最初来自检索 AI 的总结——在反向依赖、crates.io、git 全历史三个层面均不成立。**二手检索结论必须一手验证。**
+
+  **开源版是否刻意劣化？（2026-09-15 追问，判定：否）**：① 工程师在 HN 开源讨论（2024-02）确认"**内部用 Gerrit，GitHub 是伪镜像**"——Cloud 产品跑的就是这份引擎代码；② 仓库内唯一的分层门控在适配层（`allow_cache_ddl=false` 时提示"用 ReadySet Cloud 管理缓存"），无 license key、无引擎级门控；③ 公开基准（benchmarks/，含 workload emulator）2024 后仍活跃维护——劣化公开引擎等于砸自己的营销基准；④ BSL 允许免费任意节点生产使用，免费版即获客漏斗，劣化在商业上不成立。Cloud 的付费点在托管运维与缓存管理操作面，不在引擎微性能。
 - Cranelift 自身用 e-graph（isle 指令选择）做表达式改写——"IR 利于改写"的活例子。
 
 ### 6.2 脚本语言 VM/JIT 的可借鉴清单
