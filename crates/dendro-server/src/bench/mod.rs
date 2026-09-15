@@ -393,8 +393,47 @@ pub fn bench_recovery() -> BenchResult {
     }
 }
 
+/// 环境指纹（P2-3）：CPU/内存/OS/时间戳——写入 bench 结果以便复现对照
+fn env_fingerprint() -> String {
+    let mut fp = String::new();
+    if let Ok(cpuinfo) = std::fs::read_to_string("/proc/cpuinfo") {
+        for line in cpuinfo.lines() {
+            if line.starts_with("model name") {
+                fp.push_str(line.split(':').nth(1).unwrap_or("?").trim());
+                break;
+            }
+        }
+    }
+    let mem_kb: u64 = std::fs::read_to_string("/proc/meminfo")
+        .unwrap_or_default()
+        .lines()
+        .find(|l| l.starts_with("MemTotal"))
+        .and_then(|l| l.split_whitespace().nth(1).and_then(|v| v.parse().ok()))
+        .unwrap_or(0);
+    fp.push_str(&format!(" | {} MB RAM", mem_kb / 1024));
+    let uptime: f64 = std::fs::read_to_string("/proc/uptime")
+        .unwrap_or_default()
+        .split_whitespace()
+        .next()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.0);
+    if uptime < 600.0 {
+        fp.push_str(" | ⚠ uptime <10min (cold cache)");
+    }
+    fp.push_str(&format!(" | {} | {}", std::env::consts::OS, chrono_now()));
+    fp
+}
+
+fn chrono_now() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap();
+    format!("epoch={}", now.as_secs())
+}
+
 pub fn run_all(out_dir: &PathBuf) {
     std::fs::create_dir_all(out_dir).unwrap();
+    println!("env: {}", env_fingerprint());
     eprintln!("[bench] tp starting...");
     let suites = vec![bench_tp(20_000, 200_000)];
     #[allow(unused_variables)]
