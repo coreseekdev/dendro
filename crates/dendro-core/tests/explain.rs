@@ -20,7 +20,9 @@ fn explain_outputs_scan_and_steps() {
         })
         .collect();
     assert_eq!(text[0], "Seq Scan on t", "首行扫描形状：{text:?}");
-    assert!(text[1].starts_with("Filter:"), "{text:?}");
+    // v2c-1 后行序：Scan / dispatch / Filter / 步列表——按下标断言过时
+    assert!(text.iter().any(|l| l.starts_with("dispatch: ")), "{text:?}");
+    assert!(text.iter().any(|l| l.starts_with("Filter:")), "{text:?}");
     // 步列表段：Col 步带列名、比较步存在
     let joined = text.join("\n");
     assert!(joined.contains("Col #1:v"), "列名标注：{joined}");

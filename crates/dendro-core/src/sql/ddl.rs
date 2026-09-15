@@ -453,7 +453,8 @@ pub(crate) fn exec_insert(
                 }
                 let mut row = vec![SqlValue::Null; schema.columns.len()];
                 for (v, &ci) in vr.iter().zip(&col_idx) {
-                    row[ci] = expr::eval(v, &[], &|_| None)?;
+                    let lit = expr::eval(v, &[], &|_| None)?;
+                    row[ci] = coerce_for_column(lit, &schema.columns[ci].ty)?;
                 }
                 let pk_vals: Vec<SqlValue> =
                     schema.pk.iter().map(|&i| row[i as usize].clone()).collect();
@@ -509,6 +510,65 @@ pub(crate) fn exec_insert(
         tag: format!("INSERT 0 {count}"),
         affected: count,
     }))
+}
+
+/// 账本 #26（b）：INSERT 字面量按**目标列型**采纳（PG unknown-literal
+/// 语义）。Utf8 字面量 → 数值/日期/时间戳列按输入语法解析（非法 →
+/// 22P02）；数值/布尔 → TEXT 列文本化；同族直通；Null 直通。
+pub(crate) fn coerce_for_column(v: SqlValue, ty: &crate::types::ColType) -> Result<SqlValue> {
+    use crate::types::ColType;
+    let bad = |want: &str, shown: String| {
+        SqlError::new(
+            "22P02",
+            format!("invalid input syntax for type {want}: {shown}"),
+        )
+    };
+    Ok(match (v, ty) {
+        (SqlValue::Null, _) => SqlValue::Null,
+        (SqlValue::Utf8(s), ColType::Int32) => {
+            SqlValue::Int32(s.parse().map_err(|_| bad("integer", s))?)
+        }
+        (SqlValue::Utf8(s), ColType::Int64) => {
+            SqlValue::Int64(s.parse().map_err(|_| bad("bigint", s))?)
+        }
+        (SqlValue::Utf8(s), ColType::Float64) => {
+            SqlValue::Float64(s.parse().map_err(|_| bad("double", s))?)
+        }
+        (SqlValue::Utf8(s), ColType::Bool) => {
+            let low = s.to_ascii_lowercase();
+            match low.as_str() {
+                "true" | "t" | "1" => SqlValue::Bool(true),
+                "false" | "f" | "0" => SqlValue::Bool(false),
+                _ => return Err(bad("boolean", s)),
+            }
+        }
+        (SqlValue::Utf8(s), ColType::Date32) => SqlValue::Date32(
+            crate::sql::expr::parse_date(&s).ok_or_else(|| bad("date", s.clone()))?,
+        ),
+        (SqlValue::Utf8(s), ColType::TimestampMs) => SqlValue::TimestampMs(
+            crate::sql::expr::parse_ts(&s).ok_or_else(|| bad("timestamp", s.clone()))?,
+        ),
+        // 数值/布尔 → TEXT：文本化（PG：INSERT 1 INTO text → '1'）
+        (SqlValue::Int32(i), ColType::Utf8) => SqlValue::Utf8(i.to_string()),
+        (SqlValue::Int64(i), ColType::Utf8) => SqlValue::Utf8(i.to_string()),
+        (SqlValue::Float64(f), ColType::Utf8) => SqlValue::Utf8(crate::types::format_f64(f)),
+        (SqlValue::Bool(b), ColType::Utf8) => SqlValue::Utf8(b.to_string()),
+        (SqlValue::Date32(d), ColType::Utf8) => SqlValue::Utf8(crate::types::format_date(d)),
+        (SqlValue::TimestampMs(t), ColType::Utf8) => SqlValue::Utf8(crate::types::format_ts_ms(t)),
+        // 同族宽/窄化（PG 数值字面量按列采纳：小整数 Number 定型 Int32，
+        // 入 BIGINT 列须宽化——此前 embed 的 i64 启发式掩盖了存储宽度）
+        (SqlValue::Int32(i), ColType::Int64) => SqlValue::Int64(i as i64),
+        (SqlValue::Int64(i), ColType::Int32) => i32::try_from(i)
+            .map(SqlValue::Int32)
+            .map_err(|_| SqlError::new("22003", format!("integer out of range: {i}")))?,
+        (SqlValue::Int32(i), ColType::Float64) => SqlValue::Float64(i as f64),
+        (SqlValue::Int64(i), ColType::Float64) => SqlValue::Float64(i as f64),
+        (SqlValue::Float64(f), ColType::Int32) if f.fract() == 0.0 => SqlValue::Int32(f as i32),
+        (SqlValue::Float64(f), ColType::Int64) if f.fract() == 0.0 => SqlValue::Int64(f as i64),
+        // 其余（浮点带小数入整列 / 布尔入数值等）：直通由读取侧类型不匹配
+        // 暴露（v1 不做全矩阵错误面）
+        (v, _) => v,
+    })
 }
 
 fn insert_row(

@@ -72,14 +72,17 @@ fn distinct_literal_text_distinct_results() {
         let r = conn.query(&format!("SELECT {n} AS n")).unwrap();
         assert_eq!(
             r.rows()[0][0],
-            dendro_core::types::SqlValue::Int64(n),
+            dendro_core::types::SqlValue::Int32(n as i32), // #26：Number 窄化定型（曾 embed 启发式 i64）
             "SELECT {n} 结果错乱"
         );
     }
     // 再跑一遍（命中路径）仍各归各位
     for n in 1..=5 {
         let r = conn.query(&format!("SELECT {n} AS n")).unwrap();
-        assert_eq!(r.rows()[0][0], dendro_core::types::SqlValue::Int64(n));
+        assert_eq!(
+            r.rows()[0][0],
+            dendro_core::types::SqlValue::Int32(n as i32)
+        );
     }
 }
 
@@ -91,7 +94,7 @@ fn cache_rejects_nothing_on_parse_error_miss() {
     assert!(conn.query("SELEC 1").is_err(), "重复报错行为一致");
     // 正确语句不受污染
     let r = conn.query("SELECT 1").unwrap();
-    assert_eq!(r.rows()[0][0], dendro_core::types::SqlValue::Int64(1));
+    assert_eq!(r.rows()[0][0], dendro_core::types::SqlValue::Int32(1)); // #26 同上
 }
 
 #[test]

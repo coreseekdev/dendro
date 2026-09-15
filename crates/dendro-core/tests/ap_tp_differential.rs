@@ -65,8 +65,8 @@ fn ap_tp_overlay_merge_consistent() {
         }
         s.exec("CHECKPOINT").unwrap();
         // overlay 增量
-        s.exec("INSERT INTO t VALUES (99_999, 'overlay')").unwrap();
-        s.exec("INSERT INTO t VALUES (100_000, 'overlay')").unwrap();
+        s.exec("INSERT INTO t VALUES (99999, 'overlay')").unwrap();
+        s.exec("INSERT INTO t VALUES (100000, 'overlay')").unwrap();
     }
     let tp_count = {
         let mut s = db.new_session();

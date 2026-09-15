@@ -275,6 +275,33 @@ fn count_affected(outputs: &[Output]) -> u64 {
         .sum()
 }
 
+/// 文本单元格 → 按列型定型（无类型信息时退文本）
+fn typed_cell(s: &str, ty: Option<crate::types::ColType>) -> SqlValue {
+    use crate::types::ColType;
+    match ty {
+        Some(ColType::Int32) => s
+            .parse::<i32>()
+            .map(SqlValue::Int32)
+            .unwrap_or_else(|_| SqlValue::Utf8(s.to_string())),
+        Some(ColType::Int64) => s
+            .parse::<i64>()
+            .map(SqlValue::Int64)
+            .unwrap_or_else(|_| SqlValue::Utf8(s.to_string())),
+        Some(ColType::Float64) => s
+            .parse::<f64>()
+            .map(SqlValue::Float64)
+            .unwrap_or_else(|_| SqlValue::Utf8(s.to_string())),
+        Some(ColType::Bool) => match s {
+            "true" | "t" => SqlValue::Bool(true),
+            "false" | "f" => SqlValue::Bool(false),
+            _ => SqlValue::Utf8(s.to_string()),
+        },
+        // Utf8/Bytes/Date/Timestamp 及未知：保持文本（Date/Ts 的文本形
+        // 保留原串——embed 消费方按需再转换）
+        _ => SqlValue::Utf8(s.to_string()),
+    }
+}
+
 fn to_result(outputs: Vec<Output>) -> QueryResult {
     let mut columns = Vec::new();
     let mut rows = Vec::new();
@@ -283,19 +310,16 @@ fn to_result(outputs: Vec<Output>) -> QueryResult {
             if columns.is_empty() {
                 columns = rs.columns.iter().map(|c| c.name.clone()).collect();
             }
+            // 账本 #26（c）：按**列元数据类型**定型——此前对文本化结果
+            // 重新猜类型（i64→f64→Utf8 启发式），TEXT 列的 '1' 在 embed
+            // 视图里变回 Int64（测试视角污染源）
+            let tys: Vec<crate::types::ColType> = rs.columns.iter().map(|c| c.ty).collect();
             for row in rs.text_rows() {
                 let sql_row: Vec<SqlValue> = row
                     .iter()
-                    .map(|c| match c {
-                        Some(s) => {
-                            if let Ok(i) = s.parse::<i64>() {
-                                SqlValue::Int64(i)
-                            } else if let Ok(f) = s.parse::<f64>() {
-                                SqlValue::Float64(f)
-                            } else {
-                                SqlValue::Utf8(s.clone())
-                            }
-                        }
+                    .enumerate()
+                    .map(|(i, c)| match c {
+                        Some(s) => typed_cell(s, tys.get(i).copied()),
                         None => SqlValue::Null,
                     })
                     .collect();

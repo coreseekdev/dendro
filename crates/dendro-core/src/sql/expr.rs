@@ -640,9 +640,12 @@ pub fn parse_ts(s: &str) -> Option<i64> {
 /// sqlparser Value → SqlValue 字面量
 pub fn value_from_parser(v: PV) -> SqlValue {
     match v {
-        PV::Number(n, _) | PV::SingleQuotedString(n) | PV::DoubleQuotedString(n) => {
-            number_or_string(n)
-        }
+        // 账本 #26 修复：引号串恒为 text（PG unknown-literal——数值语义的
+        // 采纳发生在 INSERT 按列 coerce（ddl.rs coerce_for_column），不再
+        // 在字面量层启发式数值化（'1'→Int64/'1.5'→Float64 曾系统性丢失
+        // 字符串类型，TEXT 列被污染）。EscapedStringLiteral 原本就是 text。
+        PV::Number(n, _) => number_or_string(n),
+        PV::SingleQuotedString(n) | PV::DoubleQuotedString(n) => SqlValue::Utf8(n),
         PV::Boolean(b) => SqlValue::Bool(b),
         PV::Null => SqlValue::Null,
         PV::HexStringLiteral(h) => SqlValue::Bytes(
