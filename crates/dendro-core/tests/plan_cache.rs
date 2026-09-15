@@ -79,10 +79,7 @@ fn distinct_literal_text_distinct_results() {
     // 再跑一遍（命中路径）仍各归各位
     for n in 1..=5 {
         let r = conn.query(&format!("SELECT {n} AS n")).unwrap();
-        assert_eq!(
-            r.rows()[0][0],
-            dendro_core::types::SqlValue::Int32(n)
-        );
+        assert_eq!(r.rows()[0][0], dendro_core::types::SqlValue::Int32(n));
     }
 }
 

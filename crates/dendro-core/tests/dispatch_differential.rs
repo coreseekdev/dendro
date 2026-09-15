@@ -171,3 +171,67 @@ fn as_of_history_arm_equivalent() {
         &["auto", "prolly"],
     );
 }
+
+/// v2c-2 归并源新保证：① AP 路径输出**恒 pk 有序**（此前仅 overlay 非空
+/// 分支有序——段乱序输出是路径相关序的来源之一，现已收敛）；
+/// ② pushdown_limit 早停两分支同口径。
+#[test]
+fn merge_source_ordered_output_without_overlay() {
+    use dendro_core::types::Output;
+    let db = {
+        let db = Database::open(DbOptions {
+            store: StoreConfig::Memory,
+            ..Default::default()
+        })
+        .unwrap();
+        db.set_columnar(Arc::new(dendro_columnar::integrate::CbfColumnar {
+            row_group_rows: 4096,
+        }));
+        let mut s = db.new_session();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v INT)")
+            .unwrap();
+        for chunk in 0..12 {
+            // 交错块序写入（块内递增、块间倒序）——若段收集保序错误会被放大
+            let vals: Vec<String> = (0..1000)
+                .rev()
+                .map(|i| {
+                    let id = (11 - chunk) * 1000 + i + 1;
+                    format!("({id}, {id})")
+                })
+                .collect();
+            s.exec(&format!("INSERT INTO t VALUES {}", vals.join(",")))
+                .unwrap();
+        }
+        db.checkpoint_branch("main").unwrap();
+        db
+    };
+    let mut s = db.new_session();
+    s.exec("SET dendro.force_source = 'main'").unwrap();
+    let outs = s.exec("SELECT id FROM t").unwrap();
+    let ids: Vec<i64> = match &outs[0] {
+        Output::Rows(rs) => rs
+            .text_rows()
+            .iter()
+            .map(|r| r[0].as_deref().unwrap_or_default().parse().unwrap())
+            .collect(),
+        _ => panic!(),
+    };
+    assert_eq!(ids.len(), 12_000);
+    let mut sorted = ids.clone();
+    sorted.sort();
+    assert_eq!(ids, sorted, "无 overlay 时 AP 输出必须恒 pk 有序（归并源）");
+    // cap 同口径：LIMIT + ORDER BY 顶截断正确
+    let outs2 = s
+        .exec("SELECT id FROM t WHERE v > 500 ORDER BY id DESC LIMIT 3")
+        .unwrap();
+    let top: Vec<i64> = match &outs2[0] {
+        Output::Rows(rs) => rs
+            .text_rows()
+            .iter()
+            .map(|r| r[0].as_deref().unwrap_or_default().parse().unwrap())
+            .collect(),
+        _ => panic!(),
+    };
+    assert_eq!(top.len(), 3);
+    assert_eq!(top[0], 12_000, "DESC 顶三：{top:?}");
+}

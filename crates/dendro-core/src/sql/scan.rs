@@ -770,10 +770,17 @@ fn try_ap_scan(
             pk_range = extract_pk_range(sel, &pk_name);
         }
     }
-    // 多段扫描：新段优先（段列表末尾=最新），pk 去重 + delete 抑制
-    let mut rows = Vec::with_capacity(entry.col_rows as usize);
-    let mut seen: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
     let pkc = schema.pk[0] as usize;
+    // 归并源（v2c-2，ir-spec 04 §4 MainPlusDelta）：段（旧→新，新者覆盖）
+    // + memtx overlay + 显式事务写，三路按 pk 在 BTreeMap 归并——
+    // 替换原"HashSet 去重 + 非覆盖分支乱序输出"。语义不变量：
+    // - 同 key 优先级 txn > overlay > 新段 > 旧段（与原 seen-新段优先 +
+    //   overlay 覆盖一致）；
+    // - col_deletes 只抑制**段源**行（overlay/txn 的重插不受影响——
+    //   与原 deletes 过滤位于段收集阶段一致）；
+    // - 输出恒 pk 有序（原仅 overlay 分支有序——统一后 AP 与行路径
+    //   行序收敛，消除一类路径相关序）；
+    // - pushdown_limit 早停两分支同口径（原非 overlay 分支忽略 cap）。
     let _deletes: std::collections::HashSet<Vec<u8>> = entry
         .col_deletes
         .iter()
@@ -791,7 +798,9 @@ fn try_ap_scan(
                 .ok()
         })
         .collect();
-    for seg in entry.col_segments.iter().rev() {
+    let mut keyed: std::collections::BTreeMap<Vec<u8>, Vec<SqlValue>> =
+        std::collections::BTreeMap::new();
+    for seg in entry.col_segments.iter() {
         // 段级 pk 剪枝
         if let Some((lo, hi)) = pk_range {
             // 账本 #24：None=无界——Option 序下 None<=Some(x) 恒真曾把
@@ -812,71 +821,54 @@ fn try_ap_scan(
                     continue;
                 }
                 let key = crate::format::row::encode_key(&[r[pkc].clone()]);
-                if seen.contains(&key) || deletes.contains(&key) {
+                if deletes.contains(&key) {
                     continue;
                 }
-                seen.insert(key);
                 r.resize(schema.columns.len(), SqlValue::Null);
-                rows.push(r);
+                keyed.insert(key, r);
             }
         }
     }
-    // 可见性归并（与 table_scan 同一抽象）：CBF 行 → memtx overlay →
-    // 会话显式事务自身写（Q-14：此前 AP 路径不读事务的写——≥1 万行的
-    // 显式事务内查询与行路径不一致）
+    // memtx overlay（覆盖段源；None=墓碑删除）
     let b = db.branch(&sess.branch)?;
     let overlay = b.mem.table(entry.id).snapshot_rows(snapshot);
-    let txn_has_writes = sess
-        .txn
-        .as_ref()
-        .map(|t| t.explicit && t.writes.keys().any(|(tid, _)| *tid == entry.id))
-        .unwrap_or(false);
-    if !overlay.is_empty() || txn_has_writes {
-        let mut keyed: std::collections::BTreeMap<Vec<u8>, Vec<SqlValue>> =
-            std::collections::BTreeMap::new();
-        for r in rows {
-            let k = crate::format::row::encode_key(&[r[pkc].clone()]);
-            keyed.insert(k, r);
-        }
-        for (k, ov) in overlay {
-            match ov {
-                Some(v) => {
-                    if let Ok(r) = row_from_bytes(&schema, &v) {
-                        keyed.insert(k, r);
-                    }
-                }
-                None => {
-                    keyed.remove(&k);
+    for (k, ov) in overlay {
+        match ov {
+            Some(v) => {
+                if let Ok(r) = row_from_bytes(&schema, &v) {
+                    keyed.insert(k, r);
                 }
             }
-        }
-        // ③ 会话显式事务自身写（最后覆盖）
-        if let Some(t) = &sess.txn {
-            if t.explicit {
-                for ((tid, k), m) in &t.writes {
-                    if *tid != entry.id {
-                        continue;
-                    }
-                    match m {
-                        crate::prolly::Mutation::Put(v) => {
-                            if let Ok(r) = row_from_bytes(&schema, v) {
-                                keyed.insert(k.clone(), r);
-                            }
-                        }
-                        crate::prolly::Mutation::Delete => {
-                            keyed.remove(k);
-                        }
-                    }
-                }
+            None => {
+                keyed.remove(&k);
             }
-        }
-        // Q-1：AP 路径同口径早停——BTreeMap 键序前 cap 行
-        if let Some(cap) = pushdown_limit {
-            rows = keyed.values().take(cap).cloned().collect();
-        } else {
-            rows = keyed.into_values().collect();
         }
     }
+    // 会话显式事务自身写（最后覆盖；Q-14：AP 路径读事务的写）
+    if let Some(t) = &sess.txn {
+        if t.explicit {
+            for ((tid, k), m) in &t.writes {
+                if *tid != entry.id {
+                    continue;
+                }
+                match m {
+                    crate::prolly::Mutation::Put(v) => {
+                        if let Ok(r) = row_from_bytes(&schema, v) {
+                            keyed.insert(k.clone(), r);
+                        }
+                    }
+                    crate::prolly::Mutation::Delete => {
+                        keyed.remove(k);
+                    }
+                }
+            }
+        }
+    }
+    // Q-1：早停同口径——键序前 cap 行（两分支统一）
+    let rows: Vec<Vec<SqlValue>> = match pushdown_limit {
+        Some(cap) => keyed.values().take(cap).cloned().collect(),
+        None => keyed.into_values().collect(),
+    };
     let names = schema.columns.iter().map(|c| c.name.clone()).collect();
     Ok(Some(TableView { names, rows }))
 }
