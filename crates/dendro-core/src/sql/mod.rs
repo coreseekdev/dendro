@@ -5,6 +5,7 @@
 pub mod agg;
 pub mod ddl;
 pub mod expr;
+pub mod optimize;
 pub mod scan;
 
 use crate::engine::{commit_tx, Database, Prepared, Session};

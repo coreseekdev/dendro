@@ -139,8 +139,12 @@ pub(crate) fn eval_query(
         _ => None,
     };
     let mut tv = eval_from(db, sess, select, snapshot, pushdown_limit)?;
-    // WHERE
-    if let Some(w) = &select.selection {
+    // WHERE（v1 规则优化：常量折叠/布尔简化先于求值）
+    let selection = select
+        .selection
+        .as_ref()
+        .map(|w| crate::sql::optimize::optimize(w));
+    if let Some(w) = selection.as_ref() {
         // 常量短路（Q-1 优化器）：WHERE 表达式不含列引用时单次求值——
         // false/NULL → 跳过扫描直接返回空集（免全表遍历+行解码）；
         // true → 跳过过滤（恒真条件不需逐行判定）
