@@ -201,16 +201,16 @@ pub(crate) fn eval_query(
                 crate::exec::pipeline::drive(&mut pipe_cx, &mut it, &mut sort_op, &mut sink)?;
                 rows = sink.rows; // SortOp 已去键前缀
             }
-            if let Some(lc) = &q.limit_clause {
-                if let sqlparser::ast::LimitClause::LimitOffset { limit, offset, .. } = lc {
-                    if let Some(off) = offset {
-                        let n = eval_const(&off.value)? as usize;
-                        rows = rows.into_iter().skip(n).collect();
-                    }
-                    if let Some(l) = limit {
-                        let n = eval_const(l)? as usize;
-                        rows.truncate(n);
-                    }
+            if let Some(sqlparser::ast::LimitClause::LimitOffset { limit, offset, .. }) =
+                &q.limit_clause
+            {
+                if let Some(off) = offset {
+                    let n = eval_const(&off.value)? as usize;
+                    rows = rows.into_iter().skip(n).collect();
+                }
+                if let Some(l) = limit {
+                    let n = eval_const(l)? as usize;
+                    rows.truncate(n);
                 }
             }
             return Ok(TableView {
