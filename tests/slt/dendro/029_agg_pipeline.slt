@@ -1,0 +1,65 @@
+# 聚合管线接线（v2c-3）：AggOp 接入 eval_select + 两路径语义合同
+# 合同：count 计数任意类型；sum/avg 才数值化；min/max 只比较；
+# DISTINCT 去重对所有函数生效；混合 int/float 列 SUM 不丢整数部分。
+# auto 资格 = 纯列引用键/参数 → 本文件默认走 AggOp 管线路径。
+
+statement ok
+CREATE TABLE ag (id BIGINT PRIMARY KEY, grp TEXT, name TEXT, v BIGINT, f DOUBLE)
+
+statement ok
+INSERT INTO ag VALUES (1,'a','foo',10,1.5),(2,'a','bar',20,2.0),(3,'a','foo',10,NULL),(4,'b','baz',100,0.5),(5,'b',NULL,NULL,1.0),(6,NULL,'qux',7,7.0)
+
+# count(文本列) 计数（原 as_i64 报 42804 的缺陷修复）
+query I
+SELECT count(name) FROM ag
+----
+5
+
+# 分组 + 全函数矩阵（文本组键 + 数值/文本 min/max）
+query TIIIII TT
+SELECT grp, count(*), count(v), sum(v), min(v), max(v), min(name), max(name) FROM ag GROUP BY grp ORDER BY grp NULLS LAST
+----
+a 3 3 40 10 20 bar foo
+b 2 1 100 100 100 baz baz
+NULL 1 1 7 7 7 qux qux
+
+# DISTINCT 去重对 sum/avg 生效（v 非空值 [10,20,10,100,7] → 去重 {10,20,100,7}）
+query III
+SELECT count(DISTINCT v), sum(DISTINCT v), avg(DISTINCT v) FROM ag
+----
+4 137 34.25
+
+# 混合 NULL 的 count 语义：count(f) 跳过 NULL（6 行 5 非 NULL）
+query I
+SELECT count(f) FROM ag
+----
+5
+
+# HAVING 过滤（管线路径 keys/vals 与行式共用 HAVING 段）
+query TI
+SELECT grp, sum(v) FROM ag GROUP BY grp HAVING sum(v) > 15 ORDER BY grp
+----
+a 40
+b 100
+
+# 表达式组键（资格外 → 行式路径，结果一致）
+query TI
+SELECT upper(grp), count(*) FROM ag GROUP BY upper(grp) ORDER BY 1 NULLS LAST
+----
+A 3
+B 2
+NULL 1
+
+# 空输入全局聚合：单行零值（count=0, sum=NULL）
+statement ok
+CREATE TABLE ag_e (id BIGINT PRIMARY KEY, v BIGINT)
+
+query I I
+SELECT count(*), sum(v) FROM ag_e
+----
+0 NULL
+
+# 空输入分组：零行
+query I
+SELECT count(*) FROM ag_e GROUP BY v
+----

@@ -60,6 +60,28 @@ pub fn parse_force(v: &str) -> Result<Option<ScanAlt>> {
     })
 }
 
+/// v2c-3：聚合执行路径强制目标（AggOp 管线 vs group_aggregate 行式）。
+/// 缺省（None）= auto：资格判定（组键/聚合参数均为纯列引用 → 管线）；
+/// pipeline/row 仅调试构建可强制（差分测试，ADR-5 同源）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AggPath {
+    Pipeline,
+    Row,
+}
+
+pub fn parse_force_agg(v: &str) -> Result<Option<AggPath>> {
+    Ok(match v.to_ascii_lowercase().as_str() {
+        "auto" => None,
+        "pipeline" => Some(AggPath::Pipeline),
+        "row" => Some(AggPath::Row),
+        other => {
+            return Err(SqlError::syntax(format!(
+                "unknown dendro.force_agg value: {other} (auto|pipeline|row)"
+            )))
+        }
+    })
+}
+
 /// 派发（05 §1-2：候选生成 + 规则序；无统计代价模型——规则序即优先序）：
 /// 1. version 子句 → HistoryScan（R6 P0 门控的 IR 化：从未加入其他候选）
 /// 2. force_source 覆盖（调试构建）：结构性检查后旁路阈值

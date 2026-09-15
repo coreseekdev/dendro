@@ -21,6 +21,10 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Instant;
 
+/// 装配层默认批大小（行路径物化行 → 批的切分粒度；方向2 Source
+/// 流式化后由 Source 自产批，此常量成为其缺省批大小）
+pub const ROW_BATCH: usize = 1024;
+
 #[derive(Debug)]
 pub enum FlowControl {
     Continue,
@@ -630,28 +634,36 @@ pub enum AggFunc {
     Max,
 }
 
-/// 累加器（= agg.rs Accum 的管线侧镜像——语义逐字节一致）
+/// 累加器（= agg.rs Accum 的管线侧镜像——语义逐字节一致）。
+/// v2c-3 语义合同（两路径共用）：count 只计数（任意类型，含文本——
+/// 原 `count(文本列)` 因 as_i64 报错的缺陷在两侧同步修复）；
+/// sum/avg 才数值化（非数值报 42804）；min/max 只比较；
+/// DISTINCT 去重门在累加前（对所有函数生效，非仅 count）。
 #[derive(Clone)]
 pub struct AggAccum {
+    func: AggFunc,
+    distinct: bool,
     pub count: u64,
     pub sum_f: f64,
     pub sum_i: i64,
     pub is_float: bool,
     pub min: Option<SqlValue>,
     pub max: Option<SqlValue>,
-    pub distinct: Option<std::collections::HashSet<String>>,
+    pub seen: Option<std::collections::HashSet<String>>,
 }
 
 impl AggAccum {
-    fn new(distinct: bool) -> Self {
+    fn new(func: AggFunc, distinct: bool) -> Self {
         Self {
+            func,
+            distinct,
             count: 0,
             sum_f: 0.0,
             sum_i: 0,
             is_float: false,
             min: None,
             max: None,
-            distinct: if distinct {
+            seen: if distinct {
                 Some(std::collections::HashSet::new())
             } else {
                 None
@@ -659,60 +671,75 @@ impl AggAccum {
         }
     }
 
-    fn push(&mut self, v: Option<SqlValue>) {
+    fn push(&mut self, v: Option<SqlValue>) -> crate::error::Result<()> {
         match v {
-            None => self.count += 1, // count(*) 路径
+            None => {
+                self.count += 1; // count(*) 路径
+                Ok(())
+            }
             Some(val) => {
                 if val.is_null() {
-                    return; // NULL 不参与聚合
+                    return Ok(()); // NULL 不参与聚合
                 }
-                let key = crate::sql::expr::to_text(val.clone());
-                if let Some(ds) = &mut self.distinct {
-                    if !ds.insert(key) {
-                        return; // DISTINCT 重复
+                if self.distinct {
+                    let key = crate::sql::expr::to_text(val.clone());
+                    if !self.seen.as_mut().unwrap().insert(key) {
+                        return Ok(()); // DISTINCT 重复
                     }
                 }
                 self.count += 1;
-                match val {
-                    SqlValue::Int32(i) => self.sum_i += i as i64,
-                    SqlValue::Int64(i) => self.sum_i += i,
-                    SqlValue::Float64(f) => {
-                        self.is_float = true;
-                        self.sum_f += f;
+                if matches!(self.func, AggFunc::Sum | AggFunc::Avg) {
+                    match &val {
+                        SqlValue::Float64(f) => {
+                            self.is_float = true;
+                            self.sum_f += *f;
+                        }
+                        other => self.sum_i += crate::sql::expr::as_i64(other)?,
                     }
-                    _ => {}
                 }
-                let less = self
-                    .min
-                    .as_ref()
-                    .map(|m| {
-                        crate::sql::expr::cmp_values(&val, m)
-                            .map(|o| o == std::cmp::Ordering::Less)
-                            .unwrap_or(false)
-                    })
-                    .unwrap_or(true);
-                if less {
-                    self.min = Some(val.clone());
+                if self.func == AggFunc::Min {
+                    let less = self
+                        .min
+                        .as_ref()
+                        .map(|m| {
+                            crate::sql::expr::cmp_values(&val, m)
+                                .map(|o| o == std::cmp::Ordering::Less)
+                                .unwrap_or(false)
+                        })
+                        .unwrap_or(true);
+                    if less {
+                        self.min = Some(val.clone());
+                    }
                 }
-                let greater = self
-                    .max
-                    .as_ref()
-                    .map(|m| {
-                        crate::sql::expr::cmp_values(&val, m)
-                            .map(|o| o == std::cmp::Ordering::Greater)
-                            .unwrap_or(false)
-                    })
-                    .unwrap_or(true);
-                if greater {
-                    self.max = Some(val);
+                if self.func == AggFunc::Max {
+                    let greater = self
+                        .max
+                        .as_ref()
+                        .map(|m| {
+                            crate::sql::expr::cmp_values(&val, m)
+                                .map(|o| o == std::cmp::Ordering::Greater)
+                                .unwrap_or(false)
+                        })
+                        .unwrap_or(true);
+                    if greater {
+                        self.max = Some(val);
+                    }
                 }
+                Ok(())
             }
         }
     }
 
-    fn finish(&self, func: AggFunc) -> SqlValue {
-        match func {
-            AggFunc::Count => SqlValue::Int64(self.count as i64),
+    fn finish(&self) -> SqlValue {
+        match self.func {
+            AggFunc::Count => {
+                let n = if self.distinct {
+                    self.seen.as_ref().map(|s| s.len() as u64).unwrap_or(0)
+                } else {
+                    self.count
+                };
+                SqlValue::Int64(n as i64)
+            }
             AggFunc::Sum => {
                 if self.count == 0 {
                     SqlValue::Null
@@ -762,23 +789,20 @@ impl PipeOp<Vec<Vec<SqlValue>>> for AggOp {
                 hashkey.push(crate::sql::expr::to_text(v.clone()));
                 keyvals.push(v);
             }
+            let specs = self.calls.clone();
             let accums = self.groups.entry(hashkey.clone()).or_insert_with(|| {
                 self.order.push((hashkey.clone(), keyvals.clone()));
-                vec![AggAccum::new(false); self.calls.len()]
+                specs.iter().map(|s| AggAccum::new(s.func, s.distinct)).collect()
             });
-            // distinct 按需挂载（Accum::new(false) 后按 spec 补）
-            for (ai, spec) in self.calls.iter().enumerate() {
-                if spec.distinct && accums[ai].distinct.is_none() {
-                    accums[ai].distinct = Some(std::collections::HashSet::new());
-                }
-            }
             for (ai, spec) in self.calls.iter().enumerate() {
                 let v = if let Some(col) = spec.arg_col {
                     row.get(col).cloned()
                 } else {
                     None // count(*)
                 };
-                accums[ai].push(v);
+                if let Err(e) = accums[ai].push(v) {
+                    return FlowControl::Err(e);
+                }
             }
         }
         FlowControl::Continue
@@ -794,8 +818,8 @@ impl PipeOp<Vec<Vec<SqlValue>>> for AggOp {
         for (hk, kv) in &self.order {
             if let Some(accums) = self.groups.get(hk) {
                 let mut row = kv.clone(); // 组键值
-                for (ai, spec) in self.calls.iter().enumerate() {
-                    row.push(accums[ai].finish(spec.func));
+                for a in accums {
+                    row.push(a.finish());
                 }
                 result_rows.push(row);
             }
@@ -807,10 +831,7 @@ impl PipeOp<Vec<Vec<SqlValue>>> for AggOp {
             let row: Vec<SqlValue> = self
                 .calls
                 .iter()
-                .map(|spec| {
-                    let a = AggAccum::new(false);
-                    a.finish(spec.func)
-                })
+                .map(|spec| AggAccum::new(spec.func, spec.distinct).finish())
                 .collect();
             result_rows.push(row);
         }

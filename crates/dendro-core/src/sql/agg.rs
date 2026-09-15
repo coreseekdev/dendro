@@ -41,7 +41,10 @@ impl Accum {
             distinct: None,
         }
     }
-    fn push(&mut self, v: Option<SqlValue>, distinct: bool) -> Result<()> {
+    /// v2c-3 语义合同（与 pipeline::AggAccum 逐字节一致）：
+    /// count 只计数（任意类型）；sum/avg 才数值化（非数值 42804）；
+    /// min/max 只比较；DISTINCT 去重门在累加前（对所有函数生效）。
+    fn push(&mut self, v: Option<SqlValue>, func: &str, distinct: bool) -> Result<()> {
         match v {
             None => {
                 // count(*) 路径
@@ -52,36 +55,45 @@ impl Accum {
                 if val.is_null() {
                     return Ok(());
                 }
-                if distinct {
-                    self.distinct
+                if distinct
+                    && !self
+                        .distinct
                         .get_or_insert_with(std::collections::HashSet::new)
-                        .insert(expr::to_text(val.clone()));
+                        .insert(expr::to_text(val.clone()))
+                {
+                    return Ok(()); // DISTINCT 重复——不参与任何累加
                 }
                 self.count += 1;
-                match &val {
-                    SqlValue::Float64(f) => {
-                        self.is_float = true;
-                        self.sum_f += *f;
-                    }
-                    v => {
-                        let i = expr::as_i64(v)?;
-                        self.sum_i += i;
-                    }
-                }
-                // min/max 更新（val 保持所有权，按需克隆）
-                match &self.min {
-                    None => self.min = Some(val.clone()),
-                    Some(m) => {
-                        if expr::cmp_values(&val, m)? == Ordering::Less {
-                            self.min = Some(val.clone());
+                if func == "sum" || func == "avg" {
+                    match &val {
+                        SqlValue::Float64(f) => {
+                            self.is_float = true;
+                            self.sum_f += *f;
+                        }
+                        other => {
+                            let i = expr::as_i64(other)?;
+                            self.sum_i += i;
                         }
                     }
                 }
-                match &self.max {
-                    None => self.max = Some(val),
-                    Some(m) => {
-                        if expr::cmp_values(&val, m)? == Ordering::Greater {
-                            self.max = Some(val.clone());
+                // min/max 更新（仅对应函数；val 保持所有权，按需克隆）
+                if func == "min" {
+                    match &self.min {
+                        None => self.min = Some(val.clone()),
+                        Some(m) => {
+                            if expr::cmp_values(&val, m)? == Ordering::Less {
+                                self.min = Some(val.clone());
+                            }
+                        }
+                    }
+                }
+                if func == "max" {
+                    match &self.max {
+                        None => self.max = Some(val),
+                        Some(m) => {
+                            if expr::cmp_values(&val, m)? == Ordering::Greater {
+                                self.max = Some(val);
+                            }
                         }
                     }
                 }
@@ -99,12 +111,14 @@ impl Accum {
                 };
                 SqlValue::Int64(n as i64)
             }
+            // 混合 int/float 列：sum_f + sum_i（原实现 is_float 时丢 sum_i，
+            // [1, 2.5] → 2.5；v2c-3 与管线侧对齐修正）
             "sum" => {
                 if self.count == 0 {
                     return SqlValue::Null;
                 }
                 if self.is_float {
-                    SqlValue::Float64(self.sum_f)
+                    SqlValue::Float64(self.sum_f + self.sum_i as f64)
                 } else {
                     SqlValue::Int64(self.sum_i)
                 }
@@ -113,11 +127,7 @@ impl Accum {
                 if self.count == 0 {
                     return SqlValue::Null;
                 }
-                let total = if self.is_float {
-                    self.sum_f
-                } else {
-                    self.sum_i as f64
-                };
+                let total = self.sum_f + self.sum_i as f64;
                 SqlValue::Float64(total / self.count as f64)
             }
             "min" => self.min.clone().unwrap_or(SqlValue::Null),
@@ -157,13 +167,12 @@ pub fn group_aggregate(
         });
         for (ai, c) in calls.iter().enumerate() {
             if c.is_star {
-                g[ai].push(None, c.distinct)?;
+                g[ai].push(None, &c.func, c.distinct)?;
             } else if let Some(a) = &c.arg {
                 let v = expr::eval(a, row, &colfn)?;
-                if v.is_null() {
-                    continue;
+                if !v.is_null() {
+                    g[ai].push(Some(v), &c.func, c.distinct)?;
                 }
-                g[ai].push(Some(v), c.distinct)?;
             }
         }
     }

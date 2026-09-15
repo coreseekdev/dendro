@@ -409,7 +409,41 @@ pub(crate) fn eval_query(
     if !group_exprs.is_empty() || has_agg {
         let calls = collect_agg_calls(&select.projection, select.having.as_ref(), &group_exprs)?;
         let cols = cols_lookup(&tv.names);
-        let res = agg::group_aggregate(&tv, &group_exprs, &calls, &cols)?;
+        // v2c-3：聚合执行路径选择——auto = 资格判定（纯列引用键/参数 →
+        // AggOp 管线），force_agg 可强制（差分轴；强制不可行 → 报错，
+        // 静默回落会让差分失义——force_source 同约定）
+        let plan = agg_pipeline_plan(&group_exprs, &calls, &cols);
+        let res = match (sess.force_agg, plan) {
+            (Some(crate::sql::dispatch::AggPath::Row), _) | (None, None) => {
+                agg::group_aggregate(&tv, &group_exprs, &calls, &cols)?
+            }
+            (Some(crate::sql::dispatch::AggPath::Pipeline), None) => {
+                return Err(SqlError::syntax(
+                    "cannot force pipeline: group/agg expressions are not plain column refs",
+                ));
+            }
+            (_, Some((gidx, specs))) => {                let mut agg_op = crate::exec::pipeline::AggOp::new(gidx, specs);
+                let mut sink = crate::exec::pipeline::CollectSink::new(None);
+                let batches: Vec<Result<Vec<Vec<SqlValue>>>> = tv
+                    .rows
+                    .chunks(crate::exec::pipeline::ROW_BATCH)
+                    .map(|ch| Ok(ch.to_vec()))
+                    .collect();
+                let mut it = batches.into_iter();
+                let mut pcx = crate::exec::pipeline::PipeCtx::new(
+                    vec![],
+                    sess.stmt_deadline,
+                    sess.cancel_token.clone(),
+                );
+                crate::exec::pipeline::drive(&mut pcx, &mut it, &mut agg_op, &mut sink)?;
+                // AggOp 吐出 [组键 | 聚合值] 拼接行——拆回 keys/vals，
+                // HAVING/投影段与行式路径共用（零分叉）
+                let nk = group_exprs.len();
+                let keys = sink.rows.iter().map(|r| r[..nk].to_vec()).collect();
+                let vals = sink.rows.iter().map(|r| r[nk..].to_vec()).collect();
+                agg::AggResult { keys, vals }
+            }
+        };
         // HAVING 过滤
         let mut kept: Vec<usize> = Vec::new();
         for i in 0..res.keys.len() {
@@ -456,7 +490,7 @@ pub(crate) fn eval_query(
         out_names = projection_names(&select.projection, &tv.names, &calls)?;
     } else {
         // 投影
-        let (names, proj_rows) = project(&select.projection, &tv)?;
+        let (names, proj_rows) = project(&select.projection, &tv, sess)?;
         out_names = names;
         out_rows = proj_rows;
     }
@@ -2343,9 +2377,12 @@ fn col_pos(e: &Expr, names: &[String]) -> Option<usize> {
 
 // ---------- 投影/聚合 ----------
 
-fn project(p: &[SelectItem], tv: &TableView) -> Result<(Vec<String>, Vec<Vec<SqlValue>>)> {
+fn project(
+    p: &[SelectItem],
+    tv: &TableView,
+    sess: &Session,
+) -> Result<(Vec<String>, Vec<Vec<SqlValue>>)> {
     let cols = cols_lookup(&tv.names);
-    let colfn = |name: &str| cols.get(&name.to_ascii_lowercase()).copied();
     let mut names = Vec::new();
     let mut items: Vec<(Expr, Option<String>)> = Vec::new();
     for item in p {
@@ -2381,15 +2418,31 @@ fn project(p: &[SelectItem], tv: &TableView) -> Result<(Vec<String>, Vec<Vec<Sql
             }
         }
     }
-    let mut rows = Vec::with_capacity(tv.rows.len());
-    for row in &tv.rows {
-        let mut out = Vec::with_capacity(items.len());
-        for (e, _) in &items {
-            out.push(expr::eval(e, row, &colfn)?);
-        }
-        rows.push(out);
+    // v2c-3：ProjectOp 接线——装配（名字/表达式展开）在上，行变换走管线
+    // （分批；原手写双层循环删除，与 ProjectOp 的差分见 agg_pipeline 测试）
+    if items.is_empty() {
+        return Ok((names, vec![]));
     }
-    Ok((names, rows))
+    let exprs: Vec<Expr> = items.iter().map(|(e, _)| e.clone()).collect();
+    let cols2 = cols.clone();
+    let mut pop = crate::exec::pipeline::ProjectOp {
+        exprs,
+        cols: Box::new(move |n: &str| cols2.get(&n.to_ascii_lowercase()).copied()),
+    };
+    let mut sink = crate::exec::pipeline::CollectSink::new(None);
+    let batches: Vec<Result<Vec<Vec<SqlValue>>>> = tv
+        .rows
+        .chunks(crate::exec::pipeline::ROW_BATCH)
+        .map(|ch| Ok(ch.to_vec()))
+        .collect();
+    let mut it = batches.into_iter();
+    let mut pcx = crate::exec::pipeline::PipeCtx::new(
+        vec![],
+        sess.stmt_deadline,
+        sess.cancel_token.clone(),
+    );
+    crate::exec::pipeline::drive(&mut pcx, &mut it, &mut pop, &mut sink)?;
+    Ok((names, sink.rows))
 }
 
 fn projection_names(p: &[SelectItem], tv: &[String], calls: &[AggCall]) -> Result<Vec<String>> {
@@ -2569,6 +2622,56 @@ fn collect_agg_calls(
 }
 
 // ---------- ORDER ----------
+
+/// v2c-3：AggOp 管线资格（05 §4 同源的装配层判定）：组键与聚合参数均为
+/// 纯列引用 → 可管线化（列偏移预解析）；否则（表达式键/参数）走
+/// group_aggregate 行式路径（等价性锚点）。
+fn agg_pipeline_plan(
+    group_exprs: &[Expr],
+    calls: &[AggCall],
+    cols: &std::collections::HashMap<String, usize>,
+) -> Option<(
+    Vec<usize>,
+    Vec<crate::exec::pipeline::AggSpec>,
+)> {
+    fn col_idx(
+        e: &Expr,
+        cols: &std::collections::HashMap<String, usize>,
+    ) -> Option<usize> {
+        match e {
+            Expr::Identifier(id) => cols.get(&id.value.to_ascii_lowercase()).copied(),
+            Expr::Nested(i) => col_idx(i, cols),
+            _ => None,
+        }
+    }
+    let mut gidx = Vec::with_capacity(group_exprs.len());
+    for g in group_exprs {
+        gidx.push(col_idx(g, cols)?);
+    }
+    let mut specs = Vec::with_capacity(calls.len());
+    for c in calls {
+        use crate::exec::pipeline::{AggFunc, AggSpec};
+        let func = match c.func.as_str() {
+            "count" => AggFunc::Count,
+            "sum" => AggFunc::Sum,
+            "avg" => AggFunc::Avg,
+            "min" => AggFunc::Min,
+            "max" => AggFunc::Max,
+            _ => return None,
+        };
+        let arg_col = if c.is_star {
+            None
+        } else {
+            Some(col_idx(c.arg.as_ref()?, cols)?)
+        };
+        specs.push(AggSpec {
+            func,
+            arg_col,
+            distinct: c.distinct,
+        });
+    }
+    Some((gidx, specs))
+}
 
 /// ORDER BY 键提取（apply_order 的键提取段函数化——逻辑零改动）：
 /// 别名→投影列 / 序数 / 未投影列回退输入行 / 任意表达式

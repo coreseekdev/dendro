@@ -924,6 +924,34 @@ pub(crate) fn exec_statement(
                         }));
                     }
                 }
+                // v2c-3：`SET dendro.force_agg = 'auto|pipeline|row'`（同
+                // force_source 的调试面约定——release 忽略）
+                if name == "dendro.force_agg" {
+                    #[cfg(any(debug_assertions, test))]
+                    {
+                        let v = match values.first() {
+                            Some(sqlparser::ast::Expr::Value(v)) => match &v.value.clone() {
+                                PV::SingleQuotedString(sv) => sv.clone(),
+                                PV::DoubleQuotedString(sv) => sv.clone(),
+                                other => other.to_string(),
+                            },
+                            Some(other) => other.to_string(),
+                            None => String::new(),
+                        };
+                        sess.force_agg = crate::sql::dispatch::parse_force_agg(&v)?;
+                        return Ok(Some(Output::Command {
+                            tag: "SET".into(),
+                            affected: 0,
+                        }));
+                    }
+                    #[cfg(not(any(debug_assertions, test)))]
+                    {
+                        return Ok(Some(Output::Command {
+                            tag: "SET".into(),
+                            affected: 0,
+                        }));
+                    }
+                }
                 // S-3：`SET statement_timeout = <毫秒>` 是唯一实语义的会话参数
                 if name == "statement_timeout" {
                     let ms = values.first().and_then(|e| match e {

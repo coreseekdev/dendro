@@ -677,6 +677,7 @@ impl Database {
             stmt_deadline: None,
             cancel_token: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             force_source: None,
+            force_agg: None,
         }
     }
 
@@ -1569,6 +1570,9 @@ pub struct Session {
     /// `SET dendro.force_source` 设置（release 的 SET 处理忽略——调试面
     /// 不进生产语义）。差分测试的枚举轴。
     pub(crate) force_source: Option<crate::sql::dispatch::ScanAlt>,
+    /// 强制聚合路径（v2c-3，同 force_source 的调试面约定）：
+    /// `SET dendro.force_agg = 'auto|pipeline|row'`。
+    pub(crate) force_agg: Option<crate::sql::dispatch::AggPath>,
 }
 
 impl Session {
