@@ -128,10 +128,11 @@ pub enum ScalarStep {
         negated: bool,
     },
     /// simple CASE 命中测试：任一 Null → Bool(false)（不命中继续，无错）；
-    /// 否则 cmp_values(op, when)==Eq
+    /// 否则 cmp_values(operand, when)==Eq（恒等比较，无 binop 语义——
+    /// B4 实证修正：曾名 op 造成"寄存器 vs binop 索引"二义）
     CaseHit {
         dst: u16,
-        op: u16,
+        operand: u16,
         when: u16,
     },
     Mov {
@@ -175,7 +176,13 @@ pub struct ScalarProgram {
     pub casts: Vec<PD>,
     pub n_regs: usize,
     pub n_cols: usize,
+    /// 列名侧表（B4）：Col 步 idx → 名字（反汇编/文本 IR 可读性）。
+    /// 由调用方（scan.rs 传 tv.names）提供；空 = 未知（反汇编退化为索引）。
+    pub col_names: Vec<String>,
 }
+
+/// 步数上限（B5；06 §4 单条目尺寸上界的步数形态）
+pub const SCALAR_STEP_CAP: usize = 1024;
 
 pub struct CompiledPredicate {
     pub prog: ScalarProgram,
@@ -187,9 +194,29 @@ pub fn compile_predicate(
     cols: &dyn Fn(&str) -> Option<usize>,
     n_cols: usize,
 ) -> Result<CompiledPredicate> {
+    compile_predicate_named(e, cols, n_cols, &[])
+}
+
+/// 同上，携带列名侧表（反汇编用）。
+pub fn compile_predicate_named(
+    e: &Expr,
+    cols: &dyn Fn(&str) -> Option<usize>,
+    n_cols: usize,
+    names: &[String],
+) -> Result<CompiledPredicate> {
     let mut c = Ctx::new(n_cols);
+    c.prog.col_names = names.to_vec();
     let r = c.expr(e, cols)?;
     c.emit(ScalarStep::Qual { src: r });
+    // B5（S-3/06 §4）：步数硬断——防恶意巨型表达式撑爆解释循环与
+    // （将来的）程序缓存；超限拒绝编译（调用方回落 AST 路径，行为可接受
+    // 而非无界）
+    if c.prog.steps.len() > SCALAR_STEP_CAP {
+        return Err(SqlError::not_supported(format!(
+            "expression too large ({} steps > {SCALAR_STEP_CAP})",
+            c.prog.steps.len()
+        )));
+    }
     Ok(CompiledPredicate { prog: c.prog })
 }
 
@@ -210,7 +237,12 @@ struct Ctx {
     /// 编译期常量寄存器（折叠用）：reg idx → 值
     const_regs: std::collections::HashMap<u16, SqlValue>,
     next_reg: u16,
+    depth: u32,
 }
+
+/// 递归深度上限（B5 实证：深链编译先于步数上限爆栈——SIGABRT）。
+/// 128 深 ≫ 任何合法用户表达式；超限 = 恶意/失控生成，编译期拒绝。
+const SCALAR_COMPILE_DEPTH: u32 = 128;
 
 impl Ctx {
     fn new(n_cols: usize) -> Self {
@@ -221,6 +253,7 @@ impl Ctx {
             },
             const_regs: Default::default(),
             next_reg: 0,
+            depth: 0,
         }
     }
     fn reg(&mut self) -> u16 {
@@ -251,6 +284,18 @@ impl Ctx {
 
     /// 编译表达式 → 寄存器。子表达式步序 = 求值序（eager 复刻的根基）。
     fn expr(&mut self, e: &Expr, cols: &dyn Fn(&str) -> Option<usize>) -> Result<u16> {
+        self.depth += 1;
+        if self.depth > SCALAR_COMPILE_DEPTH {
+            return Err(SqlError::not_supported(
+                "expression nesting too deep (>128)",
+            ));
+        }
+        let r = self.expr_inner(e, cols);
+        self.depth -= 1;
+        r
+    }
+
+    fn expr_inner(&mut self, e: &Expr, cols: &dyn Fn(&str) -> Option<usize>) -> Result<u16> {
         match e {
             Expr::Value(v) => {
                 if let PV::Placeholder(id) = &v.value {
@@ -440,7 +485,7 @@ impl Ctx {
                             let hit = self.reg();
                             self.emit(ScalarStep::CaseHit {
                                 dst: hit,
-                                op: opr,
+                                operand: opr,
                                 when: r,
                             });
                             let skip = self.prog.steps.len();
@@ -691,8 +736,11 @@ pub fn eval_row(
                 };
                 regs[*dst as usize] = SqlValue::Bool(res != *negated);
             }
-            ScalarStep::CaseHit { dst, op, when } => {
-                let (ov, wv) = (regs[*op as usize].clone(), regs[*when as usize].clone());
+            ScalarStep::CaseHit { dst, operand, when } => {
+                let (ov, wv) = (
+                    regs[*operand as usize].clone(),
+                    regs[*when as usize].clone(),
+                );
                 let hit = !ov.is_null()
                     && !wv.is_null()
                     && crate::sql::expr::cmp_values(&ov, &wv)? == std::cmp::Ordering::Equal;
@@ -731,6 +779,508 @@ pub fn eval_row(
         }
     }
     Err(SqlError::internal("scalar: program missing terminator"))
+}
+
+
+
+// ---------------------------------------------------------------------------
+// B4：反汇编与再解析（EXPLAIN 步列表段 / R4 round-trip；09 文本表示的
+// 标量方言前奏——正式 dendro.ir 格式随 v2c-1 落地，此处先立 round-trip
+// 合同本体：disassemble(reparse(disassemble(p))) == disassemble(p)）。
+// ---------------------------------------------------------------------------
+
+/// 常量的文本表示（确定性：Float64 用 IEEE 位模式十六进制——禁十进制
+/// 往返，09 §3 规则 2）
+fn fmt_const(v: &SqlValue) -> String {
+    match v {
+        SqlValue::Null => "null".into(),
+        SqlValue::Bool(b) => format!("bool({b})"),
+        SqlValue::Int32(i) => format!("i32({i})"),
+        SqlValue::Int64(i) => format!("i64({i})"),
+        SqlValue::Float64(f) => format!("f64(0x{:016x})", f.to_bits()),
+        SqlValue::Utf8(s) => format!("str({})", escape_str(s)),
+        SqlValue::Bytes(b) => format!("bytes(0x{})", hex(b)),
+        SqlValue::Date32(d) => format!("date32({d})"),
+        SqlValue::TimestampMs(t) => format!("tsms({t})"),
+    }
+}
+
+fn parse_const(t: &str) -> Option<SqlValue> {
+    if t == "null" {
+        return Some(SqlValue::Null);
+    }
+    let (tag, body) = t.split_once('(')?;
+    let body = body.strip_suffix(')')?;
+    Some(match tag {
+        "null" => SqlValue::Null,
+        "bool" => SqlValue::Bool(body.parse().ok()?),
+        "i32" => SqlValue::Int32(body.parse().ok()?),
+        "i64" => SqlValue::Int64(body.parse().ok()?),
+        "f64" => SqlValue::Float64(f64::from_bits(
+            u64::from_str_radix(body.strip_prefix("0x")?, 16).ok()?,
+        )),
+        "str" => SqlValue::Utf8(unescape_str(body)?),
+        "bytes" => SqlValue::Bytes(unhex(body.strip_prefix("0x")?)),
+        "date32" => SqlValue::Date32(body.parse().ok()?),
+        "tsms" => SqlValue::TimestampMs(body.parse().ok()?),
+        _ => return None,
+    })
+}
+
+fn escape_str(s: &str) -> String {
+    // JSON 转义子集（\n \" \\），非 ASCII 原样（源是 UTF-8）
+    s.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .inserted_quotes()
+}
+
+trait InsertQuotes {
+    fn inserted_quotes(self) -> String;
+}
+impl InsertQuotes for String {
+    fn inserted_quotes(self) -> String {
+        format!("\"{self}\"")
+    }
+}
+
+fn unescape_str(s: &str) -> Option<String> {
+    let s = s.strip_prefix('"')?.strip_suffix('"')?;
+    let mut out = String::new();
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c == '\\' {
+            match it.next()? {
+                'n' => out.push('\n'),
+                '"' => out.push('"'),
+                '\\' => out.push('\\'),
+                _ => return None,
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    Some(out)
+}
+
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+fn unhex(s: &str) -> Vec<u8> {
+    (0..s.len() / 2)
+        .filter_map(|i| u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok())
+        .collect()
+}
+
+fn colref(p: &ScalarProgram, idx: u16) -> String {
+    p.col_names
+        .get(idx as usize)
+        .map(|n| format!("#{idx}:{n}"))
+        .unwrap_or_else(|| format!("#{idx}"))
+}
+
+/// 反汇编：每步一行 `<pc>: <step>`。确定性（无时间/地址）。
+pub fn disassemble(p: &ScalarProgram) -> String {
+    let mut out = String::new();
+    if !p.col_names.is_empty() {
+        out.push_str(&format!(
+            "cols {}
+",
+            p.col_names.join(",")
+        ));
+    }
+    for (i, s) in p.steps.iter().enumerate() {
+        let line = match s {
+            ScalarStep::Const { dst, c } => {
+                format!("Const {} -> r{dst}", fmt_const(&p.consts[*c as usize]))
+            }
+            ScalarStep::Col { dst, idx } => format!("Col {} -> r{dst}", colref(p, *idx)),
+            ScalarStep::Param { dst, idx } => format!("Param ${} -> r{dst}", idx + 1),
+            ScalarStep::Cmp { dst, op, a, b } => {
+                format!("Cmp[{}](r{a}, r{b}) -> r{dst}", p.binops[*op as usize])
+            }
+            ScalarStep::Arith { dst, op, a, b } => {
+                format!("Arith[{}](r{a}, r{b}) -> r{dst}", p.binops[*op as usize])
+            }
+            ScalarStep::Concat { dst, a, b } => format!("Concat(r{a}, r{b}) -> r{dst}"),
+            ScalarStep::And { dst, a, b } => format!("And(r{a}, r{b}) -> r{dst}"),
+            ScalarStep::Or { dst, a, b } => format!("Or(r{a}, r{b}) -> r{dst}"),
+            ScalarStep::Not { dst, src } => format!("Not(r{src}) -> r{dst}"),
+            ScalarStep::Neg { dst, src } => format!("Neg(r{src}) -> r{dst}"),
+            ScalarStep::IsNull { dst, src } => format!("IsNull(r{src}) -> r{dst}"),
+            ScalarStep::IsNotNull { dst, src } => format!("IsNotNull(r{src}) -> r{dst}"),
+            ScalarStep::IsTrue { dst, src } => format!("IsTrue(r{src}) -> r{dst}"),
+            ScalarStep::IsFalse { dst, src } => format!("IsFalse(r{src}) -> r{dst}"),
+            ScalarStep::Cast { dst, src, ty } => {
+                format!("Cast[{}](r{src}) -> r{dst}", p.casts[*ty as usize])
+            }
+            ScalarStep::Between {
+                dst,
+                v,
+                lo,
+                hi,
+                negated,
+            } => format!("Between(neg={negated})(r{v}, r{lo}, r{hi}) -> r{dst}"),
+            ScalarStep::InTest { v, item, state } => format!("InTest(r{v}, r{item}) -> r{state}"),
+            ScalarStep::InFinish {
+                dst,
+                state,
+                negated,
+            } => format!("InFinish(neg={negated})(r{state}) -> r{dst}"),
+            ScalarStep::CaseHit { dst, operand, when } => {
+                format!("CaseHit(r{operand}, r{when}) -> r{dst}")
+            }
+            ScalarStep::Mov { dst, src } => format!("Mov(r{src}) -> r{dst}"),
+            ScalarStep::Jump(t) => format!("Jump L{t}"),
+            ScalarStep::JumpIfTrue { reg, tgt } => format!("JumpIfTrue(r{reg}) L{tgt}"),
+            ScalarStep::JumpIfNotTrue { reg, tgt } => format!("JumpIfNotTrue(r{reg}) L{tgt}"),
+            ScalarStep::JumpIfInFound { state, tgt } => format!("JumpIfInFound(r{state}) L{tgt}"),
+            ScalarStep::Qual { src } => format!("Qual(r{src})"),
+            ScalarStep::Out { src } => format!("Out(r{src})"),
+        };
+        out.push_str(&format!("{i}: {line}\n"));
+    }
+    out
+}
+
+/// 再解析（R4）：反汇编文本 → ScalarProgram。失败 = None（fail-closed，
+/// 不做宽容解析）。侧表（consts/binops/casts）按再出现序重建——
+/// round-trip 后与原程序**结构等价**（disassemble 输出逐字节相等）。
+pub fn reparse(text: &str) -> Option<ScalarProgram> {
+    let mut p = ScalarProgram::default();
+    // 头行（可选）：cols 名单（round-trip 保列名）
+    let mut lines = text.lines();
+    let mut first = lines.next()?.trim().to_string();
+    if let Some(names) = first.strip_prefix("cols ") {
+        if !names.is_empty() {
+            p.col_names = names.split(',').map(|s| s.to_string()).collect();
+        }
+        first = lines.next()?.trim().to_string();
+    }
+    let rest: Vec<&str> = lines.map(|l| l.trim()).collect();
+    let all: Vec<&str> = std::iter::once(first.as_str()).chain(rest).collect();
+    for line in all {
+        let line = line.trim();
+        let (pc_s, body) = line.split_once(": ")?;
+        let _pc: usize = pc_s.parse().ok()?;
+        let s = parse_step(body, &mut p)?;
+        p.steps.push(s);
+    }
+    // n_regs 扫描重建
+    let mut maxr = 0u16;
+    fn scan(s: &ScalarStep, maxr: &mut u16) {
+        use ScalarStep::*;
+        macro_rules! r {
+            ($x:expr) => {
+                *maxr = (*maxr).max(*$x)
+            };
+        }
+        match s {
+            Const { dst, .. } | Col { dst, .. } | Param { dst, .. } => r!(dst),
+            Cmp { dst, a, b, .. }
+            | Arith { dst, a, b, .. }
+            | Concat { dst, a, b }
+            | And { dst, a, b }
+            | Or { dst, a, b } => {
+                r!(dst);
+                r!(a);
+                r!(b);
+            }
+            Not { dst, src }
+            | Neg { dst, src }
+            | IsNull { dst, src }
+            | IsNotNull { dst, src }
+            | IsTrue { dst, src }
+            | IsFalse { dst, src }
+            | Cast { dst, src, .. } => {
+                r!(dst);
+                r!(src);
+            }
+            Between { dst, v, lo, hi, .. } => {
+                r!(dst);
+                r!(v);
+                r!(lo);
+                r!(hi);
+            }
+            InTest { v, item, state } => {
+                r!(v);
+                r!(item);
+                r!(state);
+            }
+            InFinish { dst, state, .. } => {
+                r!(dst);
+                r!(state);
+            }
+            CaseHit { dst, operand, when } => {
+                r!(dst);
+                r!(operand);
+                r!(when);
+            }
+            Mov { dst, src } => {
+                r!(dst);
+                r!(src);
+            }
+            JumpIfTrue { reg, .. } | JumpIfNotTrue { reg, .. } => r!(reg),
+            JumpIfInFound { state, .. } => r!(state),
+            Qual { src } | Out { src } => r!(src),
+            Jump(_) => {}
+        }
+    }
+    for s in &p.steps {
+        scan(s, &mut maxr);
+    }
+    p.n_regs = if p.steps.is_empty() {
+        0
+    } else {
+        maxr as usize + 1
+    };
+    Some(p)
+}
+
+fn parse_step(body: &str, p: &mut ScalarProgram) -> Option<ScalarStep> {
+    use ScalarStep::*;
+    // 尾部 " -> rN" 统一剥
+    let (head, dst) = if let Some((h, r)) = body.split_once(" -> r") {
+        (h, Some(r.parse::<u16>().ok()?))
+    } else {
+        (body, None)
+    };
+    let opidx = |p: &mut ScalarProgram, repr: &str| -> Option<u16> {
+        // binops 侧表按 Display 串比对（round-trip 内自洽）
+        if let Some(i) = p.binops.iter().position(|o| o.to_string() == repr) {
+            Some(i as u16)
+        } else {
+            // 常见比较/算术由 Display 反查 BO
+            let bo = match repr {
+                "=" => BO::Eq,
+                "!=" => BO::NotEq,
+                "<" => BO::Lt,
+                "<=" => BO::LtEq,
+                ">" => BO::Gt,
+                ">=" => BO::GtEq,
+                "+" => BO::Plus,
+                "-" => BO::Minus,
+                "*" => BO::Multiply,
+                "/" => BO::Divide,
+                "%" => BO::Modulo,
+                _ => return None,
+            };
+            p.binops.push(bo);
+            Some((p.binops.len() - 1) as u16)
+        }
+    };
+    let rr = |s: &str| -> Option<u16> { s.strip_prefix('r')?.parse().ok() };
+    Some(match head {
+        h if h.starts_with("Const ") => {
+            let v = parse_const(h.strip_prefix("Const ")?)?;
+            let c = p.consts.len() as u16;
+            p.consts.push(v);
+            Const { dst: dst?, c }
+        }
+        h if h.starts_with("Col #") => {
+            let idx = h.strip_prefix("Col #")?.split(':').next()?.parse().ok()?;
+            let _ = p.col_names.get(idx as usize); // 名字不重建（结构等价即可）
+            Col { dst: dst?, idx }
+        }
+        h if h.starts_with("Param $") => {
+            let n: u16 = h.strip_prefix("Param $")?.parse().ok()?;
+            Param {
+                dst: dst?,
+                idx: n - 1,
+            }
+        }
+        h if h.starts_with("Cmp[") => {
+            let close = h.find("](")?;
+            let opi = opidx(p, &h[4..close])?;
+            let (a, b) = args2(&h[close + 2..h.len() - 1], &rr)?;
+            Cmp {
+                dst: dst?,
+                op: opi,
+                a,
+                b,
+            }
+        }
+        h if h.starts_with("Arith[") => {
+            let close = h.find("](")?;
+            let opi = opidx(p, &h[6..close])?;
+            let (a, b) = args2(&h[close + 2..h.len() - 1], &rr)?;
+            Arith {
+                dst: dst?,
+                op: opi,
+                a,
+                b,
+            }
+        }
+        h if h.starts_with("Concat(") => {
+            let (a, b) = args2(strip(h, "Concat("), &rr)?;
+            Concat { dst: dst?, a, b }
+        }
+        h if h.starts_with("And(") => {
+            let (a, b) = args2(strip(h, "And("), &rr)?;
+            And { dst: dst?, a, b }
+        }
+        h if h.starts_with("Or(") => {
+            let (a, b) = args2(strip(h, "Or("), &rr)?;
+            Or { dst: dst?, a, b }
+        }
+        _ => {
+            // 无 dst 的控制流/终结步
+            if let Some(t) = head.strip_prefix("Jump L") {
+                Jump(t.parse().ok()?)
+            } else if let Some(t) = head.strip_prefix("JumpIfTrue(r") {
+                let close = t.find(") L")?;
+                JumpIfTrue {
+                    reg: t[..close]
+                        .strip_prefix('r')
+                        .unwrap_or(&t[..close])
+                        .parse()
+                        .ok()?,
+                    tgt: t[close + 3..].parse().ok()?,
+                }
+            } else if let Some(t) = head.strip_prefix("JumpIfNotTrue(r") {
+                let close = t.find(") L")?;
+                JumpIfNotTrue {
+                    reg: t[..close].parse().ok()?,
+                    tgt: t[close + 3..].parse().ok()?,
+                }
+            } else if let Some(t) = head.strip_prefix("JumpIfInFound(r") {
+                let close = t.find(") L")?;
+                JumpIfInFound {
+                    state: t[..close].parse().ok()?,
+                    tgt: t[close + 3..].parse().ok()?,
+                }
+            } else if let Some(t) = head.strip_prefix("Qual(r") {
+                Qual {
+                    src: t.strip_suffix(')')?.parse().ok()?,
+                }
+            } else if let Some(t) = head.strip_prefix("Out(r") {
+                Out {
+                    src: t.strip_suffix(')')?.parse().ok()?,
+                }
+            } else if head.starts_with("Between(") {
+                let inner = head.strip_prefix("Between(")?.strip_suffix(')')?;
+                let neg = inner.starts_with("neg=true");
+                let regs = &inner[inner.find(")(").map(|i| i + 2).unwrap_or(8)..];
+                let parts: Vec<&str> = regs.split(", ").collect();
+                if parts.len() != 3 {
+                    return None;
+                }
+                Between {
+                    dst: dst?,
+                    v: rr(parts[0])?,
+                    lo: rr(parts[1])?,
+                    hi: rr(parts[2])?,
+                    negated: neg,
+                }
+            } else if head.starts_with("InTest(") {
+                let inner = head.strip_prefix("InTest(")?.strip_suffix(')')?;
+                let (a, b) = args2(inner, &rr)?;
+                InTest {
+                    v: a,
+                    item: b,
+                    state: dst?,
+                }
+            } else if head.starts_with("InFinish(") {
+                let inner = head.strip_prefix("InFinish(")?.strip_suffix(')')?;
+                let neg = inner.starts_with("neg=true");
+                // inner 形如 "neg=false)(r2"：find(")(r")+3 已越过 'r'
+                let reg = inner[inner.find(")(r").map(|i| i + 3).unwrap_or(0)..]
+                    .parse()
+                    .ok()?;
+                InFinish {
+                    dst: dst?,
+                    state: reg,
+                    negated: neg,
+                }
+            } else if head.starts_with("CaseHit(") {
+                let (operand, when) = args2(strip(head, "CaseHit("), &rr)?;
+                CaseHit {
+                    dst: dst?,
+                    operand,
+                    when,
+                }
+            } else if let Some(s) = head.strip_prefix("Not(r").and_then(|t| t.strip_suffix(')')) {
+                Not {
+                    dst: dst?,
+                    src: s.parse().ok()?,
+                }
+            } else if let Some(s) = head.strip_prefix("Neg(r").and_then(|t| t.strip_suffix(')')) {
+                Neg {
+                    dst: dst?,
+                    src: s.parse().ok()?,
+                }
+            } else if let Some(s) = head
+                .strip_prefix("IsNull(r")
+                .and_then(|t| t.strip_suffix(')'))
+            {
+                IsNull {
+                    dst: dst?,
+                    src: s.parse().ok()?,
+                }
+            } else if let Some(s) = head
+                .strip_prefix("IsNotNull(r")
+                .and_then(|t| t.strip_suffix(')'))
+            {
+                IsNotNull {
+                    dst: dst?,
+                    src: s.parse().ok()?,
+                }
+            } else if let Some(s) = head
+                .strip_prefix("IsTrue(r")
+                .and_then(|t| t.strip_suffix(')'))
+            {
+                IsTrue {
+                    dst: dst?,
+                    src: s.parse().ok()?,
+                }
+            } else if let Some(s) = head
+                .strip_prefix("IsFalse(r")
+                .and_then(|t| t.strip_suffix(')'))
+            {
+                IsFalse {
+                    dst: dst?,
+                    src: s.parse().ok()?,
+                }
+            } else if let Some(s) = head.strip_prefix("Mov(r").and_then(|t| t.strip_suffix(')')) {
+                Mov {
+                    dst: dst?,
+                    src: s.parse().ok()?,
+                }
+            } else if head.starts_with("Cast[") {
+                let close = head.find("](r")?;
+                let repr = &head[5..close];
+                let ty = if let Some(i) = p.casts.iter().position(|c| c.to_string() == repr) {
+                    i as u16
+                } else {
+                    // 反查常见类型（round-trip 内自洽：失败 None）
+                    let dt = match repr {
+                        "INT" | "INTEGER" => PD::Int(None),
+                        "BIGINT" => PD::BigInt(None),
+                        "TEXT" | "VARCHAR" => PD::Varchar(None),
+                        "DOUBLE" => PD::Double(sqlparser::ast::ExactNumberInfo::None),
+                        "BOOLEAN" | "BOOL" => PD::Boolean,
+                        _ => return None,
+                    };
+                    p.casts.push(dt);
+                    (p.casts.len() - 1) as u16
+                };
+                let src = head[close + 3..].strip_suffix(')')?.parse().ok()?;
+                Cast { dst: dst?, src, ty }
+            } else {
+                return None;
+            }
+        }
+    })
+}
+
+fn strip<'a>(h: &'a str, prefix: &str) -> &'a str {
+    h.strip_prefix(prefix)
+        .and_then(|r| r.strip_suffix(')'))
+        .unwrap_or("")
+}
+fn args2(s: &str, rr: &dyn Fn(&str) -> Option<u16>) -> Option<(u16, u16)> {
+    let (a, b) = s.split_once(", ")?;
+    Some((rr(a.trim())?, rr(b.trim())?))
 }
 
 #[cfg(test)]
@@ -972,6 +1522,95 @@ mod tests {
         assert!(r2.is_err(), "行缺失必须报错非 panic");
         // 未定义列：编译期错误
         assert!(compile_predicate(&Expr::Identifier(Ident::new("zz")), &cols1, 1).is_err());
+    }
+
+    /// R4：round-trip——disassemble(reparse(text)) 逐字节恒等
+    #[test]
+    fn r4_roundtrip() {
+        let names: Vec<String> = vec!["id".into(), "v".into()];
+        let cols = |n: &str| names.iter().position(|c| c == n);
+        let cases: Vec<Expr> = vec![
+            bin(Expr::Identifier(Ident::new("v")), BO::Gt, num("10")),
+            bin(
+                bin(Expr::Identifier(Ident::new("id")), BO::Eq, num("1")),
+                BO::And,
+                bin(Expr::Identifier(Ident::new("v")), BO::Lt, num("9")),
+            ),
+            Expr::UnaryOp {
+                op: sqlparser::ast::UnaryOperator::Not,
+                expr: Box::new(Expr::IsNull(Box::new(Expr::Identifier(Ident::new("v"))))),
+            },
+            Expr::InList {
+                expr: Box::new(Expr::Identifier(Ident::new("id"))),
+                list: vec![num("1"), num("2"), null()],
+                negated: true,
+            },
+            Expr::Between {
+                expr: Box::new(Expr::Identifier(Ident::new("v"))),
+                negated: false,
+                low: Box::new(num("1")),
+                high: Box::new(num("9")),
+            },
+            Expr::Case {
+                case_token: sqlparser::ast::helpers::attached_token::AttachedToken::empty(),
+                end_token: sqlparser::ast::helpers::attached_token::AttachedToken::empty(),
+                operand: Some(Box::new(Expr::Identifier(Ident::new("id")))),
+                conditions: vec![
+                    sqlparser::ast::CaseWhen {
+                        condition: num("1"),
+                        result: num("10"),
+                    },
+                    sqlparser::ast::CaseWhen {
+                        condition: num("2"),
+                        result: num("20"),
+                    },
+                ],
+                else_result: Some(Box::new(num("0"))),
+            },
+            Expr::Cast {
+                kind: sqlparser::ast::CastKind::Cast,
+                expr: Box::new(Expr::Identifier(Ident::new("v"))),
+                data_type: PD::Int(None),
+                format: None,
+                array: false,
+            },
+            bin(
+                strv("a"),
+                BO::StringConcat,
+                Expr::Identifier(Ident::new("v")),
+            ),
+        ];
+        for e in &cases {
+            let cp = compile_predicate_named(e, &cols, names.len(), &names).unwrap();
+            let p = cp.prog;
+            let text = disassemble(&p);
+            let p2 = reparse(&text).unwrap_or_else(|| panic!("reparse 失败：{text}"));
+            let text2 = disassemble(&p2);
+            assert_eq!(text, text2, "round-trip 不恒等");
+            // 再解析程序与原程序结构等价（steps 逐条相等）
+            assert_eq!(p.steps, p2.steps, "steps 结构不等价：{text}");
+        }
+    }
+
+    /// B5：步数硬断——超深表达式编译拒绝（非 panic、非无界）。
+    /// 用列引用链防常量折叠折叠成单步。
+    #[test]
+    fn b5_step_cap() {
+        let colsc = |n: &str| (n == "x").then_some(0usize);
+        let x = || Expr::Identifier(Ident::new("x"));
+        let mut e = x();
+        for _ in 0..1100 {
+            e = bin(e, BO::Plus, num("1"));
+        }
+        assert!(
+            compile_predicate(&e, &colsc, 1).is_err(),
+            "1100 深链必须被深度守卫（>128）拒绝，不爆栈"
+        );
+        let mut e2 = x();
+        for _ in 0..100 {
+            e2 = bin(e2, BO::Plus, num("1"));
+        }
+        assert!(compile_predicate(&e2, &colsc, 1).is_ok(), "100 深正常编译");
     }
 
     fn num_placeholder(id: &str) -> Expr {

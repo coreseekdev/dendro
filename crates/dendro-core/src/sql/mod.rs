@@ -785,14 +785,73 @@ pub(crate) fn exec_statement(
         }
         Statement::Truncate(tr) => ddl::truncate_impl(db, sess, tr.table_names),
         Statement::Explain { statement, .. } => {
+            // v2b B4：真实计划输出（步列表段）。派发器/树形摘要层是 v2c-1
+            //（05 §5/Q16）——当前输出 = 扫描形状 + WHERE 的 ScalarProgram
+            // 反汇编（可 round-trip，reparse 即当时谓词程序）。
             let inner = *statement;
-            let _ = inner;
+            let mut lines: Vec<String> = Vec::new();
+            let mut described = false;
+            if let sqlparser::ast::Statement::Query(q) = &inner {
+                if let sqlparser::ast::SetExpr::Select(sel) = &*q.body {
+                    // 单表扫描形状（join/派生表的形状行留给 v2c-1 派发器）
+                    if sel.from.len() == 1 && sel.from[0].joins.is_empty() {
+                        if let sqlparser::ast::TableFactor::Table { name, .. } =
+                            &sel.from[0].relation
+                        {
+                            let full = name
+                                .0
+                                .iter()
+                                .filter_map(|p| p.as_ident().map(|i| i.value.clone()))
+                                .collect::<Vec<_>>()
+                                .join(".");
+                            let short = full.rsplit('.').next().unwrap_or(&full).to_string();
+                            lines.push(format!("Seq Scan on {short}"));
+                            if let Some(w) = sel.selection.as_ref() {
+                                if let Ok((schema, _)) =
+                                    crate::sql::scan::resolve_table(db, &sess.branch, &short)
+                                {
+                                    let names: Vec<String> =
+                                        schema.columns.iter().map(|c| c.name.clone()).collect();
+                                    let lookup = |n: &str| {
+                                        names.iter().position(|c| c.eq_ignore_ascii_case(n))
+                                    };
+                                    match crate::sql::scalar::compile_predicate_named(
+                                        w,
+                                        &lookup,
+                                        names.len(),
+                                        &names,
+                                    ) {
+                                        Ok(p) => {
+                                            lines.push(format!("Filter: {w}"));
+                                            lines.push(
+                                                crate::sql::scalar::disassemble(&p.prog)
+                                                    .trim_end()
+                                                    .to_string(),
+                                            );
+                                        }
+                                        Err(_) => lines.push(format!(
+                                            "Filter: {w} (steps: n/a — falls back to AST path)"
+                                        )),
+                                    }
+                                } else {
+                                    lines.push(format!("Filter: {w} (table unresolved)"));
+                                }
+                            }
+                            described = true;
+                        }
+                    }
+                }
+            }
+            if !described {
+                lines.push(format!(
+                    "{} (plan detail pending v2c-1 dispatcher)",
+                    stmt_kind_label(&inner)
+                ));
+            }
             Ok(Some(Output::Rows(make_record_set(
                 &["QUERY PLAN"],
                 &[ColType::Utf8],
-                vec![vec![SqlValue::Utf8(
-                    "Seq Scan (v1: detailed plans pending)".into(),
-                )]],
+                lines.into_iter().map(|l| vec![SqlValue::Utf8(l)]).collect(),
             ))))
         }
         Statement::Set(set) => {
@@ -969,6 +1028,18 @@ pub(crate) fn prepare(
         },
     );
     Ok(meta)
+}
+
+/// EXPLAIN 兜底行：语句种类标签（未覆盖形状的诚实输出）
+fn stmt_kind_label(s: &Statement) -> &'static str {
+    match s {
+        Statement::Query(_) => "Query",
+        Statement::Insert { .. } => "Insert",
+        Statement::Update { .. } => "Update",
+        Statement::Delete { .. } => "Delete",
+        Statement::CreateTable { .. } => "CreateTable",
+        _ => "Statement",
+    }
 }
 
 fn dummy_branch_statement() -> Statement {

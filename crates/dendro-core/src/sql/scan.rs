@@ -165,7 +165,8 @@ pub(crate) fn eval_query(
         // v2b B2：编译优先——谓词编译为 ScalarProgram 逐行步进（ir-spec 03）；
         // 编译失败（Function/TryCast/Substring 等未覆盖形态）整体回落 AST
         // 直评，行为与既有路径逐字节一致（B1 差分 + slt 护航）。
-        let compiled = crate::sql::scalar::compile_predicate(w, &cols, tv.names.len()).ok();
+        let compiled =
+            crate::sql::scalar::compile_predicate_named(w, &cols, tv.names.len(), &tv.names).ok();
         let mut filtered = Vec::with_capacity(tv.rows.len());
         for row in tv.rows.drain(..) {
             let keep = match &compiled {
