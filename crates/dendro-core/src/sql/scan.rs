@@ -96,8 +96,128 @@ pub(crate) fn eval_query(
     snapshot: u64,
 ) -> Result<TableView> {
     let set_expr = q.body.as_ref();
+    // S-4：UNION / UNION ALL（v1：两侧子查询独立求值 → 拼接；UNION
+    // 额外按全行文本去重；列数须匹配，列名取左侧）
     let select = match set_expr {
         SetExpr::Select(s) => s.as_ref(),
+        SetExpr::SetOperation {
+            op,
+            set_quantifier,
+            left,
+            right,
+        } => {
+            use sqlparser::ast::{SetOperator, SetQuantifier};
+            if !matches!(op, SetOperator::Union) {
+                return Err(SqlError::not_supported(format!(
+                    "set op: {op:?}（v1 仅 UNION）"
+                )));
+            }
+            // SQL 标准：UNION 默认 DISTINCT（去重），UNION ALL 保留重复
+            let all = matches!(
+                set_quantifier,
+                SetQuantifier::All | SetQuantifier::AllByName
+            );
+            let mk_query = |body: Box<SetExpr>| sqlparser::ast::Query {
+                with: None,
+                body,
+                order_by: None,
+                limit_clause: None,
+                fetch: None,
+                locks: Vec::new(),
+                for_clause: None,
+                settings: None,
+                format_clause: None,
+                pipe_operators: Vec::new(),
+            };
+            // PG：尾部 ORDER BY/LIMIT 属于整个 UNION 结果——不传给子查询，
+            // 合并后统一应用（曾传给左侧导致右侧乱序混入）
+            let lt = eval_query(db, sess, &mk_query(left.clone()), snapshot)?;
+            let rt = eval_query(db, sess, &mk_query(right.clone()), snapshot)?;
+            if lt.names.len() != rt.names.len() {
+                return Err(SqlError::syntax(format!(
+                    "UNION: column count mismatch {}/{}",
+                    lt.names.len(),
+                    rt.names.len()
+                )));
+            }
+            let mut rows = lt.rows;
+            rows.extend(rt.rows);
+            if !all {
+                let mut seen = std::collections::HashSet::new();
+                rows.retain(|r| {
+                    let key: String = r
+                        .iter()
+                        .map(|v| expr::to_text(v.clone()))
+                        .collect::<Vec<_>>()
+                        .join("\u{1}");
+                    seen.insert(key)
+                });
+            }
+            // 外层 ORDER BY / LIMIT 统一应用到合并结果
+            let order_exprs: &[sqlparser::ast::OrderByExpr] =
+                match q.order_by.as_ref().map(|o| &o.kind) {
+                    Some(sqlparser::ast::OrderByKind::Expressions(exprs)) => exprs,
+                    _ => &[],
+                };
+            if !order_exprs.is_empty() {
+                let asc: Vec<bool> = order_exprs
+                    .iter()
+                    .map(|o| o.options.asc.unwrap_or(true))
+                    .collect();
+                let cols = cols_lookup(&lt.names);
+                let mut keyed: Vec<Vec<SqlValue>> = Vec::with_capacity(rows.len());
+                for row in &rows {
+                    let mut kr = Vec::with_capacity(asc.len() + row.len());
+                    for o in order_exprs {
+                        let v = match &o.expr {
+                            sqlparser::ast::Expr::Identifier(id) => cols
+                                .get(&id.value.to_ascii_lowercase())
+                                .and_then(|&i| row.get(i).cloned())
+                                .unwrap_or(SqlValue::Null),
+                            sqlparser::ast::Expr::Value(vws) => {
+                                if let sqlparser::ast::Value::Number(n, _) = &vws.value {
+                                    let idx: usize = n.parse().unwrap_or(1);
+                                    row.get(idx - 1).cloned().unwrap_or(SqlValue::Null)
+                                } else {
+                                    SqlValue::Null
+                                }
+                            }
+                            _ => SqlValue::Null,
+                        };
+                        kr.push(v);
+                    }
+                    kr.extend(row.iter().cloned());
+                    keyed.push(kr);
+                }
+                let mut sort_op = crate::exec::pipeline::SortOp::new(asc);
+                let mut sink = crate::exec::pipeline::CollectSink::new(None);
+                let src: Vec<Result<Vec<Vec<SqlValue>>>> = vec![Ok(keyed)];
+                let mut it = src.into_iter();
+                let mut pipe_cx = crate::exec::pipeline::PipeCtx::new(
+                    vec![],
+                    sess.stmt_deadline,
+                    sess.cancel_token.clone(),
+                );
+                crate::exec::pipeline::drive(&mut pipe_cx, &mut it, &mut sort_op, &mut sink)?;
+                rows = sink.rows; // SortOp 已去键前缀
+            }
+            if let Some(lc) = &q.limit_clause {
+                if let sqlparser::ast::LimitClause::LimitOffset { limit, offset, .. } = lc {
+                    if let Some(off) = offset {
+                        let n = eval_const(&off.value)? as usize;
+                        rows = rows.into_iter().skip(n).collect();
+                    }
+                    if let Some(l) = limit {
+                        let n = eval_const(l)? as usize;
+                        rows.truncate(n);
+                    }
+                }
+            }
+            return Ok(TableView {
+                names: lt.names,
+                rows,
+            });
+        }
         other => {
             return Err(SqlError::not_supported(format!(
                 "set op: {}",
