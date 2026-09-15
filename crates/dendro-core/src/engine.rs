@@ -624,6 +624,7 @@ impl Database {
             cursors: HashMap::new(),
             statement_timeout_ms: self.opts.default_statement_timeout_ms,
             stmt_deadline: None,
+            cancel_token: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -1492,6 +1493,8 @@ pub struct Session {
     pub(crate) statement_timeout_ms: u64,
     /// 当前语句的截止时刻（exec 入口按 statement_timeout 设置）
     pub(crate) stmt_deadline: Option<std::time::Instant>,
+    /// 语句取消令牌（S-3 后续：CancelRequest 从另一连接设置）
+    pub(crate) cancel_token: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Session {
@@ -1504,7 +1507,21 @@ impl Session {
                 return Err(SqlError::new("57014", "statement timeout"));
             }
         }
+        if self.cancel_token.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(SqlError::new("57014", "query canceled"));
+        }
         Ok(())
+    }
+
+    /// 获取取消令牌引用（CancelRequest / 外部取消入口）
+    pub fn cancel_token(&self) -> Arc<std::sync::atomic::AtomicBool> {
+        self.cancel_token.clone()
+    }
+
+    /// 主动取消当前正在执行的语句
+    pub fn cancel(&self) {
+        self.cancel_token
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -1534,6 +1551,8 @@ impl Session {
     pub fn exec(&mut self, sql: &str) -> Result<Vec<Output>> {
         let db = self.db.clone();
         // 语句超时（S-3）：每语句重置截止时刻；执行器在循环检查点查询
+        self.cancel_token
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         self.stmt_deadline = if self.statement_timeout_ms > 0 {
             Some(
                 std::time::Instant::now()
