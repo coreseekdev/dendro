@@ -67,7 +67,42 @@ TiDB X：ack 在本地盘 Raft log，S3 异步——低延迟但实例级故障�
 - **shared cache 独立层**（行存+列存缓存作为计算与 S3 之间的服务）：dendro 规模下是过度设计，cached.rs 块缓存 + NodeStore LRU 已覆盖热路径。
 - **分支/时间旅行缺失**：TiDB X 文档未覆盖 snapshot 分支语义（只有元数据备份）——这是 dendro 的差异化维度，对照时注意谁向谁学：存储形状学 TiDB X 的运维分离，语义层面 dendro 是超集。
 
-## 引用来源
+## 5. 对 dendro 架构的可能影响
+
+### 5.1 战略层：选型收敛性验证（不摇摆）
+
+两个相反的起点走到了同一形状：dendro 从 git/对象存储语义出发天然得到"不可变对象 + 元数据发布"；TiDB X 从 shared-nothing 十年演进后也落到"对象存储一份不可变 SST + 元数据复制"。意义有二：① 核心赌注（append-only、CAS、manifest 发布、单事实源对象层）不是边缘另类，而是头部 HTAP 厂商用重写代价换来的汇聚点——SPEC 相应决策（追加模式、prolly 内容寻址）获得外部佐证；② "不做什么"同样清晰：不引入本地盘优先的 durability（谱系另一端，§3-E）、不做 in-place 改写、不做为共享而共享的副本概念（§4）。
+
+### 5.2 架构层：三个连锁影响（具体到模块）
+
+**① manifest 从"状态记录"升格为"发布/跟随货币"——唯一直接触及持久格式的改动。**
+现状（objstore/manifest.rs）：每个 manifest 版本是**全量状态对象**（version + 全部分支 + 全部表 + 墓碑），`load_latest` 整体加载。单写者下没问题；一旦做只读挂载（attach），读者轮询 = 每次全量拉取，manifest 体积随分支/表数线性增长后会成为跟随路径的放大器。TiDB X 的"Raft 复制 file-version **changes**"指向的正是这个缺口：manifest 需要演进为 **delta 链 + 周期全量快照**。dendro 的有利条件：内容寻址使 delta 天然廉价——未变更分支/表的表项内容地址不变，一个 manifest delta ≈ 变化分支的表项列表 + 前驱版本号。此改动**不需要现在做**（单写者下全量对象最简单），但 attach 动工前必须先做，且 manifest 格式演进的窗口应该趁早保留（v1 格式尚未冻结是唯一窗口期红利）。
+
+**② GC 宽限期从运维旋钮升格为多进程一致性契约——attach 的隐藏成本。**
+现状：gc_retention_ms 默认 24h，可 `-1` 暂停（backup 运行手册就在用）。墓碑与"停止引用"在同一 manifest 版本原子发布（engine.rs gc_sweep）——这个设计跨进程依然正确。变化在于：单进程时宽限期只是"运维留窗口"；多进程 attach 后它成为**读者安全的唯一保护**——慢读者拿着旧 manifest 读已被 GC 的对象 = 读到消失的文件。由此产生一条新不变式（账本 I-G 候选扩展）：
+> **AttachVisibility**：attach 读者可见对象集合 ⊆ 其所持 manifest 版本引用集合；GC 不得删除宽限期内任何曾被任一 manifest 版本引用的对象；部署契约 T_refresh(manifest 跟随周期) ≪ T_gc_retention。
+
+现有墓碑机制已满足该不变式，缺的是"读者慢"场景的失败测试（实现 attach 前先写）。WAL 段退休不受影响——attach 读者只读 manifest 引用的对象树，不读 WAL，retire_bound 的进程内语义不变。
+
+**③ 缓存纪律 SPEC 化——attach 简单性的根基，零代码改动。**
+TiDB X 需要在计算与 S3 之间维护带失效语义的共享缓存层；dendro 的内容寻址让这整层问题消失：**缓存键 = 内容地址 ⇒ 永远不错；唯一的可变状态是 DbSnapshot 里的 manifest 指针**。现有代码已天然遵守（NodeStore LRU 键 = 内容地址；cached.rs 键 = path+range，path 含 hash）。影响不是改代码，而是把这条写成 SPEC 纪律，防止未来任何人往缓存里塞可变对象破坏 attach 前提：**"缓存只缓存不可变对象；可变状态只活在 DbSnapshot"**。
+
+**不受影响的部分**（避免过度反应）：two-pass commit 的 Pass2 本来就是 file publication 语义；gap-free watermark 是进程内发布前沿，attach 读者各持快照 = 各自水位，快照语义天然无分布式一致性问题；fencing 单写者不变——TiDB X 三副本为实例 HA，dendro 的等价物是 epoch fencing + WAL 回放的"重开即接管"，RTO = 回放时间，仅当需要 RPO≈0 才值得引入副本。
+
+### 5.3 叙事/路线图层
+
+- **compute-compute 分离**被 TiDB X 列为核心卖点（compaction 独立服务，索引构建 5×）：dendro 的 C delta（checkpoint/GC 出进程 seam）从"可选优化"升格为"行业确认方向"，当前唯一要求是**保持 seam 干净**——不把 checkpoint 线程与前台纠缠。
+- **agent 数据库定位**：siddontang 本人当前 bio 即"AI agents need databases too"。TiDB X 验证了"共享存储 + 弹性 attach"是 agent 场景的基础设施形状；dendro 的独有组合是**分支语义 × attach**——每个 agent 任务开一个分支、只读挂载共享主数据、任务结束分支即弃。这把 A delta（attach）从"运维特性"升格为"agent 场景的入口特性"，是路线图叙事的优先级信号。
+
+### 5.4 行动建议
+
+| 时点 | 动作 |
+|------|------|
+| 现在 | ① SPEC 补缓存纪律与 GC 多进程契约两段文字；② 账本 I-G 预登记 AttachVisibility 不变式（先写"读者慢"失败测试的思路）；③ manifest delta 格式设计草稿（一页，不实现）|
+| 触发后 | attach（真实多进程需求出现）；checkpoint 出进程（实测前台 p99 受扰）|
+| 不做 | 三副本/本地盘 Raft、shared cache 服务层、为共享引入副本概念 |
+
+
 
 - [siddontang on X — Inside TiDB X | Shared SSTs](https://x.com/siddontang/status/2099418842892312849)
 - [siddontang on X — Inside TiDB X | Write](https://x.com/siddontang/status/2099670387198173399)
