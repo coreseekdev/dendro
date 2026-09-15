@@ -165,23 +165,47 @@ pub(crate) fn eval_query(
         // v2b B2：编译优先——谓词编译为 ScalarProgram 逐行步进（ir-spec 03）；
         // 编译失败（Function/TryCast/Substring 等未覆盖形态）整体回落 AST
         // 直评，行为与既有路径逐字节一致（B1 差分 + slt 护航）。
-        let compiled =
-            crate::sql::scalar::compile_predicate_named(w, &cols, tv.names.len(), &tv.names).ok();
-        let mut filtered = Vec::with_capacity(tv.rows.len());
-        for row in tv.rows.drain(..) {
-            let keep = match &compiled {
-                Some(p) => {
+        // v2c-1b：谓词走 push 管线（协议 C3 + eval_chunk v1=C5）。
+        // 单批 v1（tv.rows 本已物化，行移动零拷贝）；批粒度随流式 Source
+        // 到来。语义与手写循环逐字节一致（eval_row + Qual 丢行 + 错误上抛），
+        // 新增：每批 deadline/cancel 检查点（S-3 对齐）。编译失败回落 AST。
+        match crate::sql::scalar::compile_predicate_named(w, &cols, tv.names.len(), &tv.names) {
+            Ok(cp) if tv.rows.len() > 64 => {
+                let mut cx = crate::exec::pipeline::PipeCtx::new(
+                    vec![],
+                    sess.stmt_deadline,
+                    sess.cancel_token.clone(),
+                );
+                let all = std::mem::take(&mut tv.rows);
+                let mut src = std::iter::once(Ok(all));
+                let mut op = crate::exec::pipeline::FilterOp::new(cp.prog);
+                let mut sink = crate::exec::pipeline::CollectSink::new(None);
+                crate::exec::pipeline::drive(&mut cx, &mut src, &mut op, &mut sink)?;
+                tv.rows = sink.rows;
+            }
+            // 小结果集走紧循环（点查 1 行：管线包装的常数开销在 µs 级
+            // 路径不可接受——bench 实证 315k→200k；两路径语义逐字节一致）
+            Ok(cp) => {
+                let mut filtered = Vec::with_capacity(tv.rows.len());
+                for row in tv.rows.drain(..) {
                     let mut out = SqlValue::Null;
-                    crate::sql::scalar::eval_row(&p.prog, &row, &[], &mut out)?;
-                    matches!(out, SqlValue::Bool(true))
+                    crate::sql::scalar::eval_row(&cp.prog, &row, &[], &mut out)?;
+                    if matches!(out, SqlValue::Bool(true)) {
+                        filtered.push(row);
+                    }
                 }
-                None => matches!(expr::eval(w, &row, &cols), Ok(SqlValue::Bool(true))),
-            };
-            if keep {
-                filtered.push(row);
+                tv.rows = filtered;
+            }
+            Err(_) => {
+                let mut filtered = Vec::with_capacity(tv.rows.len());
+                for row in tv.rows.drain(..) {
+                    if matches!(expr::eval(w, &row, &cols), Ok(SqlValue::Bool(true))) {
+                        filtered.push(row);
+                    }
+                }
+                tv.rows = filtered;
             }
         }
-        tv.rows = filtered;
     }
     // GROUP BY / 聚合 / HAVING
     let has_agg = projection_aggregates(&select.projection).is_some()

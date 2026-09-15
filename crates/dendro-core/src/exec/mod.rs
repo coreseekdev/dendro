@@ -2,3 +2,4 @@
 //! 转换器；C2-C5（Source/管线协议/派发器/eval_chunk）随后。
 
 pub mod chunk;
+pub mod pipeline;
