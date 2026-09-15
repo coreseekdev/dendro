@@ -69,7 +69,7 @@ pub struct RelNode<T: RelNodeType, D: RelAttrType> {
 
 - **生产背书**：Wasmtime 1.0（2022-09）起 Cranelift 是其默认优化代码生成器（JIT + AOT），Fastly/Shopify 级生产负载；版本号随 Wasmtime 走（仍 0.x 语义化版本，但稳定性分层文档明确）。2025-11 仍在扩功能（异常处理提案实现）。
 - **SIMD**：Wasm SIMD128 在 x86-64/aarch64 完全支持且默认开启；relaxed-SIMD 已实现；**缺口**：RISC-V 无 SIMD、且其向量形状是 128 位定宽（Wasm 形状）——**不是 AVX-512 级宽内核**。对数据库的含义：标量表达式 JIT（逐行或小块循环）理想；向量化内核仍需手写/Arrow，不能指望 Cranelift 自动向量化。
-- **直接先例**：**ReadySet** 用 `cranelift-jit` 把 SQL 标量表达式编译成原生代码跑在 dataflow 节点里——与 dendro"标量层 JIT"的设想完全同形，且它只 JIT 标量层、算子层仍解释，就已经拿到主要收益。
+- **ReadySet 案例（本地克隆实证修正）**：ReadySet **历史版本**曾在 dataflow 里用 `cranelift-jit` 编译 SQL 标量表达式（crates.io 反向依赖可查），但**当前源码（stable-250227+）已整体移除 JIT，退回纯 AST 解释器**（`dataflow-expression/src/eval.rs` 直接对 DfValue 模式匹配，全树 cranelift 零命中）。这个"从 JIT 退回解释器"的产品决策，与其缓存点查负载形态一致——是"解释器优先、JIT 按需"路线最有力的生产实证。本地参考副本在 `~/src.db/ref-projects/readyset/`（BSL 1.1，**仅可读禁止复制**，见 ref-projects/README.md）。
 - Cranelift 自身用 e-graph（isle 指令选择）做表达式改写——"IR 利于改写"的活例子。
 
 ### 6.2 脚本语言 VM/JIT 的可借鉴清单
@@ -97,11 +97,41 @@ pub struct RelNode<T: RelNodeType, D: RelAttrType> {
 1. **唯一列 ID + 可推导 schema 属性**——改写正确性的地基。谓词下推后"该列来自哪个扫描"必须无歧义；列位置（索引）在重写中漂移，唯一 ID 不漂移（CockroachDB 惯例：查询内列 ID 全局唯一）。
 2. **性质框架（order / distribution / partitioning）**——"拆分与合并"的正解表达。拆分（morsel 化、并行分片）= 插入 Exchange 算子以满足 distribution 性质；合并（融合、省物化点）= 证明子计划已满足性质故 Exchange 可省。性质是"可要求/可推导"的框架成员（Volcano/Cascades 语义），没有它调度只能靠经验规则硬编码。
 3. **pipeline 边界显式化**（HyPer）——"哪些算子能融合"的可判定化。查询 = 由 materialization 点分隔的 pipeline 序列：scan+filter 同 pipeline 可融合；hash join 的 build 侧是边界。IR 必须让 pipeline 成员关系可推导，fusion 的合法性才有判据。
-4. **标量层与关系层分层**——下沉与 JIT 的共享货币。谓词/投影是标量表达式 IR（可下发到 zone map 求值、可编译进 Arrow kernel、可 Cranelift JIT——ReadySet 只做这层就拿到主要收益）；关系算子是另一层。两层混在一个 IR 里，下推与编译的接口就糊了。
+4. **标量层与关系层分层**——下沉与 JIT 的共享货币。谓词/投影是标量表达式 IR（可下发到 zone map 求值、可编译进 Arrow kernel、可 Cranelift JIT——ReadySet 历史版在此层做过 JIT，现版退回解释器仍够用）；关系算子是另一层。两层混在一个 IR 里，下推与编译的接口就糊了。
 
 **两类禁止进入 IR 本体**：执行细节（内存布局/调用约定进逻辑层 = 锁死改写空间）；统计信息（基数/选择性放 catalog 侧并带版本，IR 只引用——统计是数据而 IR 是结构，混放会使计划缓存随统计失效风暴）。
 
 **dendro 落点**：若建 IR，四必须 + optd 泛形（§4：分支/快照/水位语义放属性 D）即可覆盖当前可见的调度需求（PK/范围下推已有；AP zone map 已有；缺的是 pipeline 边界建模——它决定 P2-2 向量化与未来融合的收益上限）。这再次支持"v2b 绑定计划先行、IR 后置到 v3 触发条件"的排序。
+
+## 7. 手写/Arrow 的 SOTA：优化框架与方法（P2-2 向量化的弹药库）
+
+### 7.1 框架层（按对 dendro 的参考价值排序）
+
+| 框架 | 语言/现状 | 对 dendro |
+|------|----------|-----------|
+| **Polars 新流引擎** | Rust；1.31+ 起内置并走向默认，PDS-H 与 DuckDB 打平且内存更低 | **最值得研读的 Rust 同侪**：out-of-core 内存管理、async 任务图调度、向量化 pipeline 的现代 Rust 实现 |
+| **DuckDB** | C++ 单机分析事实标准；2048 定宽向量、selection vector、morsel、push-based pipeline | 执行格式与并行模型的设计母本（v3 决策点的主要对照物） |
+| **Apache Velox** | Meta 捐赠、Apache 孵化；C++ 通用向量化执行组件库（Presto / Spark-Gluten 生产在用） | 形态不合（C++、非嵌入式），作为**组件划分/类型系统/惰性物化**的设计参考最强 |
+| Apache Gluten / DataFusion Comet | Spark→native 向量化加速（Velox / DataFusion 后端），生产 | 佐证"重引擎借原生向量化库"的行业方向，与 dendro 无直接关系 |
+| Acero / arrow-rs compute | Arrow 官方流引擎 / Rust kernels | arrow-rs 已是 dendro 依赖；kernels 即"手写算子的地基" |
+
+### 7.2 方法层（X100→2025 沉淀，逐条对 dendro 落点）
+
+1. **向量化基线形制**：定宽向量（DuckDB `STANDARD_VECTOR_SIZE=2048`，cache 友好）+ push-based pipeline + morsel 多线程（Leis SIGMOD'14）。"拆分"的工业标准即 morsel——直接呼应 §6.4 的 pipeline 边界建模：morsel 是 pipeline 的并行执行货币。
+2. **selection vector 优于物化过滤**：filter 产出选择向量在算子间传递"紧凑选中集"；DuckDB 向量支持 flat/constant/dictionary/RLE 四编码——惰性物化的执行层表达。dendro 落点：Arrow 的 `filter_record_batch` 内部即 selection 语义，P2-2 用它起步，无需自造。
+3. **编译 vs 向量化的定量结论**（Kersten/Leis/Kemper/Neumann/Boncz，VLDB'18，235+ 引用）："**向量化更善于隐藏 cache miss 延迟（大扫描/低选择性），data-centric 编译指令数更少（cache-resident 热点）**，两者皆胜过 Volcano 迭代器，现代系统混合化"。—— dendro TP（解释）/AP（向量化）双引擎的理论背书；也回答"手写 Arrow 还是 JIT"：**混合已够，JIT 非必需**（ReadySet 的退回与此互证）。
+4. **Rust SIMD 现实（2025）**：arrow-rs 主要依赖 LLVM autovectorization，显式 SIMD kernel 仅 min/max/sum（issue #5032，社区正重评是否扩展）；`std::simd` 仍 nightly；LanceDB 实测手写 SIMD 可显著超越 arrow kernel；**LLVM 不自动向量化浮点运算**。dendro 落点：整型过滤/比较靠 autovec 起步够用；热点（聚合、FSST 解码后过滤）再考虑 `wide`/`pulp`/intrinsics，且必须 bench 驱动（当前 ap_group_agg 200k 行 185ms，先算法后 SIMD）。
+5. **字典编码 SIMD 探测**：谓词先在字典层求值再展开（DuckDB dictionary vector + selection vector 组合）。dendro CBF 已有字典类布局，谓词下推到字典层是现成的增量优化点。
+6. **迟物化（late materialization）**：join/过滤链传 selection/index 而非整行拷贝——对 AP 投影的 join 输出形状影响最大，是 P2-2 之后的第一优先级。
+7. **算子融合 = pipeline 成员关系**：同 pipeline 内算子共享一轮向量循环（filter 融合进 scan），跨 pipeline 才物化——"合并"的可判定判据，接 §6.4-③。
+
+### 7.3 P2-2 启动清单（由本节直接导出）
+
+① 定向量宽度 + push-based pipeline 骨架（pipeline 边界即 §6.4 IR 需求的落地物）；② selection 语义用 `filter_record_batch` 起步；③ 字典层谓词下推（CBF 现成布局）；④ 聚合热点 bench 驱动的 SIMD（整型先 autovec）；⑤ 研读 Polars 新流引擎源码（Rust 同侪，out-of-core 与 async 调度）。
+
+## 引用来源
+
+- [ReadySet（GitHub，BSL 1.1；本地参考副本 ~/src.db/ref-projects/readyset/）](https://github.com/readysettech/readyset)
 
 
 
@@ -112,3 +142,6 @@ pub struct RelNode<T: RelNodeType, D: RelAttrType> {
 - [cmu-db/optd（2.0 优化器即服务）](https://github.com/cmu-db/optd) / [optd-original（Cascades + DataFusion 集成，已停主线）](https://github.com/cmu-db/optd-original) / [Plan Representation 教训（skyzh, 2025-02）](https://www.skyzh.dev/blog/2025-02-06-optimizer-lesson-01/)
 - [Substrait 采用现状](https://www.data-landscape.com/standards/substrait/) / [DataFusion Substrait crate](https://docs.rs/datafusion-substrait) / [一份计划三引擎执行实例](https://medium.com/@omri-levy/one-query-plan-three-different-engines-e5dc74aeb52f)
 - [DataFusion 2025 代价模型/自适应优化方向（issue #14373）](https://github.com/apache/datafusion/issues/14373)
+- [Everything You Always Wanted to Know About Compiled and Vectorized Queries（VLDB 2018）](https://www.vldb.org/pvldb/vol11/p2209-kersten.pdf) / [DuckDB 执行格式（2048 向量/selection/dictionary）](https://duckdb.org/docs/current/internals/vector.html)
+- [arrow-rs 显式 SIMD 聚合重评（issue #5032）](https://github.com/apache/arrow-rs/issues/5032) / [The State of SIMD in Rust 2025](https://shnatsel.medium.com/the-state-of-simd-in-rust-in-2025-32c263e5f53d) / [LanceDB：手写 SIMD vs arrow kernel](https://www.lancedb.com/blog/my-simd-is-faster-than-yours-fb2989bf25e7)
+- [Polars 新流引擎跟踪 issue（1.31+）](https://github.com/pola-rs/polars/issues/20947) / [PDS-H 基准（2025-05）](https://pola.rs/posts/benchmarks/) / [Apache Gluten](https://github.com/apache/gluten)
