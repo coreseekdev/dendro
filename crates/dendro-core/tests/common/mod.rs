@@ -66,7 +66,7 @@ fn record_rows(rs: &RecordSet) -> Vec<Vec<SqlValue>> {
         Array, BooleanArray, Date32Array, Float64Array, Int32Array, Int64Array, StringArray,
         TimestampMillisecondArray,
     };
-    fn dn<'a>(arr: &'a dyn Array) -> &'a dyn std::any::Any {
+    fn dn(arr: &dyn Array) -> &dyn std::any::Any {
         arr.as_any()
     }
     let mut out = Vec::new();
@@ -141,8 +141,7 @@ pub fn value_equiv(a: &SqlValue, b: &SqlValue, float_tol_ulp: u32) -> bool {
             let bx = x.to_bits();
             let by = y.to_bits();
             // 同符号下的位距（IEEE754 单调性：位差≈ULP 数）
-            let d = if bx > by { bx - by } else { by - bx };
-            d <= float_tol_ulp as u64
+            bx.abs_diff(by) <= float_tol_ulp as u64
         }
         _ => a == b,
     }
@@ -200,8 +199,8 @@ fn compare_rows(
         // 多重集：按规范键排序后逐一比对（键=值的稳定序列化）
         let key = |r: &Vec<SqlValue>| format!("{r:?}");
         let (mut sa, mut sb) = (r1.to_vec(), r2.to_vec());
-        sa.sort_by(|a, b| key(a).cmp(&key(b)));
-        sb.sort_by(|a, b| key(a).cmp(&key(b)));
+        sa.sort_by_key(|r| key(r).to_string());
+        sb.sort_by_key(|r| key(r).to_string());
         for (i, (x, y)) in sa.iter().zip(sb.iter()).enumerate() {
             assert_row(ctx, i, x, y, tol);
         }
