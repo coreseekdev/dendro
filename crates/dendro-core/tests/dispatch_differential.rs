@@ -139,4 +139,35 @@ fn explain_shows_dispatch() {
     assert_eq!(cols, vec!["QUERY PLAN"]);
     let joined = format!("{rows:?}");
     assert!(joined.contains("Seq Scan on t"), "{joined}");
+    assert!(
+        joined.contains("dispatch: CurrentPoint"),
+        "派发理由行：{joined}"
+    );
+    // 强制标记可见
+    let mut s2 = db.new_session();
+    s2.exec("SET dendro.force_source = 'main'").unwrap();
+    let outs2 = s2.exec("EXPLAIN SELECT v FROM t WHERE id = 500").unwrap();
+    let j2 = format!("{:?}", rows_of(&outs2).1);
+    assert!(
+        j2.contains("dispatch: MainPlusDelta [forced: MainPlusDelta]"),
+        "强制派发必须标注：{j2}"
+    );
+}
+
+/// AS OF（HistoryScan 臂）：auto 与 forced prolly 在带版本子句查询上等价。
+/// 取最近合法时间点（夹具建好后 1s 前——落后于最后提交 ⇒ 完整可见集）。
+/// 早于一切的点两条路径同错（22023），不走 diff。
+#[test]
+fn as_of_history_arm_equivalent() {
+    let db = fixture();
+    // 现时刻：必然 ≥ 最新快照点（at-or-before 闭区间），返回完整可见集
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    diff(
+        &db,
+        &format!("SELECT id FROM t FOR SYSTEM_TIME AS OF {ts}"),
+        &["auto", "prolly"],
+    );
 }

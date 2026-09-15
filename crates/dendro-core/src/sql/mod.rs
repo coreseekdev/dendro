@@ -817,6 +817,32 @@ pub(crate) fn exec_statement(
                                     let lookup = |n: &str| {
                                         names.iter().position(|c| c.eq_ignore_ascii_case(n))
                                     };
+                                    // 05 §5：派发理由行（规则式代价的可观测化）
+                                    let alt = crate::sql::dispatch::dispatch_scan(
+                                        db,
+                                        sess,
+                                        &sqlparser::ast::TableFactor::Table {
+                                            alias: None,
+                                            name: name.clone(),
+                                            args: None,
+                                            with_hints: vec![],
+                                            version: None,
+                                            with_ordinality: false,
+                                            partitions: vec![],
+                                            json_path: None,
+                                            sample: None,
+                                            index_hints: vec![],
+                                        },
+                                        Some(w),
+                                        0,
+                                    )
+                                    .map(|a| a.label().to_string())
+                                    .unwrap_or_else(|_| "n/a".into());
+                                    let forced = sess
+                                        .force_source
+                                        .map(|f| format!(" [forced: {}]", f.label()))
+                                        .unwrap_or_default();
+                                    lines.push(format!("dispatch: {alt}{forced}"));
                                     match crate::sql::scalar::compile_predicate_named(
                                         w,
                                         &lookup,
