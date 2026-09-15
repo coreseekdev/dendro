@@ -42,6 +42,10 @@ pub fn optimize(e: &Expr) -> Expr {
 
 /// 二元运算常量折叠（整数算术）
 fn fold_binary(op: &BinOp, l: &Expr, r: &Expr) -> Option<Expr> {
+    match op {
+        BinOp::And | BinOp::Or => return fold_bool(op, l, r),
+        _ => {}
+    }
     let (lv, rv) = match (extract_int(l), extract_int(r)) {
         (Some(a), Some(b)) => (a, b),
         _ => return None,
