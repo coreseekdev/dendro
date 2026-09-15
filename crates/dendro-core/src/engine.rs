@@ -389,6 +389,8 @@ pub struct Prepared {
 /// PreparedMeta/Output 语义见 spec/10。
 pub trait WireSession: Send {
     fn exec(&mut self, sql: &str) -> Result<Vec<Output>>;
+    /// 会话用户（S-4：pgwire startup 后注入；缺省实现 no-op 供 mock）
+    fn set_user(&mut self, _user: &str) {}
     /// 取消令牌引用（S-3 语句取消；默认返回 dummy 供 mock 使用）
     fn cancel_token(&self) -> Arc<std::sync::atomic::AtomicBool> {
         Arc::new(std::sync::atomic::AtomicBool::new(false))
@@ -408,6 +410,9 @@ pub trait WireSession: Send {
 }
 
 impl WireSession for Session {
+    fn set_user(&mut self, user: &str) {
+        self.user = user.to_string();
+    }
     fn cancel_token(&self) -> Arc<std::sync::atomic::AtomicBool> {
         self.cancel_token.clone()
     }
@@ -678,6 +683,7 @@ impl Database {
             cancel_token: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             force_source: None,
             force_agg: None,
+            user: crate::sql::privs::SUPERUSER.to_string(),
         }
     }
 
@@ -1573,6 +1579,9 @@ pub struct Session {
     /// 强制聚合路径（v2c-3，同 force_source 的调试面约定）：
     /// `SET dendro.force_agg = 'auto|pipeline|row'`。
     pub(crate) force_agg: Option<crate::sql::dispatch::AggPath>,
+    /// 会话用户（S-4：权限门主体；pgwire startup user / embed set_user；
+    /// 缺省 = 超户 "dendro"——缺省行为全放行，既有语义不变）
+    pub user: String,
 }
 
 impl Session {

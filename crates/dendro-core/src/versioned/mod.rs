@@ -94,6 +94,12 @@ pub struct TableEntry {
     /// 列存投影行数估计（段行数和，advisory）
     #[serde(default)]
     pub col_rows: u64,
+    /// 表属主（S-4 方向4；空 = 引导期建表 = 超户所有——旧 manifest 兼容）
+    #[serde(default)]
+    pub owner: String,
+    /// 表级 ACL：角色 → 权限位（privs.rs PRIV_*；serde default 兼容旧 manifest）
+    #[serde(default)]
+    pub acl: std::collections::HashMap<String, u8>,
 }
 
 /// 一个列存投影段（不可变 CBF 对象）

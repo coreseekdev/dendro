@@ -54,6 +54,7 @@ pub fn parse_only(sql: &str, d: SqlDialect) -> std::result::Result<String, Strin
 /// v2c-1：coverage 派发器（扫描路径选择的纯函数化 + force_source）。
 pub mod dispatch;
 /// v2b B1：标量层步列表（编译 + eval_row）。compile-or-fallback 合同。
+pub mod privs;
 pub mod scalar;
 
 pub(crate) fn parse_batch(sql: &str, d: SqlDialect) -> Result<Vec<Statement>> {
@@ -585,6 +586,8 @@ fn is_ddl(stmt: &Statement) -> bool {
             | Statement::Drop { .. }
             | Statement::Truncate { .. } // 第二十轮 R20-1：truncate_impl 同样 catalog_commit
             | Statement::CreateView { .. } // 第二十一轮 R21-16：CREATE VIEW 也是 catalog 写
+            | Statement::Grant { .. } // S-4：GRANT 也是 catalog 写（同 Q-10 口径）
+            | Statement::Revoke { .. }
     )
 }
 
@@ -603,6 +606,8 @@ pub(crate) fn exec_statement(
             "transactional DDL not supported: run DDL outside explicit transactions",
         ));
     }
+    // S-4（方向4）：语句权限门——单点走查（超户/owner 直通，ACL 位判定）
+    privs::enforce(db, sess, &stmt)?;
     match stmt {
         Statement::StartTransaction { .. } => {
             if sess.txn.is_some() {
@@ -669,6 +674,8 @@ pub(crate) fn exec_statement(
                 affected: 0,
             }))
         }
+        Statement::Grant(g) => privs::exec_grant(db, sess, &g),
+        Statement::Revoke(r) => privs::exec_revoke(db, sess, &r),
         Statement::Query(q) => {
             if q.with.is_some() {
                 return Err(SqlError::not_supported("WITH (CTE)"));
@@ -1083,6 +1090,9 @@ pub(crate) fn prepare(
         let params = count_placeholders(&mut stmts[0]);
         (stmts.into_iter().next().unwrap(), params)
     };
+    // S-4：prepared 语句同受权限门（否则 DESCRIBE/describe_result 泄漏
+    // 未授权表的列信息）；执行期 exec_prepared → exec_statement 二道门
+    privs::enforce(db, sess, &stmt)?;
     // 参数类型：wire hint 优先；否则按语句上下文推断（INSERT 列/UPDATE SET/WHERE 比较）
     let param_types: Vec<ColType> = {
         let inferred = infer_param_types(db, sess, &stmt, params);

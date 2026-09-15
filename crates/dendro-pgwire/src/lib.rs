@@ -181,9 +181,11 @@ pub fn handle_connection<T: Read + Write>(
     let mut pg = PgStream::new(stream);
 
     // startup + 认证（SPEC 06 §2.1）；None = 连接应关闭（已发错误或对端断开）
-    let Some((_params, backend_pid)) = startup::handshake(&mut pg, &cfg)? else {
+    let Some((params, backend_pid)) = startup::handshake(&mut pg, &cfg)? else {
         return Ok(());
     };
+    // S-4：startup user → 会话权限主体（缺省 "dendro" = 超户，行为不变）
+    sess.set_user(&params.user);
     // 注册取消令牌（S-3）：pid → Session 的 cancel_token
     let token = sess.cancel_token();
     crate::register_cancel(backend_pid, token);

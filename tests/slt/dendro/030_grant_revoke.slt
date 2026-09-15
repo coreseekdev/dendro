@@ -1,0 +1,61 @@
+# GRANT/REVOKE 与权限门（S-4 方向4）
+# slt 连接为缺省超户 dendro——本文件固化语句接受面与错误口径；
+# 非超户语义矩阵见 Rust tests/grant.rs
+
+statement ok
+CREATE TABLE gt (id BIGINT PRIMARY KEY, v INT)
+
+statement ok
+INSERT INTO gt VALUES (1, 10), (2, 20)
+
+# 超户：GRANT/REVOKE 各形态
+statement ok
+GRANT SELECT ON gt TO reader
+
+statement ok
+GRANT SELECT, INSERT ON gt TO writer
+
+statement ok
+GRANT ALL ON gt TO admin_user
+
+statement ok
+GRANT ALL PRIVILEGES ON gt TO admin2
+
+# REVOKE：全量与部分
+statement ok
+REVOKE INSERT ON gt FROM writer
+
+statement ok
+REVOKE ALL ON gt FROM admin_user
+
+# 幂等：revoke 未授权项 = no-op（PG 语义）
+statement ok
+REVOKE DELETE ON gt FROM reader
+
+# 不存在的表 → 表错误口径（非权限门）
+statement error
+GRANT SELECT ON no_such TO reader
+
+# WITH GRANT OPTION 不支持（诚实拒绝）
+statement error
+GRANT SELECT ON gt TO x WITH GRANT OPTION
+
+# 事务内 DCL 拒绝（Q-10 同口径：catalog 写）
+statement ok
+BEGIN
+
+statement error
+GRANT SELECT ON gt TO in_txn
+
+statement ok
+ROLLBACK
+
+# 非表对象不支持（诚实拒绝）
+statement error
+GRANT SELECT ON SCHEMA public TO reader
+
+# 授权后超户行为不变
+query I
+SELECT count(*) FROM gt
+----
+2
