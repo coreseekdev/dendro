@@ -28,9 +28,12 @@ fn scan_alternatives(req, cat, snap) -> Vec<ScanAlt> {
 按序取第一条命中的规则：
 
 1. version 子句 → HistoryScan；
-2. 显式事务且涉及本表的读 → DeltaPoint/DeltaRange/RowFallback
-   （**不派 Main**：Q-14 要求事务读见自身写，Main 无事务尾巴——保守
-   正确；事务内大表查询走 RowFallback 与今日行为一致）；
+2. 显式事务且涉及本表的读 → CurrentPoint/CurrentRange/RowFallback
+   （**不派 Main**——保守正确，缩小等价风险面；注意与 04 §5 的表述
+   统一：现状事务内大表查询走 try_ap_scan+txn overlay（Q-14 修复后），
+   派发到 RowFallback 是**行为变化**，v1 保守化处理需在差分中显式
+   标注豁免，或 v1 事务内直接保留现 if-else 路径不进派发器——
+   Q10 拍板）；
 3. pk 等值 → DeltaPoint；
 4. Main Full 覆盖（checkpoint 已覆盖至 snap，无尾巴）→ MainScan；
 5. Main+Delta 联合可 Full → MainPlusDelta；
@@ -73,6 +76,15 @@ dispatch: rule#4 (main full coverage, threshold=10000)
 
 - 输出**派发理由**（rule# + 关键数字）——规则式代价的可观测化；
 - `force_source` 生效时标注 `[forced: delta]`（调试可辨识）。
+
+## 5.5 派发输入：catalog 内存快照（评审 P1-6 补设计）
+
+派发是纯函数，但 `catalog` 输入现状是 prolly 树查找（resolve_table →
+catalog_lookup，经 chunk 缓存的 CAS 读），且一条查询最多 resolve 同表
+**3 次**（try_pk_pushdown/try_ap_scan/table_scan 各一次）。补设计：
+DbSnapshot 内挂 `Arc<CatalogCache>`（branch → 表名 → {schema, entry,
+col_rows, col_segments}），随 schema_version 原子换新。**附带收益**：
+每查询 3 次 resolve 收敛为 1 次，列为 v2c-1 显式收益项。
 
 ## 6. 实现前必须回答
 

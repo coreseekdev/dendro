@@ -10,6 +10,7 @@
 pub enum ScalarStep {
     Const(u32),              // 常量池索引（含 NULL：Const(NULL_IDX)）
     Col(usize),              // 行/块内列偏移（绑定产物）
+    Param(u16),              // 参数槽位 $n（评审 P0-3：prepared 模板编译必需）
     Cmp(BinaryOperator),     // < <= = != >= like 等比较（语义=现 eval）
     Arith(BinaryOperator),   // + - * / %（含负数字面量已折 Const）
     LogicAnd / LogicOr,      // 三值逻辑短路（见 §4）
@@ -52,22 +53,32 @@ pub fn eval_row(p: &ScalarProgram, row: &[SqlValue], out: &mut SqlValue)
 - 逐行调用，供 DeltaPoint/RowFallback/退化管线使用；
 - 越界/类型错 = 返回内部错误（不 panic；P0-2 同款纪律）。
 
-## 4. 三值逻辑的编译模式（NULL 短路的正确性关键）
+## 4. 求值序与 NULL 语义（评审 P0-1 修正：现状复刻，非 SQL 标准）
 
-AND/OR 不能朴素短路（`NULL AND FALSE = FALSE`，须看右侧）。
-采用 PG 的 anynull 跟踪模式：
+**现状是唯一基准**（行为等价红线）：现行 `expr.rs binop`（408-433 行）的
+AND/OR/比较是 **eager + null-first**：两侧**都先求值**，任一侧 NULL 即
+返回 NULL，无短路；`NOT NULL` 今天是 internal error（as_bool(Null)
+报错），**不是**返回 NULL；`SELECT (false AND NULL)` 今天返回 NULL
+（不是 FALSE）。
+
+因此 v1 编译模式为**忠实复刻**（禁止 Kleene 化）：
 
 ```
-a AND b 编译为：
-  eval a -> r0
-  JumpIfFalse r0 -> L_false          ; a=false ⇒ 整体 false（跳过 b）
-  eval b -> r1
-  ...                                 ; 汇合点：结合 anynull 标志合成结果
+a AND b 编译为：            ; 与现 binop 逐步同构
+  eval a -> r0              ; 总是求值（无跳转——见下）
+  eval b -> r1              ; 总是求值（eager：右侧除零仍须报错！）
+  And                       ; 合成：任一 Null ⇒ Null；否则 bool_and
 ```
 
-合成规则（与现 eval 逐条对拍，进编译器单测）：
-AND：见 false ⇒ false；否则见 null ⇒ null；否则 true。
-OR 对偶。**禁止**引入"null 当 false"之类的近似——I-H1 红线。
+- **v1 不引入任何求值短路**：现状 eager 求值使 `WHERE x=1 AND 1/0=1`
+  今天对每行报 division_by_zero——JumpIfFalse 短路会把"错误"变"空集"，
+  属可见行为变化，**禁止**。Jump/JumpIfFalse/JumpIfNull 指令保留在
+  指令集中（Case/InList 内部控制流用），但 AND/OR 不用它们；
+- **NOT 的现状**：`Not(Null)` = internal error（非 Null）。复刻为
+  Not 步遇 Null 输入返回同样错误；
+- **语义修正（Kleene 化）是明确的未来变更**：单列"已知语义偏差清单"
+  （SQL 标准三值逻辑 + NOT NULL=NULL + 短路求值），作为独立 PR 评审、
+  重生成受影响 slt 期望，并从行为等价护航中显式豁免——本 spec 不做。
 
 ## 5. 后端二：eval_chunk（AP，v2c-1 接入）
 
@@ -97,11 +108,22 @@ expr:
   3: Out
 ```
 
+## 7.5 附录 A：Expr → ScalarStep 全映射表（B1 前置交付物）
+
+评审 P1-8 结论：现有表达式面远大于指令集的直观覆盖（Between 含
+negated/NULL、InList 三值 found/has_null 且 found 即 break、Case 的
+operand 形式与条件 NULL、IsTrue/IsFalse、TryCast/SafeCast、TypedString、
+Substring FROM-FOR 语法、StringConcat、约 20 个 builtin 含变参）。
+**B1 开工前必须交付附录 A**（独立文档或本文件扩充）：逐 Expr 形的
+步序列、求值顺序、错误码、NULL 行为，与 expr.rs 行号互链；R1/R2
+单测按此表逐行生成。此表同时是对拍基准——差分红了以它裁决。
+
 ## 8. 实现前必须回答
 
-1. `Like` 模式当前语义（转义/大小写）在哪实现？步列表的预解析模式
-   必须与其逐字节一致（编译期预解析属于"控制流"改动还是"语义"改动？
-   建议：v1 保持 Like 现状（运行时匹配），预解析进 v2b.1）。
+1. **LIKE 现状根本未实现**（评审 P1-8 更正：全库无 Expr::Like 处理，
+   落在 not_supported 兜底）——它不是"语义搬运"而是**新功能**：Builtin
+   表新增条目 + 新语义定义（转义/大小写规则需拍板）+ 新增测试，不进
+   等价性叙事。Q3 作废。
 2. `Builtin` 表与现有 builtin 函数注册机制（若有）如何对齐？避免双表。
 3. Agg 是否纳入步列表？建议：**v1 不纳入**（聚合走算子层 AggCall，
    见 04），步列表只管标量表达式——缩小爆炸半径。

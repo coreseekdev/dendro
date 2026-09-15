@@ -21,24 +21,27 @@ pub struct Chunk {
 - **边界转换**：`Chunk → RecordBatch`（结果集出口，零拷贝）；
   `RecordBatch → Chunk`（CBF 入口，零拷贝）；**禁止逐行跨界**。
 
-## 2. 管线协议（push-based）
+## 2. 管线协议（push-based；评审 P1-7 补错误通道）
 
 ```rust
+pub enum FlowControl {
+    Continue,
+    Stop,                    // LIMIT 满员/取消/超时 → 正常停止
+    Err(SqlError),           // 求值错误 → 语句失败（现状语义）
+}
 pub trait Sink { fn push(&mut self, cx: &mut Ctx, c: Chunk) -> FlowControl; }
-pub enum FlowControl { Continue, Stop }   // LIMIT 满员/取消/超时 → Stop
-
-pub trait PipeOp { fn push(&mut self, cx: &mut Ctx, c: Chunk, out: &mut dyn Sink); }
+pub trait PipeOp { fn push(&mut self, cx: &mut Ctx, c: Chunk, out: &mut dyn Sink) -> FlowControl; }
 ```
 
-- Source 顺序产 Chunk 推入算子链尾端的 Sink；
-- `Ctx` 携带：会话句柄（deadline_check/cancel——**每算子 push 前检查**，
-  超时/取消即时传播）、内存守卫配额、标量程序引用；
-- **Stop 沿 push 链逆向传播**：Sink 停止后算子即不再向下游推（LIMIT
-  短路的实现点；EXISTS 半连接同机制）；
-- v1 **单线程顺序执行**（不做 morsel 并行——AP 200k 行 185ms 的瓶颈
-  不是并行度；并行是 v3，避免一次引入调度复杂度）。
+- **错误即停、逐层透传**：Filter 谓词类型错/除零、Cast 失败、join 键
+  比较错——Err 沿管线逐层上抛（等价现状"求值错误 → 语句失败"，
+  scan.rs:168-170）；**Source 在错误后不得再被 poll**；
+- `Ctx` 携带：会话句柄（deadline_check/cancel——每算子 push 前检查）、
+  内存守卫配额、标量程序引用、**参数数组**（Param 步取值，见 06 §1.1）；
+- **Stop 沿 push 链逆向传播**（LIMIT 短路/EXISTS 半连接）；
+- v1 **单线程顺序执行**（morsel 并行是 v3）。
 
-## 3. 算子集（v1 最小集）
+## 3. 算子集## 3. 算子集（v1 最小集）
 
 | 算子 | 语义 | 备注 |
 |------|------|------|
@@ -51,7 +54,7 @@ pub trait PipeOp { fn push(&mut self, cx: &mut Ctx, c: Chunk, out: &mut dyn Sink
 算子**无状态于查询间**（状态在 Ctx/算子实例内）；同一算子类型服务
 TP/AP——差异只在批大小（点查路径批=1 行或不产生中间批）。
 
-## 4. 数据源（Source trait = 放置层多态）
+## 4. 数据源（Source trait = 放置层多态）（评审 P0-2 修正构成）
 
 ```rust
 pub trait Source {
@@ -59,19 +62,21 @@ pub trait Source {
 }
 ```
 
-| Source | 语义（全部为**现有行为的搬运**，非新逻辑） |
+| Source | 语义（**现有行为的逐段搬运**，含坑位注释） |
 |--------|------------------------------------------|
-| `MemtxSource`（Point/Range）| memtx `get`/`snapshot_rows_in_range` → 行解码 → chunk（点查=1 行 chunk 或直接 Sink 产 ResultSet）|
-| `CbfSource` | col_segments 段剪枝（pk_range ∩ [pk_min,pk_max]）→ ap.scan → RecordBatch → Chunk（零拷贝）→ pk 去重 + col_deletes 抑制 |
-| `MainPlusDeltaSource` | CbfSource 主流 + memtx 尾巴：v1 = 现 `seen: HashSet` 去重语义原样搬运（行为等价）；v2c-2 = pk 有序归并替换 |
+| `CurrentSource::Point` | **四段合成**：memtx get → **墓碑判定**（latest_ts ≤ snapshot 不得回树——R7-1 伴生①，曾出 P0）→ prolly cursor::lookup → txn writes（build_point_view 1258-1297 逐段搬运）。checkpoint 截断后树是主源 |
+| `CurrentSource::Range` | prolly range_scan + snapshot_rows_in_range + txn（table_scan 1611-1656；**无纯 memtx 范围路径**） |
+| `CbfSource` | 段剪枝（pk_range ∩ [pk_min,pk_max]）→ ap.scan → RecordBatch → Chunk → pk 去重 + col_deletes hex 抑制（try_ap_scan 725-752）|
+| `MainPlusDeltaSource` | CbfSource 主流 + 当前读尾巴（overlay 含 txn 写，Q-14）；v1 = 现 `seen: HashSet` 语义原样搬运；v2c-2 = 归并替换 |
 | `ProllySource` | time_travel_scan 现逻辑 → chunk |
-| `RowFallbackSource` | 现行 `table_scan` 路径 → chunk（**等价性锚点**：任何派发决策可与之对拍）|
+| `RowFallbackSource` | 现行 `table_scan` 路径 → chunk（**等价性锚点**）|
 
-**可见性规则**（所有 Source 一致）：snapshot 过滤（memtx）/段快照
-（CBF）/事务冻结根（Q-14：显式事务读 `txn_head`，事务自身写以 overlay
-并入——现 try_ap_scan 语义逐条搬运）。
+**已知既有缺陷如实搬运**（评审 P2）：多列 pk 且 ≥10k 行的表今天已走
+CBF 路径且无条件以 pk[0] 做去重键（潜在既有 bug）——v1 派发器排除
+多列 pk 走 Main；差分若红 = 既有 bug 暴露，**按 bug 修而非按等价修**，
+单列已知问题清单。
 
-## 5. 管线装配与退化路径
+## 5. 管线装配## 5. 管线装配与退化路径
 
 - 派发器（见 05）产出：`Source + [算子] + Sink` 的具体序列；
 - **退化管线**：点查 = MemtxSource(Point) → ProjectSink（无中间算子，
@@ -88,5 +93,9 @@ pub trait Source {
 2. 错误传播：Source 中途错误（CBF 段 CRC 坏）→ 管线中止 + 错误上抛
    （现语义）；不允许"跳过坏段"（静默丢数据红线）。
 3. 内存量（S-3）：Chunk 批大小上限（建议 4096 行，介于 DuckDB 2048
-   与现 CBF 行组之间，bench 后定）；管线内存守卫并入现有
-   max_txn_bytes 同款机制。
+   与现 CBF 行组之间，bench 后定）。**读侧内存守卫是缺口**（评审 P2）：
+   max_txn_bytes 只管写集，Sort/HashJoin/Aggregate 仍无界物化——
+   v1 明示此缺口，守卫机制另立设计（v3），不写空话。
+4. **物化点澄清**（评审 P2）：sel 非连续时 Chunk→RecordBatch 必须
+   物化（arrow take/filter），"零拷贝"仅对连续/无 sel 批成立——
+   转换器实现须注明物化点与代价。
