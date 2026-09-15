@@ -102,7 +102,7 @@ impl QueryResult {
         self.rows
             .get(row)
             .and_then(|r| r.get(col))
-            .map_or(true, |v| matches!(v, SqlValue::Null))
+            .is_none_or(|v| matches!(v, SqlValue::Null))
     }
 }
 
