@@ -11,7 +11,6 @@ use sqlparser::ast::{
     Expr, FunctionArg, FunctionArgExpr, GroupByExpr, JoinOperator, ObjectName, OrderByExpr, Query,
     Select, SelectItem, SetExpr, TableFactor, Value as PV,
 };
-use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::sync::Arc;
 
