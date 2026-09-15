@@ -148,7 +148,13 @@ pub(crate) fn eval_query(
         // 常量短路（Q-1 优化器）：WHERE 表达式不含列引用时单次求值——
         // false/NULL → 跳过扫描直接返回空集（免全表遍历+行解码）；
         // true → 跳过过滤（恒真条件不需逐行判定）
-        if !has_column_ref(w) {
+        // 账本 #23：恒假短路仅在**无聚合**时返回空集——带全局聚合的查询
+        // （count(*) 等）空输入仍须产出一行（零值聚合）。此前短路跳过了
+        // 聚合阶段：WHERE 1=0 返回 0 行、而等价的逐行过滤路径返回 count=0，
+        // 两条路径分叉。has_agg 判定前移（原在过滤后计算，现两处共用）。
+        let has_agg = projection_aggregates(&select.projection).is_some()
+            || select.having.as_ref().map(has_agg_expr).unwrap_or(false);
+        if !has_column_ref(w) && !has_agg {
             match expr::eval(w, &[], &|_| None) {
                 Ok(SqlValue::Bool(false)) | Ok(SqlValue::Null) => {
                     return Ok(TableView {
@@ -207,9 +213,7 @@ pub(crate) fn eval_query(
             }
         }
     }
-    // GROUP BY / 聚合 / HAVING
-    let has_agg = projection_aggregates(&select.projection).is_some()
-        || select.having.as_ref().map(has_agg_expr).unwrap_or(false);
+    // GROUP BY / 聚合 / HAVING（has_agg 已在常量短路判定前计算——#23）
     let group_exprs: Vec<Expr> = match &select.group_by {
         GroupByExpr::All(_) => return Err(SqlError::not_supported("GROUP BY ALL")),
         GroupByExpr::Expressions(e, _) => e.clone(),
@@ -1880,10 +1884,13 @@ fn hash_join(
     on: &Expr,
     deadline: Option<std::time::Instant>,
 ) -> Result<TableView> {
-    // 找等值条件 col_l = col_r（支持 AND 链中提取多个）
-    let eqs = extract_equi(on, &l.names, &r.names)?;
+    // 找等值条件 col_l = col_r（支持 AND 链中提取多个；#22 残留合取回收）
+    let (eqs, residual) = extract_equi(on, &l.names, &r.names)?;
     let mut names = l.names.clone();
     names.extend(r.names.clone());
+    // 列名克隆进闭包持有——避免借用 names 阻碍结尾 TableView 移动
+    let owned = names.clone();
+    let res_cols = col_lookup(&owned);
     // 建右表哈希（文本键：类型内规范）
     let mkkey = |row: &Vec<SqlValue>, idx: &[usize]| -> Option<Vec<String>> {
         let mut k = Vec::with_capacity(idx.len());
@@ -1926,6 +1933,10 @@ fn hash_join(
             for rr in matches {
                 let mut row = lr.clone();
                 row.extend(rr.iter().cloned());
+                // #22：残留合取逐候选对求值（INNER：不成立即丢弃）
+                if !residual_holds(&residual, &row, &res_cols)? {
+                    continue;
+                }
                 rows.push(row);
             }
         }
@@ -1939,9 +1950,30 @@ fn hash_join_left(
     on: &Expr,
     deadline: Option<std::time::Instant>,
 ) -> Result<TableView> {
-    let eqs = extract_equi(on, &l.names, &r.names)?;
+    let (eqs, residual) = extract_equi(on, &l.names, &r.names)?;
     let mut names = l.names.clone();
     names.extend(r.names.clone());
+    // 列名克隆进闭包持有——避免借用 names 阻碍结尾 TableView 移动
+    let owned = names.clone();
+    let res_cols = col_lookup(&owned);
+    // #21：类型标签键（与 INNER 版同型）——裸 to_text 曾使 NULL↔NULL、
+    // Int64(1)↔Utf8("1") 碰撞；NULL 分量 = 永不匹配（SQL 等值 NULL 语义）
+    let mkkey = |row: &Vec<SqlValue>, idx: &[usize]| -> Option<Vec<String>> {
+        let mut k = Vec::with_capacity(idx.len());
+        for &i in idx {
+            let v = row.get(i)?;
+            if v.is_null() {
+                return None;
+            }
+            k.push(format!(
+                "{}{}{}",
+                v.type_name(),
+                NUL_PLACEHOLDER,
+                expr::to_text(v.clone())
+            ));
+        }
+        Some(k)
+    };
     let mut hm: HashMap<Vec<String>, Vec<&Vec<SqlValue>>> = HashMap::new();
     let mut hj_chk = 0usize;
     for rr in &r.rows {
@@ -1953,34 +1985,34 @@ fn hash_join_left(
                 }
             }
         }
-        let key: Vec<String> = eqs
-            .ridx
-            .iter()
-            .map(|&i| expr::to_text(rr[i].clone()))
-            .collect();
-        if key.iter().any(|k| k == "\x00NULL") {
-            continue;
+        if let Some(key) = mkkey(rr, &eqs.ridx) {
+            hm.entry(key).or_default().push(rr);
         }
-        hm.entry(key).or_default().push(rr);
     }
     let null_right = vec![SqlValue::Null; r.names.len()];
     let mut rows = Vec::new();
     for lr in &l.rows {
-        let key: Vec<String> = eqs
-            .lidx
-            .iter()
-            .map(|&i| expr::to_text(lr[i].clone()))
-            .collect();
-        let matched = if key.iter().any(|k| k == "\x00NULL") {
-            None
-        } else {
-            hm.get(&key)
+        // 探侧 NULL 键 → 无匹配 → NULL 延展（LEFT 语义）
+        let matched = match mkkey(lr, &eqs.lidx) {
+            None => None,
+            Some(k) => hm.get(&k),
         };
         match matched {
             Some(ms) => {
+                let mut any = false;
                 for rr in ms {
                     let mut row = lr.clone();
                     row.extend(rr.iter().cloned());
+                    // #22：残留合取；全部候选不成立 → 仍按无匹配 NULL 延展
+                    if !residual_holds(&residual, &row, &res_cols)? {
+                        continue;
+                    }
+                    any = true;
+                    rows.push(row);
+                }
+                if !any {
+                    let mut row = lr.clone();
+                    row.extend(null_right.iter().cloned());
                     rows.push(row);
                 }
             }
@@ -2000,15 +2032,19 @@ struct EquiIdx {
 }
 
 /// 从 ON 条件提取 `l.c = r.c` 等值对（AND 链）
-fn extract_equi(e: &Expr, ln: &[String], rn: &[String]) -> Result<EquiIdx> {
+fn extract_equi(e: &Expr, ln: &[String], rn: &[String]) -> Result<(EquiIdx, Vec<Expr>)> {
     let mut lidx = Vec::new();
     let mut ridx = Vec::new();
+    let mut residual: Vec<Expr> = Vec::new();
+    // 账本 #22：AND 链中非等值合取曾**静默丢弃**（子节点返回值被无视）。
+    // 改为收集残留、逐候选对求值（LEFT：残留不成立=该对不匹配→NULL 延展）
     fn walk(
         e: &Expr,
         ln: &[String],
         rn: &[String],
         li: &mut Vec<usize>,
         ri: &mut Vec<usize>,
+        residual: &mut Vec<Expr>,
     ) -> Result<bool> {
         match e {
             Expr::BinaryOp {
@@ -2016,9 +2052,17 @@ fn extract_equi(e: &Expr, ln: &[String], rn: &[String]) -> Result<EquiIdx> {
                 op: sqlparser::ast::BinaryOperator::And,
                 right,
             } => {
-                walk(left, ln, rn, li, ri)?;
-                walk(right, ln, rn, li, ri)?;
-                Ok(true)
+                // #22：不可提取的子式由**父节点**收集（子式自身只在叶子报
+                // false）；AND 恒真当且仅当全部子式可提取
+                let a = walk(left, ln, rn, li, ri, residual)?;
+                if !a {
+                    residual.push((**left).clone());
+                }
+                let b = walk(right, ln, rn, li, ri, residual)?;
+                if !b {
+                    residual.push((**right).clone());
+                }
+                Ok(a && b)
             }
             Expr::BinaryOp {
                 left,
@@ -2045,15 +2089,32 @@ fn extract_equi(e: &Expr, ln: &[String], rn: &[String]) -> Result<EquiIdx> {
             _ => Ok(false),
         }
     }
-    if !walk(e, ln, rn, &mut lidx, &mut ridx)? {
+    let _ = walk(e, ln, rn, &mut lidx, &mut ridx, &mut residual)?;
+    // 顶层整体不可提取且无任何等值对 → 原错误语义（顶层非等值条件）
+    if lidx.is_empty() {
         return Err(SqlError::not_supported(
             "JOIN ON: only equi-conditions supported",
         ));
     }
-    if lidx.is_empty() {
-        return Err(SqlError::not_supported("JOIN ON: no equi-condition found"));
+    Ok((EquiIdx { lidx, ridx }, residual))
+}
+
+/// 残留合取求值（#22）：组合行上求值，全部 Bool(true) 才匹配（终结
+/// 语义与 WHERE 一致：仅 true 放行）
+/// 键内分隔符（NUL 字节，类型名与文本之间——附录 A 键编码）
+const NUL_PLACEHOLDER: &str = "\u{0}";
+
+fn residual_holds(
+    residual: &[Expr],
+    combined: &[SqlValue],
+    cols: &dyn Fn(&str) -> Option<usize>,
+) -> Result<bool> {
+    for e in residual {
+        if !matches!(expr::eval(e, combined, cols), Ok(SqlValue::Bool(true))) {
+            return Ok(false);
+        }
     }
-    Ok(EquiIdx { lidx, ridx })
+    Ok(true)
 }
 
 fn col_pos(e: &Expr, names: &[String]) -> Option<usize> {
