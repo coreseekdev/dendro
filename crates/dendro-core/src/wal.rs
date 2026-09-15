@@ -183,18 +183,28 @@ impl<'a> FrameIter<'a> {
     }
     /// 返回 (type, seq, payload)；段尾 32B trailer 不作为帧产出。
     /// 对不可信输入（截断/坏 len）返回 Err 而非 panic（P0-2 修复）。
+    ///
+    /// 段尾识别（账本 #19）：旧 guard `remaining <= TRAILER_LEN 即停`
+    /// 把"最后一个总长 ≤32B 的小帧"（24B 头 + ≤8B 载荷）当 trailer
+    /// 丢弃——封段回放静默丢已确认提交（Kani H2 反例）。改为按魔数
+    /// 识别：DRNO（帧）≠ ESAL（段尾），天然可分；垃圾尾（非两魔数）
+    /// 报 Err，不再被字节数容差静默吞掉。撕尾/腐坏的容忍分级由回放方
+    /// 按段位置处理（recovery.rs：末段一律容忍，非末段严格报错）——
+    /// 迭代器不做 trailer crc 校验：ESAL 魔数已截断的撕尾/位腐，
+    /// 与"已封但计数腐坏"在追加模式下本就不可区分（尾段是否封口
+    /// 不可靠），校验只会把符号执行成本变成 28 字节 CRC 链（H2 爆炸）。
     pub fn next_frame(&mut self) -> Option<Result<(FrameType, u64, &'a [u8])>> {
-        if self.off >= self.data.len() || self.data.len() - self.off <= TRAILER_LEN {
-            return None;
-        }
-        if self.off + HEADER_LEN > self.data.len() {
+        if self.off >= self.data.len() {
             return None;
         }
         let d = &self.data[self.off..];
         if d.len() < HEADER_LEN {
-            return None;
+            return None; // 半帧头：段尾/撕尾
         }
         let magic = u32::from_le_bytes(d[..4].try_into().unwrap());
+        if magic == SEGMENT_MAGIC {
+            return None; // 段尾 trailer（ESAL）
+        }
         if magic != FRAME_MAGIC {
             return Some(Err(SqlError::internal("wal frame magic")));
         }

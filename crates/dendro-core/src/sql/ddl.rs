@@ -316,12 +316,20 @@ pub(crate) fn alter_table_impl(
     let short = full.rsplit('.').next().unwrap_or(&full).to_string();
     match op {
         sqlparser::ast::AlterTableOperation::AddColumn { column_def, .. } => {
-            let (mut cols, pk) = translate_columns(&[column_def], &[])?;
+            let (mut cols, new_pk) = translate_columns(&[column_def], &[])?;
+            if !new_pk.is_empty() {
+                return Err(SqlError::not_supported(
+                    "ALTER TABLE ADD COLUMN ... PRIMARY KEY（改用建表约束或重建表）",
+                ));
+            }
             let (_, entry) = scan::resolve_table(db, &sess.branch, &short)?;
             let catalog = crate::versioned::Versioned::new(db.store.clone());
             let mut schema = catalog.load_schema(&entry.schema_addr)?;
             schema.columns.append(&mut cols);
-            schema.pk = pk; // AddColumn 无 pk
+            // 原主键保持不变：AddColumn 只追加列。曾在此被新列的空 pk
+            // 整体覆盖，表随即永久失去主键（后续 INSERT 全部报
+            // "has no primary key"）。
+            let _ = new_pk;
             db.cas
                 .put_batch(&[schema.to_chunk()], &mut HashSet::new())
                 .map_err(SqlError::from)?;

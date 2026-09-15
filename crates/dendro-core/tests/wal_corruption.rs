@@ -8,7 +8,9 @@
 use bytes::Bytes;
 use dendro_core::objstore::memory::MemoryObjStore;
 use dendro_core::objstore::{ObjResult, ObjStore};
-use dendro_core::wal::{encode_frame, FrameIter, FrameType, HEADER_LEN};
+use dendro_core::wal::{
+    encode_frame, encode_trailer, FrameIter, FrameType, HEADER_LEN, TRAILER_LEN,
+};
 use dendro_core::{Database, DbOptions, StoreConfig};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -112,12 +114,22 @@ fn frame_iter_truncated_payload_is_error() {
 
 #[test]
 fn frame_iter_torn_tail_tolerated() {
-    // 尾部 ≤ 32B（不足段尾）视为撕裂写容忍 → None（torn write 语义，SPEC 01 §4）。
-    // 引擎真实帧均 > 32B（帧头 24B + 非空 payload），不会被此容差吞掉。
+    // 撕尾合同（账本 #19 重定义）：迭代器层两级——
+    //   < 24B（半帧头）→ None（干净终止）
+    //   ≥ 24B 但非完整帧 → Err（撕裂/腐坏），回放方按末段容忍/非末段严格分级
+    // 旧 guard "剩余 ≤32B 一律 None" 会把段尾小帧（≤32B 完整帧）一并吞掉
+    // ——封段回放静默丢已确认提交（Kani H2/H4 反例），已删除。
     let frame = encode_frame(FrameType::Txn, 1, b"0123456789");
-    let cut = &frame[..frame.len() - 4]; // 剩 30B
+    let cut = &frame[..frame.len() - 4]; // 剩 30B：≥24B 的撕尾 → Err
     let mut it = FrameIter::new(cut);
-    assert!(it.next_frame().is_none(), "≤32B 残尾按撕裂写容忍");
+    assert!(
+        matches!(it.next_frame(), Some(Err(_))),
+        "≥24B 撕尾必须报 Err（末段回放按 durable 前缀容忍）"
+    );
+    // 半帧头（< 24B）→ None
+    let cut2 = &frame[..10];
+    let mut it2 = FrameIter::new(cut2);
+    assert!(it2.next_frame().is_none(), "半帧头视为段尾");
 }
 
 #[test]
@@ -133,14 +145,75 @@ fn frame_iter_truncated_header_ends_cleanly() {
 
 #[test]
 fn frame_iter_trailer_not_decoded_as_frame() {
-    // 正常段 = 帧 + 32B 段尾；迭代器必须停在帧边界，不把段尾当帧
+    // 正常段 = 帧 + 32B 段尾（encode_trailer，带 SEGMENT_MAGIC + 自校验 crc）；
+    // 迭代器必须停在帧边界，不把段尾当帧。
     let frame = encode_frame(FrameType::Txn, 7, b"aaa");
     let mut seg = frame;
-    seg.extend_from_slice(&[0u8; 32]);
+    seg.extend_from_slice(&encode_trailer(1, 7, 7));
     let mut it = FrameIter::new(&seg);
     let (ty, seq, payload) = it.next_frame().unwrap().unwrap();
     assert_eq!((ty, seq, payload), (FrameType::Txn, 7, &b"aaa"[..]));
-    assert!(it.next_frame().is_none());
+    assert!(it.next_frame().is_none(), "trailer 干净终止");
+    // 账本 #19 附带收紧：旧 guard 把任何 ≤32B 垃圾尾静默吞掉；
+    // 现在 ≥24B 的垃圾尾（非合法 trailer）必须报 Err（位腐可检测）
+    let mut seg2 = encode_frame(FrameType::Txn, 7, b"aaa");
+    seg2.extend_from_slice(&[0u8; 32]);
+    let mut it2 = FrameIter::new(&seg2);
+    assert!(it2.next_frame().unwrap().is_ok(), "真帧先正常解码");
+    assert!(
+        matches!(it2.next_frame(), Some(Err(_))),
+        "垃圾尾（非 trailer）不再被静默吞掉"
+    );
+}
+
+#[test]
+fn frame_iter_tiny_frame_at_segment_end_decodes() {
+    // 账本 #19 主回归：24B 头 + ≤8B 载荷的完整帧（总长 ≤32B）在段尾
+    // 必须解码——旧 guard 把它当 trailer 丢弃 = 丢已确认提交
+    for plen in [0usize, 1, 4, 8] {
+        let payload = vec![b'v'; plen];
+        let frame = encode_frame(FrameType::Txn, 9, &payload);
+        assert!(
+            frame.len() <= TRAILER_LEN,
+            "前置：24+{plen} 应 ≤32B 才构成小帧场景"
+        );
+        let mut seg = frame;
+        seg.extend_from_slice(&encode_trailer(1, 9, 9));
+        let mut it = FrameIter::new(&seg);
+        let (ty, seq, p) = it.next_frame().unwrap().unwrap();
+        assert_eq!((ty, seq), (FrameType::Txn, 9));
+        assert_eq!(p.len(), plen);
+        assert!(it.next_frame().is_none());
+    }
+}
+
+// ── Kani harness 同源守卫（账本 #19 附带机制）──
+// harness 是真实现的独立副本（kani standalone 不支持外部 crate），
+// 曾发生 FRAME_MAGIC 漂移（副本 0x4C41_5345 vs 真实现 0x4F524E44）
+// 而无任何告警。常量级同步测试：漂移即红。
+#[test]
+fn kani_harness_constants_in_sync() {
+    let src = include_str!("../../../verification/kani/wal_frame.rs");
+    assert!(
+        src.contains("pub const FRAME_MAGIC: u32 = 0x4F524E44;"),
+        "Kani harness FRAME_MAGIC 与 wal.rs 漂移"
+    );
+    assert!(
+        src.contains("pub const SEGMENT_MAGIC: u32 = 0x4C415345;"),
+        "Kani harness SEGMENT_MAGIC 与 wal.rs 漂移"
+    );
+    assert!(
+        src.contains(&format!("pub const HEADER_LEN: usize = {HEADER_LEN};")),
+        "Kani harness HEADER_LEN 与 wal.rs 漂移"
+    );
+    assert!(
+        src.contains(&format!("pub const TRAILER_LEN: usize = {TRAILER_LEN};")),
+        "Kani harness TRAILER_LEN 与 wal.rs 漂移"
+    );
+    assert!(
+        src.contains("pub const FRAME_VERSION: u16 = 1;"),
+        "Kani harness FRAME_VERSION 与 wal.rs 漂移"
+    );
 }
 
 // ── e2e：打库路径对损坏段 fail-fast ──

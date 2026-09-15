@@ -147,6 +147,80 @@ pub fn bench_tp(n_insert: usize, n_select: usize) -> BenchResult {
     }
 }
 
+/// P2-6 v2a 计划缓存 A/B：同一文本（命中，免解析）vs 唯一字面量
+/// （未命中：hash+锁+插入缓存+解析）。两臂执行器工作量相同
+/// （同为 ~1000 行表上的主键点查），差值即解析开销。
+pub fn bench_plan_cache(n: usize) -> BenchResult {
+    let mut rows = Vec::new();
+    let db = mem_db(Durability::NoWait, 1);
+    let mut s = db.new_session();
+    s.exec("CREATE TABLE pc (id BIGINT PRIMARY KEY, v TEXT)")
+        .unwrap();
+    for i in 0..1000 {
+        s.exec(&format!("INSERT INTO pc VALUES ({i}, 'v{i}')"))
+            .unwrap();
+    }
+
+    // 1. 命中臂：固定文本反复执行
+    let mut lat = Vec::with_capacity(n);
+    let t0 = Instant::now();
+    for _ in 0..n {
+        let t = Instant::now();
+        let out = s.exec("SELECT v FROM pc WHERE id = 42").unwrap();
+        lat.push(t.elapsed().as_secs_f64() * 1e6);
+        assert!(!out.is_empty());
+    }
+    let total = t0.elapsed().as_secs_f64();
+    rows.push(BenchRow {
+        name: "plan_cache_hit_point_select".into(),
+        value: n as f64 / total,
+        unit: "txn/s",
+    });
+    rows.push(BenchRow {
+        name: "plan_cache_hit_p50_us".into(),
+        value: pct(&lat, 0.5),
+        unit: "us",
+    });
+
+    // 2. 未命中臂：每次唯一文本（>4096 上限，触发周期性清空），
+    //    键 ≥1000 均不存在（同形状点查）
+    let mut lat = Vec::with_capacity(n);
+    let t0 = Instant::now();
+    for i in 0..n {
+        let t = Instant::now();
+        let out = s
+            .exec(&format!("SELECT v FROM pc WHERE id = {}", 1000 + i))
+            .unwrap();
+        lat.push(t.elapsed().as_secs_f64() * 1e6);
+        // 零行 SELECT 仍产出 Output::Rows（空 RecordSet）——判行数非判输出列表
+        assert!(
+            out.iter().all(|o| match o {
+                dendro_core::types::Output::Rows(r) => {
+                    r.batches.iter().map(|b| b.num_rows()).sum::<usize>() == 0
+                }
+                _ => false,
+            }),
+            "缺席键点查应零行"
+        );
+    }
+    let total = t0.elapsed().as_secs_f64();
+    rows.push(BenchRow {
+        name: "plan_cache_miss_point_select".into(),
+        value: n as f64 / total,
+        unit: "txn/s",
+    });
+    rows.push(BenchRow {
+        name: "plan_cache_miss_p50_us".into(),
+        value: pct(&lat, 0.5),
+        unit: "us",
+    });
+
+    BenchResult {
+        suite: "plan_cache".into(),
+        rows,
+    }
+}
+
 /// 组提交延迟 vs durability 模式 vs 模拟 RTT（LocalDir + flush 间隔）
 pub fn bench_commit_latency() -> BenchResult {
     let mut rows = Vec::new();
@@ -444,6 +518,14 @@ pub fn run_all(out_dir: &PathBuf) {
         for r in &s.rows {
             println!("  {:<48} {:>12.3} {}", r.name, r.value, r.unit);
         }
+    }
+    eprintln!("[bench] plan_cache starting...");
+    let s = bench_plan_cache(50_000);
+    let path = out_dir.join(format!("{}.json", s.suite));
+    std::fs::write(&path, s.to_json()).unwrap();
+    println!("wrote {}", path.display());
+    for r in &s.rows {
+        println!("  {:<48} {:>12.3} {}", r.name, r.value, r.unit);
     }
     eprintln!("[bench] commit_latency starting...");
     let s = bench_commit_latency();

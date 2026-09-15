@@ -119,3 +119,24 @@ RocksDB（KV 层）：预编译级点查单线程 200-500k/s，批量写（WAL o
 模型本地代价，OSS 上 RTT 主导时该差距被网络淹没）；并发写入与分支能力
 （O(1) CREATE BRANCH / 全历史时间旅行 / git 式合并）是 SQLite/MySQL/
 RocksDB 不具备的维度。
+
+## 计划缓存 A/B（2026-09-15，AMD Ryzen AI 9 H365，负载≈3.8 下实测）
+
+P2-6 v2a 落地：`hash(SQL)+dialect → 已解析 AST`（4096 条满即清空）。
+命中臂=固定文本，未命中臂=每次唯一字面量（>上限，触发周期清空）；
+两臂执行器工作量相同（同为 1000 行表主键点查），差值即 tokenize+parse 开销。
+
+| 路径 | 吞吐 | p50 |
+|------|-------:|------:|
+| plan_cache_hit_point_select | **324,913 txn/s** | 2.9µs |
+| plan_cache_miss_point_select | 115,802 txn/s | 7.1µs |
+
+**命中 2.8×**，每查询省 ≈4.2µs 解析开销。横向对比表里"SQL 重解析为主"
+的 SQLite 差距项，对重复文本（真实 OLTP 热查询形态）由此收窄——点查命中
+路径 325k/s，与 SQLite 预编译微路径（同机 0.8-1.3M/s，含 python 绑定开销）
+进入同一量级（3-4×）。
+
+注意：未参数化客户端（每查询拼接唯一字面量）走 miss 路径，额外开销
+仅 hash+锁+缓存插入（≈0.1µs 级），不劣化于无缓存版本；上限搅动为
+摊销 O(1)。正确性不变式见 docs/VERIFICATION.md I-E4（纯 AST 缓存，
+执行期实时绑定，DDL 漂移免疫）。JSON：`plan_cache.json`。

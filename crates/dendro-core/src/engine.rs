@@ -493,6 +493,10 @@ pub struct Database {
     pub(crate) branches: RwLock<HashMap<String, Arc<Branch>>>,
     /// 连接数守卫（S-3）：两协议共享
     pub conn_guard: Arc<ConnGuard>,
+    /// SQL 计划缓存（P2-6 v2a）：SQL hash+dialect → 已解析 AST
+    /// 命中时 clone 返回（结构性拷贝 << tokenize+parse 开销）
+    pub(crate) plan_cache:
+        parking_lot::Mutex<std::collections::HashMap<u64, Arc<Vec<sqlparser::ast::Statement>>>>,
     /// 每-名字打开互斥（branch 创建 / reopen 驱逐串行化）
     open_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     pub(crate) session_seq: AtomicU64,
@@ -586,6 +590,7 @@ impl Database {
         let (ver, manifest) = manifest_store.load_latest().map_err(SqlError::from)?;
         crate::recovery::recover_branches(&obj, &manifest)?;
         let conn_guard = Arc::new(ConnGuard::new(opts.max_connections));
+        let plan_cache = parking_lot::Mutex::new(std::collections::HashMap::new());
         let db = Arc::new(Database {
             opts,
             obj,
@@ -595,6 +600,7 @@ impl Database {
             state: ArcSwap::from_pointee(DbSnapshot { manifest }),
             branches: RwLock::new(HashMap::new()),
             conn_guard,
+            plan_cache,
             open_locks: Mutex::new(HashMap::new()),
             session_seq: AtomicU64::new(1),
             chunk_seen: Mutex::new(HashSet::new()),
@@ -618,6 +624,11 @@ impl Database {
             tracing::warn!("gc sweep on open: {e}");
         }
         Ok(db)
+    }
+
+    /// 计划缓存条数（观测/测试用；S-3 有界性验证）
+    pub fn plan_cache_len(&self) -> usize {
+        self.plan_cache.lock().len()
     }
 
     pub fn new_session(self: &Arc<Self>) -> Session {

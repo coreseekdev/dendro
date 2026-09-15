@@ -8,7 +8,11 @@ use std::convert::TryInto;
 
 pub const HEADER_LEN: usize = 24;
 pub const TRAILER_LEN: usize = 32;
-pub const FRAME_MAGIC: u32 = 0x4C41_5345; // "ESAL" LE
+/// 与真实现同步（账本 #19 附带发现：本副本 FRAME_MAGIC 曾漂移为
+/// 0x4C41_5345 而真实现是 0x4F524E44——"逐行同源"声明无机制保障，
+/// 已加 constants-sync 测试防再犯）
+pub const FRAME_MAGIC: u32 = 0x4F524E44; // "DRNO" LE
+pub const SEGMENT_MAGIC: u32 = 0x4C415345; // "ESAL"
 pub const FRAME_VERSION: u16 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -65,17 +69,17 @@ impl<'a> FrameIter<'a> {
     }
 
     pub fn next_frame(&mut self) -> Option<Result<(FrameType, u64, &'a [u8]), ()>> {
-        if self.off >= self.data.len() || self.data.len() - self.off <= TRAILER_LEN {
-            return None;
-        }
-        if self.off + HEADER_LEN > self.data.len() {
+        if self.off >= self.data.len() {
             return None;
         }
         let d = &self.data[self.off..];
         if d.len() < HEADER_LEN {
-            return None;
+            return None; // 半帧头：段尾/撕尾
         }
         let magic = u32::from_le_bytes(d[..4].try_into().unwrap());
+        if magic == SEGMENT_MAGIC {
+            return None; // 段尾 trailer（ESAL）
+        }
         if magic != FRAME_MAGIC {
             return Some(Err(()));
         }
@@ -107,25 +111,58 @@ mod kani_harness {
     use super::*;
 
     /// H1：任意输入序列上 FrameIter 恒不 panic（Err/None 而非 UB/越界）
+    /// 界 40 = 帧头 24 + 16B 载荷：旧界 24 使迭代器永远停在段尾 guard，
+    /// 解码体从未被探索（账本 #19 连带发现）。
+    /// 编码注意（实证调参）：整块符号化（kani::any 数组，无填充循环）
+    /// + 固定 3 次调用（解析/推进/再解析）——原 while-let 无界迭代 +
+    /// 符号长度 Vec 填充使展开空间乘法爆炸（40B/ unwind 80 实测
+    /// >9min 不收敛）。unwind 17 覆盖 crc32c（内循环恰 8、外循环
+    /// ≤16B 载荷）。
     #[kani::proof]
+    #[kani::unwind(17)]
     fn frame_iter_arbitrary_input_never_panics() {
+        let buf: [u8; 40] = kani::any();
         let len: usize = kani::any();
-        kani::assume(len <= 24);
-        let mut buf = Vec::with_capacity(len);
-        for _ in 0..len {
-            buf.push(kani::any::<u8>());
-        }
-        let mut it = FrameIter::new(&buf);
-        while let Some(r) = it.next_frame() {
-            let _ = r;
+        kani::assume(len <= 40);
+        let mut it = FrameIter::new(&buf[..len]);
+        let _ = it.next_frame();
+        let _ = it.next_frame();
+        let _ = it.next_frame();
+    }
+
+    /// H4（账本 #19 回归）：总长 ≤ TRAILER_LEN 的小帧在段尾必须被解码
+    /// （旧 guard `remaining <= TRAILER_LEN 即停` 会把它当 trailer 丢弃
+    /// ——封段回放静默丢已确认提交）。
+    #[kani::proof]
+    #[kani::unwind(9)]
+    fn tiny_frame_at_segment_end_decodes() {
+        let seq: u64 = kani::any();
+        let payload: [u8; 2] = [kani::any(), kani::any()]; // 26B 帧 < 32B trailer
+        let frame = encode_frame(FrameType::Txn, seq, &payload);
+        assert!(frame.len() <= TRAILER_LEN, "前置：确为小帧");
+        let mut it = FrameIter::new(&frame);
+        match it.next_frame() {
+            Some(Ok((ty, s, p))) => {
+                assert_eq!(ty, FrameType::Txn);
+                assert_eq!(s, seq);
+                assert_eq!(p, payload.as_slice());
+            }
+            _ => panic!("小帧必须解码，不得当 trailer 丢弃"),
         }
     }
 
     /// H2：合法编码帧必被无错解码（编码/解码对偶）
+    /// 注：payload 用栈上数组而非 vec![kani::any(),..]——符号字节进
+    /// 堆分配（box [..] → into_raw_with_allocator）会引入分配器建模
+    /// 噪声，曾在本工具链上产生虚假反例（0.67 + nightly-2025-11-21）。
+    /// unwind 9：crc32c 内循环恰 8 次 + 外循环 = 载荷长（此处 2）。
+    /// 无显式界时 Kani 对符号长度循环逐轮自动加界、每轮完整求解，
+    /// 实测 >150s 不收敛（CaDiCaL/kissat 同）。
     #[kani::proof]
+    #[kani::unwind(9)]
     fn frame_roundtrip_exact() {
         let seq: u64 = kani::any();
-        let payload: Vec<u8> = vec![kani::any(), kani::any()];
+        let payload: [u8; 2] = [kani::any(), kani::any()];
         let frame = encode_frame(FrameType::Txn, seq, &payload);
         let mut it = FrameIter::new(&frame);
         match it.next_frame() {

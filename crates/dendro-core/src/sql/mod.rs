@@ -15,6 +15,7 @@ use sqlparser::ast::Statement;
 use sqlparser::ast::Value as PV;
 use sqlparser::dialect::{MySqlDialect, PostgreSqlDialect};
 use sqlparser::parser::Parser;
+use std::sync::Arc;
 
 /// 方言（由 wire 层设置；默认 PG）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,6 +37,9 @@ impl Session {
 pub fn agg_display(e: &sqlparser::ast::Expr) -> String {
     e.to_string()
 }
+
+/// 计划缓存条目上限（每库）；防未参数化客户端撑爆内存
+const PLAN_CACHE_CAP: usize = 4096;
 
 pub(crate) fn parse_batch(sql: &str, d: SqlDialect) -> Result<Vec<Statement>> {
     let dialect: &dyn sqlparser::dialect::Dialect = match d {
@@ -125,7 +129,30 @@ pub(crate) fn exec_batch(db: &Database, sess: &mut Session, sql: &str) -> Result
             outs.extend(out);
             continue;
         }
-        let stmts = parse_batch(&raw, sess.dialect)?;
+        // P2-6 v2a 计划缓存：hash(SQL)+dialect → 已解析 AST。
+        // 命中时 clone（Statement 结构性拷贝 << tokenize+parse 微秒级开销）。
+        // 注意：guard 必须显式落语句——if-let 审视位的临时 guard 活到
+        // 整个 if/else 结束，miss 分支里再 lock() 就是自死锁（已复现）。
+        let stmts = {
+            let key = xxhash_rust::xxh3::xxh3_64(raw.as_bytes())
+                ^ (sess.dialect as usize as u64).rotate_left(32);
+            let hit = db.plan_cache.lock().get(&key).cloned();
+            match hit {
+                Some(cached) => cached.as_ref().clone(),
+                None => {
+                    let parsed = parse_batch(&raw, sess.dialect)?;
+                    let mut cache = db.plan_cache.lock();
+                    // 有界缓存（S-3 同源）：满即整体清空。
+                    // 攻击面是拼接字面量的海量唯一 SQL（未参数化客户端），
+                    // LRU 的常数开销在此场景不划算，clear 是 O(n) 且罕见。
+                    if cache.len() >= PLAN_CACHE_CAP {
+                        cache.clear();
+                    }
+                    cache.insert(key, Arc::new(parsed.clone()));
+                    parsed
+                }
+            }
+        };
         if stmts.is_empty() {
             continue;
         }

@@ -44,13 +44,18 @@ report $? "TLC liveness (StallFreedom)"
 cd ..
 
 echo "[5/5] Kani..."
-# 门禁只跑快速 harness（H2/H3）；H1（全输入边界）留 nightly
-# H1（全输入边界 CRC32C 符号执行）留 nightly 单独跑
-# H2/H3（编解码对偶+撕尾容忍）已确认绿——账本 I-C6 ✅
-report 0 "Kani L1 (H2/H3 gate; H1 nightly)"
-K=$(grep -c "SUCCESS" /tmp/verify_kani.txt 2>/dev/null || echo 0)
-if [ "$K" -ge 3 ]; then report 0 "Kani L1 ($K/3 harnesses)"
-else report 1 "Kani L1 ($K/3 harnesses)"; fi
+# 账本 #19 后真跑：H1 任意输入不 panic / H2 编解码对偶 /
+# H3 撕尾容忍 / H4 小帧段尾回归（总耗时 ≈30s）
+K=0
+for h in frame_roundtrip_exact tiny_frame_at_segment_end_decodes truncated_header_ends_cleanly frame_iter_arbitrary_input_never_panics; do
+    if timeout 300 kani verification/kani/wal_frame.rs --harness "$h" > "/tmp/verify_kani_$h.txt" 2>&1; then
+        K=$((K+1))
+    else
+        echo "    harness $h FAILED（/tmp/verify_kani_$h.txt）"
+    fi
+done
+if [ "$K" -ge 4 ]; then report 0 "Kani L1 ($K/4: H1 arbitrary / H2 roundtrip / H3 torn / H4 tiny-frame)"
+else report 1 "Kani L1 ($K/4 harnesses)"; fi
 
 echo ""
 echo "=== 验证结果: $PASS 通过 / $FAIL 失败 ==="

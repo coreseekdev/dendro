@@ -52,7 +52,7 @@
 | I-C3 | NoPhantom | 可见行 ⊆ acked ∪ uncertain-durable（Uncertain = 已持久化但客户端收到错误，reopen 后可见且未 ack——SPEC 02 §3.5） | 幻行 | opfuzz chaos（uncertain 注入档 🚧 待接） |
 | I-C4 | 段退休安全 | retire_bound ≤ 全部已安装前沿（在途帧段不可退休） | reopen 丢已 ack 数据（R6 实证） | retirement_bounded ✅ |
 | I-C5 | 撕尾合同二分 | 已封段严格 / 未封段容忍 | 两个方向各有一种静默丢 | 双合同测试 ✅ |
-| I-C6 | FrameIter 不可信输入 | 任意字节输入不 panic（Err/None 而非 UB） | 网络可达 DoS | 边界测试 ✅ + Kani 0.67 3/3 SUCCESS ✅ |
+| I-C6 | FrameIter 不可信输入 | 任意字节输入不 panic（Err/None 而非 UB）；合法帧必解码；段尾小帧不丢（#19） | 网络可达 DoS / 已确认提交丢失 | 边界测试 ✅ + Kani 0.67 4/4（H1 arbitrary / H2 roundtrip / H3 torn / H4 tiny-frame）✅ |
 | I-C7 | 水位停滞免役 | in-flight 全部摘除后（含失败路径）watermark = installed_max | 已 ack 行不可见（R8-WM TLC 反例） | watermark_recovers（精确等值断言）✅ + TLC StallFreedom ✅ |
 
 ### I-D 分支 / 合并 / manifest（⬜ 待建模）
@@ -88,8 +88,13 @@
 ### I-E 资源守卫（✅ 已闭合）
 
 连接数（panic 安全/竞态）/ 分支数（CAS 内检查）/ 单事务字节（Pass1 无副作用
-拒绝）/ 语句超时（57014 逐语句重置）/ 会话配额（prepared/cursor/结果集）——
-见 resource_limits.rs 15 项。
+拒绝）/ 语句超时（57014 逐语句重置）/ 会话配额（prepared/cursor/结果集）/
+计划缓存（4096 满即清空，plan_cache_is_bounded）——见 resource_limits.rs
+15 项 + plan_cache.rs 6 项。
+
+计划缓存正确性不变式（I-E4）：缓存对象是**纯 AST**——执行期名字解析、
+schema 绑定、快照选取全部逐次执行，因此 DDL 漂移（加列/重建同名列型）
+对命中路径即时可见（ddl_drift_does_not_poison_cached_ast 固化）。
 
 ## 2. 信任阶梯（dendro 版）
 
@@ -136,3 +141,6 @@ standalone harness 口径）、Verus（未引入；触发条件见 basalt §4.1 
 | 14 | **in-flight 摘除不推进水位（R8-WM）** | 摘除路径前沿缺失 | **TLA+ liveness（StallFreedom）反例** ✅ 首例 | recompute_watermark_on_removal 统一 + watermark_recovers 回归 |
 | 15 | ConnGuard exit 非原子 RMW（并发 enter 覆盖 → 慢泄漏 + 伪 53300） | 计数器 RMW 竞态 | 形式化评审 agent 探针（8 线程×30 万次，泄漏 62 + 35901 伪拒绝） | exit 对称 fetch_update + 并发配额测试 |
 | 16 | 模型 drop 路径未回灌水位重算（模型-实现精化桥断裂）+ Makefile tail 吞 exit 13 | 精化桥断裂 + 门禁失效 | 形式化评审 agent 复验（账本 ✅ 不实） | drop 动作补 frontier 公式 + Makefile 去 tail |
+| 17 | if-let 审视位 MutexGuard 活到 if/else 尾，miss 分支再 lock() 自死锁（P2-6 计划缓存首执行即挂） | Rust 临时值存活期陷阱 | cargo test 0% CPU 挂死复现 | guard 显式落语句（`let hit = …; match hit`）+ plan_cache.rs 全套命中路径测试 |
+| 18 | ALTER TABLE ADD COLUMN 用新列空 pk 整体覆盖 schema.pk → 表永久失去主键，后续 INSERT 全部报 "has no primary key" | DDL 目录字段覆盖 | 计划缓存 DDL 漂移行为测试（ALTER 后 INSERT 即暴露） | AddColumn 保持原 pk 不变 + ddl_drift 回归 |
+| 19 | **FrameIter 段尾守卫 `remaining ≤ TRAILER_LEN 即停` 把总长 ≤32B 的小帧当 trailer 丢弃 → 封段回放静默丢已确认提交（P0）**；连带发现 Kani 同源副本 FRAME_MAGIC 漂移（副本 0x4C41_5345 vs 真实现 0x4F524E44）长期无告警 | 边界字节数启发式错误 + 同源副本无机制保障 | **Kani H2 对偶反例**（2B 载荷 = 26B 帧 < 32B 被吞；旧 guard 下 H2/H1 从未真正进入解码路径——"3/3 绿"含假阴性覆盖） | next_frame 按魔数识别段尾（DRNO≠ESAL，垃圾尾改报 Err）+ H4 小帧回归 + constants-sync 同步守卫测试 + H1 重编码（整块符号化 + 固定 3 次调用 + unwind 定界：符号长度循环逐轮自动加界曾 >9min 不收敛） |

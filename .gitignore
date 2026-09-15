@@ -1,3 +1,9 @@
 /target/
 /target-wire/
 /target-wire-touch/
+
+# Kani 构建产物（verification/kani/ 下由 kani 生成，不入库）
+verification/kani/*.out
+verification/kani/*.symtab.out
+verification/kani/*.rlib
+verification/kani/*.json
