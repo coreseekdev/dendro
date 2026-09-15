@@ -72,7 +72,7 @@ fn distinct_literal_text_distinct_results() {
         let r = conn.query(&format!("SELECT {n} AS n")).unwrap();
         assert_eq!(
             r.rows()[0][0],
-            dendro_core::types::SqlValue::Int32(n as i32), // #26：Number 窄化定型（曾 embed 启发式 i64）
+            dendro_core::types::SqlValue::Int32(n), // #26：Number 窄化定型（曾 embed 启发式 i64）
             "SELECT {n} 结果错乱"
         );
     }
@@ -81,7 +81,7 @@ fn distinct_literal_text_distinct_results() {
         let r = conn.query(&format!("SELECT {n} AS n")).unwrap();
         assert_eq!(
             r.rows()[0][0],
-            dendro_core::types::SqlValue::Int32(n as i32)
+            dendro_core::types::SqlValue::Int32(n)
         );
     }
 }
