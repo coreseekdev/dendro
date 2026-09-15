@@ -1180,7 +1180,9 @@ fn try_pk_pushdown(
             op: sqlparser::ast::BinaryOperator::Eq,
             right,
         } => is_col_vs_value(left, right, &pk_name) || is_col_vs_value(right, left, &pk_name),
-        Expr::InList { expr, .. } => match expr.as_ref() {
+        // 账本 #20：资格判定必须与取键同拒 negated——NOT IN 在此放行则
+        // 取键产出空集，点查静默变 0 行（附录 A 实证）。回落通用谓词路径。
+        Expr::InList { expr, negated, .. } if !*negated => match expr.as_ref() {
             Expr::Identifier(id) => id.value.eq_ignore_ascii_case(&pk_name),
             _ => false,
         },
