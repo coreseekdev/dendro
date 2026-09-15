@@ -227,37 +227,38 @@ pub fn bench_storage_bytes() -> BenchResult {
     } else {
         0.0
     };
-    let mut rows = Vec::new();
-    rows.push(BenchRow {
-        name: "storage_row_bytes".into(),
-        value: row_bytes as f64,
-        unit: "B",
-    });
-    rows.push(BenchRow {
-        name: "storage_col_bytes".into(),
-        value: col_bytes as f64,
-        unit: "B",
-    });
-    rows.push(BenchRow {
-        name: "storage_wal_bytes".into(),
-        value: wal_bytes as f64,
-        unit: "B",
-    });
-    rows.push(BenchRow {
-        name: "storage_row_over_col_ratio".into(),
-        value: ratio,
-        unit: "x",
-    });
-    rows.push(BenchRow {
-        name: "storage_total_rows".into(),
-        value: total_rows as f64,
-        unit: "rows",
-    });
-    rows.push(BenchRow {
-        name: "storage_delta_tail_pct".into(),
-        value: tail_pct,
-        unit: "%",
-    });
+    let mut rows = vec![
+        BenchRow {
+            name: "storage_row_bytes".into(),
+            value: row_bytes as f64,
+            unit: "B",
+        },
+        BenchRow {
+            name: "storage_col_bytes".into(),
+            value: col_bytes as f64,
+            unit: "B",
+        },
+        BenchRow {
+            name: "storage_wal_bytes".into(),
+            value: wal_bytes as f64,
+            unit: "B",
+        },
+        BenchRow {
+            name: "storage_row_over_col_ratio".into(),
+            value: ratio,
+            unit: "x",
+        },
+        BenchRow {
+            name: "storage_total_rows".into(),
+            value: total_rows as f64,
+            unit: "rows",
+        },
+        BenchRow {
+            name: "storage_delta_tail_pct".into(),
+            value: tail_pct,
+            unit: "%",
+        },
+    ];
     // 正确性哨兵：尾巴行必须可见（Main+Delta 归并）
     let r = s.exec("SELECT count(*) AS n FROM t").unwrap();
     let cnt: f64 = match &r[0] {
