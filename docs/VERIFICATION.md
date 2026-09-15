@@ -7,6 +7,13 @@
 
 ## 0. 状态
 
+- **2026-09-15 v2b+v2c 全量完成**：26 条账本缺陷全闭环（#1-#26，每条
+  有永久检测机制）；ScalarStep 标量层 + ChunkPlane 执行层 + coverage
+  派发器 + MainPlusDelta 归并源 + SortOp/ProjectOp 算子群 + ORDER BY
+  管线化 + prepared 重校验 + EXPLAIN 真实输出 + force_source 差分体
+  系 + 存储字节比 bench。门禁 7/7（clippy / 373 测试 / 26 slt / TLC
+  safety+liveness / Kani 4/4）。
+
 - L1（Kani 无 panic harness）：✅ verification/kani/wal_frame.rs（3 harness：
   任意输入不 panic / 编解码对偶 / 撕尾容忍；运行 `kani --standalone verification/kani/wal_frame.rs`）
 - L2（TLA+ 模型检查）：✅ spec/CommitPipeline.tla 首个模型全空间绿
