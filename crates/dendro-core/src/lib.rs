@@ -20,6 +20,7 @@ pub mod memtx;
 pub mod recovery;
 pub mod sql;
 
+pub mod embed;
 pub mod engine; // 门面：Database/Session（wire 层唯一入口）
 
 // 顶层 re-export（wire/bench/slt 使用方）
