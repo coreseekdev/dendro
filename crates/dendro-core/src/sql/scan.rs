@@ -107,6 +107,26 @@ pub(crate) fn eval_query(
             right,
         } => {
             use sqlparser::ast::{SetOperator, SetQuantifier};
+            // O-2c+ A1：集合操作走计划路径（优化开 + 计划可建 + 节点
+            // ⊆ 可执行集 + q 级无 OFFSET）；失败/不覆盖回落下方 AST 路径
+            if sess.optimize_enabled {
+                if let Ok(mut plan) = crate::ir::plan::build_plan(q) {
+                    crate::ir::plan::rewrite_pushdown(&mut plan);
+                    let no_offset = !matches!(
+                        &q.limit_clause,
+                        Some(sqlparser::ast::LimitClause::LimitOffset { offset: Some(_), .. })
+                    );
+                    let top_ok = matches!(
+                        &plan,
+                        crate::ir::plan::Plan::Sort { .. } | crate::ir::plan::Plan::SetOp { .. }
+                    );
+                    if no_offset && top_ok && plan_nodes_exec_ok(&plan) {
+                        let masks = plan_scan_masks(db, sess, &plan);
+                        let (tv, _) = exec_plan(db, sess, &plan, snapshot, &masks)?;
+                        return Ok(tv);
+                    }
+                }
+            }
             // 三算子统一（S-4 v2）：UNION / EXCEPT / INTERSECT
             let mk_query = |body: Box<SetExpr>| sqlparser::ast::Query {
                 with: None,
@@ -1090,6 +1110,194 @@ fn db_right_key(tf: &sqlparser::ast::TableFactor) -> Option<String> {
 // LIMIT/集合操作由 eval_select 覆盖判定回落 AST 路径）
 // ---------------------------------------------------------------------------
 
+/// 集合操作应用（O-2c+ 提取：eval_query 与 exec_plan 共享——防漂移）。
+/// op ∈ {union, except, intersect}；all = UNION ALL/EXCEPT ALL/... 多重集
+pub(crate) fn apply_setop(
+    op: &str,
+    all: bool,
+    lt: TableView,
+    rt: &TableView,
+) -> Result<(Vec<String>, Vec<Vec<SqlValue>>)> {
+    if lt.names.len() != rt.names.len() {
+        return Err(SqlError::syntax(format!(
+            "set op: column count mismatch {}/{}",
+            lt.names.len(),
+            rt.names.len()
+        )));
+    }
+    let names = lt.names.clone();
+    let row_key = |r: &Vec<SqlValue>| -> String {
+        r.iter()
+            .map(|v| expr::to_text(v.clone()))
+            .collect::<Vec<_>>()
+            .join("\u{1}")
+    };
+    let right_keys: std::collections::HashSet<String> = rt.rows.iter().map(&row_key).collect();
+    let rows: Vec<Vec<SqlValue>> = match op {
+        "union" => {
+            let mut combined = lt.rows;
+            combined.extend(rt.rows.iter().cloned());
+            if !all {
+                let mut seen = std::collections::HashSet::new();
+                combined.retain(|r| seen.insert(row_key(r)));
+            }
+            combined
+        }
+        "except" => {
+            if all {
+                let mut right_counts: std::collections::HashMap<String, u64> =
+                    std::collections::HashMap::new();
+                for r in &rt.rows {
+                    *right_counts.entry(row_key(r)).or_insert(0) += 1;
+                }
+                lt.rows
+                    .into_iter()
+                    .filter(|r| {
+                        let k = row_key(r);
+                        match right_counts.get_mut(&k) {
+                            Some(c) if *c > 0 => {
+                                *c -= 1;
+                                false
+                            }
+                            _ => true,
+                        }
+                    })
+                    .collect()
+            } else {
+                let mut seen = std::collections::HashSet::new();
+                lt.rows
+                    .into_iter()
+                    .filter(|r| {
+                        let k = row_key(r);
+                        !right_keys.contains(&k) && seen.insert(k)
+                    })
+                    .collect()
+            }
+        }
+        "intersect" => {
+            if all {
+                let mut right_counts: std::collections::HashMap<String, u64> =
+                    std::collections::HashMap::new();
+                for r in &rt.rows {
+                    *right_counts.entry(row_key(r)).or_insert(0) += 1;
+                }
+                lt.rows
+                    .into_iter()
+                    .filter(|r| {
+                        let k = row_key(r);
+                        match right_counts.get_mut(&k) {
+                            Some(c) if *c > 0 => {
+                                *c -= 1;
+                                true
+                            }
+                            _ => false,
+                        }
+                    })
+                    .collect()
+            } else {
+                let mut seen = std::collections::HashSet::new();
+                lt.rows
+                    .into_iter()
+                    .filter(|r| {
+                        let k = row_key(r);
+                        right_keys.contains(&k) && seen.insert(k)
+                    })
+                    .collect()
+            }
+        }
+        other => return Err(SqlError::not_supported(format!("set op: {other}"))),
+    };
+    Ok((names, rows))
+}
+
+/// 计划路径的 ORDER BY 键提取（O-2c+ A2）：镜像 order_key_value 语义
+/// ——输出列名/序数优先，未投影列回退输入行（投影保行：两侧行对齐）。
+fn plan_order_key(
+    e: &Expr,
+    out_row: &[SqlValue],
+    ri: usize,
+    out_cols: &std::collections::HashMap<String, usize>,
+    in_row: Option<&[SqlValue]>,
+    in_cols: &Option<std::collections::HashMap<String, usize>>,
+) -> Result<SqlValue> {
+    match e {
+        Expr::Identifier(id) => {
+            let low = id.value.to_ascii_lowercase();
+            if let Some(&i) = out_cols.get(&low) {
+                return Ok(out_row.get(i).cloned().unwrap_or(SqlValue::Null));
+            }
+            if let (Some(ir), Some(ic)) = (in_row, in_cols) {
+                if let Some(&i) = ic.get(&low) {
+                    return Ok(ir.get(i).cloned().unwrap_or(SqlValue::Null));
+                }
+            }
+            Ok(SqlValue::Null)
+        }
+        // 序数（ORDER BY 1）——输出列位置
+        Expr::Value(vws) => match &vws.value {
+            sqlparser::ast::Value::Number(n, _) => {
+                let idx: usize = n.parse().unwrap_or(1);
+                Ok(out_row.get(idx.wrapping_sub(1)).cloned().unwrap_or(SqlValue::Null))
+            }
+            _ => Ok(SqlValue::Null),
+        },
+        other => {
+            // 一般表达式：输出行求值优先，失败回退输入行
+            let oc = |n: &str| out_cols.get(&n.to_ascii_lowercase()).copied();
+            if let Ok(v) = expr::eval(other, out_row, &oc) {
+                return Ok(v);
+            }
+            if let (Some(ir), Some(ic)) = (in_row, in_cols) {
+                let icf = |n: &str| ic.get(&n.to_ascii_lowercase()).copied();
+                return expr::eval(other, ir, &icf);
+            }
+            let _ = ri;
+            Ok(SqlValue::Null)
+        }
+    }
+}
+
+/// 计划路径排序（A2）：键提取 + SortOp（top-N 有界堆——limit 已知时）
+fn plan_sort(
+    keys: &[(Expr, bool)],
+    limit: Option<usize>,
+    out_rows: &mut Vec<Vec<SqlValue>>,
+    in_rows: Option<&[Vec<SqlValue>]>,
+    out_names: &[String],
+    in_names: &[String],
+    sess: &Session,
+) -> Result<()> {
+    let asc: Vec<bool> = keys.iter().map(|(_, a)| *a).collect();
+    let out_cols = cols_lookup(out_names);
+    let in_cols: Option<std::collections::HashMap<String, usize>> =
+        in_rows.map(|_| cols_lookup(in_names));
+    let mut keyed: Vec<Vec<SqlValue>> = Vec::with_capacity(out_rows.len());
+    for (ri, row) in out_rows.iter().enumerate() {
+        let ir = in_rows.and_then(|rs| rs.get(ri)).map(|v| v.as_slice());
+        let mut kr = Vec::with_capacity(asc.len() + row.len());
+        for (e, _) in keys {
+            kr.push(plan_order_key(e, row, ri, &out_cols, ir, &in_cols)?);
+        }
+        kr.extend(row.iter().cloned());
+        keyed.push(kr);
+    }
+    let mut sort_op = match limit {
+        Some(n) => crate::exec::pipeline::SortOp::with_limit(asc, n),
+        None => crate::exec::pipeline::SortOp::new(asc),
+    };
+    let mut sink = crate::exec::pipeline::CollectSink::new(None);
+    let src: Vec<Result<Vec<Vec<SqlValue>>>> = vec![Ok(keyed)];
+    let mut it = src.into_iter();
+    let mut pcx = crate::exec::pipeline::PipeCtx::new(
+        vec![],
+        sess.stmt_deadline,
+        sess.cancel_token.clone(),
+    );
+    crate::exec::pipeline::drive(&mut pcx, &mut it, &mut sort_op, &mut sink)?;
+    *out_rows = sink.rows;
+    Ok(())
+}
+
 /// 计划 Scan → 合成 TableFactor（视图展开/派发按名工作；alias/版本
 /// 不经此路——布局键取计划，版本子句由覆盖判定排除）
 fn synthetic_tf(table: &str) -> TableFactor {
@@ -1116,15 +1324,37 @@ fn plan_exec_covered(
     q: &Query,
 ) -> bool {
     use crate::ir::plan::Plan;
-    // AST 形态：聚合/分组/HAVING/排序/LIMIT/通配 → AST 路径
-    //（DISTINCT 在 eval_select 入口已显式拒绝）
+    // AST 形态：聚合/分组/HAVING/通配/OFFSET → AST 路径
+    //（DISTINCT 在 eval_select 入口已显式拒绝；Plan::Sort v1 不携带
+    // OFFSET——带 OFFSET 的排序查询回落 AST）
     if projection_aggregates(&select.projection).is_some()
         || select.having.is_some()
         || !matches!(&select.group_by, sqlparser::ast::GroupByExpr::Expressions(es, _) if es.is_empty())
-        || q.order_by.is_some()
-        || q.limit_clause.is_some()
+        || matches!(
+            &q.limit_clause,
+            Some(sqlparser::ast::LimitClause::LimitOffset { offset: Some(_), .. })
+        )
     {
         return false;
+    }
+    // LIMIT 无 ORDER BY：build_plan 不产 Sort 节点——limit 会丢失，
+    // 回落 AST 路径（其有 pushdown_limit 早停）
+    let has_order = q
+        .order_by
+        .as_ref()
+        .is_some_and(|o| matches!(&o.kind, sqlparser::ast::OrderByKind::Expressions(es) if !es.is_empty()));
+    if q.limit_clause.is_some() && !has_order {
+        return false;
+    }
+    // 集合操作查询：body 非 Select——只约束 q 级（排序/LIMIT 已成节点）
+    if !matches!(&*q.body, sqlparser::ast::SetExpr::Select(_)) {
+        // SetOp 形态：无 WHERE 级 select 检查——q 级 OFFSET 已排除
+        if matches!(
+            &q.limit_clause,
+            Some(sqlparser::ast::LimitClause::LimitOffset { offset: Some(_), .. })
+        ) {
+            return false;
+        }
     }
     if select
         .projection
@@ -1146,17 +1376,27 @@ fn plan_exec_covered(
     }) {
         return false;
     }
-    // 计划结构：节点 ⊆ {Scan, Filter, Join, Project}，顶层必为 Project
-    // 且非空（空投影 = 通配形态，上面已排除——防御双检）
-    fn nodes_ok(p: &Plan) -> bool {
-        match p {
-            Plan::Scan { .. } | Plan::Values => true,
-            Plan::Filter { input, .. } | Plan::Project { input, .. } => nodes_ok(input),
-            Plan::Join { left, right, .. } => nodes_ok(left) && nodes_ok(right),
-            _ => false, // Aggregate/Sort/SetOp → AST 路径
-        }
+    // 计划结构：节点 ⊆ 可执行集；顶层 Project（Select）或 Sort/SetOp
+    match plan {
+        Plan::Project { exprs, .. } if !exprs.is_empty() => plan_nodes_exec_ok(plan),
+        Plan::Sort { .. } | Plan::SetOp { .. } => plan_nodes_exec_ok(plan),
+        _ => false,
     }
-    matches!(plan, Plan::Project { exprs, .. } if !exprs.is_empty()) && nodes_ok(plan)
+}
+
+/// 计划节点可执行性（exec_plan 覆盖集；Aggregate 待 A3）
+fn plan_nodes_exec_ok(p: &crate::ir::plan::Plan) -> bool {
+    use crate::ir::plan::Plan;
+    match p {
+        Plan::Scan { .. } | Plan::Values => true,
+        Plan::Filter { input, .. } | Plan::Project { input, .. } | Plan::Sort { input, .. } => {
+            plan_nodes_exec_ok(input)
+        }
+        Plan::Join { left, right, .. } | Plan::SetOp { left, right, .. } => {
+            plan_nodes_exec_ok(left) && plan_nodes_exec_ok(right)
+        }
+        _ => false, // Aggregate → AST 路径
+    }
 }
 
 /// 计划内全部表达式（Filter 谓词 / Project 投影 / Sort 键——掩码分析面）
@@ -1338,7 +1578,48 @@ fn exec_plan(
             let out = project_exprs(exprs, names, &tv, sess, qres)?;
             Ok((out, FactorLayout::new()))
         }
-        // 聚合/排序/集合操作：覆盖判定已排除——不可达（防御性回落错误）
+        Plan::Sort { keys, limit, input } => {
+            // A2：排序在投影之上。Project 输入保留作键回退（投影保行——
+            // 两侧行对齐；未投影列的 ORDER BY 键经输入行求值）
+            if let Plan::Project {
+                exprs,
+                names,
+                input: pin,
+            } = &**input
+            {
+                let (tv_in, layout) = exec_plan(db, sess, pin, snapshot, masks)?;
+                let lay = layout.clone();
+                let nms = tv_in.names.clone();
+                let qres = move |n: &str| resolve_qualified(&lay, &nms, n);
+                let mut out = project_exprs(exprs, names, &tv_in, sess, qres)?;
+                plan_sort(
+                    keys,
+                    *limit,
+                    &mut out.rows,
+                    Some(&tv_in.rows),
+                    &out.names,
+                    &tv_in.names,
+                    sess,
+                )?;
+                return Ok((out, FactorLayout::new()));
+            }
+            // 非 Project 输入（集合操作顶等）：无输入回退
+            let (mut tv, _layout) = exec_plan(db, sess, input, snapshot, masks)?;
+            plan_sort(keys, *limit, &mut tv.rows, None, &tv.names, &[], sess)?;
+            Ok((tv, FactorLayout::new()))
+        }
+        Plan::SetOp { op, all, left, right } => {
+            // A1：两侧子计划求值 → 共享 apply_setop（与 eval_query 逐字节
+            // 同语义）
+            let (lt, _) = exec_plan(db, sess, left, snapshot, masks)?;
+            let (rt, _) = exec_plan(db, sess, right, snapshot, masks)?;
+            let (names, rows) = apply_setop(op, *all, lt, &rt)?;
+            Ok((
+                TableView { names, rows },
+                FactorLayout::new(),
+            ))
+        }
+        // 聚合：覆盖判定已排除——不可达（防御性回落错误）
         other => Err(SqlError::internal(format!(
             "exec_plan: uncovered plan node {other:?}"
         ))),
