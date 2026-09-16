@@ -594,6 +594,10 @@ impl<'a> Printer<'a> {
 // ---------------------------------------------------------------------------
 
 /// SQL 表达式文本 → Expr（借道 parse_batch；谓词/投影两种包装）
+pub(crate) fn parse_expr_text_pub(t: &str) -> Option<Expr> {
+    parse_expr_text(t, false)
+}
+
 fn parse_expr_text(t: &str, as_pred: bool) -> Option<Expr> {
     let sql = if as_pred {
         format!("SELECT 1 WHERE {t}")

@@ -146,29 +146,40 @@ fn sum_over_text_errors_in_both_paths() {
 #[test]
 fn expression_group_key_falls_back_and_forces_error() {
     let mut c = setup();
-    // 表达式组键（upper(grp)）→ 资格外，auto 走行式（静默、结果正确）
+    // A3 起：表达式组键（upper(grp)）在计划路径原生支持（group_aggregate
+    // 的表达式键求值本就完备——原资格判定只影响 AggOp 管线臂）
     let r = c
-        .query("SELECT upper(grp), count(*) FROM g GROUP BY upper(grp)")
+        .query("SELECT upper(grp), count(*) FROM g GROUP BY upper(grp) ORDER BY 1 NULLS LAST")
         .unwrap();
     assert_eq!(r.row_count(), 3); // A / B / NULL（upper(NULL)=NULL 一组）
-    // 强制 pipeline + 资格外 → 报错（静默回落会让差分失义）
     c.execute("SET dendro.force_agg = 'pipeline'").unwrap();
-    let e = c
-        .query("SELECT upper(grp), count(*) FROM g GROUP BY upper(grp)")
-        .err()
+    let r2 = c
+        .query("SELECT upper(grp), count(*) FROM g GROUP BY upper(grp) ORDER BY 1 NULLS LAST")
         .unwrap();
-    assert!(e.to_string().contains("not plain column refs"), "{e}");
+    assert_eq!(r2.rows, r.rows, "两路径结果一致");
 }
 
 #[test]
 fn expression_agg_arg_falls_back() {
     let mut c = setup();
-    // 聚合参数是表达式（v+1）→ 资格外，行式求值
-    let r = c.query("SELECT grp, sum(v + 1) FROM g GROUP BY grp").unwrap();
-    assert_eq!(r.row_count(), 3);
+    // A3 起：聚合参数是表达式（v+1）在计划路径原生支持（原为资格外
+    // 回落行式——强制 pipeline 曾报错，能力过时断言更新为正确性验证）
+    let r = c.query("SELECT grp, sum(v + 1) FROM g GROUP BY grp ORDER BY 1 NULLS LAST").unwrap();
+    let sums: Vec<i64> = r
+        .rows
+        .iter()
+        .map(|row| match &row[1] {
+            SqlValue::Int64(v) => *v,
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    // a 组非空 v [10,20,10] → sum(v+1)=43；b 组 [100] → 101；NULL 组 [7] → 8
+    assert_eq!(sums, vec![43, 101, 8], "{:?}", r.rows);
     c.execute("SET dendro.force_agg = 'pipeline'").unwrap();
-    let e = c.query("SELECT grp, sum(v + 1) FROM g GROUP BY grp").err().unwrap();
-    assert!(e.to_string().contains("not plain column refs"), "{e}");
+    let r2 = c
+        .query("SELECT grp, sum(v + 1) FROM g GROUP BY grp ORDER BY 1 NULLS LAST")
+        .unwrap();
+    assert_eq!(r2.rows, r.rows, "两路径结果一致");
 }
 
 #[test]

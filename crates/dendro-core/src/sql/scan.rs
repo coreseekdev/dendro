@@ -1110,6 +1110,88 @@ fn db_right_key(tf: &sqlparser::ast::TableFactor) -> Option<String> {
 // LIMIT/集合操作由 eval_select 覆盖判定回落 AST 路径）
 // ---------------------------------------------------------------------------
 
+/// 聚合调用 display 串 → AggCall（O-2c+ A3：计划执行期结构化——
+/// display 由 collect_agg_text 产生，形态 = 合法聚合表达式文本）
+fn parse_plan_agg(display: &str) -> Result<crate::sql::agg::AggCall> {
+    let e = crate::ir::plan::parse_expr_text_pub(display)
+        .ok_or_else(|| SqlError::internal(format!("plan agg parse: {display}")))?;
+    match e {
+        Expr::Function(f) => {
+            let n = f.name.to_string().to_ascii_lowercase();
+            if !matches!(n.as_str(), "count" | "sum" | "avg" | "min" | "max") {
+                return Err(SqlError::internal(format!("plan agg fn: {display}")));
+            }
+            let (arg, is_star) = match fn_args(&f).first() {
+                Some(FunctionArg::Unnamed(FunctionArgExpr::Expr(e))) => (Some(e.clone()), false),
+                Some(FunctionArg::Unnamed(FunctionArgExpr::Wildcard)) => (None, true),
+                _ => (None, false),
+            };
+            Ok(crate::sql::agg::AggCall {
+                func: n,
+                arg,
+                distinct: fn_distinct(&f),
+                is_star,
+                display: display.to_string(),
+            })
+        }
+        other => Err(SqlError::internal(format!(
+            "plan agg not a function: {other}"
+        ))),
+    }
+}
+
+/// 组合聚合段执行（O-2c+ A3）：Aggregate → [HAVING Filter] → Project
+/// 一体求值——镜像 eval_select 聚合分支（同 group_aggregate/eval_having/
+/// display-文本映射语义）。返回投影结果。
+fn exec_aggregate_composite(
+    tv_in: &TableView,
+    agg: &crate::ir::plan::Plan,
+    having: Option<&Expr>,
+    proj_exprs: &[Expr],
+    proj_names: &[String],
+) -> Result<TableView> {
+    let crate::ir::plan::Plan::Aggregate { keys, aggs, .. } = agg else {
+        return Err(SqlError::internal("aggregate composite: 非 Aggregate 节点"));
+    };
+    let calls: Vec<crate::sql::agg::AggCall> =
+        aggs.iter().map(|d| parse_plan_agg(d)).collect::<Result<_>>()?;
+    let cols = cols_lookup(&tv_in.names);
+    let res = agg::group_aggregate(tv_in, keys, &calls, &cols)?;
+    // HAVING 过滤（保留组索引）
+    let mut kept: Vec<usize> = Vec::new();
+    for i in 0..res.keys.len() {
+        if let Some(h) = having {
+            let hv = agg::eval_having(h, &calls, &res.vals[i], keys, &res.keys[i], &cols)?;
+            if hv != SqlValue::Bool(true) {
+                continue;
+            }
+        }
+        kept.push(i);
+    }
+    // 投影映射：display 匹配聚合值 / 组键文本匹配（与 eval_select 同口径）
+    let mut rows = Vec::with_capacity(kept.len());
+    for &i in &kept {
+        let mut row = Vec::with_capacity(proj_exprs.len());
+        for e in proj_exprs {
+            let et = e.to_string();
+            if let Some(ci) = calls.iter().position(|c| c.display == et) {
+                row.push(res.vals[i][ci].clone());
+            } else if let Some(gi) = keys.iter().position(|g| g.to_string() == et) {
+                row.push(res.keys[i][gi].clone());
+            } else {
+                return Err(SqlError::syntax(
+                    "column must appear in GROUP BY or aggregation",
+                ));
+            }
+        }
+        rows.push(row);
+    }
+    Ok(TableView {
+        names: proj_names.to_vec(),
+        rows,
+    })
+}
+
 /// 集合操作应用（O-2c+ 提取：eval_query 与 exec_plan 共享——防漂移）。
 /// op ∈ {union, except, intersect}；all = UNION ALL/EXCEPT ALL/... 多重集
 pub(crate) fn apply_setop(
@@ -1324,17 +1406,12 @@ fn plan_exec_covered(
     q: &Query,
 ) -> bool {
     use crate::ir::plan::Plan;
-    // AST 形态：聚合/分组/HAVING/通配/OFFSET → AST 路径
-    //（DISTINCT 在 eval_select 入口已显式拒绝；Plan::Sort v1 不携带
-    // OFFSET——带 OFFSET 的排序查询回落 AST）
-    if projection_aggregates(&select.projection).is_some()
-        || select.having.is_some()
-        || !matches!(&select.group_by, sqlparser::ast::GroupByExpr::Expressions(es, _) if es.is_empty())
-        || matches!(
-            &q.limit_clause,
-            Some(sqlparser::ast::LimitClause::LimitOffset { offset: Some(_), .. })
-        )
-    {
+    // AST 形态：通配/OFFSET → AST 路径（DISTINCT 入口已拒；
+    // Plan::Sort v1 不携带 OFFSET；A3 起聚合/分组/HAVING 走计划路径）
+    if matches!(
+        &q.limit_clause,
+        Some(sqlparser::ast::LimitClause::LimitOffset { offset: Some(_), .. })
+    ) {
         return false;
     }
     // LIMIT 无 ORDER BY：build_plan 不产 Sort 节点——limit 会丢失，
@@ -1395,7 +1472,7 @@ fn plan_nodes_exec_ok(p: &crate::ir::plan::Plan) -> bool {
         Plan::Join { left, right, .. } | Plan::SetOp { left, right, .. } => {
             plan_nodes_exec_ok(left) && plan_nodes_exec_ok(right)
         }
-        _ => false, // Aggregate → AST 路径
+        Plan::Aggregate { input, .. } => plan_nodes_exec_ok(input),
     }
 }
 
@@ -1570,7 +1647,34 @@ fn exec_plan(
             }
             Ok((tv, llayout))
         }
-        Plan::Project { exprs, names, input } => {
+        Plan::Project {
+            exprs,
+            names,
+            input,
+        } => {
+            // A3 组合模式：Project{[Filter(HAVING)] Aggregate input}
+            // ——聚合中间态（keys/vals/calls）不出组合段
+            match &**input {
+                Plan::Aggregate { input: a_in, .. } => {
+                    // 聚合的**内层**输入（组合段吃掉 Aggregate 节点自身）
+                    let (tv_in, _) = exec_plan(db, sess, a_in, snapshot, masks)?;
+                    let out = exec_aggregate_composite(&tv_in, input, None, exprs, names)?;
+                    return Ok((out, FactorLayout::new()));
+                }
+                Plan::Filter {
+                    pred,
+                    input: inner,
+                } if matches!(&**inner, Plan::Aggregate { .. }) => {
+                    let Plan::Aggregate { input: a_in, .. } = &**inner else {
+                        unreachable!()
+                    };
+                    let (tv_in, _) = exec_plan(db, sess, a_in, snapshot, masks)?;
+                    let out =
+                        exec_aggregate_composite(&tv_in, inner, Some(pred), exprs, names)?;
+                    return Ok((out, FactorLayout::new()));
+                }
+                _ => {}
+            }
             let (tv, layout) = exec_plan(db, sess, input, snapshot, masks)?;
             let lay = layout.clone();
             let nms = tv.names.clone();
@@ -1579,14 +1683,25 @@ fn exec_plan(
             Ok((out, FactorLayout::new()))
         }
         Plan::Sort { keys, limit, input } => {
-            // A2：排序在投影之上。Project 输入保留作键回退（投影保行——
-            // 两侧行对齐；未投影列的 ORDER BY 键经输入行求值）
+            // A2/A3：排序在投影之上。普通投影保留输入作键回退（投影保行
+            // ——未投影列的 ORDER BY 键经输入行求值）；聚合组合形态的
+            // 行不与输入对齐（组行）——经 Project 臂组合执行后无回退排序
             if let Plan::Project {
                 exprs,
                 names,
                 input: pin,
             } = &**input
             {
+                let agg_composite = matches!(&**pin, Plan::Aggregate { .. })
+                    || matches!(
+                        &**pin,
+                        Plan::Filter { input: fi, .. } if matches!(&**fi, Plan::Aggregate { .. })
+                    );
+                if agg_composite {
+                    let (mut out, _) = exec_plan(db, sess, input, snapshot, masks)?;
+                    plan_sort(keys, *limit, &mut out.rows, None, &out.names, &[], sess)?;
+                    return Ok((out, FactorLayout::new()));
+                }
                 let (tv_in, layout) = exec_plan(db, sess, pin, snapshot, masks)?;
                 let lay = layout.clone();
                 let nms = tv_in.names.clone();
