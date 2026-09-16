@@ -55,6 +55,7 @@ pub fn parse_only(sql: &str, d: SqlDialect) -> std::result::Result<String, Strin
 pub mod dispatch;
 /// v2b B1：标量层步列表（编译 + eval_row）。compile-or-fallback 合同。
 pub mod privs;
+pub mod stats;
 pub mod scalar;
 
 pub(crate) fn parse_batch(sql: &str, d: SqlDialect) -> Result<Vec<Statement>> {
@@ -847,12 +848,17 @@ pub(crate) fn exec_statement(
                     lines.push(desc);
                 }
                 for m in &metrics {
+                    let est = m
+                        .est
+                        .map(|e| format!(" est={e}"))
+                        .unwrap_or_default();
                     lines.push(format!(
-                        "{}! actual: {} rows={} time={}us",
+                        "{}! actual: {} rows={} time={}us{}",
                         "  ".repeat(m.depth),
                         m.label,
                         m.rows,
-                        m.elapsed_us
+                        m.elapsed_us,
+                        est
                     ));
                 }
                 return Ok(Some(Output::Rows(make_record_set(

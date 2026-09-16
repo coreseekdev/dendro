@@ -154,6 +154,25 @@ impl ColumnarStore for CbfColumnar {
         Ok((seg, old_paths))
     }
 
+    fn col_stats(
+        &self,
+        obj: &Arc<dyn ObjStore>,
+        segments: &[ColSegment],
+    ) -> Option<Vec<dendro_core::sql::stats::ColStat>> {
+        let agg = crate::segment_col_stats(obj, segments).ok()?;
+        Some(
+            agg.into_iter()
+                .map(|c| dendro_core::sql::stats::ColStat {
+                    rows: c.rows,
+                    nulls: c.nulls,
+                    min: c.min,
+                    max: c.max,
+                    has_data: c.has_data,
+                })
+                .collect(),
+        )
+    }
+
     fn scan(
         &self,
         obj: &Arc<dyn ObjStore>,

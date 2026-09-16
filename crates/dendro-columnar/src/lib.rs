@@ -54,6 +54,53 @@ pub mod writer;
 
 pub use codec::{choose_codec, CodecId};
 pub use footer::{BlockMeta, CbfFooter, ChunkMeta, RgMeta};
+
+/// 段集的每列聚合统计（join reorder 前置——spec 12 §4）：
+/// min/max 为 order 域 u64（跨块/跨段 min-of-min/max-of-max），
+/// nulls/rows 求和。经稀疏 footer 读——零列数据解码。
+pub fn segment_col_stats(
+    obj: &std::sync::Arc<dyn dendro_core::objstore::ObjStore>,
+    segments: &[dendro_core::versioned::ColSegment],
+) -> crate::Result<Vec<ColStatAgg>> {
+    let mut acc: Vec<ColStatAgg> = Vec::new();
+    for seg in segments {
+        let footer = crate::reader::footer_sparse(obj, &seg.path)
+            .map_err(|e| crate::Error::InvalidInput(format!("stats: {e}")))?;
+        if acc.is_empty() {
+            acc = vec![
+                ColStatAgg { rows: 0, nulls: 0, min: u64::MAX, max: 0, has_data: false };
+                footer.schema.fields().len()
+            ];
+        }
+        for rg in 0..footer.rg_count {
+            let rgm = &footer.rgs[rg];
+            for (ci, cm) in rgm.cols.iter().enumerate() {
+                if ci >= acc.len() {
+                    break;
+                }
+                for b in &cm.blocks {
+                    let a = &mut acc[ci];
+                    a.rows += b.rows as u64;
+                    a.nulls += b.null_count as u64;
+                    a.min = a.min.min(b.min);
+                    a.max = a.max.max(b.max);
+                    a.has_data = true;
+                }
+            }
+        }
+    }
+    Ok(acc)
+}
+
+/// 每列聚合统计（order 域）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ColStatAgg {
+    pub rows: u64,
+    pub nulls: u64,
+    pub min: u64,
+    pub max: u64,
+    pub has_data: bool,
+}
 pub use stats::ColStats;
 
 /// 便利 re-export：codec 决策回调签名中的列类型来自 dendro-core。

@@ -1663,6 +1663,8 @@ pub struct NodeMetric {
     pub rows: usize,
     /// 子树墙钟（含子节点）
     pub elapsed_us: u128,
+    /// 估算行数（列统计 × 选择率——仅 scan 节点；None = 无段统计）
+    pub est: Option<u64>,
 }
 
 /// exec_plan 上下文（参数收敛：掩码/top-N 界/指标采集 + 递归深度）
@@ -1686,12 +1688,24 @@ impl<'a> ExecCx<'a> {
     }
     /// 记录节点指标（采集开启时）
     fn record(&mut self, label: &str, rows: usize, t: std::time::Instant) {
+        self.record_est(label, rows, t, None);
+    }
+
+    /// 同上，携带估算行数（scan 节点——列统计消费面）
+    fn record_est(
+        &mut self,
+        label: &str,
+        rows: usize,
+        t: std::time::Instant,
+        est: Option<u64>,
+    ) {
         if let Some(ms) = self.metrics.as_mut() {
             ms.push(NodeMetric {
                 label: label.to_string(),
                 depth: self.depth,
                 rows,
                 elapsed_us: t.elapsed().as_micros(),
+                est,
             });
         }
     }
@@ -1757,6 +1771,20 @@ fn exec_plan_inner(
             let tf = synthetic_tf(table, version.as_deref());
             let mask = cx.masks.get(&key);
             let tv = table_scan_opt(db, sess, &tf, snapshot, None, None, mask.map(|v| v.as_slice()))?;
+            // est = 段统计总行数（无过滤；无段 → None）
+            let est = cx.metrics.as_ref().and_then(|_| {
+                crate::sql::stats::table_stats(db, sess, table)
+                    .and_then(|st| st.cols.first().map(|c| c.rows))
+            });
+            if let Some(ms) = cx.metrics.as_mut() {
+                ms.push(NodeMetric {
+                    label: format!("scan {table}"),
+                    depth: cx.depth,
+                    rows: tv.rows.len(),
+                    elapsed_us: 0,
+                    est,
+                });
+            }
             let layout = FactorLayout::from([(
                 key,
                 0usize,
@@ -1789,7 +1817,15 @@ fn exec_plan_inner(
                     mask.map(|v| v.as_slice()),
                 )?;
                 // 捷径绕过 exec_plan(Scan) 包装——手动记 scan 指标
-                cx.record(&format!("scan {table}"), tv.rows.len(), t_scan);
+                //（行数 = 过滤前扫描输出；est = 列统计 × 范围选择率）
+                let est = cx.metrics.as_ref().and_then(|_| {
+                    let st = crate::sql::stats::table_stats(db, sess, table)?;
+                    let total = st.cols.first()?.rows;
+                    Some(crate::sql::stats::estimate_filter_rows(
+                        &st, &tv.names, pred, total,
+                    ))
+                });
+                cx.record_est(&format!("scan {table}"), tv.rows.len(), t_scan, est);
                 let names: Vec<String> = tv.names.iter().map(|n| n.to_ascii_lowercase()).collect();
                 let layout = FactorLayout::from([(key, 0usize, tv.names.len(), names)]);
                 let lay = layout.clone();

@@ -471,6 +471,16 @@ pub trait ColumnarStore: Send + Sync {
         existing: &[crate::versioned::ColSegment],
     ) -> Result<(crate::versioned::ColSegment, Vec<String>)>;
 
+    /// 段集每列聚合统计（join reorder 前置——spec 12 §4）：order 域
+    /// min/max/nulls/rows；默认 None = 引擎未接列存（统计面不阻塞）
+    fn col_stats(
+        &self,
+        _obj: &Arc<dyn ObjStore>,
+        _segments: &[crate::versioned::ColSegment],
+    ) -> Option<Vec<crate::sql::stats::ColStat>> {
+        None
+    }
+
     /// 扫描段集合（含段级 pk 剪枝）。调用方（core）负责 pk 去重与
     /// delete 抑制。`col_mask`（O-3 投影裁剪）：与 schema 列同长的
     /// 需求位图——false 列以零成本 null 数组占位（不解码），批宽度

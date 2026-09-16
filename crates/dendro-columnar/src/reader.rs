@@ -5,6 +5,8 @@ use crate::codec::{build_array, decode_chunk, layout_of, merge_chunks, ChunkPart
 use crate::footer::{parse_block_header, parse_footer, CbfFooter};
 use crate::{Error, Result, BLOCK_HEADER_LEN};
 use arrow::array::{ArrayRef, RecordBatch};
+use dendro_core::objstore::ObjStore;
+use std::sync::Arc;
 use arrow::datatypes::SchemaRef;
 
 pub(crate) fn read_footer(data: &[u8]) -> Result<CbfFooter> {
@@ -25,6 +27,27 @@ pub(crate) fn read_cbf(data: &[u8]) -> Result<(SchemaRef, Vec<RecordBatch>)> {
     }
     tracing::debug!(row_groups = out.len(), bytes = data.len(), "read_cbf done");
     Ok((footer.schema, out))
+}
+
+/// 段的稀疏 footer 抓取（head 定长 → 尾 8B → footer 体；列统计/
+/// 掩码剪枝共用——O-3+ 稀疏读路径）
+pub fn footer_sparse(
+    obj: &Arc<dyn ObjStore>,
+    path: &str,
+) -> Result<CbfFooter> {
+    let len = obj
+        .head(path)
+        .map_err(|e| crate::Error::InvalidInput(format!("head: {e}")))?
+        .ok_or_else(|| crate::Error::InvalidInput("segment missing".into()))?
+        .len;
+    let tail = obj
+        .get_range(path, len - 8, 8)
+        .map_err(|e| crate::Error::InvalidInput(format!("tail: {e}")))?;
+    let flen = u32::from_le_bytes([tail[0], tail[1], tail[2], tail[3]]) as u64;
+    let fbody = obj
+        .get_range(path, len - flen, (flen - 8) as usize)
+        .map_err(|e| crate::Error::InvalidInput(format!("footer: {e}")))?;
+    crate::footer::parse_footer_from(&tail, &fbody)
 }
 
 /// 字节源（整文件切片 / ObjStore get_range 稀疏取数）
