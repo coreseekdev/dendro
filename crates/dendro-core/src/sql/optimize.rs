@@ -441,6 +441,14 @@ fn rewrite_stat_prop_walk(
         | Plan::Limit { input, .. }
         | Plan::Distinct { input }
         | Plan::Window { input, .. } => rewrite_stat_prop_walk(input, db, sess),
+        Plan::Cte { plan, body, .. } => {
+            rewrite_stat_prop_walk(plan, db, sess);
+            rewrite_stat_prop_walk(body, db, sess);
+        }
+        Plan::IterativeScan { base, recursive, .. } => {
+            rewrite_stat_prop_walk(base, db, sess);
+            rewrite_stat_prop_walk(recursive, db, sess);
+        }
         Plan::SetOp { left, right, .. } => {
             rewrite_stat_prop_walk(left, db, sess);
             rewrite_stat_prop_walk(right, db, sess);
@@ -705,6 +713,12 @@ fn has_wildcard_projection(p: &Plan2) -> bool {
         | Plan::Limit { input, .. }
         | Plan::Distinct { input }
         | Plan::Window { input, .. } => has_wildcard_projection(input),
+        Plan::Cte { plan, body, .. } => {
+            has_wildcard_projection(plan) || has_wildcard_projection(body)
+        }
+        Plan::IterativeScan { base, recursive, .. } => {
+            has_wildcard_projection(base) || has_wildcard_projection(recursive)
+        }
         Plan::Join { left, right, .. } | Plan::SetOp { left, right, .. } => {
             has_wildcard_projection(left) || has_wildcard_projection(right)
         }
@@ -736,6 +750,14 @@ fn rewrite_join_order_walk(
         | Plan::Limit { input, .. }
         | Plan::Distinct { input }
         | Plan::Window { input, .. } => rewrite_join_order_walk(input, db, sess),
+        Plan::Cte { plan, body, .. } => {
+            rewrite_join_order_walk(plan, db, sess);
+            rewrite_join_order_walk(body, db, sess);
+        }
+        Plan::IterativeScan { base, recursive, .. } => {
+            rewrite_join_order_walk(base, db, sess);
+            rewrite_join_order_walk(recursive, db, sess);
+        }
         Plan::SetOp { left, right, .. } => {
             rewrite_join_order_walk(left, db, sess);
             rewrite_join_order_walk(right, db, sess);
@@ -1104,6 +1126,14 @@ fn rewrite_eq_copy_walk(plan: &mut Plan2) {
         | Plan::Limit { input, .. }
         | Plan::Distinct { input }
         | Plan::Window { input, .. } => rewrite_eq_copy_walk(input),
+        Plan::Cte { plan, body, .. } => {
+            rewrite_eq_copy_walk(plan);
+            rewrite_eq_copy_walk(body);
+        }
+        Plan::IterativeScan { base, recursive, .. } => {
+            rewrite_eq_copy_walk(base);
+            rewrite_eq_copy_walk(recursive);
+        }
         Plan::SetOp { left, right, .. } => {
             rewrite_eq_copy_walk(left);
             rewrite_eq_copy_walk(right);
@@ -1303,6 +1333,14 @@ fn rewrite_in_list_walk(plan: &mut Plan2) {
         Plan::Limit { input, .. }
         | Plan::Distinct { input }
         | Plan::Window { input, .. } => rewrite_in_list_walk(input),
+        Plan::Cte { plan, body, .. } => {
+            rewrite_in_list_walk(plan);
+            rewrite_in_list_walk(body);
+        }
+        Plan::IterativeScan { base, recursive, .. } => {
+            rewrite_in_list_walk(base);
+            rewrite_in_list_walk(recursive);
+        }
         Plan::SetOp { left, right, .. } => {
             rewrite_in_list_walk(left);
             rewrite_in_list_walk(right);
@@ -1423,6 +1461,14 @@ fn rewrite_filter_order_walk(plan: &mut Plan2) {
         | Plan::Limit { input, .. }
         | Plan::Distinct { input }
         | Plan::Window { input, .. } => rewrite_filter_order_walk(input),
+        Plan::Cte { plan, body, .. } => {
+            rewrite_filter_order_walk(plan);
+            rewrite_filter_order_walk(body);
+        }
+        Plan::IterativeScan { base, recursive, .. } => {
+            rewrite_filter_order_walk(base);
+            rewrite_filter_order_walk(recursive);
+        }
         Plan::Join { left, right, .. } => {
             rewrite_filter_order_walk(left);
             rewrite_filter_order_walk(right);

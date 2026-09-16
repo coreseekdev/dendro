@@ -401,6 +401,8 @@ pub(crate) fn plan_exec_covered(
             plan_nodes_exec_ok(plan)
         }
         Plan::Sort { .. } | Plan::SetOp { .. } | Plan::Limit { .. } => plan_nodes_exec_ok(plan),
+        // 阶段3：WITH 查询顶层为 Cte 包裹（body 顶层恒为 Project）
+        Plan::Cte { .. } | Plan::IterativeScan { .. } => plan_nodes_exec_ok(plan),
         _ => false,
     }
 }
@@ -422,6 +424,10 @@ pub(crate) fn plan_nodes_exec_ok(p: &crate::ir::plan::Plan) -> bool {
         // 同款共享助手；差分轴对拍护航）
         Plan::Distinct { input } | Plan::Window { input, .. } => {
             plan_nodes_exec_ok(input)
+        }
+        Plan::Cte { plan, body, .. } => plan_nodes_exec_ok(plan) && plan_nodes_exec_ok(body),
+        Plan::IterativeScan { base, recursive, .. } => {
+            plan_nodes_exec_ok(base) && plan_nodes_exec_ok(recursive)
         }
     }
 }
@@ -469,6 +475,14 @@ pub(crate) fn plan_exprs(plan: &crate::ir::plan::Plan, out: &mut Vec<Expr>) {
             }
             plan_exprs(input, out);
         }
+        Plan::Cte { plan, body, .. } => {
+            plan_exprs(plan, out);
+            plan_exprs(body, out);
+        }
+        Plan::IterativeScan { base, recursive, .. } => {
+            plan_exprs(base, out);
+            plan_exprs(recursive, out);
+        }
         Plan::Scan { .. } | Plan::Values => {}
     }
 }
@@ -500,6 +514,10 @@ pub(crate) fn plan_scan_masks(
             Plan::Join { left, right, .. } | Plan::SetOp { left, right, .. } => {
                 has_wildcard(left) || has_wildcard(right)
             }
+            Plan::Cte { plan, body, .. } => has_wildcard(plan) || has_wildcard(body),
+            Plan::IterativeScan { base, recursive, .. } => {
+                has_wildcard(base) || has_wildcard(recursive)
+            }
             Plan::Scan { .. } | Plan::Values => false,
         }
     }
@@ -521,6 +539,10 @@ pub(crate) fn plan_scan_masks(
             | Plan::Aggregate { input, .. } | Plan::Sort { input, .. }
             | Plan::Limit { input, .. } | Plan::Distinct { input }
             | Plan::Window { input, .. } => scans_of(input, out),
+            Plan::Cte { plan, body, .. } | Plan::IterativeScan { base: plan, recursive: body, .. } => {
+                scans_of(plan, out);
+                scans_of(body, out);
+            }
             Plan::Join { left, right, .. } | Plan::SetOp { left, right, .. } => {
                 scans_of(left, out);
                 scans_of(right, out);
@@ -588,6 +610,10 @@ pub struct ExecCx<'a> {
     ///（子节点经 as_deref_mut 线性共享——兄弟顺序复用同一向量）
     pub metrics: Option<&'a mut Vec<NodeMetric>>,
     pub depth: usize,
+    /// CTE 名绑定（阶段3：Cte/IterativeScan 求值期把体结果绑定到名——
+    /// body/递归臂中的 Scan{同名} 直接取绑定视图，不经 catalog）。
+    /// Rc 共享（多次引用零重算）；child 继承（同查询作用域）
+    pub binding: Option<(String, std::rc::Rc<TableView>)>,
 }
 
 impl<'a> ExecCx<'a> {
@@ -597,6 +623,7 @@ impl<'a> ExecCx<'a> {
             sort_hint: hint,
             metrics: self.metrics.as_deref_mut(),
             depth: self.depth + usize::from(deeper),
+            binding: self.binding.clone(),
         }
     }
     /// 记录节点指标（采集开启时）
@@ -644,6 +671,8 @@ pub(crate) fn node_label(p: &crate::ir::plan::Plan) -> String {
         Plan::Limit { .. } => "limit".into(),
         Plan::Distinct { .. } => "distinct".into(),
         Plan::Window { .. } => "window".into(),
+        Plan::Cte { name, .. } => format!("cte {name}"),
+        Plan::IterativeScan { name, .. } => format!("iterate {name}"),
         Plan::SetOp { op, .. } => format!("setop {op}"),
     }
 }
@@ -683,6 +712,19 @@ pub(crate) fn exec_plan_inner(
             version,
         } => {
             let key = alias.clone().unwrap_or_else(|| table.to_ascii_lowercase());
+            // CTE 绑定命中：绑定视图直取（布局与物理扫描同构）
+            if let Some((bname, btv)) = cx.binding.as_ref() {
+                if *bname == table.to_ascii_lowercase() {
+                    let tv = (**btv).clone();
+                    let layout = FactorLayout::from([(
+                        key,
+                        0usize,
+                        tv.names.len(),
+                        tv.names.iter().map(|n| n.to_ascii_lowercase()).collect(),
+                    )]);
+                    return Ok((tv, layout));
+                }
+            }
             let ver_s = version.as_ref().map(|v| v.display());
             let tf = synthetic_tf(table, ver_s.as_deref());
             let mask = cx.masks.get(&key);
@@ -720,6 +762,20 @@ pub(crate) fn exec_plan_inner(
             } = &**input
             {
                 let key = alias.clone().unwrap_or_else(|| table.to_ascii_lowercase());
+                // CTE 绑定的 Scan 不走物理扫描捷径（下方通用路径即可）
+                let bound = cx
+                    .binding
+                    .as_ref()
+                    .is_some_and(|(b, _)| *b == table.to_ascii_lowercase());
+                if bound {
+                    let (mut tv, layout) =
+                        exec_plan(db, sess, input, snapshot, &mut cx.child(None, true))?;
+                    let lay = layout.clone();
+                    let nms = tv.names.clone();
+                    let qres = move |n: &str| resolve_qualified(&lay, &nms, n);
+                    tv = apply_predicates_q(tv, pred, sess, &qres)?;
+                    return Ok((tv, layout));
+                }
                 let ver_s = version.as_ref().map(|v| v.display());
             let tf = synthetic_tf(table, ver_s.as_deref());
                 let mask = cx.masks.get(&key);
@@ -954,6 +1010,98 @@ pub(crate) fn exec_plan_inner(
             let cols = cols_lookup(&tv.names);
             super::window::eval_windows(&mut tv, calls, &cols)?;
             Ok((tv, layout))
+        }
+        Plan::Cte {
+            name,
+            names,
+            plan,
+            body,
+        } => {
+            // 阶段3：体求值一次 → 名绑定 → body 求值（多次引用共享）
+            let (mut tv, _) = exec_plan(db, sess, plan, snapshot, &mut cx.child(None, true))?;
+            if let Some(ns) = names {
+                if ns.len() == tv.names.len() {
+                    tv.names = ns.clone();
+                }
+            }
+            let saved = cx.binding.take();
+            cx.binding = Some((name.clone(), std::rc::Rc::new(tv)));
+            let out = exec_plan(db, sess, body, snapshot, &mut cx.child(None, true));
+            cx.binding = saved;
+            out
+        }
+        Plan::IterativeScan {
+            name,
+            distinct,
+            names,
+            base,
+            recursive,
+        } => {
+            // 阶段3：delta 工作集不动点（PG 语义——递归臂只见上一轮
+            // 新行；收敛 = 新增空集。无 VALUES 注入/无全量重解析/
+            // 无 O(n²) 行克隆）。到顶报错——绝不静默截断
+            let saved_outer = cx.binding.take();
+            let (mut all_tv, _) =
+                exec_plan(db, sess, base, snapshot, &mut cx.child(None, true))?;
+            // CTE 列别名覆盖（递归臂引用 r.n 的解析依赖）
+            if let Some(ns) = names {
+                if ns.len() == all_tv.names.len() {
+                    all_tv.names = ns.clone();
+                }
+            }
+            let names = all_tv.names.clone();
+            let rowkey = |r: &Vec<SqlValue>| {
+                r.iter()
+                    .map(|v| expr::to_text(v.clone()))
+                    .collect::<Vec<_>>()
+                    .join("\u{1}")
+            };
+            let mut seen: std::collections::HashSet<String> =
+                all_tv.rows.iter().map(&rowkey).collect();
+            let mut work = all_tv.rows.clone();
+            let mut converged = work.is_empty();
+            if !converged {
+                for _ in 0..super::cte::RECURSIVE_MAX_ITER {
+                    if all_tv.rows.len() >= super::cte::RECURSIVE_MAX_ROWS {
+                        break;
+                    }
+                    let saved = cx.binding.take();
+                    cx.binding = Some((
+                        name.clone(),
+                        std::rc::Rc::new(TableView {
+                            names: names.clone(),
+                            rows: work.clone(),
+                        }),
+                    ));
+                    let res = exec_plan(db, sess, recursive, snapshot, &mut cx.child(None, true));
+                    cx.binding = saved;
+                    let (new_tv, _) = res?;
+                    let new_rows: Vec<Vec<SqlValue>> = if *distinct {
+                        new_tv
+                            .rows
+                            .into_iter()
+                            .filter(|r| seen.insert(rowkey(r)))
+                            .collect()
+                    } else {
+                        new_tv.rows
+                    };
+                    if new_rows.is_empty() {
+                        converged = true;
+                        break;
+                    }
+                    work = new_rows;
+                    all_tv.rows.extend(work.iter().cloned());
+                }
+            }
+            cx.binding = saved_outer;
+            if !converged {
+                return Err(SqlError::not_supported(format!(
+                    "recursive CTE exceeded iteration({})/row({}) limit — divergent or too large; refusing to return partial rows",
+                    super::cte::RECURSIVE_MAX_ITER,
+                    super::cte::RECURSIVE_MAX_ROWS
+                )));
+            }
+            Ok((all_tv, FactorLayout::new()))
         }
         Plan::Limit {
             limit,

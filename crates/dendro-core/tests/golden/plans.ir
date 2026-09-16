@@ -129,3 +129,34 @@ plan @q0 {
   %p0 = project %w0 {exprs = [id, __w0], names = ["id", "sum(total) OVER (PARTITION BY cid ORDER BY id)"]}
   yield %p0
 }
+; corpus: WITH RECURSIVE fib(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM fib WHERE n < 5) SELECT sum(n) FROM fib
+dendro.ir v1
+plan @q0 {
+  %v0 = values {rows = 1}
+  %p0 = project %v0 {exprs = [1], names = ["1"]}
+  %t0 = table "fib" ! unresolved
+  %s0 = scan %t0
+  %f0 = filter %s0, pred "n < 5"
+  %p1 = project %f0 {exprs = [n + 1], names = ["n + 1"]}
+  %i0 = iterate "fib" base %p0 step %p1 {cols = [n]}
+  %t1 = table "fib" ! unresolved
+  %s1 = scan %t1
+  %a0 = aggregate %s1 {keys = [], aggs = [sum(n)]}
+  %p2 = project %a0 {exprs = [sum(n)], names = ["sum(n)"]}
+  %c0 = cte "fib" (%i0) {cols = [n]} body %p2
+  yield %c0
+}
+; corpus: WITH big AS (SELECT id FROM orders WHERE total > 100) SELECT count(*) FROM big
+dendro.ir v1
+plan @q0 {
+  %t0 = table "orders" {cols = [id, cid, total], pk = [0]}
+  %s0 = scan %t0
+  %f0 = filter %s0, pred "total > 100"
+  %p0 = project %f0 {exprs = [id], names = ["id"]}
+  %t1 = table "big" ! unresolved
+  %s1 = scan %t1
+  %a0 = aggregate %s1 {keys = [], aggs = [count(*)]}
+  %p1 = project %a0 {exprs = [count(*)], names = ["count(*)"]}
+  %c0 = cte "big" (%p0) body %p1
+  yield %c0
+}

@@ -36,7 +36,11 @@ pub(crate) fn hash_join(
     let owned = names.clone();
     let lay_owned = llay.cloned().unwrap_or_default();
     let res_cols = move |n: &str| resolve_qualified(&lay_owned, &owned, n);
-    // 建右表哈希（文本键：类型内规范）
+    // 建右表哈希（文本键：数值宽度归一）
+    // 差分实证：派生表字面量 SELECT 1 求值 Int32（int4），BIGINT 列
+    // Int64（int8）——原键含 type_name 使 int4/1 ≠ int8/1，join 静默
+    // 0 行（SQL 数值等值语义 1=1）。整数统一 i128 规范形（Int32/Int64
+    // 互等）；文本与数值仍分离（Utf8("1") ≠ 1 维持）
     let mkkey = |row: &Vec<SqlValue>, idx: &[usize]| -> Option<Vec<String>> {
         let mut k = Vec::with_capacity(idx.len());
         for &i in idx {
@@ -44,12 +48,7 @@ pub(crate) fn hash_join(
             if v.is_null() {
                 return None;
             }
-            // 类型 tag + 文本：防 Int64(1) 与 Utf8("1") 碰撞
-            k.push(format!(
-                "{}\u{0}{}",
-                v.type_name(),
-                expr::to_text(v.clone())
-            ));
+            k.push(join_key_part(v));
         }
         Some(k)
     };
@@ -200,12 +199,7 @@ pub(crate) fn hash_join_left(
             if v.is_null() {
                 return None;
             }
-            k.push(format!(
-                "{}{}{}",
-                v.type_name(),
-                NUL_PLACEHOLDER,
-                expr::to_text(v.clone())
-            ));
+            k.push(join_key_part(v));
         }
         Some(k)
     };
@@ -411,3 +405,52 @@ pub(crate) fn residual_holds(
 }
 
 // ---------- 投影/聚合 ----------
+
+/// join 哈希键的规范成分：整数宽度归一（Int32/Int64 → 同一 i128 形，
+/// SQL 数值等值语义 1=1；差分实证：派生表字面量 Int32 vs BIGINT 列
+/// Int64 曾静默 0 行）；其余类型 tag+文本（Utf8("1") ≠ 1 维持）
+pub(crate) fn join_key_part(v: &SqlValue) -> String {
+    match v {
+        SqlValue::Int32(i) => format!("i:{i}"),
+        SqlValue::Int64(i) => format!("i:{i}"),
+        other => format!(
+            "{}{}{}",
+            other.type_name(),
+            NUL_PLACEHOLDER,
+            expr::to_text(other.clone())
+        ),
+    }
+}
+
+#[cfg(test)]
+mod join_key_tests {
+    use super::*;
+    use sqlparser::ast::Expr;
+
+    fn expr_of(sql: &str) -> Expr {
+        let stmts = crate::sql::parse_batch(sql, crate::sql::SqlDialect::Pg).unwrap();
+        match &stmts[0] {
+            sqlparser::ast::Statement::Query(q) => match &*q.body {
+                sqlparser::ast::SetExpr::Select(sel) => sel.selection.clone().unwrap(),
+                _ => panic!(),
+            },
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn dbg_derived_left_equi() {
+        let on = expr_of("SELECT 1 WHERE o.id = r.n");
+        let ln = vec!["n".to_string()];
+        let rn = vec!["id".to_string()];
+        let lay: FactorLayout = vec![(
+            "r".to_string(),
+            0,
+            1,
+            vec!["n".to_string()],
+        )];
+        let (eqs, residual) = extract_equi(&on, &ln, &rn, Some(&lay), Some("o")).unwrap();
+        eprintln!("DBG lidx={:?} ridx={:?} residual={:?}", eqs.lidx, eqs.ridx, residual.len());
+        assert!(!eqs.lidx.is_empty(), "equi not extracted: residual={residual:?}");
+    }
+}

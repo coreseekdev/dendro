@@ -842,6 +842,7 @@ pub(crate) fn exec_statement(
                     sort_hint: None,
                     metrics: Some(&mut metrics),
                     depth: 0,
+                    binding: None,
                 };
                 let (_tv, _layout) =
                     crate::sql::scan::exec_plan_pub(db, sess, &plan, snapshot, &mut cx)?;

@@ -101,6 +101,27 @@ pub enum Plan {
         calls: Vec<WindowCall>,
         input: Box<Plan>,
     },
+    /// CTE 绑定（阶段3：CTE 进计划——体求值一次，body 中 Scan{name}
+    /// 引用绑定结果；多次引用共享同一求值，克隆展开消失）
+    Cte {
+        name: String,
+        /// CTE 列别名（WITH x(a, b) AS ...）；None = 用体输出名
+        names: Option<Vec<String>>,
+        plan: Box<Plan>,
+        body: Box<Plan>,
+    },
+    /// 递归 CTE 不动点（阶段3：执行器驱动 delta 工作集迭代——PG 语义
+    /// 递归臂只见上一轮新行；无 VALUES 注入、无 O(n²) 全量重建）
+    IterativeScan {
+        name: String,
+        /// UNION DISTINCT 语义（false = UNION ALL）
+        distinct: bool,
+        /// CTE 列别名（WITH r(n) ...）——迭代绑定视图的列名（递归臂
+        /// 引用 r.n 依赖；None = base 输出名）
+        names: Option<Vec<String>>,
+        base: Box<Plan>,
+        recursive: Box<Plan>,
+    },
     Project {
         exprs: Vec<Expr>,
         /// 输出列名（与 exprs 平行；别名信息不在 Expr 上——O-2c 执行
@@ -157,6 +178,14 @@ impl Plan {
             | Plan::Limit { input, .. }
             | Plan::Distinct { input }
             | Plan::Window { input, .. } => input.collect_keys(out),
+            Plan::Cte { plan, body, .. } => {
+                plan.collect_keys(out);
+                body.collect_keys(out);
+            }
+            Plan::IterativeScan { base, recursive, .. } => {
+                base.collect_keys(out);
+                recursive.collect_keys(out);
+            }
             Plan::Join { left, right, .. } => {
                 left.collect_keys(out);
                 right.collect_keys(out);
@@ -202,6 +231,67 @@ fn scan_version_of(v: &sqlparser::ast::TableVersion) -> ScanVersion {
 
 /// Query → Plan（自顶向下：SetOp 递归 / Select 装配链）
 pub fn build_plan(q: &Query) -> Result<Plan> {
+    let mut p = build_plan_body(q)?;
+    // 阶段3：WITH → Cte 节点（rev 包裹——后声明先包，使链式引用
+    // c2→c1 的 c2 体落在 c1 绑定作用域内）
+    if let Some(with) = &q.with {
+        for cte in with.cte_tables.iter().rev() {
+            let name = cte.alias.name.value.to_ascii_lowercase();
+            let names = if cte.alias.columns.is_empty() {
+                None
+            } else {
+                Some(
+                    cte.alias
+                        .columns
+                        .iter()
+                        .map(|c| c.name.value.clone())
+                        .collect(),
+                )
+            };
+            let plan = if with.recursive
+                && matches!(
+                    &*cte.query.body,
+                    SetExpr::SetOperation {
+                        op: sqlparser::ast::SetOperator::Union,
+                        ..
+                    }
+                )
+            {
+                let SetExpr::SetOperation {
+                    set_quantifier,
+                    left,
+                    right,
+                    ..
+                } = &*cte.query.body
+                else {
+                    unreachable!()
+                };
+                let distinct = matches!(
+                    set_quantifier,
+                    sqlparser::ast::SetQuantifier::Distinct | sqlparser::ast::SetQuantifier::None
+                );
+                Plan::IterativeScan {
+                    name: name.clone(),
+                    distinct,
+                    names: names.clone(),
+                    base: Box::new(build_setexpr(left)?),
+                    recursive: Box::new(build_setexpr(right)?),
+                }
+            } else {
+                build_plan(&cte.query)?
+            };
+            p = Plan::Cte {
+                name,
+                names,
+                plan: Box::new(plan),
+                body: Box::new(p),
+            };
+        }
+    }
+    Ok(p)
+}
+
+fn build_plan_body(q: &Query) -> Result<Plan> {
     let mut p = build_setexpr(&q.body)?;
     // ORDER BY / LIMIT（Query 级）
     let order: &[(Expr, bool)] = &[]; // OrderByExpr → (expr, asc) 在下方转换
@@ -569,6 +659,14 @@ fn rewrite_walk(plan: &mut Plan, out: &mut Vec<(String, Vec<Expr>)>) {
             rewrite_walk(left, out);
             rewrite_walk(right, out);
         }
+        Plan::Cte { plan, body, .. } => {
+            rewrite_walk(plan, out);
+            rewrite_walk(body, out);
+        }
+        Plan::IterativeScan { base, recursive, .. } => {
+            rewrite_walk(base, out);
+            rewrite_walk(recursive, out);
+        }
         Plan::Scan { .. } | Plan::Values => {}
     }
 }
@@ -624,7 +722,7 @@ pub fn db_schema_lookup<'a>(
 
 struct Printer<'a> {
     out: String,
-    counters: [usize; 11], // v,t,s,f,j,a,p,o,u,d,w
+    counters: [usize; 13], // v,t,s,f,j,a,p,o,u,d,w,c,i
     lookup: SchemaLookup<'a>,
     scan_ids: std::collections::HashMap<String, String>, // 因子键 → %sN
 }
@@ -632,7 +730,7 @@ struct Printer<'a> {
 pub fn print_plan(name: &str, plan: &Plan, lookup: SchemaLookup<'_>) -> String {
     let mut p = Printer {
         out: String::new(),
-        counters: [0; 11],
+        counters: [0; 13],
         lookup,
         scan_ids: std::collections::HashMap::new(),
     };
@@ -644,7 +742,7 @@ pub fn print_plan(name: &str, plan: &Plan, lookup: SchemaLookup<'_>) -> String {
     p.out
 }
 
-const KINDS: [&str; 11] = ["v", "t", "s", "f", "j", "a", "p", "o", "u", "d", "w"];
+const KINDS: [&str; 13] = ["v", "t", "s", "f", "j", "a", "p", "o", "u", "d", "w", "c", "i"];
 
 impl<'a> Printer<'a> {
     fn next_id(&mut self, k: usize) -> String {
@@ -817,6 +915,44 @@ impl<'a> Printer<'a> {
                 self.out.push_str(&format!(
                     "  {id} = window {i} {{calls = [{}]}}\n",
                     cs.join(", ")
+                ));
+                id
+            }
+            Plan::Cte {
+                name,
+                names,
+                plan,
+                body,
+            } => {
+                let p_id = self.emit(plan);
+                let b_id = self.emit(body);
+                let id = self.next_id(11);
+                let cols_part = names
+                    .as_ref()
+                    .map(|ns| format!(" {{cols = [{}]}}", ns.join(", ")))
+                    .unwrap_or_default();
+                self.out.push_str(&format!(
+                    "  {id} = cte \"{name}\" ({p_id}){cols_part} body {b_id}\n"
+                ));
+                id
+            }
+            Plan::IterativeScan {
+                name,
+                distinct,
+                names,
+                base,
+                recursive,
+            } => {
+                let b = self.emit(base);
+                let r = self.emit(recursive);
+                let id = self.next_id(12);
+                let d = if *distinct { " distinct" } else { "" };
+                let cols_part = names
+                    .as_ref()
+                    .map(|ns| format!(" {{cols = [{}]}}", ns.join(", ")))
+                    .unwrap_or_default();
+                self.out.push_str(&format!(
+                    "  {id} = iterate \"{name}\" base {b} step {r}{d}{cols_part}\n"
                 ));
                 id
             }
@@ -1160,6 +1296,51 @@ pub fn parse_plan(text: &str) -> Option<Plan> {
                 })
                 .collect::<Option<Vec<_>>>()?;
             Plan::Window { calls, input }
+        } else if let Some(t) = body.strip_prefix("cte \"") {
+            // cte "name" (%plan)[ {cols = [...]}] body %body
+            let (name, rest) = t.split_once("\" (")?;
+            let (p_id, rest) = rest.split_once(')')?;
+            let plan = Box::new(lookup_node(&nodes, p_id)?);
+            let (names, rest) = match rest.strip_prefix(" {cols = [") {
+                Some(r) => {
+                    let (ns, r2) = r.split_once("]}")?;
+                    (Some(split_top_level(ns)?), r2)
+                }
+                None => (None, rest),
+            };
+            let b_id = rest.strip_prefix(" body %")?;
+            let body = Box::new(lookup_node(&nodes, b_id)?);
+            Plan::Cte {
+                name: name.to_string(),
+                names,
+                plan,
+                body,
+            }
+        } else if let Some(t) = body.strip_prefix("iterate \"") {
+            // iterate "name" base %b step %r[ distinct]
+            let (name, rest) = t.split_once("\" base ")?;
+            let (b, rest) = rest.split_once(" step ")?;
+            // step 引用后缀序：[ {cols = [...]}][ distinct]（打印序
+            // distinct 在前 cols 在后——剥除从最外层后缀起）
+            let (rest, names) = match rest.find(" {cols = [") {
+                Some(pos) => {
+                    let cs = &rest[pos + " {cols = [".len()..];
+                    let (ns, _) = cs.split_once("]}")?;
+                    (&rest[..pos], Some(split_top_level(ns)?))
+                }
+                None => (rest, None),
+            };
+            let (r, d) = match rest.strip_suffix(" distinct") {
+                Some(rr) => (rr, true),
+                None => (rest, false),
+            };
+            Plan::IterativeScan {
+                name: name.to_string(),
+                distinct: d,
+                names,
+                base: Box::new(lookup_node(&nodes, b)?),
+                recursive: Box::new(lookup_node(&nodes, r)?),
+            }
         } else {
             return None; // 未知操作 fail-closed
         };
@@ -1183,6 +1364,12 @@ pub fn verify_plan(p: &Plan) -> bool {
         Plan::SetOp { left, right, .. } => verify_plan(left) && verify_plan(right),
         Plan::Distinct { input } => verify_plan(input),
         Plan::Window { calls, input } => !calls.is_empty() && verify_plan(input),
+        Plan::Cte { name, plan, body, .. } => {
+            !name.is_empty() && verify_plan(plan) && verify_plan(body)
+        }
+        Plan::IterativeScan { name, base, recursive, .. } => {
+            !name.is_empty() && verify_plan(base) && verify_plan(recursive)
+        }
     }
 }
 
@@ -1296,6 +1483,9 @@ mod tests {
             "SELECT DISTINCT cid FROM orders ORDER BY cid LIMIT 2",
             "SELECT id, row_number() OVER (ORDER BY total DESC) FROM orders",
             "SELECT id, sum(total) OVER (PARTITION BY cid ORDER BY id) FROM orders",
+            // 阶段3：Cte / IterativeScan 打印
+            "WITH RECURSIVE fib(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM fib WHERE n < 5) SELECT sum(n) FROM fib",
+            "WITH big AS (SELECT id FROM orders WHERE total > 100) SELECT count(*) FROM big",
         ];
         let mut cur = String::new();
         cur.push_str("; dendro.ir v1 plans golden（生成见 ir/plan.rs tests；人工审阅后提交）\n");
@@ -1342,6 +1532,9 @@ mod tests {
             "SELECT id, row_number() OVER (ORDER BY total DESC) FROM orders",
             "SELECT id, sum(total) OVER (PARTITION BY cid ORDER BY id) FROM orders WHERE total > 10",
             "SELECT c.region, count(*), sum(o.total) FROM orders o JOIN customers c ON o.cid = c.id GROUP BY c.region UNION ALL SELECT region, count(*), sum(id) FROM customers GROUP BY region",
+            // 阶段3：Cte / IterativeScan round-trip
+            "WITH RECURSIVE fib(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM fib WHERE n < 5) SELECT sum(n) FROM fib",
+            "WITH big AS (SELECT id FROM orders WHERE total > 100) SELECT count(*) FROM big",
         ];
         for sql in corpus {
             let mut p = plan_of(sql);

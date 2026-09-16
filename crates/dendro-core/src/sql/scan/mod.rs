@@ -42,6 +42,7 @@ pub(crate) use window::*;
 pub(crate) use cte::*;
 
 /// 扫描出来的表视图
+#[derive(Clone)]
 pub struct TableView {
     pub names: Vec<String>,
     pub rows: Vec<Vec<SqlValue>>,
@@ -125,6 +126,36 @@ pub(crate) fn eval_query(
     // 窗口函数在 eval_select 投影段处理（真实现——不再拒绝）
 
     reject_offset_comma(q)?;
+    // 阶段3：optimize 开 → WITH 由计划路径原生消费（Plan::Cte 共享子树 /
+    // Plan::IterativeScan delta 不动点——递归无 VALUES 注入、无 O(n²)
+    // 全量重建）；失败/不覆盖回落下方 AST 展开路径（差分轴 off 的旧行为）
+    if sess.optimize_enabled && q.with.is_some() {
+        if let Ok(mut plan) = crate::ir::plan::build_plan(q) {
+            crate::sql::optimize::rewrite_in_list(&mut plan);
+            crate::ir::plan::rewrite_pushdown(&mut plan);
+            crate::sql::optimize::rewrite_stat_prop(&mut plan, db, sess);
+            crate::sql::optimize::rewrite_eq_copy(&mut plan);
+            crate::sql::optimize::rewrite_join_order(&mut plan, db, sess);
+            crate::sql::optimize::rewrite_filter_order(&mut plan);
+            let covered = match &*q.body {
+                SetExpr::Select(sel) => plan_exec_covered(&plan, sel, q),
+                SetExpr::SetOperation { .. } => plan_nodes_exec_ok(&plan),
+                _ => false,
+            };
+            if covered {
+                let masks = plan_scan_masks(db, sess, &plan);
+                let mut cx = ExecCx {
+                    masks: &masks,
+                    sort_hint: None,
+                    metrics: None,
+                    depth: 0,
+                    binding: None,
+                };
+                let (tv, _) = exec_plan(db, sess, &plan, snapshot, &mut cx)?;
+                return Ok(tv);
+            }
+        }
+    }
     // P0：CTE 展开——非递归走 expand_ctes（纯函数）；递归走迭代不动点
     //（需本函数的求值上下文 db/sess/snapshot——optimize 纯函数不可达）
     let q_expanded;
@@ -187,6 +218,7 @@ pub(crate) fn eval_query(
                             sort_hint: None,
                             metrics: None,
                             depth: 0,
+                            binding: None,
                         };
                         let (tv, _) = exec_plan(db, sess, &plan, snapshot, &mut cx)?;
                         return Ok(tv);
@@ -508,6 +540,7 @@ pub(crate) fn eval_query(
                 sort_hint: None,
                 metrics: None,
                 depth: 0,
+                binding: None,
             };
             let (mut tv, _layout) = exec_plan(db, sess, p, snapshot, &mut cx)?;
             if distinct {

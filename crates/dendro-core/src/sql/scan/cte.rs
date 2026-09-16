@@ -17,6 +17,11 @@ use sqlparser::ast::{
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// 递归 CTE 迭代/行数上限（AST 注入路径与计划 IterativeScan 共用——
+/// 到顶必须报错，绝不静默截断返回部分行）
+pub(crate) const RECURSIVE_MAX_ITER: usize = 200;
+pub(crate) const RECURSIVE_MAX_ROWS: usize = 1000;
+
 pub(crate) fn eval_recursive_cte(
     db: &Database,
     sess: &mut Session,
@@ -74,8 +79,8 @@ pub(crate) fn eval_recursive_cte(
     };
     // 逐轮迭代：递归臂中 r → Derived(VALUES 已积累行)，求值至不动点
     let mut all_rows = base_tv.rows.clone();
-    const MAX_ITER: usize = 200;
-    const MAX_ROWS: usize = 1000; // 发散防护——到顶必须报错（静默截断 =
+    const MAX_ITER: usize = RECURSIVE_MAX_ITER;
+    const MAX_ROWS: usize = RECURSIVE_MAX_ROWS; // 发散防护——到顶必须报错（静默截断 =
     // 不可察觉的错误结果，架构审视 #2），PG 同场景报
     // "recursive query cancelled" 而非给出部分行
     let mut hit_limit = false;

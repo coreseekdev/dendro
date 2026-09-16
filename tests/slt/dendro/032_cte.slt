@@ -58,3 +58,26 @@ WITH RECURSIVE fib AS (SELECT 0 AS a, 1 AS b UNION ALL SELECT b, a + b FROM fib 
 # MATERIALIZED 拒绝
 statement error
 WITH MATERIALIZED c AS (SELECT v FROM tt) SELECT count(*) FROM c
+
+# 阶段3：计划路径 Cte/IterativeScan（optimize on 走 Plan::Cte delta 不动点）
+query I
+WITH RECURSIVE fib(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM fib WHERE n < 11) SELECT count(*) FROM fib
+----
+11
+
+# join 键数值宽度归一回归：派生表 Int32 字面量 vs BIGINT 列 Int64（曾静默 0 行）
+statement ok
+CREATE TABLE IF NOT EXISTS jt2 (id BIGINT PRIMARY KEY)
+
+statement ok
+INSERT INTO jt2 VALUES (1),(2),(3)
+
+query I
+SELECT count(*) FROM (SELECT 1 AS n UNION ALL SELECT 2) r JOIN jt2 o ON o.id = r.n
+----
+2
+
+query I
+SELECT count(*) FROM jt2 o JOIN (SELECT 1 AS n UNION ALL SELECT 2) r ON o.id = r.n
+----
+2
