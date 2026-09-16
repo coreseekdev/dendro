@@ -31,7 +31,35 @@ pub(crate) struct WindowCall {
     pub(crate) synth_col: String,
 }
 
-/// 提取 Select 投影中的窗口函数（v1：每项最多 1 个窗口调用）
+/// 表达式内是否含窗口调用（递归——含嵌套形态 `x + row_number() OVER ..`）
+pub(crate) fn expr_has_window(e: &Expr) -> bool {
+    match e {
+        Expr::Function(f) => {
+            f.over.is_some()
+                || super::fn_args(f).iter().any(|a| {
+                    matches!(a, FunctionArg::Unnamed(FunctionArgExpr::Expr(inner)) if expr_has_window(inner))
+                })
+        }
+        Expr::BinaryOp { left, right, .. } => expr_has_window(left) || expr_has_window(right),
+        Expr::UnaryOp { expr, .. } => expr_has_window(expr),
+        Expr::Nested(i) => expr_has_window(i),
+        Expr::Cast { expr, .. } => expr_has_window(expr),
+        Expr::Case {
+            conditions,
+            else_result,
+            ..
+        } => {
+            conditions
+                .iter()
+                .any(|cw| expr_has_window(&cw.condition) || expr_has_window(&cw.result))
+                || else_result.as_ref().is_some_and(|e| expr_has_window(e))
+        }
+        _ => false,
+    }
+}
+
+/// 提取 Select 投影中的窗口函数（递归收集——嵌套在算术/标量函数/
+/// CASE 内的调用同样收集；遍历序 = 求值序 = rewrite_window_calls 序）
 pub(crate) fn collect_window_calls(select: &Select) -> Result<Vec<WindowCall>> {
     let mut out = Vec::new();
     for item in &select.projection {
@@ -40,51 +68,139 @@ pub(crate) fn collect_window_calls(select: &Select) -> Result<Vec<WindowCall>> {
             SelectItem::ExprWithAlias { expr, .. } => expr,
             _ => continue,
         };
-        if let Expr::Function(f) = e {
-            if let Some(over) = &f.over {
-                let sqlparser::ast::WindowType::WindowSpec(spec) = over else {
-                    return Err(SqlError::not_supported("named window (WINDOW clause)"));
-                };
-                if spec.window_frame.is_some() {
-                    return Err(SqlError::not_supported("window frame (ROWS/RANGE)"));
-                }
-                let name = f.name.to_string().to_ascii_lowercase();
-                if !matches!(
-                    name.as_str(),
-                    "row_number" | "rank" | "dense_rank" | "sum" | "count" | "min" | "max" | "avg"
-                ) {
-                    return Err(SqlError::not_supported(format!("window function {name}")));
-                }
-                let arg = match fn_args(f).first() {
-                    Some(FunctionArg::Unnamed(FunctionArgExpr::Expr(e))) => Some(e.clone()),
-                    Some(FunctionArg::Unnamed(FunctionArgExpr::Wildcard)) => None,
-                    None => None,
-                    _ => return Err(SqlError::not_supported("window function arg form")),
-                };
-                // 排名函数无参；聚合必须有参数
-                if matches!(name.as_str(), "row_number" | "rank" | "dense_rank") && arg.is_some() {
-                    return Err(SqlError::syntax("ranking function takes no argument"));
-                }
-                if matches!(name.as_str(), "sum" | "min" | "max" | "avg") && arg.is_none() {
-                    return Err(SqlError::syntax("aggregate window function requires argument"));
-                }
-                let order_by: Vec<(Expr, bool)> = spec
-                    .order_by
-                    .iter()
-                    .map(|o| (o.expr.clone(), o.options.asc.unwrap_or(true)))
-                    .collect();
-                let synth_col = format!("__w{}", out.len());
-                out.push(WindowCall {
-                    func: name,
-                    arg,
-                    partition_by: spec.partition_by.clone(),
-                    order_by,
-                    synth_col,
-                });
-            }
-        }
+        collect_in_expr(e, &mut out)?;
     }
     Ok(out)
+}
+
+/// 表达式树内递归收集窗口调用（前序、从左到右）
+fn collect_in_expr(e: &Expr, out: &mut Vec<WindowCall>) -> Result<()> {
+    match e {
+        Expr::Function(f) => {
+            if f.over.is_some() {
+                extract_call(f, out)?;
+                // SQL 标准禁止窗口调用嵌套窗口调用——不再下钻参数
+            } else {
+                // 标量函数包装形态：coalesce(sum(v) OVER (), 0)
+                for a in super::fn_args(f) {
+                    if let FunctionArg::Unnamed(FunctionArgExpr::Expr(inner)) = a {
+                        collect_in_expr(inner, out)?;
+                    }
+                }
+            }
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            collect_in_expr(left, out)?;
+            collect_in_expr(right, out)?;
+        }
+        Expr::UnaryOp { expr, .. } => collect_in_expr(expr, out)?,
+        Expr::Nested(i) => collect_in_expr(i, out)?,
+        Expr::Cast { expr, .. } => collect_in_expr(expr, out)?,
+        Expr::Case {
+            conditions,
+            else_result,
+            ..
+        } => {
+            for cw in conditions {
+                collect_in_expr(&cw.condition, out)?;
+                collect_in_expr(&cw.result, out)?;
+            }
+            if let Some(el) = else_result {
+                collect_in_expr(el, out)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// 单个窗口调用 → WindowCall（校验 + 合成列名分配）
+fn extract_call(f: &sqlparser::ast::Function, out: &mut Vec<WindowCall>) -> Result<()> {
+    let Some(over) = &f.over else {
+        return Ok(());
+    };
+    let sqlparser::ast::WindowType::WindowSpec(spec) = over else {
+        return Err(SqlError::not_supported("named window (WINDOW clause)"));
+    };
+    if spec.window_frame.is_some() {
+        return Err(SqlError::not_supported("window frame (ROWS/RANGE)"));
+    }
+    let name = f.name.to_string().to_ascii_lowercase();
+    if !matches!(
+        name.as_str(),
+        "row_number" | "rank" | "dense_rank" | "sum" | "count" | "min" | "max" | "avg"
+    ) {
+        return Err(SqlError::not_supported(format!("window function {name}")));
+    }
+    let arg = match super::fn_args(f).first() {
+        Some(FunctionArg::Unnamed(FunctionArgExpr::Expr(e))) => Some(e.clone()),
+        Some(FunctionArg::Unnamed(FunctionArgExpr::Wildcard)) => None,
+        None => None,
+        _ => return Err(SqlError::not_supported("window function arg form")),
+    };
+    // 排名函数无参；聚合必须有参数
+    if matches!(name.as_str(), "row_number" | "rank" | "dense_rank") && arg.is_some() {
+        return Err(SqlError::syntax("ranking function takes no argument"));
+    }
+    if matches!(name.as_str(), "sum" | "min" | "max" | "avg") && arg.is_none() {
+        return Err(SqlError::syntax("aggregate window function requires argument"));
+    }
+    let order_by: Vec<(Expr, bool)> = spec
+        .order_by
+        .iter()
+        .map(|o| (o.expr.clone(), o.options.asc.unwrap_or(true)))
+        .collect();
+    let synth_col = format!("__w{}", out.len());
+    out.push(WindowCall {
+        func: name,
+        arg,
+        partition_by: spec.partition_by.clone(),
+        order_by,
+        synth_col,
+    });
+    Ok(())
+}
+
+/// 投影表达式内的窗口调用 → Identifier(合成列)。
+/// 与 collect_in_expr 同遍历序（前序、从左到右）——索引对齐即替换正确性
+pub(crate) fn rewrite_window_calls(e: &mut Expr, calls: &[WindowCall], idx: &mut usize) {
+    match e {
+        Expr::Function(f) => {
+            if f.over.is_some() {
+                if let Some(wc) = calls.get(*idx) {
+                    *e = Expr::Identifier(sqlparser::ast::Ident::new(wc.synth_col.clone()));
+                    *idx += 1;
+                }
+            } else {
+                for a in super::fn_args_mut(f) {
+                    if let FunctionArg::Unnamed(FunctionArgExpr::Expr(inner)) = a {
+                        rewrite_window_calls(inner, calls, idx);
+                    }
+                }
+            }
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            rewrite_window_calls(left, calls, idx);
+            rewrite_window_calls(right, calls, idx);
+        }
+        Expr::UnaryOp { expr, .. } => rewrite_window_calls(expr, calls, idx),
+        Expr::Nested(i) => rewrite_window_calls(i, calls, idx),
+        Expr::Cast { expr, .. } => rewrite_window_calls(expr, calls, idx),
+        Expr::Case {
+            conditions,
+            else_result,
+            ..
+        } => {
+            for cw in conditions.iter_mut() {
+                rewrite_window_calls(&mut cw.condition, calls, idx);
+                rewrite_window_calls(&mut cw.result, calls, idx);
+            }
+            if let Some(el) = else_result {
+                rewrite_window_calls(el, calls, idx);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// 窗口函数求值：全输入行 → 合成列追加到 tv

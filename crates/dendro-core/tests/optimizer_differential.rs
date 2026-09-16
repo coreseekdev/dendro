@@ -397,3 +397,54 @@ fn limit_and_offset_plan_path() {
     // OFFSET 2 跳过 4,2 → 取 100 组前两个（首见序 id 1,7? 见 slt 同款断言）
     assert_eq!(ids.len(), 2, "{ids:?}");
 }
+
+// ---------- 阶段0 差分扩容：窗口 / DISTINCT / 递归 CTE（阶段2/3 对拍基准） ----------
+
+#[test]
+fn diff_window_shapes() {
+    let mut c = setup();
+    // 排名（无 partition）+ 帧内聚合（partition + order）
+    diff(&mut c, "SELECT id, row_number() OVER (ORDER BY total DESC) FROM orders");
+    diff(&mut c, "SELECT id, sum(total) OVER (PARTITION BY cid) FROM orders ORDER BY id");
+    diff(&mut c, "SELECT id, rank() OVER (PARTITION BY cid ORDER BY total DESC) FROM orders ORDER BY id");
+    // 窗口 + 外层 WHERE/投影混用
+    diff(&mut c, "SELECT id, total + row_number() OVER (ORDER BY id) FROM orders WHERE total > 50 ORDER BY id");
+}
+
+#[test]
+fn diff_distinct_shapes() {
+    let mut c = setup();
+    diff(&mut c, "SELECT DISTINCT cid FROM orders");
+    diff(&mut c, "SELECT DISTINCT cid FROM orders ORDER BY cid");
+    diff(&mut c, "SELECT DISTINCT cid FROM orders LIMIT 2");
+    diff(&mut c, "SELECT DISTINCT region FROM customers ORDER BY region");
+    // DISTINCT + 聚合 + 排序组合（carve-out ② 形态）
+    diff(&mut c, "SELECT DISTINCT cid, count(*) FROM orders GROUP BY cid ORDER BY cid");
+}
+
+#[test]
+fn diff_recursive_cte_shapes() {
+    let mut c = setup();
+    // 数列生成（求和特征值）
+    diff(&mut c, "WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM r WHERE n < 10) SELECT sum(n) FROM r");
+    // 与业务表 join
+    diff(
+        &mut c,
+        "WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM r WHERE n < 5) \
+         SELECT count(*) FROM orders o JOIN r ON o.id = r.n",
+    );
+    // UNION DISTINCT 递归（去重收敛）
+    diff(&mut c, "WITH RECURSIVE r(n) AS (SELECT 1 UNION SELECT n+1 FROM r WHERE n < 6) SELECT count(*) FROM r");
+}
+
+#[test]
+fn diff_subquery_and_cte_shapes() {
+    let mut c = setup();
+    // WHERE 子查询（内联路径 on/off 等价）
+    diff(&mut c, "SELECT id FROM orders WHERE total > (SELECT avg(total) FROM orders) ORDER BY id");
+    diff(&mut c, "SELECT id FROM orders WHERE cid IN (SELECT id FROM customers WHERE region = 'EU') ORDER BY id");
+    // 相关 EXISTS 属阶段 3（v2）——语料用非相关形态
+    diff(&mut c, "SELECT id FROM orders WHERE EXISTS (SELECT 1 FROM customers WHERE tier > 2) ORDER BY id");
+    // 非递归 CTE（多次引用）
+    diff(&mut c, "WITH big AS (SELECT * FROM orders WHERE total > 100) SELECT count(*) FROM big a JOIN big b ON a.id = b.id");
+}

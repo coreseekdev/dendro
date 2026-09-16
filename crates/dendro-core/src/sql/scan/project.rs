@@ -198,6 +198,9 @@ pub fn has_column_ref(e: &sqlparser::ast::Expr) -> bool {
         | Expr::IsNull(e)
         | Expr::IsNotNull(e) => has_column_ref(e),
         Expr::InList { expr, list, .. } => has_column_ref(expr) || list.iter().any(has_column_ref),
+        // 子查询形态：内层列引用与外层行无关，但**不可**被外层常量
+        // 短路求值（expr::eval 不支持——按"有列引用"处理交正常过滤）
+        Expr::Exists { .. } | Expr::InSubquery { .. } | Expr::Subquery(_) => true,
         Expr::Between {
             expr, low, high, ..
         } => has_column_ref(expr) || has_column_ref(low) || has_column_ref(high),
@@ -437,3 +440,10 @@ pub fn rows_to_record_set(columns: &[ColumnMeta], rows: Vec<Vec<SqlValue>>) -> R
 // ---------------------------------------------------------------------------
 // 架构评审止血：窗口函数诚实拒绝 + FROM/LIMIT 显式拒绝
 // ---------------------------------------------------------------------------
+
+pub(crate) fn fn_args_mut(f: &mut sqlparser::ast::Function) -> &mut [FunctionArg] {
+    match &mut f.args {
+        sqlparser::ast::FunctionArguments::List(l) => &mut l.args,
+        _ => &mut [] as &mut [FunctionArg],
+    }
+}

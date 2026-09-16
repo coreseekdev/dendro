@@ -501,11 +501,10 @@ pub(crate) fn eval_query(
     if let Some(p) = qplan.as_ref() {
         // 窗口查询不走计划路径（Plan IR 无窗口节点——eval_select 的
         // 合成列路径处理；计划路径的 expr::eval 会报 "function sum"）
-        let has_window = select.projection.iter().any(|item| {
-            matches!(item,
-                SelectItem::UnnamedExpr(Expr::Function(f))
-                | SelectItem::ExprWithAlias { expr: Expr::Function(f), .. }
-                if f.over.is_some())
+        let has_window = select.projection.iter().any(|item| match item {
+            SelectItem::UnnamedExpr(e)
+            | SelectItem::ExprWithAlias { expr: e, .. } => window::expr_has_window(e),
+            _ => false,
         });
         if !has_window && plan_exec_covered(p, select, q) {
             let masks = plan_scan_masks(db, sess, p);
@@ -551,23 +550,28 @@ pub(crate) fn eval_query(
         // 两条路径分叉。has_agg 判定前移（原在过滤后计算，现两处共用）。
         let has_agg = projection_aggregates(&select.projection).is_some()
             || select.having.as_ref().map(has_agg_expr).unwrap_or(false);
+        // 常量短路（Q-1）：仅决定**是否跳过行过滤**，绝不提前 return——
+        // 管线后续（投影/窗口/排序/limit）必须照走（恒真短路曾直接返回
+        // 未投影的 tv：`SELECT id ... WHERE EXISTS(非相关)` 列集错成全表；
+        // 恒假空集同理需要投影后的列名）
+        let mut skip_filter = false;
         if !has_column_ref(w) && !has_agg {
             match expr::eval(w, &[], &|_| None) {
                 Ok(SqlValue::Bool(false)) | Ok(SqlValue::Null) => {
-                    return Ok(TableView {
-                        names: tv.names.clone(),
-                        rows: vec![],
-                    });
+                    tv.rows = vec![];
+                    skip_filter = true;
                 }
-                Ok(SqlValue::Bool(true)) => return Ok(tv), // 恒真：免过滤
-                _ => {}                                    // 非布尔：走正常过滤（行级报错）
+                Ok(SqlValue::Bool(true)) => skip_filter = true, // 恒真：免过滤
+                _ => {} // 非布尔：走正常过滤（行级报错）
             }
         }
-        // #28：join 后限定名按因子布局解析（o.id 不再错读右侧同名列）
-        let lay = factor_layout.clone();
-        let nms = tv.names.clone();
-        let qres = move |n: &str| resolve_qualified(&lay, &nms, n);
-        tv = apply_predicates_q(tv, w, sess, &qres)?;
+        if !skip_filter {
+            // #28：join 后限定名按因子布局解析（o.id 不再错读右侧同名列）
+            let lay = factor_layout.clone();
+            let nms = tv.names.clone();
+            let qres = move |n: &str| resolve_qualified(&lay, &nms, n);
+            tv = apply_predicates_q(tv, w, sess, &qres)?;
+        }
     }
     // P0：窗口函数（全输入行上下文——在聚合/投影前求值）
     // has_agg 判定需排除窗口调用（窗口 sum() 不是全局聚合——每行出值）
@@ -580,31 +584,38 @@ pub(crate) fn eval_query(
         // + has_agg 排除窗口
         // 重建投影（简单方案：包装 SelectItem 走 Identifier）
         // v1：直接在投影段引用合成列
-        let has_window = !window_calls.is_empty();
-        // 覆盖判定：含窗口的查询走 AST 路径（计划 IR 未覆盖窗口）
-        // → 强制回落（通过设置 has_window 使 plan_exec_covered 返回 false
-        //   的效果——此处直接 return AST 路径的后续代码）
-        // 最简：设置一个 flag 使下方不走计划路径
-        let select_with_window = true;
-        // 投影阶段：window call expr 替换为 Identifier(synth_col)
+        // 投影阶段：窗口调用（含嵌套形态 total + row_number() OVER ..）
+        // → Identifier(合成列)；遍历序与收集序对齐（前序、从左到右）。
+        // 顶层调用输出名 = 原表达式 display（与旧行为一致）；嵌套形态
+        // 整项以原 display 为别名（名称不因重写漂移）
         let mut patched_projection: Vec<SelectItem> = Vec::new();
         let mut wc_idx = 0usize;
         for item in select.projection.iter() {
-            match item {
-                SelectItem::UnnamedExpr(Expr::Function(f)) if f.over.is_some() => {
-                    let synth = window_calls
-                        .get(wc_idx)
-                        .map(|w| w.synth_col.clone())
-                        .unwrap_or_default();
-                    wc_idx += 1;
-                    patched_projection.push(SelectItem::ExprWithAlias {
-                        expr: Expr::Identifier(sqlparser::ast::Ident::new(synth)),
-                        alias: sqlparser::ast::Ident::new(f.to_string()),
-                    });
+            let e = match item {
+                SelectItem::UnnamedExpr(e) => e,
+                SelectItem::ExprWithAlias { expr, .. } => expr,
+                _ => {
+                    patched_projection.push(item.clone());
+                    continue;
                 }
-                _ => patched_projection.push(item.clone()),
+            };
+            if !window::expr_has_window(e) {
+                patched_projection.push(item.clone());
+                continue;
             }
+            let display = e.to_string();
+            let mut ne = e.clone();
+            window::rewrite_window_calls(&mut ne, &window_calls, &mut wc_idx);
+            let alias = match item {
+                SelectItem::ExprWithAlias { alias, .. } => alias.clone(),
+                _ => sqlparser::ast::Ident::new(display),
+            };
+            patched_projection.push(SelectItem::ExprWithAlias {
+                expr: ne,
+                alias,
+            });
         }
+        debug_assert!(wc_idx <= window_calls.len());
         // 使用 patched 投影 + 无聚合路径（窗口已算完，synth 列可当普通列引用）
         let mut select_owned2: Select;
         let select: &Select = {
@@ -623,7 +634,6 @@ pub(crate) fn eval_query(
             select_owned2.having = None;
             &select_owned2
         };
-        let _ = (has_window, select_with_window);
         // 继续走正常投影路径（窗口列作为普通列）
         let wnames = tv.names.clone();
         let wres = move |n: &str| wnames.iter().position(|c| c.eq_ignore_ascii_case(n));

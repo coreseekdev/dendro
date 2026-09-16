@@ -28,11 +28,10 @@ pub(crate) fn eval_recursive_cte(
         SqlError::not_supported("WITH RECURSIVE with no CTE")
     })?;
     let r_name = cte.alias.name.value.to_ascii_lowercase();
-    if cte.materialized.is_some() || !cte.alias.columns.is_empty() {
-        return Err(SqlError::not_supported(
-            "WITH RECURSIVE with MATERIALIZED / column aliases",
-        ));
+    if cte.materialized.is_some() {
+        return Err(SqlError::not_supported("WITH RECURSIVE with MATERIALIZED"));
     }
+    // base 求值（不含 r 引用）先行——列别名 `r(n, ...)` 需按输出元数校验
     // CTE 体必须是 UNION [ALL]（base 臂 + 递归臂）
     let (base_se, rec_se, _all) = match &*cte.query.body {
         sqlparser::ast::SetExpr::SetOperation {
@@ -51,9 +50,28 @@ pub(crate) fn eval_recursive_cte(
             ))
         }
     };
-    // base 求值（不含 r 引用）
     let base_query = mk_single_query(base_se);
     let base_tv = eval_query(db, sess, &base_query, snapshot)?;
+    // CTE 列别名 `r(n, ...)`：覆盖 base 臂输出名（派生表 alias 列名
+    // 路径已支持——递归臂/外层列引用按别名解析）
+    let cte_names: Vec<String> = if cte.alias.columns.is_empty() {
+        base_tv.names.clone()
+    } else {
+        let names: Vec<String> = cte
+            .alias
+            .columns
+            .iter()
+            .map(|c| c.name.value.clone())
+            .collect();
+        if names.len() != base_tv.names.len() {
+            return Err(SqlError::syntax(format!(
+                "WITH RECURSIVE column alias count {}/{}",
+                names.len(),
+                base_tv.names.len()
+            )));
+        }
+        names
+    };
     // 逐轮迭代：递归臂中 r → Derived(VALUES 已积累行)，求值至不动点
     let mut all_rows = base_tv.rows.clone();
     const MAX_ITER: usize = 200;
@@ -68,12 +86,7 @@ pub(crate) fn eval_recursive_cte(
             break;
         }
         let mut rec_q = mk_single_query(rec_se);
-        replace_rec_ref(
-            &mut rec_q,
-            &r_name,
-            rows_to_exprs(&all_rows),
-            &base_tv.names,
-        );
+        replace_rec_ref(&mut rec_q, &r_name, rows_to_exprs(&all_rows), &cte_names);
         let rec_tv = eval_query(db, sess, &rec_q, snapshot)?;
         // UNION ALL 追加；UNION DISTINCT 语义按全行文本去重
         let before = all_rows.len();
@@ -103,7 +116,7 @@ pub(crate) fn eval_recursive_cte(
     // 结果 Query：r 替换为 Derived(VALUES all_rows)，外层查询正常求值
     let mut out = q.clone();
     out.with = None;
-    replace_rec_ref(&mut out, &r_name, rows_to_exprs(&all_rows), &base_tv.names);
+    replace_rec_ref(&mut out, &r_name, rows_to_exprs(&all_rows), &cte_names);
     Ok(out)
 }
 
