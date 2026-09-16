@@ -117,7 +117,7 @@ plan @q0 {
   %t0 = table "orders" {cols = [id, cid, total], pk = [0]}
   %s0 = scan %t0
   %w0 = window %s0 {calls = [row_number() OVER (ORDER BY total DESC) AS __w0]}
-  %p0 = project %w0 {exprs = [id, row_number() OVER (ORDER BY total DESC)], names = ["id", "row_number() OVER (ORDER BY total DESC)"]}
+  %p0 = project %w0 {exprs = [id, __w0], names = ["id", "row_number() OVER (ORDER BY total DESC)"]}
   yield %p0
 }
 ; corpus: SELECT id, sum(total) OVER (PARTITION BY cid ORDER BY id) FROM orders
@@ -126,6 +126,6 @@ plan @q0 {
   %t0 = table "orders" {cols = [id, cid, total], pk = [0]}
   %s0 = scan %t0
   %w0 = window %s0 {calls = [sum(total) OVER (PARTITION BY cid ORDER BY id) AS __w0]}
-  %p0 = project %w0 {exprs = [id, sum(total) OVER (PARTITION BY cid ORDER BY id)], names = ["id", "sum(total) OVER (PARTITION BY cid ORDER "]}
+  %p0 = project %w0 {exprs = [id, __w0], names = ["id", "sum(total) OVER (PARTITION BY cid ORDER BY id)"]}
   yield %p0
 }

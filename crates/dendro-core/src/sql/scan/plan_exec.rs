@@ -365,16 +365,9 @@ pub(crate) fn plan_exec_covered(
     q: &Query,
 ) -> bool {
     use crate::ir::plan::Plan;
-    // AST 形态：通配/OFFSET → AST 路径（DISTINCT 入口已拒；
-    // Plan::Sort v1 不携带 OFFSET；A3 起聚合/分组/HAVING 走计划路径）
-    // DISTINCT：去重在 eval_select 出口做（dedup→sort→limit 语义序），
-    // 计划路径的 sort(top-N)/limit 先于出口去重会错序（[a,a,a,b] LIMIT 2
-    // → 计划 [a] vs 正确 [a,b]）——含 sort/limit 的 DISTINCT 查询回落
-    let has_distinct = select.distinct.is_some();
-    let has_sort_or_limit = q.order_by.is_some() || q.limit_clause.is_some();
-    if has_distinct && has_sort_or_limit {
-        return false;
-    }
+    // 阶段2 翻转①：DISTINCT 与 sort/limit 共存不再回落——Plan::Distinct
+    // 在 Project 之上、Sort/Limit 之下（dedup→sort→limit 语义序由节点
+    // 层次直接表达；旧回落原因是计划无去重节点、去重在 eval 出口做）
     // LIMIT/OFFSET 由 Limit 节点承接（含 LIMIT-无-ORDER / OFFSET-only）
     // 集合操作查询：body 非 Select——只约束 q 级（排序/LIMIT 已成节点）
     if !matches!(&*q.body, sqlparser::ast::SetExpr::Select(_)) {
@@ -394,18 +387,11 @@ pub(crate) fn plan_exec_covered(
         .iter()
         .filter(|item| matches!(item, sqlparser::ast::SelectItem::Wildcard(_)))
         .count();
-    let n_qwild: usize = select
-        .projection
-        .iter()
-        .filter(|item| {
-            matches!(item, sqlparser::ast::SelectItem::QualifiedWildcard(..))
-        })
-        .count();
+    // 阶段2 翻转③：QualifiedWildcard（o.*）→ 计划 prefixes 形态；
+    // 混合限定通配 build 失败（build_plan Err → 计划路径整体不适用，
+    // AST 路径处理——此处无需形态检查）
     if n_wild > 0 && n_wild != select.projection.len() {
-        return false; // 混合通配
-    }
-    if n_qwild > 0 {
-        return false; // QualifiedWildcard 全部回落（o.* 前缀过滤语义）
+        return false; // 混合通配（*, x）
     }
     // 版本子句（FOR SYSTEM_TIME/AS OF）：O-2c+ B 起计划路径携带
     // version（synthetic_tf 重建——HistoryScan 路由不变）
@@ -432,9 +418,11 @@ pub(crate) fn plan_nodes_exec_ok(p: &crate::ir::plan::Plan) -> bool {
             plan_nodes_exec_ok(left) && plan_nodes_exec_ok(right)
         }
         Plan::Aggregate { input, .. } => plan_nodes_exec_ok(input),
-        // 阶段1：节点已入 IR、exec_plan 已接线，覆盖判定仍排除——
-        // 阶段2 差分对拍后逐项翻转
-        Plan::Distinct { .. } | Plan::Window { .. } => false,
+        // 阶段2 翻转：Distinct/Window 入可执行集（实现 = AST 路径
+        // 同款共享助手；差分轴对拍护航）
+        Plan::Distinct { input } | Plan::Window { input, .. } => {
+            plan_nodes_exec_ok(input)
+        }
     }
 }
 
@@ -497,7 +485,12 @@ pub(crate) fn plan_scan_masks(
     // 变 null 即刻可见；prune 差分首跑即抓）
     fn has_wildcard(p: &Plan) -> bool {
         match p {
-            Plan::Project { wildcard, input, .. } => *wildcard || has_wildcard(input),
+            Plan::Project {
+                wildcard,
+                prefixes,
+                input,
+                ..
+            } => *wildcard || !prefixes.is_empty() || has_wildcard(input),
             Plan::Filter { input, .. }
             | Plan::Aggregate { input, .. }
             | Plan::Sort { input, .. }
@@ -801,12 +794,43 @@ pub(crate) fn exec_plan_inner(
             exprs,
             names,
             wildcard,
+            prefixes,
             input,
         } => {
             if *wildcard {
                 // 纯通配：输入透传（全列原名原行）
                 let (tv, _) = exec_plan(db, sess, input, snapshot, &mut cx.child(None, true))?;
                 return Ok((tv, FactorLayout::new()));
+            }
+            if !prefixes.is_empty() {
+                // 限定通配（o.*, c.*）：按因子布局区间取列（阶段2 翻转③
+                // ——前缀 = 因子键；区间外列丢弃）
+                let (tv, layout) =
+                    exec_plan(db, sess, input, snapshot, &mut cx.child(None, true))?;
+                let mut names_out: Vec<String> = Vec::new();
+                let mut idx: Vec<usize> = Vec::new();
+                for pre in prefixes {
+                    if let Some((_, start, len, _)) =
+                        layout.iter().find(|(k, _, _, _)| *k == *pre)
+                    {
+                        for i in *start..(*start + *len) {
+                            idx.push(i);
+                            names_out.push(tv.names[i].clone());
+                        }
+                    }
+                }
+                let rows = tv
+                    .rows
+                    .into_iter()
+                    .map(|r| idx.iter().map(|&i| r[i].clone()).collect())
+                    .collect();
+                return Ok((
+                    TableView {
+                        names: names_out,
+                        rows,
+                    },
+                    FactorLayout::new(),
+                ));
             }
             // A3 组合模式：Project{[Filter(HAVING)] Aggregate input}
             // ——聚合中间态（keys/vals/calls）不出组合段
@@ -855,6 +879,7 @@ pub(crate) fn exec_plan_inner(
                 names,
                 wildcard,
                 input: pin,
+                ..
             } = &**input
             {
                 let agg_composite = matches!(&**pin, Plan::Aggregate { .. })

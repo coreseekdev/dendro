@@ -108,6 +108,10 @@ pub enum Plan {
         names: Vec<String>,
         /// 纯通配投影（SELECT *）：执行 = 输入透传（全列）；exprs/names 空
         wildcard: bool,
+        /// 限定通配投影（SELECT o.*, c.*）：按因子布局区间取列——
+        /// 阶段2 翻转（全部项为 QualifiedWildcard 时非空；混合形态
+        /// build 失败回落 AST）
+        prefixes: Vec<String>,
         input: Box<Plan>,
     },
     Sort {
@@ -322,8 +326,16 @@ fn build_select(sel: &sqlparser::ast::Select) -> Result<Plan> {
     // 窗口（合成列——Project 之下求值；与 eval_select 同收集口径）
     let window_calls = crate::sql::scan::collect_window_calls(sel)?;
     if !window_calls.is_empty() {
+        // 与 AST 路径同拒绝（单一语义面）：窗口 + GROUP BY/HAVING v1 不支持
+        if !matches!(&sel.group_by, sqlparser::ast::GroupByExpr::Expressions(es, _) if es.is_empty())
+            || sel.having.is_some()
+        {
+            return Err(crate::error::SqlError::not_supported(
+                "window function with GROUP BY / HAVING (v1)",
+            ));
+        }
         plan = Plan::Window {
-            calls: window_calls,
+            calls: window_calls.clone(),
             input: Box::new(plan),
         };
     }
@@ -355,31 +367,78 @@ fn build_select(sel: &sqlparser::ast::Select) -> Result<Plan> {
     }
     // 投影（表达式 + 输出列名——与 project() 命名口径一致：
     // Unnamed = expr 文本前 40 字符；Alias = 别名）
+    // 阶段2：窗口调用在构建期重写为合成列引用（与 AST 路径同遍历序）；
+    // 限定通配（o.*）收集为 prefixes（全部项为 QualifiedWildcard 才走
+    // 计划——混合形态 build 失败，AST 路径处理）
     let mut exprs: Vec<Expr> = Vec::new();
     let mut names: Vec<String> = Vec::new();
     let mut wilds = 0usize;
+    let mut qwilds = 0usize;
+    let mut prefixes: Vec<String> = Vec::new();
+    let mut wc_idx = 0usize;
     for item in &sel.projection {
         match item {
             sqlparser::ast::SelectItem::UnnamedExpr(e) => {
-                exprs.push(e.clone());
-                names.push(crate::sql::scan::short_str_pub(e));
+                // 窗口项输出名 = 完整 display（与 AST 路径 patched 投影
+                // 同口径——40 字符截断在两路径间产生命名分叉）；普通
+                // 表达式维持 short_str
+                let display = if crate::sql::scan::expr_has_window(e) {
+                    e.to_string()
+                } else {
+                    crate::sql::scan::short_str_pub(e)
+                };
+                let mut ne = e.clone();
+                if crate::sql::scan::expr_has_window(e) {
+                    crate::sql::scan::rewrite_window_calls(&mut ne, &window_calls, &mut wc_idx);
+                }
+                exprs.push(ne);
+                names.push(display);
             }
             sqlparser::ast::SelectItem::ExprWithAlias { expr, alias, .. } => {
-                exprs.push(expr.clone());
+                let mut ne = expr.clone();
+                if crate::sql::scan::expr_has_window(expr) {
+                    crate::sql::scan::rewrite_window_calls(&mut ne, &window_calls, &mut wc_idx);
+                }
+                exprs.push(ne);
                 names.push(alias.value.clone());
             }
             sqlparser::ast::SelectItem::Wildcard(_) => wilds += 1,
-            // QualifiedWildcard 非纯通配——覆盖判定已排除（AST 路径）；
-            // 计划构建遇到则不置 wildcard（防打计划时误标）
+            sqlparser::ast::SelectItem::QualifiedWildcard(kind, _) => {
+                // 因子键 = 限定名末段小写（与 factor_key 同口径）
+                if let Some(sqlparser::ast::SelectItemQualifiedWildcardKind::ObjectName(o)) =
+                    Some(kind)
+                {
+                    if let Some(k) = o
+                        .0
+                        .last()
+                        .and_then(|p| p.as_ident())
+                        .map(|i| i.value.to_ascii_lowercase())
+                    {
+                        prefixes.push(k);
+                    }
+                }
+                qwilds += 1;
+            }
             _ => {}
         }
     }
+    // 混合限定通配（o.* 与表达式/通配并存）→ build 失败（AST 路径）
+    if qwilds > 0 && qwilds != sel.projection.len() {
+        return Err(crate::error::SqlError::not_supported(
+            "plan: mixed qualified wildcard",
+        ));
+    }
     // 纯通配（全部项为通配）：wildcard 透传形态；混合通配计划不覆盖
     let wildcard = wilds > 0 && wilds == sel.projection.len();
+    if wildcard || !prefixes.is_empty() {
+        exprs.clear();
+        names.clear();
+    }
     plan = Plan::Project {
         exprs,
         names,
         wildcard,
+        prefixes,
         input: Box::new(plan),
     };
     // SELECT DISTINCT（Project 之上——投影后按输出行去重）
@@ -679,12 +738,20 @@ impl<'a> Printer<'a> {
                 exprs,
                 names,
                 wildcard,
+                prefixes,
                 input,
             } => {
                 let i = self.emit(input);
                 let id = self.next_id(6);
                 if *wildcard {
                     self.out.push_str(&format!("  {id} = project {i} {{wildcard}}\n"));
+                    return id;
+                }
+                if !prefixes.is_empty() {
+                    self.out.push_str(&format!(
+                        "  {id} = project {i} {{prefixes = [{}]}}\n",
+                        prefixes.join(", ")
+                    ));
                     return id;
                 }
                 let es: Vec<String> = exprs.iter().map(|e| e.to_string()).collect();
@@ -980,6 +1047,22 @@ pub fn parse_plan(text: &str) -> Option<Plan> {
                 exprs: vec![],
                 names: vec![],
                 wildcard: true,
+                prefixes: vec![],
+                input,
+            }
+        } else if let Some((src, pfx)) = body
+            .strip_prefix("project %")
+            .and_then(|t| t.split_once(" {prefixes = ["))
+            .and_then(|(s, rest)| rest.strip_suffix("]}").map(|p| (s, p)))
+            .map(|(s, p)| (s.trim().to_string(), p.to_string()))
+        {
+            let input = Box::new(lookup_node(&nodes, &src)?);
+            let prefixes = split_top_level(&pfx)?;
+            Plan::Project {
+                exprs: vec![],
+                names: vec![],
+                wildcard: false,
+                prefixes,
                 input,
             }
         } else if let Some(t) = body.strip_prefix("project %") {
@@ -999,6 +1082,7 @@ pub fn parse_plan(text: &str) -> Option<Plan> {
                 exprs,
                 names,
                 wildcard: false,
+                prefixes: vec![],
                 input,
             }
         } else if let Some(t) = body.strip_prefix("sort %") {

@@ -448,3 +448,34 @@ fn diff_subquery_and_cte_shapes() {
     // 非递归 CTE（多次引用）
     diff(&mut c, "WITH big AS (SELECT * FROM orders WHERE total > 100) SELECT count(*) FROM big a JOIN big b ON a.id = b.id");
 }
+
+// ---------- 阶段2：覆盖翻转后的新形态（限定通配/DISTINCT组合/SetOp分支DISTINCT） ----------
+
+#[test]
+fn diff_qualified_wildcard_shapes() {
+    let mut c = setup();
+    diff(&mut c, "SELECT o.* FROM orders o WHERE o.total > 100");
+    diff(&mut c, "SELECT c.* FROM orders o JOIN customers c ON o.cid = c.id WHERE o.total > 400");
+    // 多前缀限定通配
+    diff(&mut c, "SELECT o.*, c.* FROM orders o JOIN customers c ON o.cid = c.id WHERE o.id = 1");
+}
+
+#[test]
+fn diff_distinct_sort_limit_shapes() {
+    let mut c = setup();
+    // 翻转①核心形态：DISTINCT + ORDER BY + LIMIT 共存（曾回落 AST）
+    diff(&mut c, "SELECT DISTINCT cid FROM orders ORDER BY cid LIMIT 2");
+    diff(&mut c, "SELECT DISTINCT cid FROM orders ORDER BY cid DESC");
+    diff(&mut c, "SELECT DISTINCT cid, note FROM orders ORDER BY cid, note LIMIT 3");
+    // SetOp 分支 DISTINCT（评审 P1-2：计划路径曾丢分支去重）
+    diff(&mut c, "SELECT DISTINCT cid FROM orders UNION SELECT id FROM customers ORDER BY 1");
+    diff(&mut c, "SELECT DISTINCT region FROM customers EXCEPT SELECT note FROM orders");
+}
+
+#[test]
+fn diff_window_plan_path_shapes() {
+    let mut c = setup();
+    // 翻转②：窗口走计划路径（Window 节点 + 构建期投影重写）
+    diff(&mut c, "SELECT id, row_number() OVER (ORDER BY total DESC) FROM orders");
+    diff(&mut c, "SELECT DISTINCT cid FROM orders ORDER BY cid");
+}

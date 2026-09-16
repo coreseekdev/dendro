@@ -499,14 +499,9 @@ pub(crate) fn eval_query(
     // ⊆ {Scan, Filter, Join, Project} → 计划驱动执行（重写后的计划即
     // 执行序——EXPLAIN 计划块与执行逐节点对应）
     if let Some(p) = qplan.as_ref() {
-        // 窗口查询不走计划路径（Plan IR 无窗口节点——eval_select 的
-        // 合成列路径处理；计划路径的 expr::eval 会报 "function sum"）
-        let has_window = select.projection.iter().any(|item| match item {
-            SelectItem::UnnamedExpr(e)
-            | SelectItem::ExprWithAlias { expr: e, .. } => window::expr_has_window(e),
-            _ => false,
-        });
-        if !has_window && plan_exec_covered(p, select, q) {
+        // 阶段2 翻转：窗口查询走计划路径（Plan::Window 节点 + 构建期
+        // 投影重写为合成列引用——eval_select 的 AST 路径成为回落）
+        if plan_exec_covered(p, select, q) {
             let masks = plan_scan_masks(db, sess, p);
             let mut cx = ExecCx {
                 masks: &masks,
