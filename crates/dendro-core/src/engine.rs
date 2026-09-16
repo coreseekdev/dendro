@@ -471,13 +471,17 @@ pub trait ColumnarStore: Send + Sync {
         existing: &[crate::versioned::ColSegment],
     ) -> Result<(crate::versioned::ColSegment, Vec<String>)>;
 
-    /// 扫描段集合（含段级 pk 剪枝）。调用方（core）负责 pk 去重与 delete 抑制。
+    /// 扫描段集合（含段级 pk 剪枝）。调用方（core）负责 pk 去重与
+    /// delete 抑制。`col_mask`（O-3 投影裁剪）：与 schema 列同长的
+    /// 需求位图——false 列以零成本 null 数组占位（不解码），批宽度
+    /// 与 schema 一致（消费端零映射）；None = 全解码。
     fn scan(
         &self,
         obj: &Arc<dyn ObjStore>,
         schema: &TableSchema,
         segments: &[crate::versioned::ColSegment],
         pk_range: &Option<(Option<u64>, Option<u64>)>,
+        col_mask: Option<&[bool]>,
     ) -> Result<Vec<arrow::record_batch::RecordBatch>>;
 }
 

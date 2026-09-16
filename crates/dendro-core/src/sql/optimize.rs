@@ -245,6 +245,25 @@ fn expr_idents(e: &Expr, out: &mut Vec<String>) {
             expr_idents(high, out);
         }
         Expr::Cast { expr, .. } => expr_idents(expr, out),
+        // CASE：条件/结果均可能引用列（原缺失——裁剪掉 CASE 引用列会
+        // 静默错值，O-3 差分补齐）
+        Expr::Case {
+            operand,
+            conditions,
+            else_result,
+            ..
+        } => {
+            if let Some(o) = operand {
+                expr_idents(o, out);
+            }
+            for cw in conditions {
+                expr_idents(&cw.condition, out);
+                expr_idents(&cw.result, out);
+            }
+            if let Some(e) = else_result {
+                expr_idents(e, out);
+            }
+        }
         Expr::Function(f) => {
             if let sqlparser::ast::FunctionArguments::List(l) = &f.args {
                 for a in &l.args {
@@ -300,6 +319,77 @@ pub fn and_all(mut cs: Vec<Expr>) -> Option<Expr> {
         };
     }
     Some(acc)
+}
+
+// ---------------------------------------------------------------------------
+// O-3：投影裁剪——列需求位图（AP 列存段跳列解码的依据）
+// ---------------------------------------------------------------------------
+
+/// 单表查询的列需求位图（true = 需要）。**fail-open**：任何不确定
+/// （通配投影 / 未知名 / 不可解析形态）→ None = 全解码——裁剪只在
+/// 确定无损时发生。pk 列恒保留（归并键/点查下推依赖）。
+pub fn column_mask(
+    select: &sqlparser::ast::Select,
+    order_exprs: &[sqlparser::ast::OrderByExpr],
+    schema: &crate::versioned::TableSchema,
+) -> Option<Vec<bool>> {
+    let ncols = schema.columns.len();
+    // 通配投影 = 全列
+    for item in &select.projection {
+        if matches!(
+            item,
+            sqlparser::ast::SelectItem::Wildcard(_) | sqlparser::ast::SelectItem::QualifiedWildcard(..)
+        ) {
+            return None;
+        }
+    }
+    let mut idents = Vec::new();
+    for item in &select.projection {
+        match item {
+            sqlparser::ast::SelectItem::UnnamedExpr(e) => expr_idents(e, &mut idents),
+            sqlparser::ast::SelectItem::ExprWithAlias { expr, .. } => {
+                expr_idents(expr, &mut idents)
+            }
+            _ => return None,
+        }
+    }
+    if let Some(w) = &select.selection {
+        expr_idents(w, &mut idents);
+    }
+    if let sqlparser::ast::GroupByExpr::Expressions(es, _) = &select.group_by {
+        for e in es {
+            expr_idents(e, &mut idents);
+        }
+    }
+    if let Some(h) = &select.having {
+        expr_idents(h, &mut idents);
+    }
+    for o in order_exprs {
+        expr_idents(&o.expr, &mut idents);
+    }
+    let mut mask = vec![false; ncols];
+    let mut any = false;
+    for id in &idents {
+        // 限定名取末段（单表：限定前缀必为本表别名/表名）
+        let bare = id.rsplit('.').next().unwrap_or(id);
+        // 未知名（别名引用/序数等）——保守放弃（`?` 直返 None）
+        let i = schema
+            .columns
+            .iter()
+            .position(|c| c.name.eq_ignore_ascii_case(bare))?;
+        mask[i] = true;
+        any = true;
+    }
+    for &pk in &schema.pk {
+        if let (i, true) = (pk as usize, (pk as usize) < ncols) {
+            mask[i] = true;
+            any = true;
+        }
+    }
+    if !any || mask.iter().all(|&b| b) {
+        return None; // 无列需求（异常）或全需求——不裁剪
+    }
+    Some(mask)
 }
 
 #[cfg(test)]

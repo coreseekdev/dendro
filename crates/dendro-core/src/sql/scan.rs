@@ -356,8 +356,20 @@ pub(crate) fn eval_query(
     } else {
         vec![]
     };
-    let (mut tv, factor_layout) =
-        eval_from(db, sess, select, snapshot, pushdown_limit, &pushed_plan)?;
+    let order_exprs: &[sqlparser::ast::OrderByExpr] =
+        match q.order_by.as_ref().map(|o| &o.kind) {
+            Some(sqlparser::ast::OrderByKind::Expressions(exprs)) => exprs,
+            Some(sqlparser::ast::OrderByKind::All(_)) | None => &[],
+        };
+    let (mut tv, factor_layout) = eval_from(
+        db,
+        sess,
+        select,
+        snapshot,
+        pushdown_limit,
+        &pushed_plan,
+        order_exprs,
+    )?;
     // WHERE（v1 规则优化：常量折叠/布尔简化先于求值）
     let selection = select
         .selection
@@ -910,6 +922,7 @@ fn eval_from(
     snapshot: u64,
     pushdown_limit: Option<usize>,
     pushed: &[(String, Vec<Expr>)],
+    order_exprs: &[sqlparser::ast::OrderByExpr],
 ) -> Result<(TableView, FactorLayout)> {
     let Some(twj) = select.from.first() else {
         // 无 FROM 常量投影（S 缺口，SELECT -3 / SELECT 1+1）：标准语义 =
@@ -922,6 +935,31 @@ fn eval_from(
             FactorLayout::new(),
         ));
     };
+    // O-3 投影裁剪：单表查询（无 join）计算列需求位图——AP 列存段
+    // 对非需求列跳过解码（null 占位；optimize 关闭 = None 全解码）
+    let col_mask_storage: Option<Vec<bool>> = if sess.optimize_enabled
+        && select.from.len() == 1
+        && twj.joins.is_empty()
+    {
+        if let TableFactor::Table { name, .. } = &twj.relation {
+            let full = name
+                .0
+                .iter()
+                .filter_map(|p| p.as_ident().map(|i| i.value.clone()))
+                .collect::<Vec<_>>()
+                .join(".");
+            let short = full.rsplit('.').next().unwrap_or(&full).to_string();
+            resolve_table(db, &sess.branch, &short)
+                .ok()
+                .and_then(|(schema, _)| {
+                    crate::sql::optimize::column_mask(select, order_exprs, &schema)
+                })
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     let mut tv = table_scan_opt(
         db,
         sess,
@@ -929,6 +967,7 @@ fn eval_from(
         snapshot,
         select.selection.as_ref(),
         pushdown_limit,
+        col_mask_storage.as_deref(),
     )?;
     // O-1 R2：首因子的下推合取项（join 前过滤——加性，join 后 WHERE
     // 原样保留，语义合同见 spec 12 §2）
@@ -955,7 +994,8 @@ fn eval_from(
             // sqlparser 0.62 区分裸 `JOIN`(Join) 与 `INNER JOIN`(Inner)、
             // 裸 `LEFT JOIN`(Left) 与 `LEFT OUTER JOIN`(LeftOuter)——语义相同
             JoinOperator::Join(constraint) | JoinOperator::Inner(constraint) => {
-                let mut right = table_scan_opt(db, sess, &j.relation, snapshot, None, None)?;
+                let mut right =
+                    table_scan_opt(db, sess, &j.relation, snapshot, None, None, None)?;
                 right = apply_pushed(db_right_key(&j.relation), right, pushed, sess)?;
                 push_layout(&mut layout, &j.relation, right.names.clone());
                 let (l, _r) = match constraint {
@@ -973,7 +1013,8 @@ fn eval_from(
                 tv = hash_join(tv, right, l, sess.stmt_deadline)?;
             }
             JoinOperator::Left(constraint) | JoinOperator::LeftOuter(constraint) => {
-                let mut right = table_scan_opt(db, sess, &j.relation, snapshot, None, None)?;
+                let mut right =
+                    table_scan_opt(db, sess, &j.relation, snapshot, None, None, None)?;
                 // LEFT 右侧下推安全：NULL 扩展行仍被 join 后保留的原谓词
                 // 过滤（NULL 判非真）——与全量右表 + 事后过滤结果一致
                 right = apply_pushed(db_right_key(&j.relation), right, pushed, sess)?;
@@ -1060,6 +1101,7 @@ fn table_scan_opt(
     snapshot: u64,
     selection: Option<&Expr>,
     pushdown_limit: Option<usize>,
+    col_mask: Option<&[bool]>,
 ) -> Result<TableView> {
     // 视图展开（Q-1 扩展）：FROM 引用视图名 → 执行存储的 SQL 并返回结果。
     // **深度上限 8**（第二十一轮 R21-13）：自引用视图 → 递归展开 → 栈溢出
@@ -1127,7 +1169,9 @@ fn table_scan_opt(
             table_scan(db, sess, tf, snapshot, pushdown_limit, selection)
         }
         crate::sql::dispatch::ScanAlt::MainPlusDelta => {
-            if let Some(tv) = try_ap_scan(db, sess, tf, selection, snapshot, pushdown_limit)? {
+            if let Some(tv) =
+                try_ap_scan(db, sess, tf, selection, snapshot, pushdown_limit, col_mask)?
+            {
                 return Ok(tv);
             }
             table_scan(db, sess, tf, snapshot, pushdown_limit, selection)
@@ -1196,6 +1240,7 @@ fn try_ap_scan(
     selection: Option<&Expr>,
     snapshot: u64,
     pushdown_limit: Option<usize>,
+    col_mask: Option<&[bool]>,
 ) -> Result<Option<TableView>> {
     let Some((schema, entry)) = ap_resolve(db, sess, tf, false) else {
         return Ok(None);
@@ -1237,6 +1282,7 @@ fn try_ap_scan(
             &schema,
             std::slice::from_ref(seg),
             &pk_range,
+            col_mask,
         )?);
     }
     // memtx overlay（覆盖段源；None=墓碑删除）

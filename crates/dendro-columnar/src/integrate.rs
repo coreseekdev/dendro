@@ -18,7 +18,7 @@ use dendro_core::format::row::{decode_row, encode_key};
 use dendro_core::objstore::ObjStore;
 use dendro_core::prolly::cursor::TreeIter;
 use dendro_core::prolly::NodeStore;
-use dendro_core::types::{ColType, SqlValue};
+use dendro_core::types::SqlValue;
 use dendro_core::versioned::{ColSegment, TableSchema};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -160,6 +160,7 @@ impl ColumnarStore for CbfColumnar {
         schema: &TableSchema,
         segments: &[ColSegment],
         pk_range: &Option<(Option<u64>, Option<u64>)>,
+        col_mask: Option<&[bool]>,
     ) -> Result<Vec<RecordBatch>> {
         let mut out = Vec::new();
         for seg in segments {
@@ -191,10 +192,19 @@ impl ColumnarStore for CbfColumnar {
                     }
                 }
                 let mut cols: Vec<ArrayRef> = Vec::with_capacity(schema.columns.len());
-                for (ci, c) in schema.columns.iter().enumerate() {
+                for ci in 0..schema.columns.len() {
+                    // 缺列/裁剪列的 null 占位类型取 footer 字段类型
+                    //（物化时真实类型——与批 schema 一致；当前 schema
+                    // 可能已分叉，streaming_source 差分实证）
+                    let null_ty = || footer.schema.field(ci).data_type().clone();
                     if ci >= rgm.cols.len() {
                         use arrow::array::new_null_array;
-                        cols.push(new_null_array(&arrow_type_for(&c.ty), rgm.rows as usize));
+                        cols.push(new_null_array(&null_ty(), rgm.rows as usize));
+                    } else if col_mask.is_some_and(|m| !m[ci]) {
+                        // O-3 投影裁剪：非需求列零成本 null 占位（不解码
+                        // 列 chunk；批宽恒 = schema 宽——消费端零映射）
+                        use arrow::array::new_null_array;
+                        cols.push(new_null_array(&null_ty(), rgm.rows as usize));
                     } else {
                         let arr = read_column_chunk(&data, &footer, rg, ci)
                             .map_err(|e| SqlError::internal(e.to_string()))?;
@@ -211,6 +221,3 @@ impl ColumnarStore for CbfColumnar {
     }
 }
 
-fn arrow_type_for(t: &ColType) -> arrow::datatypes::DataType {
-    t.arrow()
-}

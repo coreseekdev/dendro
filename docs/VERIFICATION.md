@@ -20,6 +20,14 @@
   ④ GRANT/REVOKE 表级 ACL（单点权限门 enforce，exec+prepare 双卡口；
   超户缺省行为不变）。门禁：clippy 0 / 420 测试 / 30 slt 全过。
   下一步：优化器（基于既有逻辑 IR 与 dispatch 纯函数展开）。
+- **2026-09-16 优化器 O-3（投影裁剪）**：单表查询列需求位图
+  （column_mask：投影/WHERE/GROUP/HAVING/ORDER 全引用面走查 +
+  CASE 臂补齐 + pk 恒留 + fail-open——通配/未知名即放弃）；CBF
+  段扫描对非需求列零成本 null 占位跳过解码（null 类型取 footer
+  物化时真实类型——与当前 schema 分叉时批构造会炸，差分实证即修）。
+  差分：prune_differential 8 测试（子集投影/未投影 WHERE/ORDER 回退/
+  CASE/通配不裁/overlay 尾巴/行路径恒等/强制 main 臂）。
+  门禁：clippy 0 / 458 测试 / 31 slt。
 - **2026-09-16 优化器 O-5 + O-2a**：O-5 SortOp top-N 有界堆
   （ORDER BY+LIMIT 内存 O(n)；与全量排序前缀逐字节一致——含并列
   稳定序，单测矩阵差分护航）。O-2a 逻辑计划 IR（ir/plan.rs：Plan
