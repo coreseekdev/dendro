@@ -120,7 +120,13 @@ pub(crate) fn eval_query(
                     );
                     if top_ok && plan_nodes_exec_ok(&plan) {
                         let masks = plan_scan_masks(db, sess, &plan);
-                        let (tv, _) = exec_plan(db, sess, &plan, snapshot, &masks, None)?;
+                        let mut cx = ExecCx {
+                            masks: &masks,
+                            sort_hint: None,
+                            metrics: None,
+                            depth: 0,
+                        };
+                        let (tv, _) = exec_plan(db, sess, &plan, snapshot, &mut cx)?;
                         return Ok(tv);
                     }
                 }
@@ -383,7 +389,13 @@ pub(crate) fn eval_query(
     if let Some(p) = qplan.as_ref() {
         if plan_exec_covered(p, select, q) {
             let masks = plan_scan_masks(db, sess, p);
-            let (mut tv, _layout) = exec_plan(db, sess, p, snapshot, &masks, None)?;
+            let mut cx = ExecCx {
+                masks: &masks,
+                sort_hint: None,
+                metrics: None,
+                depth: 0,
+            };
+            let (mut tv, _layout) = exec_plan(db, sess, p, snapshot, &mut cx)?;
             if distinct {
                 dedup_rows(&mut tv.rows);
             }
@@ -1434,6 +1446,31 @@ fn synthetic_tf(table: &str, version: Option<&str>) -> TableFactor {
     }
 }
 
+/// EXPLAIN ANALYZE 接线口（mod.rs 跨模块）
+pub(crate) fn plan_exec_covered_pub(
+    plan: &crate::ir::plan::Plan,
+    select: &Select,
+    q: &Query,
+) -> bool {
+    plan_exec_covered(plan, select, q)
+}
+
+/// 同 plan_nodes_exec_ok（pub 口）
+pub(crate) fn plan_nodes_exec_ok_pub(p: &crate::ir::plan::Plan) -> bool {
+    plan_nodes_exec_ok(p)
+}
+
+/// exec_plan pub 口
+pub(crate) fn exec_plan_pub(
+    db: &Database,
+    sess: &mut Session,
+    plan: &crate::ir::plan::Plan,
+    snapshot: u64,
+    cx: &mut ExecCx<'_>,
+) -> Result<(TableView, FactorLayout)> {
+    exec_plan(db, sess, plan, snapshot, cx)
+}
+
 /// O-2c 覆盖判定：查询形态（AST 侧）+ 计划节点集（结构侧）双检
 fn plan_exec_covered(
     plan: &crate::ir::plan::Plan,
@@ -1532,7 +1569,7 @@ fn plan_exprs(plan: &crate::ir::plan::Plan, out: &mut Vec<Expr>) {
 }
 
 /// 各 scan 因子的列掩码（plan 版 column_mask：全计划表达式引用面走查）
-fn plan_scan_masks(
+pub(crate) fn plan_scan_masks(
     db: &Database,
     sess: &Session,
     plan: &crate::ir::plan::Plan,
@@ -1614,14 +1651,96 @@ fn plan_scan_masks(
     out
 }
 
+/// 执行期节点指标（EXPLAIN ANALYZE——spec 09 §5.5 / 04 §2 D7 预留位）
+#[derive(Debug, Clone)]
+pub struct NodeMetric {
+    /// 节点标签（scan t / filter / join inner / project / aggregate /
+    /// sort / limit / setop union）
+    pub label: String,
+    /// 树深（0 = 顶层）——缩进呈现
+    pub depth: usize,
+    /// 该节点输出行数（实际）
+    pub rows: usize,
+    /// 子树墙钟（含子节点）
+    pub elapsed_us: u128,
+}
+
+/// exec_plan 上下文（参数收敛：掩码/top-N 界/指标采集 + 递归深度）
+pub struct ExecCx<'a> {
+    pub masks: &'a std::collections::HashMap<String, Vec<bool>>,
+    pub sort_hint: Option<usize>,
+    /// None = 不采集（常规执行零开销）；Some = EXPLAIN ANALYZE
+    ///（子节点经 as_deref_mut 线性共享——兄弟顺序复用同一向量）
+    pub metrics: Option<&'a mut Vec<NodeMetric>>,
+    pub depth: usize,
+}
+
+impl<'a> ExecCx<'a> {
+    fn child(&mut self, hint: Option<usize>, deeper: bool) -> ExecCx<'_> {
+        ExecCx {
+            masks: self.masks,
+            sort_hint: hint,
+            metrics: self.metrics.as_deref_mut(),
+            depth: self.depth + usize::from(deeper),
+        }
+    }
+    /// 记录节点指标（采集开启时）
+    fn record(&mut self, label: &str, rows: usize, t: std::time::Instant) {
+        if let Some(ms) = self.metrics.as_mut() {
+            ms.push(NodeMetric {
+                label: label.to_string(),
+                depth: self.depth,
+                rows,
+                elapsed_us: t.elapsed().as_micros(),
+            });
+        }
+    }
+}
+
+/// 节点指标标签（EXPLAIN ANALYZE 呈现）
+fn node_label(p: &crate::ir::plan::Plan) -> String {
+    use crate::ir::plan::Plan;
+    match p {
+        Plan::Values => "values".into(),
+        Plan::Scan { table, .. } => format!("scan {table}"),
+        Plan::Filter { .. } => "filter".into(),
+        Plan::Join { kind, .. } => format!("join {kind}"),
+        Plan::Aggregate { .. } => "aggregate".into(),
+        Plan::Project { wildcard, .. } => {
+            if *wildcard {
+                "project *".into()
+            } else {
+                "project".into()
+            }
+        }
+        Plan::Sort { .. } => "sort".into(),
+        Plan::Limit { .. } => "limit".into(),
+        Plan::SetOp { op, .. } => format!("setop {op}"),
+    }
+}
+
 /// 计划树求值（O-2c）：(结果, 因子布局)。Filter/投影的限定名按布局解析。
+/// 包装层统一记录节点指标（采集开启时——子树墙钟 + 实际输出行数）
 fn exec_plan(
     db: &Database,
     sess: &mut Session,
     plan: &crate::ir::plan::Plan,
     snapshot: u64,
-    masks: &std::collections::HashMap<String, Vec<bool>>,
-    sort_hint: Option<usize>,
+    cx: &mut ExecCx<'_>,
+) -> Result<(TableView, FactorLayout)> {
+    let t0 = std::time::Instant::now();
+    let label = node_label(plan);
+    let r = exec_plan_inner(db, sess, plan, snapshot, cx)?;
+    cx.record(&label, r.0.rows.len(), t0);
+    Ok(r)
+}
+
+fn exec_plan_inner(
+    db: &Database,
+    sess: &mut Session,
+    plan: &crate::ir::plan::Plan,
+    snapshot: u64,
+    cx: &mut ExecCx<'_>,
 ) -> Result<(TableView, FactorLayout)> {
     use crate::ir::plan::Plan;
     match plan {
@@ -1636,7 +1755,7 @@ fn exec_plan(
         } => {
             let key = alias.clone().unwrap_or_else(|| table.to_ascii_lowercase());
             let tf = synthetic_tf(table, version.as_deref());
-            let mask = masks.get(&key);
+            let mask = cx.masks.get(&key);
             let tv = table_scan_opt(db, sess, &tf, snapshot, None, None, mask.map(|v| v.as_slice()))?;
             let layout = FactorLayout::from([(
                 key,
@@ -1658,7 +1777,8 @@ fn exec_plan(
             {
                 let key = alias.clone().unwrap_or_else(|| table.to_ascii_lowercase());
                 let tf = synthetic_tf(table, version.as_deref());
-                let mask = masks.get(&key);
+                let mask = cx.masks.get(&key);
+                let t_scan = std::time::Instant::now();
                 let mut tv = table_scan_opt(
                     db,
                     sess,
@@ -1668,6 +1788,8 @@ fn exec_plan(
                     None,
                     mask.map(|v| v.as_slice()),
                 )?;
+                // 捷径绕过 exec_plan(Scan) 包装——手动记 scan 指标
+                cx.record(&format!("scan {table}"), tv.rows.len(), t_scan);
                 let names: Vec<String> = tv.names.iter().map(|n| n.to_ascii_lowercase()).collect();
                 let layout = FactorLayout::from([(key, 0usize, tv.names.len(), names)]);
                 let lay = layout.clone();
@@ -1676,7 +1798,7 @@ fn exec_plan(
                 tv = apply_predicates_q(tv, pred, sess, &qres)?;
                 return Ok((tv, layout));
             }
-            let (mut tv, layout) = exec_plan(db, sess, input, snapshot, masks, None)?;
+            let (mut tv, layout) = exec_plan(db, sess, input, snapshot, &mut cx.child(None, true))?;
             let lay = layout.clone();
             let nms = tv.names.clone();
             let qres = move |n: &str| resolve_qualified(&lay, &nms, n);
@@ -1684,8 +1806,8 @@ fn exec_plan(
             Ok((tv, layout))
         }
         Plan::Join { kind, on, left, right } => {
-            let (l, mut llayout) = exec_plan(db, sess, left, snapshot, masks, None)?;
-            let (r, rlayout) = exec_plan(db, sess, right, snapshot, masks, None)?;
+            let (l, mut llayout) = exec_plan(db, sess, left, snapshot, &mut cx.child(None, true))?;
+            let (r, rlayout) = exec_plan(db, sess, right, snapshot, &mut cx.child(None, true))?;
             let rstart = l.names.len();
             let tv = if *kind == "left" {
                 hash_join_left(l, r, on, sess.stmt_deadline)?
@@ -1706,7 +1828,7 @@ fn exec_plan(
         } => {
             if *wildcard {
                 // 纯通配：输入透传（全列原名原行）
-                let (tv, _) = exec_plan(db, sess, input, snapshot, masks, None)?;
+                let (tv, _) = exec_plan(db, sess, input, snapshot, &mut cx.child(None, true))?;
                 return Ok((tv, FactorLayout::new()));
             }
             // A3 组合模式：Project{[Filter(HAVING)] Aggregate input}
@@ -1714,8 +1836,13 @@ fn exec_plan(
             match &**input {
                 Plan::Aggregate { input: a_in, .. } => {
                     // 聚合的**内层**输入（组合段吃掉 Aggregate 节点自身）
-                    let (tv_in, _) = exec_plan(db, sess, a_in, snapshot, masks, None)?;
+                    let t_agg = std::time::Instant::now();
+                    let (tv_in, _) =
+                        exec_plan(db, sess, a_in, snapshot, &mut cx.child(None, true))?;
                     let out = exec_aggregate_composite(&tv_in, input, None, exprs, names)?;
+                    // 组合内联绕过 exec_plan(Aggregate) 包装——手动记
+                    //（rows = HAVING 后组行；project 同值由包装层记）
+                    cx.record("aggregate", out.rows.len(), t_agg);
                     return Ok((out, FactorLayout::new()));
                 }
                 Plan::Filter {
@@ -1725,14 +1852,17 @@ fn exec_plan(
                     let Plan::Aggregate { input: a_in, .. } = &**inner else {
                         unreachable!()
                     };
-                    let (tv_in, _) = exec_plan(db, sess, a_in, snapshot, masks, None)?;
+                    let t_agg = std::time::Instant::now();
+                    let (tv_in, _) =
+                        exec_plan(db, sess, a_in, snapshot, &mut cx.child(None, true))?;
                     let out =
                         exec_aggregate_composite(&tv_in, inner, Some(pred), exprs, names)?;
+                    cx.record("aggregate", out.rows.len(), t_agg);
                     return Ok((out, FactorLayout::new()));
                 }
                 _ => {}
             }
-            let (tv, layout) = exec_plan(db, sess, input, snapshot, masks, None)?;
+            let (tv, layout) = exec_plan(db, sess, input, snapshot, &mut cx.child(None, true))?;
             let lay = layout.clone();
             let nms = tv.names.clone();
             let qres = move |n: &str| resolve_qualified(&lay, &nms, n);
@@ -1756,17 +1886,17 @@ fn exec_plan(
                         Plan::Filter { input: fi, .. } if matches!(&**fi, Plan::Aggregate { .. })
                     );
                 if agg_composite {
-                    let (mut out, _) = exec_plan(db, sess, input, snapshot, masks, None)?;
-                    plan_sort(keys, sort_hint, &mut out.rows, None, &out.names, &[], sess)?;
+                    let (mut out, _) = exec_plan(db, sess, input, snapshot, &mut cx.child(None, true))?;
+                    plan_sort(keys, cx.sort_hint, &mut out.rows, None, &out.names, &[], sess)?;
                     return Ok((out, FactorLayout::new()));
                 }
-                let (tv_in, layout) = exec_plan(db, sess, pin, snapshot, masks, None)?;
+                let (tv_in, layout) = exec_plan(db, sess, pin, snapshot, &mut cx.child(None, true))?;
                 // wildcard 透传（键直接对输入列解析——无重投影层）
                 if *wildcard {
                     let mut out = tv_in;
                     plan_sort(
                         keys,
-                        sort_hint,
+                        cx.sort_hint,
                         &mut out.rows,
                         None,
                         &out.names,
@@ -1781,7 +1911,7 @@ fn exec_plan(
                 let mut out = project_exprs(exprs, names, &tv_in, sess, qres)?;
                 plan_sort(
                     keys,
-                    sort_hint,
+                    cx.sort_hint,
                     &mut out.rows,
                     Some(&tv_in.rows),
                     &out.names,
@@ -1791,15 +1921,15 @@ fn exec_plan(
                 return Ok((out, FactorLayout::new()));
             }
             // 非 Project 输入（集合操作顶等）：无输入回退
-            let (mut tv, _layout) = exec_plan(db, sess, input, snapshot, masks, None)?;
-            plan_sort(keys, sort_hint, &mut tv.rows, None, &tv.names, &[], sess)?;
+            let (mut tv, _layout) = exec_plan(db, sess, input, snapshot, &mut cx.child(None, true))?;
+            plan_sort(keys, cx.sort_hint, &mut tv.rows, None, &tv.names, &[], sess)?;
             Ok((tv, FactorLayout::new()))
         }
         Plan::SetOp { op, all, left, right } => {
             // A1：两侧子计划求值 → 共享 apply_setop（与 eval_query 逐字节
             // 同语义）
-            let (lt, _) = exec_plan(db, sess, left, snapshot, masks, None)?;
-            let (rt, _) = exec_plan(db, sess, right, snapshot, masks, None)?;
+            let (lt, _) = exec_plan(db, sess, left, snapshot, &mut cx.child(None, true))?;
+            let (rt, _) = exec_plan(db, sess, right, snapshot, &mut cx.child(None, true))?;
             let (names, rows) = apply_setop(op, *all, lt, &rt)?;
             Ok((
                 TableView { names, rows },
@@ -1817,7 +1947,9 @@ fn exec_plan(
                 (Plan::Sort { .. }, Some(l)) => Some(l + offset),
                 _ => None,
             };
-            let (mut tv, _layout) = exec_plan(db, sess, input, snapshot, masks, hint)?;
+            let t0 = std::time::Instant::now();
+            let _ = t0;
+            let (mut tv, _layout) = exec_plan(db, sess, input, snapshot, &mut cx.child(hint, false))?;
             if *offset > 0 {
                 tv.rows = tv.rows.into_iter().skip(*offset).collect();
             }

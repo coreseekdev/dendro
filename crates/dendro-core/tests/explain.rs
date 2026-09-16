@@ -72,3 +72,75 @@ fn explain_fallback_shapes_stay_honest() {
     assert_eq!(r2.rows.len(), 1);
     assert!(format!("{:?}", r2.rows).contains("Seq Scan on a"));
 }
+
+// ---------- EXPLAIN ANALYZE（O-2c+：逐节点实际行数 + 子树墙钟） ----------
+
+#[test]
+fn explain_analyze_node_metrics() {
+    let mut c = Connection::memory().unwrap();
+    c.execute("CREATE TABLE o (id BIGINT PRIMARY KEY, total BIGINT)").unwrap();
+    c.execute("CREATE TABLE c (id BIGINT PRIMARY KEY, region TEXT)").unwrap();
+    c.execute("INSERT INTO o VALUES (1, 100), (2, 250), (3, 50)").unwrap();
+    c.execute("INSERT INTO c VALUES (1, 'EU'), (2, 'US')").unwrap();
+    let r = c
+        .query("EXPLAIN ANALYZE SELECT o.id FROM o JOIN c ON o.id = c.id WHERE o.total > 60")
+        .unwrap();
+    let text: Vec<String> = r
+        .rows
+        .iter()
+        .map(|row| match &row[0] {
+            dendro_core::types::SqlValue::Utf8(s) => s.clone(),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    let joined = text.join("\n");
+    // 下推注记 + 逐节点行数（精确）+ 树缩进
+    assert!(joined.contains("optimizer: pushdown 1 conjunct(s)"), "{joined}");
+    assert!(joined.contains("actual: scan o rows=3"), "{joined}");
+    assert!(joined.contains("actual: scan c rows=2"), "{joined}");
+    // filter 下推在 scan 上（缩进 1 层）+ join 行数精确（total>60: id 1,2）
+    assert!(joined.contains("  ! actual: filter rows=2"), "{joined}");
+    assert!(joined.contains("actual: join inner rows=2"), "{joined}");
+    assert!(joined.contains("actual: project rows=2"), "{joined}");
+    // 时间量纲存在（非负微秒——机器相关不固化数值）
+    assert!(joined.contains("time="), "{joined}");
+}
+
+#[test]
+fn explain_analyze_shapes_and_limits() {
+    let mut c = Connection::memory().unwrap();
+    c.execute("CREATE TABLE t (id BIGINT PRIMARY KEY, v INT)").unwrap();
+    c.execute("INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)").unwrap();
+    // LIMIT + 排序（Sort/Limit 节点行数）
+    let r = c
+        .query("EXPLAIN ANALYZE SELECT id FROM t ORDER BY v DESC LIMIT 2")
+        .unwrap();
+    let joined = r
+        .rows
+        .iter()
+        .map(|row| match &row[0] {
+            dendro_core::types::SqlValue::Utf8(s) => s.clone(),
+            _ => panic!(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(joined.contains("actual: sort rows=2"), "{joined}");
+    assert!(joined.contains("actual: limit rows=2"), "{joined}");
+    // 聚合形态
+    let r = c.query("EXPLAIN ANALYZE SELECT count(*) FROM t").unwrap();
+    let joined = r
+        .rows
+        .iter()
+        .map(|row| match &row[0] {
+            dendro_core::types::SqlValue::Utf8(s) => s.clone(),
+            _ => panic!(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(joined.contains("actual: aggregate rows=1"), "{joined}");
+    // 非 SELECT 诚实拒绝
+    let e = c
+        .execute("EXPLAIN ANALYZE INSERT INTO t VALUES (9, 9)")
+        .unwrap_err();
+    assert!(e.message.contains("SELECT"), "{e}");
+}

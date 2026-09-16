@@ -793,7 +793,74 @@ pub(crate) fn exec_statement(
             }
         }
         Statement::Truncate(tr) => ddl::truncate_impl(db, sess, tr.table_names),
-        Statement::Explain { statement, .. } => {
+        Statement::Explain {
+            analyze,
+            statement,
+            ..
+        } => {
+            // EXPLAIN ANALYZE（spec 09 §5.5 / 04 §2 D7）：执行 + 逐节点
+            // 实际行数/子树墙钟（`!` 注解通道）。SELECT 且计划覆盖形态；
+            // 其余诚实拒绝。时间量纲微秒（机器相关——slt 不固化，Rust
+            // 断言 rows 精确 + 标签序列）
+            if analyze {
+                let inner = *statement;
+                let sqlparser::ast::Statement::Query(q) = inner else {
+                    return Err(SqlError::not_supported(
+                        "EXPLAIN ANALYZE: SELECT statements only",
+                    ));
+                };
+                let mut plan = crate::ir::plan::build_plan(&q)?;
+                let pushed = crate::ir::plan::rewrite_pushdown(&mut plan);
+                // 覆盖判定复用（Select 形态；集合操作顶等）
+                let covered = match &*q.body {
+                    sqlparser::ast::SetExpr::Select(sel) => {
+                        crate::sql::scan::plan_exec_covered_pub(&plan, sel, &q)
+                    }
+                    _ => {
+                        matches!(
+                            &plan,
+                            crate::ir::plan::Plan::Sort { .. }
+                                | crate::ir::plan::Plan::SetOp { .. }
+                                | crate::ir::plan::Plan::Limit { .. }
+                        ) && crate::sql::scan::plan_nodes_exec_ok_pub(&plan)
+                    }
+                };
+                if !covered {
+                    return Err(SqlError::not_supported(
+                        "EXPLAIN ANALYZE: plan-covered shapes only",
+                    ));
+                }
+                let snapshot = sess.implicit_snapshot(db)?;
+                let masks = crate::sql::scan::plan_scan_masks(db, sess, &plan);
+                let mut metrics: Vec<crate::sql::scan::NodeMetric> = Vec::new();
+                let mut cx = crate::sql::scan::ExecCx {
+                    masks: &masks,
+                    sort_hint: None,
+                    metrics: Some(&mut metrics),
+                    depth: 0,
+                };
+                let (_tv, _layout) =
+                    crate::sql::scan::exec_plan_pub(db, sess, &plan, snapshot, &mut cx)?;
+                let mut lines: Vec<String> = Vec::new();
+                let desc = crate::ir::plan::pushdown_desc(&pushed);
+                if !desc.is_empty() {
+                    lines.push(desc);
+                }
+                for m in &metrics {
+                    lines.push(format!(
+                        "{}! actual: {} rows={} time={}us",
+                        "  ".repeat(m.depth),
+                        m.label,
+                        m.rows,
+                        m.elapsed_us
+                    ));
+                }
+                return Ok(Some(Output::Rows(make_record_set(
+                    &["QUERY PLAN"],
+                    &[ColType::Utf8],
+                    lines.into_iter().map(|l| vec![SqlValue::Utf8(l)]).collect(),
+                ))));
+            }
             // v2b B4：真实计划输出（步列表段）。派发器/树形摘要层是 v2c-1
             //（05 §5/Q16）——当前输出 = 扫描形状 + WHERE 的 ScalarProgram
             // 反汇编（可 round-trip，reparse 即当时谓词程序）。

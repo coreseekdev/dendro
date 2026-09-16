@@ -30,6 +30,12 @@
   Plan::Project 增 names（别名信息）；Filter{Scan} 谓词下传
   selection 提示（点查/派发判定恢复）。
   门禁：clippy 0 / 463 测试 / 31 slt。
+- **2026-09-16 EXPLAIN ANALYZE**（spec 09 §5.5 / 04 §2 D7 预留位
+  落地）：ExecCx 参数收敛（masks/top-N 界/指标/深度）；exec_plan
+  包装层逐节点采集（实际输出行数 + 子树墙钟——Filter{Scan} 捷径与
+  聚合组合内联手记）；输出经 `!` 注解通道（树缩进呈现）。SELECT
+  且计划覆盖形态；时间机器相关——Rust 断言 rows 精确 + 标签序列，
+  slt 不固化。
 - **2026-09-16 计划路径覆盖补全（Limit + 纯通配）**：Plan::Limit
   {limit, offset}（含 OFFSET-only / LIMIT-无-ORDER；Sort 卸 limit
   字段——top-N 界经 sort_hint 父子下传保留有界堆）；Plan::Project
