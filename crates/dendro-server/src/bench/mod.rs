@@ -564,6 +564,18 @@ pub fn bench_optimizer() -> BenchResult {
     rows.push(BenchRow { name: "opt_build_side_off_ms".into(), value: build_off, unit: "ms" });
     rows.push(BenchRow { name: "opt_build_side_speedup".into(), value: build_off / build_on, unit: "x" });
 
+    // ⑤ SOTA P2：Join Filter Pushdown（宽 probe 界外行跳过）
+    // 50k 宽表（total ∈ [0, 999]）join 200 窄表（id ∈ [500, 549] 子集）
+    // → build 侧键实际窄 → probe 侧 ~95% 行 O(1) 跳过
+    {
+        let q_jfp = "SELECT count(*) FROM orders o JOIN (SELECT id FROM customers WHERE tier = 4) c ON o.cid = c.id";
+        let jfp_on = median_of(&mut s, q_jfp, "on");
+        let jfp_off = median_of(&mut s, q_jfp, "off");
+        rows.push(BenchRow { name: "opt_join_filter_pushdown_on_ms".into(), value: jfp_on, unit: "ms" });
+        rows.push(BenchRow { name: "opt_join_filter_pushdown_off_ms".into(), value: jfp_off, unit: "ms" });
+        rows.push(BenchRow { name: "opt_join_filter_pushdown_speedup".into(), value: jfp_off / jfp_on, unit: "x" });
+    }
+
     let _ = std::fs::remove_dir_all(dir);
     BenchResult { suite: "optimizer".into(), rows }
 }

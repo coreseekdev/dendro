@@ -30,6 +30,14 @@
   Plan::Project 增 names（别名信息）；Filter{Scan} 谓词下传
   selection 提示（点查/派发判定恢复）。
   门禁：clippy 0 / 463 测试 / 31 slt。
+- **2026-09-16 SOTA P2 落地：Join Filter Pushdown（执行层）**：
+  hash_join build 阶段追踪**实际**键 [min,max]（非统计近似——含
+  全部过滤效果的最窄区间）；probe 行先做 O(1) 范围检查，界外跳过
+  （省 format! 键字符串构造 + 哈希查找）。DuckDB blog 2024-11
+  同构。与 plan 层 stat_prop 互补：stat_prop 用 CBF footer 统计
+  近似（扫描前），join filter 用实际值（join 时）。NULL 键与
+  mkkey 跳过同步；比较错误（类型混列）保守按"在范围内"处理。
+  门禁：clippy 0 / 486 测试 / 31 slt。
 - **2026-09-16 SOTA P3 落地：等值谓词复制下推**：`WHERE o.cid = 5
   AND ON o.cid = c.id` → 复制 `c.id = 5` 注入 c 侧 Filter{Scan}
   （INNER join 语义：结果只含等值对——一侧常量必传导对侧）。范围

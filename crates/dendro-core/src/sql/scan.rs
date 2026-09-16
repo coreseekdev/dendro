@@ -3412,6 +3412,13 @@ fn hash_join(
         (&r.rows, &eqs.ridx, &l.rows, &eqs.lidx)
     };
     let mut hm: HashMap<Vec<String>, Vec<&Vec<SqlValue>>> = HashMap::new();
+    // SOTA P2：Join Filter Pushdown——build 侧键实际 [min,max]（非统计
+    // 近似——build 侧已含全部过滤效果的最窄区间）。probe 行先做 O(1)
+    // 范围检查，界外跳过（免 format! 键字符串 + 哈希查找——DuckDB
+    // blog 2024-11 的 build-side min/max → probe-side filter 同构）
+    let nkeys = build_idx.len();
+    let mut key_min: Vec<Option<SqlValue>> = vec![None; nkeys];
+    let mut key_max: Vec<Option<SqlValue>> = vec![None; nkeys];
     let mut hj_chk = 0usize;
     for br in build_rows {
         hj_chk += 1;
@@ -3423,11 +3430,70 @@ fn hash_join(
             }
         }
         if let Some(key) = mkkey(br, build_idx) {
+            // 键 min/max 追踪（非 NULL 行——与 mkkey 的 NULL 跳过同步）
+            for (i, &bi) in build_idx.iter().enumerate() {
+                if let Some(v) = br.get(bi) {
+                    if !v.is_null() {
+                        let less = match &key_min[i] {
+                            None => true,
+                            Some(m) => expr::cmp_values(v, m)
+                                .map(|o| o == std::cmp::Ordering::Less)
+                                .unwrap_or(false),
+                        };
+                        if less {
+                            key_min[i] = Some(v.clone());
+                        }
+                        let greater = match &key_max[i] {
+                            None => true,
+                            Some(m) => expr::cmp_values(v, m)
+                                .map(|o| o == std::cmp::Ordering::Greater)
+                                .unwrap_or(false),
+                        };
+                        if greater {
+                            key_max[i] = Some(v.clone());
+                        }
+                    }
+                }
+            }
             hm.entry(key).or_default().push(br);
         }
     }
+    // 范围有效判定：全部键列都有 min/max（空 build 侧或全 NULL → 全
+    // None → 跳过过滤——直接进哈希查找得到正确空结果）
+    let has_range = key_min.iter().zip(&key_max).all(|(mn, mx)| mn.is_some() && mx.is_some());
     let mut rows = Vec::new();
     for pr in probe_rows {
+        // Join Filter Pushdown：O(1) 范围检查先于 O(k) 键构造 + O(1)
+        // 哈希查找。比较错误（类型混列）按"在范围内"处理——后续哈希
+        // 查找会按完整语义裁决（保守——不提前误丢行）
+        if has_range {
+            let mut in_range = true;
+            for (i, &pi) in probe_idx.iter().enumerate() {
+                if let Some(v) = pr.get(pi) {
+                    if !v.is_null() {
+                        let below = match &key_min[i] {
+                            Some(m) => expr::cmp_values(v, m)
+                                .map(|o| o == std::cmp::Ordering::Less)
+                                .unwrap_or(false),
+                            None => false,
+                        };
+                        let above = match &key_max[i] {
+                            Some(m) => expr::cmp_values(v, m)
+                                .map(|o| o == std::cmp::Ordering::Greater)
+                                .unwrap_or(false),
+                            None => false,
+                        };
+                        if below || above {
+                            in_range = false;
+                            break;
+                        }
+                    }
+                }
+            }
+            if !in_range {
+                continue; // 界外——不可能匹配（省 format!/哈希）
+            }
+        }
         let key = match mkkey(pr, probe_idx) {
             Some(k) => k,
             None => continue,

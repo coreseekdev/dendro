@@ -403,3 +403,79 @@ fn eq_copy_range_predicates() {
     };
     assert_eq!(on, off, "范围复制差分");
 }
+
+// ---------- SOTA P2：Join Filter Pushdown（build 侧键范围 → probe 侧执行层过滤） ----------
+
+#[test]
+fn join_filter_pushdown_narrow_build_side() {
+    // 不对称键域：orders.ref_id ∈ [0, 9999]（宽）join small.id ∈ [500, 549]（窄）
+    // → build 侧 small 键实际 [500, 549]；probe 侧 orders 95% 行键界外
+    // → Join Filter Pushdown 跳过这些行（省 format!/哈希）
+    let db = Database::open(DbOptions {
+        store: StoreConfig::Memory,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut s = db.new_session();
+    s.exec("CREATE TABLE orders (id BIGINT PRIMARY KEY, ref_id BIGINT)").unwrap();
+    s.exec("CREATE TABLE small (id BIGINT PRIMARY KEY, w BIGINT)").unwrap();
+    // orders: 10000 行 ref_id ∈ [0, 9999]
+    for chunk in 0..10 {
+        let vals: Vec<String> = (0..1000)
+            .map(|i| format!("({}, {})", chunk * 1000 + i, chunk * 1000 + i))
+            .collect();
+        s.exec(&format!("INSERT INTO orders VALUES {}", vals.join(",")))
+            .unwrap();
+    }
+    // small: 50 行 id ∈ [500, 549]
+    {
+        let vals: Vec<String> = (500..550).map(|i| format!("({i}, {i})")).collect();
+        s.exec(&format!("INSERT INTO small VALUES {}", vals.join(",")))
+            .unwrap();
+    }
+    // 差分：两路径结果等价（Join Filter Pushdown 不改语义）
+    let mut s_on = db.new_session();
+    s_on.exec("SET dendro.optimize = 'on'").unwrap();
+    let r_on = s_on
+        .exec("SELECT count(*) FROM orders o JOIN small s ON o.ref_id = s.id")
+        .unwrap();
+    let on = match &r_on[0] {
+        Output::Rows(rs) => rs.text_rows()[0][0].clone().unwrap(),
+        _ => panic!(),
+    };
+    let mut s_off = db.new_session();
+    s_off.exec("SET dendro.optimize = 'off'").unwrap();
+    let r_off = s_off
+        .exec("SELECT count(*) FROM orders o JOIN small s ON o.ref_id = s.id")
+        .unwrap();
+    let off = match &r_off[0] {
+        Output::Rows(rs) => rs.text_rows()[0][0].clone().unwrap(),
+        _ => panic!(),
+    };
+    assert_eq!(on, off, "Join Filter Pushdown 差分");
+    assert_eq!(on.parse::<i64>().unwrap(), 50, "恰好 50 行匹配（ref_id ∈ [500,549]）");
+}
+
+#[test]
+fn join_filter_pushdown_null_keys() {
+    // NULL 键不参与范围追踪（build 侧 NULL 键行不进哈希——与 mkkey 一致）
+    let db = Database::open(DbOptions {
+        store: StoreConfig::Memory,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut s = db.new_session();
+    s.exec("CREATE TABLE a (id BIGINT PRIMARY KEY, k BIGINT)").unwrap();
+    s.exec("CREATE TABLE b (id BIGINT PRIMARY KEY, k BIGINT)").unwrap();
+    s.exec("INSERT INTO a VALUES (1, NULL), (2, 5), (3, 10)").unwrap();
+    s.exec("INSERT INTO b VALUES (1, 5), (2, NULL), (3, 100)").unwrap();
+    let r = s
+        .exec("SELECT count(*) FROM a JOIN b ON a.k = b.k")
+        .unwrap();
+    let n = match &r[0] {
+        Output::Rows(rs) => rs.text_rows()[0][0].clone().unwrap(),
+        _ => panic!(),
+    };
+    // 仅 a.k=5 匹配 b.k=5；NULL 永不匹配
+    assert_eq!(n, "1", "NULL 键正确处理");
+}
