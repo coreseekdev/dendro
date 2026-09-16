@@ -1454,24 +1454,28 @@ fn plan_exec_covered(
             return false;
         }
     }
-    if select
+    // 通配：纯通配（全部项）→ 计划 wildcard 形态；混合通配 → AST 路径
+    let wilds = select
         .projection
         .iter()
-        .any(|item| {
+        .filter(|item| {
             matches!(
                 item,
                 sqlparser::ast::SelectItem::Wildcard(_)
                     | sqlparser::ast::SelectItem::QualifiedWildcard(..)
             )
         })
-    {
+        .count();
+    if wilds > 0 && wilds != select.projection.len() {
         return false;
     }
     // 版本子句（FOR SYSTEM_TIME/AS OF）：O-2c+ B 起计划路径携带
     // version（synthetic_tf 重建——HistoryScan 路由不变）
     // 计划结构：节点 ⊆ 可执行集；顶层 Project（Select）或 Sort/SetOp
     match plan {
-        Plan::Project { exprs, .. } if !exprs.is_empty() => plan_nodes_exec_ok(plan),
+        Plan::Project { exprs, wildcard, .. } if !exprs.is_empty() || *wildcard => {
+            plan_nodes_exec_ok(plan)
+        }
         Plan::Sort { .. } | Plan::SetOp { .. } | Plan::Limit { .. } => plan_nodes_exec_ok(plan),
         _ => false,
     }
@@ -1535,6 +1539,24 @@ fn plan_scan_masks(
 ) -> std::collections::HashMap<String, Vec<bool>> {
     use crate::ir::plan::Plan;
     let mut out = std::collections::HashMap::new();
+    // 通配投影 = 全列需求（fail-open：不裁剪——裁掉列在 SELECT * 下
+    // 变 null 即刻可见；prune 差分首跑即抓）
+    fn has_wildcard(p: &Plan) -> bool {
+        match p {
+            Plan::Project { wildcard, input, .. } => *wildcard || has_wildcard(input),
+            Plan::Filter { input, .. }
+            | Plan::Aggregate { input, .. }
+            | Plan::Sort { input, .. }
+            | Plan::Limit { input, .. } => has_wildcard(input),
+            Plan::Join { left, right, .. } | Plan::SetOp { left, right, .. } => {
+                has_wildcard(left) || has_wildcard(right)
+            }
+            Plan::Scan { .. } | Plan::Values => false,
+        }
+    }
+    if has_wildcard(plan) {
+        return out;
+    }
     let mut exprs = Vec::new();
     plan_exprs(plan, &mut exprs);
     let mut idents = Vec::new();
@@ -1679,8 +1701,14 @@ fn exec_plan(
         Plan::Project {
             exprs,
             names,
+            wildcard,
             input,
         } => {
+            if *wildcard {
+                // 纯通配：输入透传（全列原名原行）
+                let (tv, _) = exec_plan(db, sess, input, snapshot, masks, None)?;
+                return Ok((tv, FactorLayout::new()));
+            }
             // A3 组合模式：Project{[Filter(HAVING)] Aggregate input}
             // ——聚合中间态（keys/vals/calls）不出组合段
             match &**input {
@@ -1718,6 +1746,7 @@ fn exec_plan(
             if let Plan::Project {
                 exprs,
                 names,
+                wildcard: _,
                 input: pin,
             } = &**input
             {

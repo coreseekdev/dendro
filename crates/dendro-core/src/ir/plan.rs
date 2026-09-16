@@ -49,6 +49,8 @@ pub enum Plan {
         /// 输出列名（与 exprs 平行；别名信息不在 Expr 上——O-2c 执行
         /// 期由计划完整重投影所需）
         names: Vec<String>,
+        /// 纯通配投影（SELECT *）：执行 = 输入透传（全列）；exprs/names 空
+        wildcard: bool,
         input: Box<Plan>,
     },
     Sort {
@@ -282,6 +284,7 @@ fn build_select(sel: &sqlparser::ast::Select) -> Result<Plan> {
     // Unnamed = expr 文本前 40 字符；Alias = 别名）
     let mut exprs: Vec<Expr> = Vec::new();
     let mut names: Vec<String> = Vec::new();
+    let mut wilds = 0usize;
     for item in &sel.projection {
         match item {
             sqlparser::ast::SelectItem::UnnamedExpr(e) => {
@@ -292,12 +295,15 @@ fn build_select(sel: &sqlparser::ast::Select) -> Result<Plan> {
                 exprs.push(expr.clone());
                 names.push(alias.value.clone());
             }
-            _ => {} // 通配——计划不展开（含通配的查询由 AST 路径执行）
+            _ => wilds += 1, // 通配项（混合形态由 AST 路径执行）
         }
     }
+    // 纯通配（全部项为通配）：wildcard 透传形态；混合通配计划不覆盖
+    let wildcard = wilds > 0 && wilds == sel.projection.len();
     plan = Plan::Project {
         exprs,
         names,
+        wildcard,
         input: Box::new(plan),
     };
     Ok(plan)
@@ -581,10 +587,15 @@ impl<'a> Printer<'a> {
             Plan::Project {
                 exprs,
                 names,
+                wildcard,
                 input,
             } => {
                 let i = self.emit(input);
                 let id = self.next_id(6);
+                if *wildcard {
+                    self.out.push_str(&format!("  {id} = project {i} {{wildcard}}\n"));
+                    return id;
+                }
                 let es: Vec<String> = exprs.iter().map(|e| e.to_string()).collect();
                 let ns: Vec<String> = names
                     .iter()
@@ -848,6 +859,14 @@ pub fn parse_plan(text: &str) -> Option<Plan> {
                 .collect::<Option<Vec<_>>>()?;
             let aggs = split_top_level(aggs_s)?;
             Plan::Aggregate { keys, aggs, input }
+        } else if let Some(src) = body.strip_prefix("project %").filter(|_| body.ends_with("{wildcard}")) {
+            let input = Box::new(lookup_node(&nodes, src.trim())?);
+            Plan::Project {
+                exprs: vec![],
+                names: vec![],
+                wildcard: true,
+                input,
+            }
         } else if let Some(t) = body.strip_prefix("project %") {
             let (src, attrs) = t.split_once(" {exprs = [")?;
             let input = Box::new(lookup_node(&nodes, src.trim())?);
@@ -864,6 +883,7 @@ pub fn parse_plan(text: &str) -> Option<Plan> {
             Plan::Project {
                 exprs,
                 names,
+                wildcard: false,
                 input,
             }
         } else if let Some(t) = body.strip_prefix("sort %") {
