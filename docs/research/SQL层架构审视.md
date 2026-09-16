@@ -515,3 +515,35 @@ ScopeDB 主引擎闭源且无版本化模型，可借鉴的是**原则**而非�
 | 差分三轴定义 | mod.rs:1025-1112（force_source/force_agg/optimize 的 SET）；dispatch.rs 全文 |
 | 错误吞噬已修承诺 | scan.rs:796-804, 859-871 |
 | 评审已修/残留账本 | docs/research/解析器架构评审-2026-09-16.md（P0-1..5 状态） |
+
+
+---
+
+## 6. 执行状态（2026-09-17 追记：六阶段全部完成）
+
+| 阶段 | 提交 | 内容 | 验证 |
+|------|------|------|------|
+| 0 | bc6c202 / 98a68aa | scan.rs 5115 行拆 11 文件；差分语料扩容（窗口/DISTINCT/递归CTE/子查询/CTE）立即暴露 3 真 bug（嵌套窗口漏收集 / 恒真短路绕过投影 / has_column_ref 子查询形态）并修复 | 全绿 |
+| 1 | ec8d85d | IR 自足化：AggCall 结构化（parse_plan_agg 删）、Plan::Distinct/Window 节点、ScanVersion 枚举、exec 接线（共享助手零新语义） | 全绿 |
+| 2 | c57f8ff | 覆盖翻转 4 项：DISTINCT+Sort/Limit、窗口（构建期投影重写）、QualifiedWildcard（Project.prefixes）、SetOp 分支 DISTINCT——carve-out 清零。[修正] 首版提交曾因脚本正则误删 plan_exec.rs 606 行，本提交恢复重放 | 全绿 |
+| 3 | 8f97dba | Plan::Cte（Rc 绑定共享子树，多 CTE 并存）+ Plan::IterativeScan（delta 工作集不动点——VALUES 注入/O(n²) 克隆/文本重解析全部消失）；修复 join 哈希键数值宽度不归一老 bug（Int32 字面量 vs Int64 列静默 0 行） | 全绿 |
+| 4 | bc2c159 | InsertGuard：CHECK 语句级解析（每行 parse → 每语句 1 次）、UNIQUE 存量键单次扫描（O(行×表)→O(表+行)）；视图体解析进程级缓存 | 全绿 |
+| 5 | 3f2307c | AST 求值路径退役：eval_query 741 行装配体 → 93 行（lowering → 计划 → 执行）；plan_exec_covered 删除；optimize 开关收窄为重写族开关；cte.rs/expand_ctes/eval_from 死代码删除；SubqueryScan/混合通配补洞 | 68 测试二进制 + 34 SLT |
+
+**KPI 终态**：carve-out 函数已删（结构上不可能回落）✓；AST 路径
+不存在 ✓；INSERT 行级 parse_batch = 0 ✓；scan/ 最大文件 1213 行
+（原 5115 单文件）✓；eval_query 残体 62 行 ≤ 100 ✓。
+
+### 遗留项（迁移中识别、独立排期）
+
+1. **子查询计划化下沉**（原阶段 3.1 的 InitPlan/半连接形态）：
+   当前非相关子查询经 inline_subqueries 以 InList 字面量内联
+   （AST lowering 步骤）——语义正确，大 IN 子查询仍有内存物化
+   代价。后续可为 Filter 谓词中的 InSubquery 构建 semi-join 节点
+2. **相关子查询**：诚实拒绝（v2 迭代求值）——Plan 层已具备
+   Lateral/NestedLoop 位置，增量实现
+3. **CHECK 目录级结构化绑定**（serde AST / ScalarProgram 键控
+   schema_version）：语句级绑定已消除行级解析；目录级可再省每语句
+   1 次 parse
+4. **EXPLAIN 单表形态**：仍输出 legacy "Seq Scan" 块——可统一为
+   计划方言输出
