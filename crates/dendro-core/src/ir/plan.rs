@@ -295,7 +295,10 @@ fn build_select(sel: &sqlparser::ast::Select) -> Result<Plan> {
                 exprs.push(expr.clone());
                 names.push(alias.value.clone());
             }
-            _ => wilds += 1, // 通配项（混合形态由 AST 路径执行）
+            sqlparser::ast::SelectItem::Wildcard(_) => wilds += 1,
+            // QualifiedWildcard 非纯通配——覆盖判定已排除（AST 路径）；
+            // 计划构建遇到则不置 wildcard（防打计划时误标）
+            _ => {}
         }
     }
     // 纯通配（全部项为通配）：wildcard 透传形态；混合通配计划不覆盖

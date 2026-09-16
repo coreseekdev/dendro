@@ -445,7 +445,28 @@ pub fn rewrite_join_order(
     db: &crate::engine::Database,
     sess: &crate::engine::Session,
 ) {
+    if has_wildcard_projection(plan) {
+        return; // 纯通配投影：输出列序 = join 序——重排改变客户端可见
+                // schema（SELECT * / INSERT…SELECT * 位置契约）。AST 路径
+                // 输出 FROM 序；计划路径须保持一致（评审 P0）
+    }
     rewrite_join_order_walk(plan, db, sess);
+}
+
+/// 计划任意 Project 节点带 wildcard 标记（含 SetOp 分支内）
+fn has_wildcard_projection(p: &Plan2) -> bool {
+    use crate::ir::plan::Plan;
+    match p {
+        Plan::Project { wildcard, input, .. } => *wildcard || has_wildcard_projection(input),
+        Plan::Filter { input, .. }
+        | Plan::Aggregate { input, .. }
+        | Plan::Sort { input, .. }
+        | Plan::Limit { input, .. } => has_wildcard_projection(input),
+        Plan::Join { left, right, .. } | Plan::SetOp { left, right, .. } => {
+            has_wildcard_projection(left) || has_wildcard_projection(right)
+        }
+        Plan::Scan { .. } | Plan::Values => false,
+    }
 }
 
 fn rewrite_join_order_walk(
@@ -550,7 +571,7 @@ fn try_reorder_chain(
     // 估算（无统计 → 全 0 → 不重排）
     let keys: Vec<String> = factors.iter().map(|f| f.key.clone()).collect();
     for f in factors.iter_mut() {
-        let (table, alias, pushed_pred) = factor_parts(&f.node);
+        let (table, _alias, pushed_pred) = factor_parts(&f.node);
         let st = crate::sql::stats::table_stats(db, sess, &table);
         let est = match &st {
             Some(st) => {
@@ -559,7 +580,6 @@ fn try_reorder_chain(
             }
             None => 0,
         };
-        let _ = alias;
         if est == 0 && st.is_some() {
             return; // 有表无段统计（表名解析失败/无段）——保守不动
         }
@@ -583,6 +603,10 @@ fn try_reorder_chain(
     let mut acc_keys = vec![first.key.clone()];
     let mut acc_est = first.est;
     let mut acc_node = first.node;
+    // 已放置因子（键→表名）——join_estimate acc 侧定位用（P1 修：
+    // 原查 remaining 未放置集——属主必不在其中）
+    let first_table = factor_parts(&acc_node).0;
+    let mut acc_placed: Vec<(String, String)> = vec![(first.key.clone(), first_table)];
     let total = acc_keys.len() + remaining.len();
     while !remaining.is_empty() {
         let mut best: Option<(usize, Vec<usize>, u64)> = None; // (因子, 消费边序号, est)
@@ -607,6 +631,7 @@ fn try_reorder_chain(
                     join_estimate(
                         &pending[pi],
                         &acc_keys,
+                        &acc_placed,
                         &remaining,
                         i,
                         db,
@@ -638,6 +663,7 @@ fn try_reorder_chain(
             });
         }
         let step_on = step_on.expect("consumable 非空必有 ON");
+        let f_table = factor_parts(&f.node).0;
         acc_node = Plan::Join {
             kind: "inner",
             on: step_on,
@@ -645,6 +671,7 @@ fn try_reorder_chain(
             right: Box::new(f.node),
         };
         acc_keys.push(f.key.clone());
+        acc_placed.push((f.key.clone(), f_table));
         acc_est = best_est;
     }
     if pending.is_empty() && acc_keys.len() == total {
@@ -678,9 +705,11 @@ fn factor_parts(node: &Plan2) -> (String, Option<String>, Option<Expr>) {
 
 /// 等值 join 估算：ON 的 `a.x = b.y`（一侧在 acc、一侧在新）→
 /// max(ndv) 分数；ON 不可解（非等值/键不可解）→ None（回退扫描估算）
+#[allow(clippy::too_many_arguments)] // 贪心估算上下文——内聚闭包不可拆
 fn join_estimate(
     on: &Expr,
     acc_keys: &[String],
+    acc_placed: &[(String, String)],
     remaining: &[JoinFactor],
     pick: usize,
     db: &crate::engine::Database,
@@ -724,17 +753,16 @@ fn join_estimate(
     let n_ndv = crate::sql::stats::col_ndv(&n_st, &new_col, n_is_pk);
     // acc 侧：因子表定位（列名→表——acc 内哪张表含该键；v1 遍历 acc 因子
     // 的表名，col_ndv 命中者）——保守：任一 acc 表含列即可
-    let (a_table, _, _) = remaining
+    // acc 侧定位（P1 修）：**已放置集**按因子键精确匹配——原在
+    // remaining（未放置）中查，属主必不在其中（恒 None 或误取他表 NDV）
+    let a_table = acc_placed
         .iter()
-        .enumerate()
-        .filter(|(i, _)| *i != pick)
-        .find_map(|(_i, f)| {
-            let (t, _, _) = factor_parts(&f.node);
-            let st = crate::sql::stats::table_stats(db, sess, &t)?;
-            (st.names.iter().any(|n| n.eq_ignore_ascii_case(&acc_col)))
-                .then_some::<(String, Option<String>, Option<Expr>)>((t, None, None))
-        })?;
+        .find(|(k, _)| *k == acc_fk)
+        .map(|(_, t)| t.clone())?;
     let a_st = crate::sql::stats::table_stats(db, sess, &a_table)?;
+    if !a_st.names.iter().any(|n| n.eq_ignore_ascii_case(&acc_col)) {
+        return None;
+    }
     let a_is_pk = is_pk_col(&a_table, &acc_col, db, sess);
     let a_ndv = crate::sql::stats::col_ndv(&a_st, &acc_col, a_is_pk);
     Some(crate::sql::stats::join_est_rows(acc_est, n_est, a_ndv, n_ndv))

@@ -127,24 +127,38 @@ pub fn estimate_filter_rows(
                             _ => "<=",
                         };
                         // 列 op 常量 / 常量 op 列 两种朝向
+                        // 朝向两种：col op const / const op col
+                        let op_s2 = match op {
+                            BO::Gt => "<",
+                            BO::GtEq => "<=",
+                            BO::Lt => ">",
+                            _ => ">=",
+                        };
                         for (a, b, o) in [
                             (left.as_ref(), right.as_ref(), op_s),
-                            (right.as_ref(), left.as_ref(), match op_s {
-                                ">" => "<",
-                                ">=" => "<=",
-                                "<" => ">",
-                                _ => ">=",
-                            }),
+                            (right.as_ref(), left.as_ref(), op_s2),
                         ] {
-                            if let (
-                                Expr::Identifier(id),
-                                Expr::Value(vws),
-                            ) = (a, b)
-                            {
-                                let v = expr::value_from_parser(vws.value.clone());
+                            // 裸名或限定名（末段）——下推合取项必为限定
+                            //（conjunct_target 拒裸名），原仅匹配裸 Identifier
+                            // 使 scan_est 对重排输入恒全行（P2 修）
+                            let col_name: Option<&String> = match a {
+                                Expr::Identifier(id) => Some(&id.value),
+                                Expr::CompoundIdentifier(parts) => {
+                                    parts.last().as_ref().map(|p| &p.value)
+                                }
+                                _ => None,
+                            };
+                            let val = match b {
+                                Expr::Value(vws) => {
+                                    Some(expr::value_from_parser(vws.value.clone()))
+                                }
+                                _ => None,
+                            };
+                            if let (Some(id), Some(v)) = (col_name, val) {
+                                let _ = o;
                                 if let Some(ci) = names
                                     .iter()
-                                    .position(|n| n.eq_ignore_ascii_case(&id.value))
+                                    .position(|n| n.eq_ignore_ascii_case(id))
                                 {
                                     if let Some(f) =
                                         range_selectivity(&stats.cols[ci], &v, o)

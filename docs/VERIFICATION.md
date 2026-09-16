@@ -30,6 +30,23 @@
   Plan::Project 增 names（别名信息）；Filter{Scan} 谓词下传
   selection 提示（点查/派发判定恢复）。
   门禁：clippy 0 / 463 测试 / 31 slt。
+- **2026-09-16 优化器评审轮（2 agent 并行 + SOTA 调研）**：3×P0
+  + 4×P1 + 2×P2 修复。P0：DISTINCT+LIMIT 语义序（去重须先于 top-N
+  截断——[a,a,a,b] LIMIT 2 曾得 [a] 而非 [a,b]，覆盖判定门控）；
+  QualifiedWildcard（o.*）双路径零列（AST starts_with 对裸名恒不
+  匹配 + 前缀含 ".*"——布局过滤 + 通配尾剥离修）；SELECT * 列序
+  保护（重排改变客户端可见 schema——通配投影即放弃重排）。P1：
+  residual 裸末段消歧（#30 同族 INNER 侧修——acc-vs-acc 残留同名
+  自比较恒真）；hash_join_left 布局接线（LEFT ON 的左侧多因子
+  限定名）；裸名歧义门控（链上方含裸名引用即放弃重排）；
+  join_estimate acc 侧定位改已放置集（原查 remaining——属主不在
+  其中恒 None 或误取他表 NDV）。P2：estimate_filter_rows 匹配
+  CompoundIdentifier（下推谓词 est 曾恒全行——限定名不匹配裸
+  Identifier 模式）；死绑定/陈旧注释清理。SOTA（SIGMOD 25
+  Debunking Join Ordering Myth / PVLDB 25 Still Asking /
+  DuckDB Ebergen 估算器 / CardBench）：当前方向（鲁棒性 > 完美
+  代价模型）与保守门控设计一致——维持。
+  门禁：clippy 0 / 481 测试 / 31 slt。
 - **2026-09-16 join reorder（O-4' 收口）+ 账本 #30**：INNER 链
   （≥3 因子）贪心重排——**待决边模型**（ON 消费于其引用集全部就位
   的那一步，AND 合并；首放置不消费边；候选必须连通——防笛卡尔积；

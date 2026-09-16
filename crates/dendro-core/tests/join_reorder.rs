@@ -134,3 +134,117 @@ fn two_way_not_reordered_and_left_untouched() {
     s.exec("SELECT count(*) FROM regions r LEFT JOIN customers c ON c.rid = r.id")
         .unwrap();
 }
+
+// ---------- 评审修复回归（P0/P1 盲区清单） ----------
+
+#[test]
+fn p0_distinct_limit_semantics() {
+    let db = fixture();
+    // DISTINCT + LIMIT：语义序 = dedup→sort→limit（曾 sort(topN)→limit→dedup
+    // → [a,a,a,b] LIMIT 2 得 [a] 而非 [a,b]——P0）
+    let mut s = db.new_session();
+    s.exec("SET dendro.optimize = 'on'").unwrap();
+    let r = s
+        .exec("SELECT DISTINCT cid FROM orders WHERE id <= 8 ORDER BY cid LIMIT 3")
+        .unwrap();
+    let vs = match &r[0] {
+        Output::Rows(rs) => rs
+            .text_rows()
+            .iter()
+            .map(|r| r[0].clone().unwrap())
+            .collect::<Vec<_>>(),
+        _ => panic!(),
+    };
+    // id 1..8 → cid = id%200 = 1..8（全不同）——8 行 DISTINCT 全留，取前 3
+    assert_eq!(vs, vec!["1", "2", "3"], "{vs:?}");
+    // 带重复：cid % 4 有 0..3 四值，前 12 个 id → DISTINCT {1,2,3,4,5..12%4}
+    let r2 = s
+        .exec("SELECT DISTINCT cid % 4 FROM orders WHERE id <= 12 ORDER BY 1 LIMIT 2")
+        .unwrap();
+    let vs2 = match &r2[0] {
+        Output::Rows(rs) => rs
+            .text_rows()
+            .iter()
+            .map(|r| r[0].clone().unwrap())
+            .collect::<Vec<_>>(),
+        _ => panic!(),
+    };
+    assert_eq!(vs2, vec!["0", "1"], "{vs2:?}");
+}
+
+#[test]
+fn p0_qualified_wildcard_columns() {
+    let db = fixture();
+    // SELECT o.* 前缀过滤语义（曾按纯通配 → 两列全出——P0）
+    let mut s = db.new_session();
+    let r = s
+        .exec("SELECT o.* FROM orders o JOIN customers c ON o.cid = c.id WHERE o.id = 1")
+        .unwrap();
+    match &r[0] {
+        Output::Rows(rs) => {
+            // o 的 4 列（id, cid, total, note）——非两侧 6 列
+            assert_eq!(rs.columns.len(), 4, "o.* 只出 o 列");
+            assert_eq!(rs.total_rows(), 1);
+        }
+        _ => panic!(),
+    }
+}
+
+#[test]
+fn p0_wildcard_column_order_stable() {
+    let db = fixture();
+    // SELECT *：列序 = FROM 序（重排不改变输出 schema——P0）
+    let (c_on, r_on) = (
+        run(&db, "on", "SELECT * FROM regions r JOIN customers c ON c.rid = r.id JOIN orders o ON o.cid = c.id WHERE o.id = 1"),
+        run(&db, "off", "SELECT * FROM regions r JOIN customers c ON c.rid = r.id JOIN orders o ON o.cid = c.id WHERE o.id = 1"),
+    );
+    assert_eq!(c_on.0, r_on.0, "列名序（客户端 schema）必须一致");
+    assert_rows_equiv("SELECT* 列序", &c_on.0, &c_on.1, &r_on.0, &r_on.1, false);
+}
+
+#[test]
+fn p1_residual_and_bare_name_gating() {
+    let db = fixture();
+    // 三因子 ON（residual 消歧）+ 中表谓词（曾裸末段使 a.x=b.y 同名
+    // 自比较恒真）+ 裸名引用（歧义门控——放弃重排但结果须正确）
+    diff(&db, "SELECT count(*) FROM orders o JOIN customers c ON o.cid = c.id \
+               JOIN regions r ON c.rid = r.id AND c.tier = 0 WHERE o.total < 5");
+    // 裸名引用形态（门控放弃重排——结果仍须等价）
+    diff(&db, "SELECT count(*) FROM orders o JOIN customers c ON o.cid = c.id \
+               JOIN regions r ON c.rid = r.id WHERE total < 3");
+    // LEFT 下 INNER 链（左侧重排后 LEFT 键仍须正确——hash_join_left 布局修）
+    diff(&db, "SELECT count(*) FROM regions r LEFT JOIN customers c ON c.rid = r.id \
+               AND c.id < 100 WHERE r.id = 0");
+}
+
+#[test]
+fn p1_scan_est_with_pushdown_now_effective() {
+    // estimate_filter_rows 限定名匹配修——WHERE o.total < 20 的 est 应
+    // 显著小于 12000（原恒 12000：CompoundIdentifier 不匹配）
+    let db = fixture();
+    let mut s = db.new_session();
+    let out = s
+        .exec("EXPLAIN ANALYZE SELECT count(*) FROM orders o JOIN customers c ON o.cid = c.id \
+               JOIN regions r ON c.rid = r.id WHERE o.total < 20")
+        .unwrap();
+    let text = match &out[0] {
+        Output::Rows(rs) => rs
+            .text_rows()
+            .iter()
+            .map(|r| r[0].clone().unwrap_or_default())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => panic!(),
+    };
+    let est: u64 = text
+        .lines()
+        .find(|l| l.contains("scan orders") && l.contains("est="))
+        .and_then(|l| l.split("est=").nth(1))
+        .and_then(|e| e.split(|c: char| !c.is_ascii_digit()).next())
+        .and_then(|e| e.parse().ok())
+        .unwrap_or(0);
+    assert!(
+        est > 0 && est < 12000,
+        "限定名匹配修后 est 应反映谓词选择率：est={est}"
+    );
+}

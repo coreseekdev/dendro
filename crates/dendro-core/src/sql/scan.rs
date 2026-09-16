@@ -549,7 +549,7 @@ pub(crate) fn eval_query(
         let lay = factor_layout.clone();
         let nms = tv.names.clone();
         let qres = move |n: &str| resolve_qualified(&lay, &nms, n);
-        let (names, proj_rows) = project(&select.projection, &tv, sess, qres)?;
+        let (names, proj_rows) = project(&select.projection, &tv, sess, qres, Some(&factor_layout))?;
         out_names = names;
         out_rows = proj_rows;
     }
@@ -1093,7 +1093,14 @@ fn eval_from(
                     sqlparser::ast::JoinConstraint::On(e) => e,
                     _ => return Err(SqlError::not_supported("LEFT JOIN constraint")),
                 };
-                tv = hash_join_left(tv, right, e, sess.stmt_deadline)?;
+                tv = hash_join_left(
+                    tv,
+                    right,
+                    e,
+                    sess.stmt_deadline,
+                    Some(&layout),
+                    crate::sql::optimize::factor_key(&j.relation).as_deref(),
+                )?;
             }
             _other => return Err(SqlError::not_supported("join type")),
         }
@@ -1497,6 +1504,14 @@ fn plan_exec_covered(
     use crate::ir::plan::Plan;
     // AST 形态：通配/OFFSET → AST 路径（DISTINCT 入口已拒；
     // Plan::Sort v1 不携带 OFFSET；A3 起聚合/分组/HAVING 走计划路径）
+    // DISTINCT：去重在 eval_select 出口做（dedup→sort→limit 语义序），
+    // 计划路径的 sort(top-N)/limit 先于出口去重会错序（[a,a,a,b] LIMIT 2
+    // → 计划 [a] vs 正确 [a,b]）——含 sort/limit 的 DISTINCT 查询回落
+    let has_distinct = select.distinct.is_some();
+    let has_sort_or_limit = q.order_by.is_some() || q.limit_clause.is_some();
+    if has_distinct && has_sort_or_limit {
+        return false;
+    }
     // LIMIT/OFFSET 由 Limit 节点承接（含 LIMIT-无-ORDER / OFFSET-only）
     // 集合操作查询：body 非 Select——只约束 q 级（排序/LIMIT 已成节点）
     if !matches!(&*q.body, sqlparser::ast::SetExpr::Select(_)) {
@@ -1508,20 +1523,26 @@ fn plan_exec_covered(
             return false;
         }
     }
-    // 通配：纯通配（全部项）→ 计划 wildcard 形态；混合通配 → AST 路径
-    let wilds = select
+    // 通配：纯 Wildcard（全部项）→ 计划 wildcard 形态；
+    // QualifiedWildcard（o.*——前缀过滤语义）与混合通配 → AST 路径
+    //（曾把 o.* 当纯通配 → join 两列全出而非仅 o 列——评审 P0）
+    let n_wild: usize = select
+        .projection
+        .iter()
+        .filter(|item| matches!(item, sqlparser::ast::SelectItem::Wildcard(_)))
+        .count();
+    let n_qwild: usize = select
         .projection
         .iter()
         .filter(|item| {
-            matches!(
-                item,
-                sqlparser::ast::SelectItem::Wildcard(_)
-                    | sqlparser::ast::SelectItem::QualifiedWildcard(..)
-            )
+            matches!(item, sqlparser::ast::SelectItem::QualifiedWildcard(..))
         })
         .count();
-    if wilds > 0 && wilds != select.projection.len() {
-        return false;
+    if n_wild > 0 && n_wild != select.projection.len() {
+        return false; // 混合通配
+    }
+    if n_qwild > 0 {
+        return false; // QualifiedWildcard 全部回落（o.* 前缀过滤语义）
     }
     // 版本子句（FOR SYSTEM_TIME/AS OF）：O-2c+ B 起计划路径携带
     // version（synthetic_tf 重建——HistoryScan 路由不变）
@@ -1863,7 +1884,15 @@ fn exec_plan_inner(
             let (r, rlayout) = exec_plan(db, sess, right, snapshot, &mut cx.child(None, true))?;
             let rstart = l.names.len();
             let tv = if *kind == "left" {
-                hash_join_left(l, r, on, sess.stmt_deadline)?
+                let lkey = right_scan_key(right);
+                hash_join_left(
+                    l,
+                    r,
+                    on,
+                    sess.stmt_deadline,
+                    Some(&llayout),
+                    lkey.as_deref(),
+                )?
             } else {
                 let rkey = right_scan_key(right);
                 hash_join(
@@ -3344,9 +3373,12 @@ fn hash_join(
     let (eqs, residual) = extract_equi(on, &l.names, &r.names, llay, rkey)?;
     let mut names = l.names.clone();
     names.extend(r.names.clone());
-    // 列名克隆进闭包持有——避免借用 names 阻碍结尾 TableView 移动
+    // 列名克隆进闭包持有——避免借用 names 阻碍结尾 TableView 移动；
+    // #30 同族修：residual 限定名按布局消歧（原裸末段首匹配曾使
+    // acc-vs-acc 残留 `a.x = b.y` 同名自比较恒真——join 条件失效）
     let owned = names.clone();
-    let res_cols = col_lookup(&owned);
+    let lay_owned = llay.cloned().unwrap_or_default();
+    let res_cols = move |n: &str| resolve_qualified(&lay_owned, &owned, n);
     // 建右表哈希（文本键：类型内规范）
     let mkkey = |row: &Vec<SqlValue>, idx: &[usize]| -> Option<Vec<String>> {
         let mut k = Vec::with_capacity(idx.len());
@@ -3424,11 +3456,16 @@ fn hash_join_left(
     r: TableView,
     on: &Expr,
     deadline: Option<std::time::Instant>,
+    llay: Option<&FactorLayout>,
+    rkey: Option<&str>,
 ) -> Result<TableView> {
-    let (eqs, residual) = extract_equi(on, &l.names, &r.names, None, None)?;
+    // #30 消歧与 INNER 同款（布局 + 右键——曾只修 INNER，LEFT 的多因子
+    // 左限定名仍裸末段误中）
+    let (eqs, residual) = extract_equi(on, &l.names, &r.names, llay, rkey)?;
     let mut names = l.names.clone();
     names.extend(r.names.clone());
     // 列名克隆进闭包持有——避免借用 names 阻碍结尾 TableView 移动
+    //（LEFT 侧布局未接线——residual 裸名回退，与 AST 路径同口径）
     let owned = names.clone();
     let res_cols = col_lookup(&owned);
     // #21：类型标签键（与 INNER 版同型）——裸 to_text 曾使 NULL↔NULL、
@@ -3657,6 +3694,7 @@ fn project<R>(
     tv: &TableView,
     sess: &Session,
     resolve: R,
+    layout: Option<&FactorLayout>,
 ) -> Result<(Vec<String>, Vec<Vec<SqlValue>>)>
 where
     R: Fn(&str) -> Option<usize> + Send + 'static,
@@ -3675,14 +3713,45 @@ where
                 }
             }
             SelectItem::QualifiedWildcard(prefix, _) => {
-                let pre = prefix.to_string().to_ascii_lowercase();
-                for n in &tv.names {
-                    if n.to_ascii_lowercase().starts_with(&pre) {
-                        names.push(n.clone());
-                        items.push((
-                            Expr::Identifier(sqlparser::ast::Ident::new(n.clone())),
-                            None,
-                        ));
+                // 布局过滤：前缀 = 因子键 → 该因子区间列（原 starts_with
+                // 对裸列名恒不匹配 → 0 列——o.* 在 join 与单表下全坏）
+                // sqlparser 0.62 的 QualifiedWildcard prefix Display 含
+                // `.*`（"o.*"）——剥通配尾后匹配因子键
+                let pre = prefix
+                    .to_string()
+                    .to_ascii_lowercase()
+                    .trim_end_matches(".*")
+                    .to_string();
+                match layout {
+                    Some(lay) => {
+                        if let Some((_, start, len, _)) =
+                            lay.iter().find(|(k, _, _, _)| *k == pre)
+                        {
+                            for i in *start..(*start + *len) {
+                                if let Some(n) = tv.names.get(i) {
+                                    names.push(n.clone());
+                                    items.push((
+                                        Expr::Identifier(sqlparser::ast::Ident::new(
+                                            n.clone(),
+                                        )),
+                                        None,
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    None => {
+                        // 无布局（单表）：前缀须匹配表键（alias 或表名）
+                        // —— tv.names 全列即该表
+                        // 保守：不做前缀匹配检查，直接全列（单表 o.* 与
+                        // SELECT * 同义——符合直觉且零破坏）
+                        for n in &tv.names {
+                            names.push(n.clone());
+                            items.push((
+                                Expr::Identifier(sqlparser::ast::Ident::new(n.clone())),
+                                None,
+                            ));
+                        }
                     }
                 }
             }
