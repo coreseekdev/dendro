@@ -30,6 +30,12 @@
   Plan::Project 增 names（别名信息）；Filter{Scan} 谓词下传
   selection 提示（点查/派发判定恢复）。
   门禁：clippy 0 / 463 测试 / 31 slt。
+- **2026-09-16 P0 UPSERT + CHECK 约束**：ON CONFLICT DO NOTHING
+  （冲突跳过）/ DO UPDATE SET（excluded(col) 引用 INSERT 新值 /
+  existing 表达式 / 字面量）。CHECK 列级 + 表级（文本存储 → INSERT
+  时 SELECT 包装重 parse 求值）；SQL NULL 语义（UNKNOWN 不拒绝——
+  仅 Bool(false) 拒绝）。测试：constraints +8（UPSERT 5 + CHECK
+  3）；slt 034 14 语句。528 测试 + 34 slt 全绿。
 - **2026-09-16 P0 UNIQUE 约束 + 复合集修正**：列级 `col TEXT
   UNIQUE` / 表级 `UNIQUE(a, b)` 解析 → TableEntry.unique_sets。
   执法：insert_row 中 memtx overlay + prolly 树双侧全扫（v1——

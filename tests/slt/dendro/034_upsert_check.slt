@@ -1,0 +1,81 @@
+# UPSERT / ON CONFLICT + CHECK 约束（P0）
+
+statement ok
+CREATE TABLE up (id BIGINT PRIMARY KEY, v INT, w TEXT)
+
+statement ok
+INSERT INTO up VALUES (1, 10, 'x')
+
+# ON CONFLICT DO NOTHING——冲突跳过
+statement ok
+INSERT INTO up VALUES (1, 99, 'y') ON CONFLICT DO NOTHING
+
+query III
+SELECT id, v, w FROM up ORDER BY id
+----
+1 10 x
+
+# ON CONFLICT DO UPDATE SET v = excluded(v)
+statement ok
+INSERT INTO up VALUES (1, 50, 'z') ON CONFLICT DO UPDATE SET v = excluded(v)
+
+query II
+SELECT v, w FROM up
+----
+50 x
+
+# SET 字面量
+statement ok
+INSERT INTO up VALUES (1, 99, 'q') ON CONFLICT DO UPDATE SET v = 42
+
+query I
+SELECT v FROM up
+----
+42
+
+# SET 表达式（existing + 1）
+statement ok
+INSERT INTO up VALUES (1, 0, 'r') ON CONFLICT DO UPDATE SET v = v + 1
+
+query I
+SELECT v FROM up
+----
+43
+
+# 无冲突正常插入
+statement ok
+INSERT INTO up VALUES (2, 20, 'b') ON CONFLICT DO NOTHING
+
+query I
+SELECT count(*) FROM up
+----
+2
+
+# CHECK 约束
+statement ok
+CREATE TABLE ck (id BIGINT PRIMARY KEY, v INT CHECK (v > 0))
+
+statement ok
+INSERT INTO ck VALUES (1, 10)
+
+statement error
+INSERT INTO ck VALUES (2, -5)
+
+# NULL 通过（UNKNOWN 不拒绝）
+statement ok
+INSERT INTO ck VALUES (3, NULL)
+
+query I
+SELECT count(*) FROM ck
+----
+2
+
+# 表级 CHECK
+statement ok
+CREATE TABLE ck2 (id BIGINT PRIMARY KEY, a INT, b INT, CHECK (a < b))
+
+statement ok
+INSERT INTO ck2 VALUES (1, 10, 20)
+
+statement error
+INSERT INTO ck2 VALUES (2, 30, 20)

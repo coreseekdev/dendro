@@ -11,6 +11,7 @@ use crate::format::hash::Hash;
 use crate::format::row::{encode_key, encode_row};
 use crate::memtx::Txn;
 use crate::types::{ColType, ColumnMeta, Output, SqlValue};
+use sqlparser::ast::{FunctionArg, FunctionArgExpr};
 use crate::versioned::{ColumnDef, TableEntry, TableSchema};
 use sqlparser::ast::{ColumnDef as PColumnDef, Expr, Ident, Insert, ObjectName, TableConstraint};
 use std::collections::HashSet;
@@ -22,7 +23,7 @@ pub(crate) fn exec_create_table(
 ) -> Result<Option<Output>> {
     let name = object_name(&create.name);
     let short = name.rsplit('.').next().unwrap_or(&name).to_string();
-    let (cols, pk, fk_defs, unique_sets) = translate_columns(&create.columns, &create.constraints)?;
+    let (cols, pk, fk_defs, unique_sets, check_exprs) = translate_columns(&create.columns, &create.constraints)?;
     let schema = TableSchema {
         name: short.clone(),
         columns: cols,
@@ -73,6 +74,7 @@ pub(crate) fn exec_create_table(
         acl: std::collections::HashMap::new(),
         foreign_keys: resolve_fk_refs(db, sess, fk_defs)?,
         unique_sets,
+        check_exprs,
     };
     // schema chunk 先写
     db.cas
@@ -179,11 +181,12 @@ fn object_name(n: &ObjectName) -> String {
 fn translate_columns(
     cols: &[PColumnDef],
     constraints: &[TableConstraint],
-) -> Result<(Vec<ColumnDef>, Vec<u16>, Vec<crate::versioned::ForeignKeyDef>, Vec<Vec<u16>>)> {
+) -> Result<(Vec<ColumnDef>, Vec<u16>, Vec<crate::versioned::ForeignKeyDef>, Vec<Vec<u16>>, Vec<String>)> {
     let mut out = Vec::new();
     let mut pk: Vec<u16> = Vec::new();
     let mut fks: Vec<crate::versioned::ForeignKeyDef> = Vec::new();
     let mut unique_sets: Vec<Vec<u16>> = Vec::new();
+    let mut check_exprs: Vec<String> = Vec::new();
     for c in cols {
         let ty = ColType::from_parse(&c.data_type.to_string())
             .ok_or_else(|| SqlError::not_supported(format!("type {}", c.data_type)))?;
@@ -197,6 +200,10 @@ fn translate_columns(
                     unique_sets.push(vec![(out.len()) as u16]);
                 }
                 sqlparser::ast::ColumnOption::Default(_) => { /* 接受但 v1 忽略 */ }
+                sqlparser::ast::ColumnOption::Check(ref ck) => {
+                    // P0：列级 CHECK（原静默丢弃）
+                    check_exprs.push(ck.expr.to_string());
+                }
                 sqlparser::ast::ColumnOption::ForeignKey(ref fk) => {
                     // 列级 REFERENCES t(c) → 单列 FK（P0——原静默丢弃）
                     let ref_table = fk
@@ -273,6 +280,9 @@ fn translate_columns(
                 cols_idx.push(idx as u16);
             }
             unique_sets.push(cols_idx);
+        } else if let TableConstraint::Check(check) = con {
+            // P0：CHECK 约束（原静默丢弃）→ 文本形态存储 + INSERT 求值
+            check_exprs.push(check.expr.to_string());
         } else if let TableConstraint::ForeignKey(fk) = con {
             // 表级 FOREIGN KEY (col) REFERENCES t(col)（P0——原静默丢弃）
             let ref_table = fk
@@ -308,7 +318,7 @@ fn translate_columns(
             // 存 referred 列名→索引延迟——v1 简化：建表后用父表 PK 序
         }
     }
-    Ok((out, pk, fks, unique_sets))
+    Ok((out, pk, fks, unique_sets, check_exprs))
 }
 
 /// catalog 变更 + 新 commit + manifest 推进的公共路径
@@ -440,7 +450,7 @@ pub(crate) fn alter_table_impl(
     let short = full.rsplit('.').next().unwrap_or(&full).to_string();
     match op {
         sqlparser::ast::AlterTableOperation::AddColumn { column_def, .. } => {
-            let (mut cols, new_pk, _, _) = translate_columns(&[column_def], &[])?;
+            let (mut cols, new_pk, _, _, _) = translate_columns(&[column_def], &[])?;
             if !new_pk.is_empty() {
                 return Err(SqlError::not_supported(
                     "ALTER TABLE ADD COLUMN ... PRIMARY KEY（改用建表约束或重建表）",
@@ -536,6 +546,18 @@ pub(crate) fn exec_insert(
             "table \"{short}\" has no primary key"
         )));
     }
+    // P0：UPSERT（ON CONFLICT DO NOTHING / DO UPDATE）——冲突时跳过/更新
+    // PG 的 ON CONFLICT 冲突面 = PK 或指定 UNIQUE 约束；v1 限定 PK
+    //（insert_row 的 duplicate_key 在 on_conflict 模式下改走此分支）
+    let upsert: Option<&sqlparser::ast::OnConflict> = match &insert.on {
+        Some(sqlparser::ast::OnInsert::OnConflict(oc)) => Some(oc),
+        Some(other) => {
+            return Err(SqlError::not_supported(format!(
+                "INSERT ON: {other:?}"
+            )))
+        }
+        None => None,
+    };
     let source = insert
         .source
         .ok_or_else(|| SqlError::syntax("INSERT requires source"))?;
@@ -543,6 +565,129 @@ pub(crate) fn exec_insert(
     let mut txn = sess.txn.take().unwrap_or_else(|| Txn::new(snapshot));
     let mut count = 0u64;
     let mut seen_keys: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
+
+    /// 冲突时行为：None=报错；DO NOTHING=跳过；DO UPDATE=按 SET 更新
+    /// 返回 (是否处理, count 增量)
+    #[allow(clippy::too_many_arguments)] // UPSERT 上下文——内聚不拆
+    fn handle_conflict(
+        db: &Database,
+        sess: &Session,
+        schema: &crate::versioned::TableSchema,
+        entry: &crate::versioned::TableEntry,
+        txn: &mut Txn,
+        upsert: Option<&sqlparser::ast::OnConflict>,
+        pk_key: &[u8],
+        row: &mut Vec<SqlValue>,
+        pk_vals: &[SqlValue],
+    ) -> Result<(bool, u64)> {
+        let Some(oc) = upsert else {
+            return Ok((false, 0)); // 无 UPSERT——调用方走正常报错路径
+        };
+        // 检查冲突（三段：txn 写集 / memtx / 树）
+        let b = db.branch(&sess.branch)?;
+        let tm = b.mem.table(entry.id);
+        // memtx（含墓碑感知）
+        let memtx_hit = tm.get(pk_key, txn.snapshot).is_some();
+        // 树
+        let tree_hit = entry
+            .table_root
+            .as_ref()
+            .and_then(|r| crate::format::hash::Hash::from_base32(r))
+            .is_some_and(|root| {
+                crate::prolly::cursor::lookup(&db.store, &root, pk_key)
+                    .map(|v| v.is_some())
+                    .unwrap_or(false)
+            });
+        // txn 写集（同事务先插后冲）
+        let txn_hit = txn.writes.contains_key(&(entry.id, pk_key.to_vec()));
+        if !memtx_hit && !tree_hit && !txn_hit {
+            return Ok((false, 0)); // 无冲突——正常 INSERT 路径
+        }
+        // 冲突！按 ON CONFLICT action 处理
+        match &oc.action {
+            sqlparser::ast::OnConflictAction::DoNothing => {
+                Ok((true, 0)) // 跳过（不报错不计数）
+            }
+            sqlparser::ast::OnConflictAction::DoUpdate(du) => {
+                // DO UPDATE SET col = expr（excluded.col = INSERT 尝试的新值）
+                // 读取现有行 → 应用 SET → 写回
+                let existing = read_existing_row(
+                    db, sess, schema, entry, txn, pk_key, pk_vals,
+                )?;
+                let Some(existing_row) = existing else {
+                    return Ok((false, 0)); // 墓碑——无现有行，走 INSERT
+                };
+                let mut updated = existing_row.clone();
+                let _ = &row;
+                for a in &du.assignments {
+                    let target = match &a.target {
+                        sqlparser::ast::AssignmentTarget::ColumnName(cn) => {
+                            cn.to_string().to_ascii_lowercase()
+                        }
+                        other => {
+                            return Err(SqlError::not_supported(format!(
+                                "ON CONFLICT SET target: {other:?}"
+                            )))
+                        }
+                    };
+                    let ci = schema.col_index(&target).ok_or_else(|| {
+                        SqlError::undefined_column(format!(
+                            "ON CONFLICT SET column {target}"
+                        ))
+                    })?;
+                    // SET 值求值：excluded(col) → INSERT 尝试的新值；
+                    // 其他表达式对 existing 行求值
+                    let val = match &a.value {
+                        Expr::Function(f)
+                            if {
+                                let n = f.name.to_string().to_ascii_lowercase();
+                                n == "excluded" || n == "values"
+                            } =>
+                        {
+                            if let Some(
+                                FunctionArg::Unnamed(FunctionArgExpr::Expr(arg)),
+                            ) = crate::sql::scan::fn_args(f).first()
+                            {
+                                let arg_name = match arg {
+                                    Expr::Identifier(id) => id.value.clone(),
+                                    Expr::CompoundIdentifier(ps) => {
+                                        ps.last().map(|p| p.value.clone()).unwrap_or_default()
+                                    }
+                                    _ => String::new(),
+                                };
+                                let aci = schema.col_index(&arg_name).ok_or_else(|| {
+                                    SqlError::undefined_column(format!(
+                                        "excluded.{arg_name}"
+                                    ))
+                                })?;
+                                row[aci].clone()
+                            } else {
+                                return Err(SqlError::not_supported(
+                                    "excluded() requires column argument",
+                                ));
+                            }
+                        }
+                        e => {
+                            let colfn = |name: &str| schema.col_index(name);
+                            expr::eval(e, &existing_row, &colfn)?
+                        }
+                    };
+                    updated[ci] =
+                        coerce_for_column(val, &schema.columns[ci].ty)?;
+                }
+                // 写回（PUT 覆盖）
+                let new_key = encode_key(pk_vals);
+                txn.writes.insert(
+                    (entry.id, new_key),
+                    crate::prolly::Mutation::Put(
+                        crate::format::row::encode_row(&updated),
+                    ),
+                );
+                Ok((true, 1))
+            }
+        }
+    }
+
     match *source.body {
         sqlparser::ast::SetExpr::Values(values) => {
             let value_rows = values.rows;
@@ -587,7 +732,15 @@ pub(crate) fn exec_insert(
                             .to_string(),
                     ));
                 }
-                insert_row(db, sess, &schema, entry.id, &mut txn, row, &entry.foreign_keys, &entry.unique_sets)?;
+                // P0 UPSERT：冲突时 DO NOTHING / DO UPDATE（非报错路径）
+                let (handled, delta) = handle_conflict(
+                    db, sess, &schema, &entry, &mut txn, upsert, &key, &mut row, &pk_vals,
+                )?;
+                if handled {
+                    count += delta;
+                    continue;
+                }
+                insert_row(db, sess, &schema, entry.id, &mut txn, row, &entry.foreign_keys, &entry.unique_sets, &entry.check_exprs)?;
                 count += 1;
             }
         }
@@ -617,7 +770,7 @@ pub(crate) fn exec_insert(
                 for (si, &ci) in col_idx.iter().enumerate() {
                     row[ci] = src_row.get(si).cloned().unwrap_or(SqlValue::Null);
                 }
-                insert_row(db, sess, &schema, entry.id, &mut txn, row, &entry.foreign_keys, &entry.unique_sets)?;
+                insert_row(db, sess, &schema, entry.id, &mut txn, row, &entry.foreign_keys, &entry.unique_sets, &entry.check_exprs)?;
                 count += 1;
             }
         }
@@ -703,10 +856,33 @@ fn insert_row(
     row: Vec<SqlValue>,
     fks: &[crate::versioned::ForeignKeyDef],
     unique_sets: &[Vec<u16>],
+    check_exprs: &[String],
 ) -> Result<()> {
     let pk_vals: Vec<SqlValue> = schema.pk.iter().map(|&i| row[i as usize].clone()).collect();
     if pk_vals.iter().any(|v| v.is_null()) {
         return Err(SqlError::new("23502", "null value in primary key column"));
+    }
+    // P0：CHECK 约束执法（表达式对行求值——false → 23514）
+    if !check_exprs.is_empty() {
+        let colfn = |name: &str| schema.col_index(name);
+        for ce in check_exprs {
+            // CHECK 存裸表达式文本——包装为 SELECT 重 parse 求值
+            if let Ok(mut ss) = crate::sql::parse_batch(&format!("SELECT {}", ce), crate::sql::SqlDialect::Pg) {
+                if let Some(sqlparser::ast::Statement::Query(q)) = ss.pop() {
+                    if let sqlparser::ast::SetExpr::Select(sel) = *q.body {
+                        if let Some(sqlparser::ast::SelectItem::UnnamedExpr(e)) = sel.projection.first().cloned() {
+                            let v = expr::eval(&e, &row, &colfn)?;
+                            if matches!(v, SqlValue::Bool(false)) {
+                                return Err(SqlError::new(
+                                    "23514",
+                                    format!("new row violates check constraint: {ce}"),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
     // P0：NOT NULL 执法（nullable 字段此前全库无读点——静默入库）
     for (i, cd) in schema.columns.iter().enumerate() {
@@ -1059,3 +1235,40 @@ pub(crate) fn check_fk_parents(
     Ok(())
 }
 
+
+/// 读取现有行（UPSERT DO UPDATE 用）：txn 写集 → memtx → 树 三段
+fn read_existing_row(
+    db: &Database,
+    sess: &Session,
+    schema: &crate::versioned::TableSchema,
+    entry: &crate::versioned::TableEntry,
+    txn: &Txn,
+    key: &[u8],
+    pk_vals: &[SqlValue],
+) -> Result<Option<Vec<SqlValue>>> {
+    let _ = pk_vals;
+    // 1. txn 写集（本事务先插的行）
+    if let Some(m) = txn.writes.get(&(entry.id, key.to_vec())) {
+        match m {
+            crate::prolly::Mutation::Put(bytes) => {
+                return Ok(Some(crate::sql::scan::row_from_bytes(schema, bytes)?));
+            }
+            crate::prolly::Mutation::Delete => return Ok(None),
+        }
+    }
+    // 2. memtx
+    let b = db.branch(&sess.branch)?;
+    let tm = b.mem.table(entry.id);
+    if let Some(v) = tm.get(key, txn.snapshot) {
+        return Ok(Some(crate::sql::scan::row_from_bytes(schema, &v)?));
+    }
+    // 3. 树
+    if let Some(root_str) = &entry.table_root {
+        if let Some(root) = crate::format::hash::Hash::from_base32(root_str) {
+            if let Ok(Some(v)) = crate::prolly::cursor::lookup(&db.store, &root, key) {
+                return Ok(Some(crate::sql::scan::row_from_bytes(schema, &v)?));
+            }
+        }
+    }
+    Ok(None)
+}

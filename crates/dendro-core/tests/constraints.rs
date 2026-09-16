@@ -135,3 +135,98 @@ fn unique_table_level() {
     s.exec("INSERT INTO u VALUES (3, 10, 30)").unwrap();
     assert_eq!(count(&d, "SELECT count(*) FROM u"), "2");
 }
+
+// ---------- UPSERT / ON CONFLICT ----------
+
+#[test]
+fn upsert_do_nothing() {
+    let d = db();
+    let mut s = d.new_session();
+    s.exec("CREATE TABLE up (id BIGINT PRIMARY KEY, v INT)").unwrap();
+    s.exec("INSERT INTO up VALUES (1, 10)").unwrap();
+    // ON CONFLICT DO NOTHING——冲突时跳过（不报错）
+    s.exec("INSERT INTO up VALUES (1, 99) ON CONFLICT DO NOTHING").unwrap();
+    assert_eq!(count(&d, "SELECT count(*) FROM up"), "1");
+    assert_eq!(count(&d, "SELECT v FROM up WHERE id = 1"), "10"); // 原值保留
+}
+
+#[test]
+fn upsert_do_update() {
+    let d = db();
+    let mut s = d.new_session();
+    s.exec("CREATE TABLE up (id BIGINT PRIMARY KEY, v INT, w INT)").unwrap();
+    s.exec("INSERT INTO up VALUES (1, 10, 100)").unwrap();
+    // ON CONFLICT DO UPDATE SET v = excluded(v)——用新值更新
+    s.exec("INSERT INTO up VALUES (1, 99, 999) ON CONFLICT DO UPDATE SET v = excluded(v)").unwrap();
+    assert_eq!(count(&d, "SELECT count(*) FROM up"), "1"); // 仍是 1 行
+    assert_eq!(count(&d, "SELECT v FROM up WHERE id = 1"), "99"); // 更新
+    assert_eq!(count(&d, "SELECT w FROM up WHERE id = 1"), "100"); // 未 SET 保留原值
+}
+
+#[test]
+fn upsert_no_conflict_normal_insert() {
+    let d = db();
+    let mut s = d.new_session();
+    s.exec("CREATE TABLE up (id BIGINT PRIMARY KEY, v INT)").unwrap();
+    // 无冲突时正常 INSERT
+    s.exec("INSERT INTO up VALUES (1, 10) ON CONFLICT DO NOTHING").unwrap();
+    s.exec("INSERT INTO up VALUES (2, 20) ON CONFLICT DO NOTHING").unwrap();
+    assert_eq!(count(&d, "SELECT count(*) FROM up"), "2");
+}
+
+#[test]
+fn upsert_do_update_with_expression() {
+    let d = db();
+    let mut s = d.new_session();
+    s.exec("CREATE TABLE up (id BIGINT PRIMARY KEY, v INT)").unwrap();
+    s.exec("INSERT INTO up VALUES (1, 10)").unwrap();
+    // SET v = v + 1（对 existing 行求值）
+    s.exec("INSERT INTO up VALUES (1, 99) ON CONFLICT DO UPDATE SET v = v + 1").unwrap();
+    assert_eq!(count(&d, "SELECT v FROM up WHERE id = 1"), "11"); // 10+1
+}
+
+#[test]
+fn upsert_do_update_set_literal() {
+    let d = db();
+    let mut s = d.new_session();
+    s.exec("CREATE TABLE up (id BIGINT PRIMARY KEY, v INT)").unwrap();
+    s.exec("INSERT INTO up VALUES (1, 10)").unwrap();
+    s.exec("INSERT INTO up VALUES (1, 99) ON CONFLICT DO UPDATE SET v = 42").unwrap();
+    assert_eq!(count(&d, "SELECT v FROM up WHERE id = 1"), "42");
+}
+
+// ---------- CHECK 约束 ----------
+
+#[test]
+fn check_constraint_violation() {
+    let d = db();
+    let mut s = d.new_session();
+    s.exec("CREATE TABLE ck (id BIGINT PRIMARY KEY, v INT CHECK (v > 0))").unwrap();
+    s.exec("INSERT INTO ck VALUES (1, 10)").unwrap(); // 合法
+    let e = err(&d, "INSERT INTO ck VALUES (2, -5)");
+    assert_eq!(e.state, "23514", "{e}");
+    assert!(e.message.contains("check"), "{e}");
+    // NULL 通过（SQL CHECK NULL 语义——unknown 不拒绝）
+    s.exec("INSERT INTO ck VALUES (3, NULL)").unwrap();
+    assert_eq!(count(&d, "SELECT count(*) FROM ck"), "2");
+}
+
+#[test]
+fn check_constraint_table_level() {
+    let d = db();
+    let mut s = d.new_session();
+    s.exec("CREATE TABLE ck (id BIGINT PRIMARY KEY, a INT, b INT, CHECK (a < b))").unwrap();
+    s.exec("INSERT INTO ck VALUES (1, 10, 20)").unwrap();
+    let e = err(&d, "INSERT INTO ck VALUES (2, 30, 20)");
+    assert_eq!(e.state, "23514", "{e}");
+}
+
+#[test]
+fn check_constraint_expression() {
+    let d = db();
+    let mut s = d.new_session();
+    s.exec("CREATE TABLE ck (id BIGINT PRIMARY KEY, v INT CHECK (v BETWEEN 1 AND 100))").unwrap();
+    s.exec("INSERT INTO ck VALUES (1, 50)").unwrap();
+    let e = err(&d, "INSERT INTO ck VALUES (2, 200)");
+    assert_eq!(e.state, "23514", "{e}");
+}
