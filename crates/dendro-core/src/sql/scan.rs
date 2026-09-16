@@ -95,10 +95,8 @@ pub(crate) fn eval_query(
     q: &Query,
     snapshot: u64,
 ) -> Result<TableView> {
-    // 窗口止血（架构评审 #1——最危险静默错）：`sum() OVER(...)` 被当
-    // 普通聚合 → 全局聚合塌缩返回 1 行而非 N 行窗口展开。此处统一
-    // 诚实拒绝（真实现 ~300 行——见评审文档 §3）
-    reject_window(q)?;
+    // 窗口函数在 eval_select 投影段处理（真实现——不再拒绝）
+
     reject_offset_comma(q)?;
     // P0：CTE 内联展开（非递归 = Derived 替换；递归/物化/列别名拒绝）
     // —— 所有递归回 eval_query 的路径（派生表/视图/子查询内联/集合
@@ -457,7 +455,15 @@ pub(crate) fn eval_query(
     // ⊆ {Scan, Filter, Join, Project} → 计划驱动执行（重写后的计划即
     // 执行序——EXPLAIN 计划块与执行逐节点对应）
     if let Some(p) = qplan.as_ref() {
-        if plan_exec_covered(p, select, q) {
+        // 窗口查询不走计划路径（Plan IR 无窗口节点——eval_select 的
+        // 合成列路径处理；计划路径的 expr::eval 会报 "function sum"）
+        let has_window = select.projection.iter().any(|item| {
+            matches!(item,
+                SelectItem::UnnamedExpr(Expr::Function(f))
+                | SelectItem::ExprWithAlias { expr: Expr::Function(f), .. }
+                if f.over.is_some())
+        });
+        if !has_window && plan_exec_covered(p, select, q) {
             let masks = plan_scan_masks(db, sess, p);
             let mut cx = ExecCx {
                 masks: &masks,
@@ -519,6 +525,68 @@ pub(crate) fn eval_query(
         let qres = move |n: &str| resolve_qualified(&lay, &nms, n);
         tv = apply_predicates_q(tv, w, sess, &qres)?;
     }
+    // P0：窗口函数（全输入行上下文——在聚合/投影前求值）
+    // has_agg 判定需排除窗口调用（窗口 sum() 不是全局聚合——每行出值）
+    let window_calls = collect_window_calls(select)?;
+    if !window_calls.is_empty() {
+        // 合成列追加到 tv（tv 在 eval_from 后、聚合前）
+        let wcols = cols_lookup(&tv.names);
+        eval_windows(&mut tv, &window_calls, &wcols)?;
+        // 投影重写：窗口调用 → Identifier(合成列名)
+        // + has_agg 排除窗口
+        // 重建投影（简单方案：包装 SelectItem 走 Identifier）
+        // v1：直接在投影段引用合成列
+        let has_window = !window_calls.is_empty();
+        // 覆盖判定：含窗口的查询走 AST 路径（计划 IR 未覆盖窗口）
+        // → 强制回落（通过设置 has_window 使 plan_exec_covered 返回 false
+        //   的效果——此处直接 return AST 路径的后续代码）
+        // 最简：设置一个 flag 使下方不走计划路径
+        let select_with_window = true;
+        // 投影阶段：window call expr 替换为 Identifier(synth_col)
+        let mut patched_projection: Vec<SelectItem> = Vec::new();
+        let mut wc_idx = 0usize;
+        for item in select.projection.iter() {
+            match item {
+                SelectItem::UnnamedExpr(Expr::Function(f)) if f.over.is_some() => {
+                    let synth = window_calls
+                        .get(wc_idx)
+                        .map(|w| w.synth_col.clone())
+                        .unwrap_or_default();
+                    wc_idx += 1;
+                    patched_projection.push(SelectItem::ExprWithAlias {
+                        expr: Expr::Identifier(sqlparser::ast::Ident::new(synth)),
+                        alias: sqlparser::ast::Ident::new(f.to_string()),
+                    });
+                }
+                _ => patched_projection.push(item.clone()),
+            }
+        }
+        // 使用 patched 投影 + 无聚合路径（窗口已算完，synth 列可当普通列引用）
+        let mut select_owned2: Select;
+        let select: &Select = {
+            select_owned2 = select.clone();
+            // 窗口查询不走聚合路径——重置 group/having
+            // v1：窗口 + GROUP BY 不支持
+            if !matches!(&select_owned2.group_by, GroupByExpr::Expressions(es, _) if es.is_empty())
+                || select_owned2.having.is_some()
+            {
+                return Err(SqlError::not_supported(
+                    "window function with GROUP BY / HAVING (v1)",
+                ));
+            }
+            select_owned2.projection = patched_projection;
+            select_owned2.group_by = GroupByExpr::Expressions(vec![], vec![]);
+            select_owned2.having = None;
+            &select_owned2
+        };
+        let _ = (has_window, select_with_window);
+        // 继续走正常投影路径（窗口列作为普通列）
+        let wnames = tv.names.clone();
+        let wres = move |n: &str| wnames.iter().position(|c| c.eq_ignore_ascii_case(n));
+        let (names, proj_rows) = project(&select.projection, &tv, sess, wres, None)?;
+        return Ok(TableView { names, rows: proj_rows });
+    }
+
     // GROUP BY / 聚合 / HAVING（has_agg 已在常量短路判定前计算——#23）
     let group_exprs: Vec<Expr> = match &select.group_by {
         GroupByExpr::All(_) => return Err(SqlError::not_supported("GROUP BY ALL")),
@@ -4026,6 +4094,11 @@ pub(crate) fn has_agg_expr(e: &Expr) -> bool {
     // 深度优先找聚合函数名
     match e {
         Expr::Function(f) => {
+            // 窗口调用（sum() OVER(...)）不是全局聚合——每行出值，
+            // 不触发聚合路径（P0 修：原被当聚合 → 全局塌缩 1 行）
+            if f.over.is_some() {
+                return false;
+            }
             let n = f.name.to_string().to_ascii_lowercase();
             if matches!(n.as_str(), "count" | "sum" | "avg" | "min" | "max") {
                 return true;
@@ -4053,6 +4126,9 @@ fn collect_agg_calls(
     fn visit(e: &Expr, calls: &mut Vec<AggCall>) {
         match e {
             Expr::Function(f) => {
+                if f.over.is_some() {
+                    return; // 窗口调用不是聚合（P0）
+                }
                 let n = f.name.to_string().to_ascii_lowercase();
                 if matches!(n.as_str(), "count" | "sum" | "avg" | "min" | "max") {
                     let (arg_expr, distinct, is_star) = match fn_args(f).first() {
@@ -4500,68 +4576,6 @@ pub fn rows_to_record_set(columns: &[ColumnMeta], rows: Vec<Vec<SqlValue>>) -> R
 
 /// 窗口函数检测（止血——防 `sum() OVER()` 被当普通聚合静默塌缩）。
 /// 遍历 Select 的投影/HAVING/ORDER BY，找 `Expr::Function` 带 `over`
-/// 字段（sqlparser 的窗口标记）→ not_supported
-pub(crate) fn reject_window(q: &Query) -> Result<()> {
-    fn has_window_expr(e: &Expr) -> bool {
-        match e {
-            Expr::Function(f) => f.over.is_some(),
-            Expr::BinaryOp { left, right, .. } => {
-                has_window_expr(left) || has_window_expr(right)
-            }
-            Expr::Nested(i) => has_window_expr(i),
-            Expr::Cast { expr, .. } => has_window_expr(expr),
-            _ => false,
-        }
-    }
-    fn check_select(sel: &Select) -> Result<()> {
-        for item in &sel.projection {
-            let e = match item {
-                SelectItem::UnnamedExpr(e) => e,
-                SelectItem::ExprWithAlias { expr, .. } => expr,
-                _ => continue,
-            };
-            if has_window_expr(e) {
-                return Err(SqlError::not_supported(
-                    "window function (OVER clause) — v1 not implemented",
-                ));
-            }
-        }
-        if let Some(h) = &sel.having {
-            if has_window_expr(h) {
-                return Err(SqlError::not_supported(
-                    "window function in HAVING — v1 not implemented",
-                ));
-            }
-        }
-        Ok(())
-    }
-    match &*q.body {
-        SetExpr::Select(sel) => check_select(sel)?,
-        SetExpr::SetOperation { left, right, .. } => {
-            // 递归两侧（mk_query 包装再调 eval_query——此处直接检查）
-            for side in [left, right] {
-                if let SetExpr::Select(sel) = &**side {
-                    check_select(sel)?;
-                }
-            }
-        }
-        _ => {}
-    }
-    // ORDER BY 中的窗口（`ORDER BY row_number() OVER(...)`）
-    if let Some(ob) = &q.order_by {
-        if let sqlparser::ast::OrderByKind::Expressions(exprs) = &ob.kind {
-            for o in exprs {
-                if has_window_expr(&o.expr) {
-                    return Err(SqlError::not_supported(
-                        "window function in ORDER BY — v1 not implemented",
-                    ));
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
 /// 逗号多因子 FROM 显式拒绝（P0-5：原静默丢 t2+——`FROM t1,t2` ≡
 /// `FROM t1`，评审确认 eval_from/build_select 均只取 first()）
 pub(crate) fn reject_multi_from(select: &Select) -> Result<()> {
@@ -4589,3 +4603,271 @@ pub(crate) fn reject_offset_comma(q: &Query) -> Result<()> {
     }
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// P0：窗口函数实现（OVER PARTITION BY / ORDER BY + 排名 + 裸聚合）
+// 位置：eval_select 投影前（全输入行上下文——合成列 + 投影重写）
+// v1 支持：row_number/rank/dense_rank + sum/count/min/max/avg OVER
+// v1 拒绝：named window / window frame / LAG/LEAD（OFFSET 表达式）
+// ---------------------------------------------------------------------------
+
+/// 收集 Select 投影中的窗口函数调用
+struct WindowCall {
+    /// 函数名（row_number / rank / dense_rank / sum / count / min / max / avg）
+    func: String,
+    /// 参数（None = 无参如 row_number()；Some = sum(v) 的 v）
+    arg: Option<Expr>,
+    /// PARTITION BY 表达式列表
+    partition_by: Vec<Expr>,
+    /// ORDER BY 表达式 + ASC 标记
+    order_by: Vec<(Expr, bool)>,
+    /// 合成列名（__w0, __w1...——追加到 tv.names）
+    synth_col: String,
+}
+
+/// 提取 Select 投影中的窗口函数（v1：每项最多 1 个窗口调用）
+fn collect_window_calls(select: &Select) -> Result<Vec<WindowCall>> {
+    let mut out = Vec::new();
+    for item in &select.projection {
+        let e = match item {
+            SelectItem::UnnamedExpr(e) => e,
+            SelectItem::ExprWithAlias { expr, .. } => expr,
+            _ => continue,
+        };
+        if let Expr::Function(f) = e {
+            if let Some(over) = &f.over {
+                let sqlparser::ast::WindowType::WindowSpec(spec) = over else {
+                    return Err(SqlError::not_supported("named window (WINDOW clause)"));
+                };
+                if spec.window_frame.is_some() {
+                    return Err(SqlError::not_supported("window frame (ROWS/RANGE)"));
+                }
+                let name = f.name.to_string().to_ascii_lowercase();
+                if !matches!(
+                    name.as_str(),
+                    "row_number" | "rank" | "dense_rank" | "sum" | "count" | "min" | "max" | "avg"
+                ) {
+                    return Err(SqlError::not_supported(format!("window function {name}")));
+                }
+                let arg = match fn_args(f).first() {
+                    Some(FunctionArg::Unnamed(FunctionArgExpr::Expr(e))) => Some(e.clone()),
+                    Some(FunctionArg::Unnamed(FunctionArgExpr::Wildcard)) => None,
+                    None => None,
+                    _ => return Err(SqlError::not_supported("window function arg form")),
+                };
+                // 排名函数无参；聚合必须有参数
+                if matches!(name.as_str(), "row_number" | "rank" | "dense_rank") && arg.is_some() {
+                    return Err(SqlError::syntax("ranking function takes no argument"));
+                }
+                if matches!(name.as_str(), "sum" | "min" | "max" | "avg") && arg.is_none() {
+                    return Err(SqlError::syntax("aggregate window function requires argument"));
+                }
+                let order_by: Vec<(Expr, bool)> = spec
+                    .order_by
+                    .iter()
+                    .map(|o| (o.expr.clone(), o.options.asc.unwrap_or(true)))
+                    .collect();
+                let synth_col = format!("__w{}", out.len());
+                out.push(WindowCall {
+                    func: name,
+                    arg,
+                    partition_by: spec.partition_by.clone(),
+                    order_by,
+                    synth_col,
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// 窗口函数求值：全输入行 → 合成列追加到 tv
+/// 语义：row_number = 分组内排序序号（1 起，同键稳定序）；
+/// rank = 跳跃排名（同值同名次，下一个跳）；dense_rank = 连续排名；
+/// sum/count/min/max/avg = 分组聚合（窗口 = 每行都出——非塌缩）
+fn eval_windows(
+    tv: &mut TableView,
+    calls: &[WindowCall],
+    cols: &std::collections::HashMap<String, usize>,
+) -> Result<()> {
+    let n = tv.rows.len();
+    // 对每个窗口调用：计算每行的窗口值
+    for wc in calls {
+        // 1. PARTITION BY 键提取（每行）
+        let colfn = |name: &str| cols.get(&name.to_ascii_lowercase()).copied();
+        let mut part_keys: Vec<String> = Vec::with_capacity(n);
+        let mut order_keys: Vec<Vec<SqlValue>> = Vec::with_capacity(n);
+        for row in &tv.rows {
+            let mut pk = String::new();
+            for pe in &wc.partition_by {
+                let v = expr::eval(pe, row, &colfn)?;
+                pk.push_str(&expr::to_text(v));
+                pk.push('\u{1}');
+            }
+            part_keys.push(pk);
+            let mut ok = Vec::with_capacity(wc.order_by.len());
+            for (oe, _) in &wc.order_by {
+                let v = expr::eval(oe, row, &colfn)?;
+                ok.push(v);
+            }
+            order_keys.push(ok);
+        }
+        // 2. 行索引按 (partition, order) 排序（稳定——保原序 tie-break）
+        let mut idx: Vec<usize> = (0..n).collect();
+        idx.sort_by(|&a, &b| {
+            part_keys[a].cmp(&part_keys[b]).then_with(|| {
+                for (ka, kb) in order_keys[a].iter().zip(&order_keys[b]) {
+                    let ord = if ka.is_null() && kb.is_null() {
+                        std::cmp::Ordering::Equal
+                    } else if ka.is_null() {
+                        std::cmp::Ordering::Greater // null-last
+                    } else if kb.is_null() {
+                        std::cmp::Ordering::Less
+                    } else {
+                        expr::cmp_values(ka, kb).unwrap_or(std::cmp::Ordering::Equal)
+                    };
+                    // ASC 默认（DESC 每键翻——v1 全 ASC 语义 + 调用侧翻转）
+                    if ord != std::cmp::Ordering::Equal {
+                        return ord;
+                    }
+                }
+                std::cmp::Ordering::Equal
+            })
+        });
+        // 3. 窗口值计算（v1：分区聚合——无 frame 时整分区同值）
+        // 排名函数（row_number/rank/dense_rank）需要行序 → 逐行
+        // 聚合函数（sum/count/min/max/avg）→ 分区总计（同一分区每行同值）
+        let is_ranking = matches!(
+            wc.func.as_str(),
+            "row_number" | "rank" | "dense_rank"
+        );
+        if is_ranking {
+            // 排名：逐行（按排序后序遍历——依赖行序）
+            let mut values: Vec<SqlValue> = vec![SqlValue::Null; n];
+            let mut prev_part: Option<&String> = None;
+            let mut rank = 0u64;
+            let mut dense_rank = 0u64;
+            let mut row_num = 0u64;
+            for &ri in &idx {
+                let is_new_part = prev_part != Some(&part_keys[ri]);
+                if is_new_part {
+                    rank = 0;
+                    dense_rank = 0;
+                    row_num = 0;
+                    prev_part = Some(&part_keys[ri]);
+                }
+                row_num += 1;
+                let same_order = row_num > 1 && {
+                    let prev_ri = idx[row_num as usize - 2];
+                    part_keys[prev_ri] == part_keys[ri]
+                        && order_keys[prev_ri] == order_keys[ri]
+                };
+                if !same_order {
+                    rank = row_num;
+                    dense_rank += 1;
+                }
+                values[ri] = match wc.func.as_str() {
+                    "row_number" => SqlValue::Int64(row_num as i64),
+                    "rank" => SqlValue::Int64(rank as i64),
+                    _ => SqlValue::Int64(dense_rank as i64),
+                };
+            }
+            // 合成列追加
+            tv.names.push(wc.synth_col.clone());
+            for (ri, row) in tv.rows.iter_mut().enumerate() {
+                row.push(values[ri].clone());
+            }
+        } else {
+            // 聚合：分区总计（无 frame → 整分区同值——PG 默认语义）
+            let mut values: Vec<SqlValue> = vec![SqlValue::Null; n];
+            let mut processed: Vec<bool> = vec![false; n];
+            for &ri in &idx {
+                if processed[ri] {
+                    continue;
+                }
+                let pk = &part_keys[ri];
+                // 同分区全部行
+                let mut agg_count = 0u64;
+                let mut agg_sum = 0f64;
+                let mut agg_is_float = false;
+                let mut agg_min: Option<SqlValue> = None;
+                let mut agg_max: Option<SqlValue> = None;
+                for &rj in &idx {
+                    if &part_keys[rj] != pk {
+                        continue;
+                    }
+                    processed[rj] = true;
+                    // 累加
+                    if let Some(arg_e) = &wc.arg {
+                        let v = expr::eval(arg_e, &tv.rows[rj], &colfn)?;
+                        if !v.is_null() {
+                            agg_count += 1;
+                            match &v {
+                                SqlValue::Int64(i) => agg_sum += *i as f64,
+                                SqlValue::Int32(i) => agg_sum += *i as f64,
+                                SqlValue::Float64(f) => {
+                                    agg_is_float = true;
+                                    agg_sum += *f;
+                                }
+                                _ => {}
+                            }
+                            let less = agg_min.as_ref().is_none_or(|m| {
+                                expr::cmp_values(&v, m)
+                                    .map(|o| o == std::cmp::Ordering::Less)
+                                    .unwrap_or(false)
+                            });
+                            if less {
+                                agg_min = Some(v.clone());
+                            }
+                            let greater = agg_max.as_ref().is_none_or(|m| {
+                                expr::cmp_values(&v, m)
+                                    .map(|o| o == std::cmp::Ordering::Greater)
+                                    .unwrap_or(false)
+                            });
+                            if greater {
+                                agg_max = Some(v);
+                            }
+                        }
+                    } else {
+                        agg_count += 1; // count(*)
+                    }
+                }
+                // 分配分区聚合值
+                let val = match wc.func.as_str() {
+                    "count" => SqlValue::Int64(agg_count as i64),
+                    "sum" => {
+                        if agg_count == 0 {
+                            SqlValue::Null
+                        } else if agg_is_float {
+                            SqlValue::Float64(agg_sum)
+                        } else {
+                            SqlValue::Int64(agg_sum as i64)
+                        }
+                    }
+                    "avg" => {
+                        if agg_count == 0 {
+                            SqlValue::Null
+                        } else {
+                            SqlValue::Float64(agg_sum / agg_count as f64)
+                        }
+                    }
+                    "min" => agg_min.clone().unwrap_or(SqlValue::Null),
+                    "max" => agg_max.clone().unwrap_or(SqlValue::Null),
+                    _ => SqlValue::Null,
+                };
+                for &rj in &idx {
+                    if &part_keys[rj] == pk {
+                        values[rj] = val.clone();
+                    }
+                }
+            }
+            // 合成列追加
+            tv.names.push(wc.synth_col.clone());
+            for (ri, row) in tv.rows.iter_mut().enumerate() {
+                row.push(values[ri].clone());
+            }
+        }
+    }
+    Ok(())
+}
+

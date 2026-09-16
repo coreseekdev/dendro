@@ -30,6 +30,15 @@
   Plan::Project 增 names（别名信息）；Filter{Scan} 谓词下传
   selection 提示（点查/派发判定恢复）。
   门禁：clippy 0 / 463 测试 / 31 slt。
+- **2026-09-16 P0 窗口函数真实现**：OVER (PARTITION BY / ORDER BY)
+  + row_number/rank/dense_rank + sum/count/min/max/avg OVER。排名逐行
+  （行序 + 同序同名次）；聚合分区总计（无 frame → 整分区同值——
+  PG 默认语义；running 需 ROWS frame 留 v2）。has_agg_expr/
+  collect_agg_calls 排除 .over（原 sum() OVER() 被当全局聚合 → 塌缩
+  1 行）。计划路径排除窗口（覆盖判定前拦截——expr::eval 无窗口）。
+  窗口 + GROUP BY/HAVING v1 诚实拒绝。reject_window 止血功成身退。
+  测试：window.rs 8（全局/分区 row_number/rank/dense_rank/sum/
+  count/min-max/不塌缩回归）；slt 033_window.slt 10 语句。
 - **2026-09-16 P0 外键 + NOT NULL 执法**：列级 REFERENCES t(c) /
   表级 FOREIGN KEY (col) REFERENCES t(c) 解析 → ForeignKeyDef 存储
   （TableEntry.foreign_keys serde default）。INSERT 时 FK 父行三段

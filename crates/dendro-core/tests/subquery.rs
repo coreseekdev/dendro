@@ -112,15 +112,25 @@ fn correlated_subquery_rejected() {
 // ---------- 架构评审止血回归 ----------
 
 #[test]
-fn window_function_rejected_not_silently_aggregated() {
+fn window_function_now_works() {
     let d = db(); setup(&d);
     let mut s = d.new_session();
-    // sum() OVER() 曾被当普通聚合 → 全局塌缩返回 1 行——现在是诚实拒绝
-    let e = s.exec("SELECT sum(total) OVER () FROM orders").unwrap_err();
-    assert!(e.message.contains("window"), "{e}");
-    // row_number() OVER(...) 也拒绝
-    let e2 = s.exec("SELECT row_number() OVER (ORDER BY id) FROM orders").unwrap_err();
-    assert!(e2.message.contains("window"), "{e2}");
+    // sum() OVER() —— 每行出值（4 行而非全局塌缩 1 行）
+    let out = s.exec("SELECT count(*) FROM (SELECT sum(total) OVER () FROM orders) w").unwrap();
+    match &out[0] {
+        dendro_core::types::Output::Rows(rs) => {
+            assert_eq!(rs.text_rows()[0][0].clone().unwrap(), "4");
+        }
+        _ => panic!(),
+    }
+    // row_number() OVER(ORDER BY id)
+    let out2 = s.exec("SELECT count(*) FROM (SELECT row_number() OVER (ORDER BY id) FROM orders) w").unwrap();
+    match &out2[0] {
+        dendro_core::types::Output::Rows(rs) => {
+            assert_eq!(rs.text_rows()[0][0].clone().unwrap(), "4");
+        }
+        _ => panic!(),
+    }
 }
 
 #[test]

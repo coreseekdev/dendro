@@ -1,0 +1,72 @@
+# 窗口函数（P0）：OVER (PARTITION BY / ORDER BY) + 排名 + 聚合窗口
+# v1：分区聚合（无 frame → 整分区同值）；排名逐行
+
+statement ok
+CREATE TABLE wt (id BIGINT PRIMARY KEY, grp TEXT, v INT)
+
+statement ok
+INSERT INTO wt VALUES (1,'a',10),(2,'a',20),(3,'a',30),(4,'b',100),(5,'b',200)
+
+# row_number 全局
+query I
+SELECT count(*) FROM (SELECT row_number() OVER (ORDER BY v DESC) FROM wt) w
+----
+5
+
+# row_number 分区（每区从 1 重编）
+query TI
+SELECT grp, row_number() OVER (PARTITION BY grp ORDER BY v) FROM wt ORDER BY grp, v
+----
+a 1
+a 2
+a 3
+b 1
+b 2
+
+# rank / dense_rank
+query II
+SELECT rank() OVER (ORDER BY v), dense_rank() OVER (ORDER BY v) FROM wt ORDER BY v
+----
+1 1
+2 2
+3 3
+4 4
+5 5
+
+# sum 分区总计（同区同值）
+query TI
+SELECT grp, sum(v) OVER (PARTITION BY grp) FROM wt ORDER BY grp, v
+----
+a 60
+a 60
+a 60
+b 300
+b 300
+
+# count 分区
+query TI
+SELECT grp, count(*) OVER (PARTITION BY grp) FROM wt ORDER BY grp, v
+----
+a 3
+a 3
+a 3
+b 2
+b 2
+
+# min/max 分区
+query II
+SELECT min(v) OVER (PARTITION BY grp), max(v) OVER (PARTITION BY grp) FROM wt WHERE grp = 'a' ORDER BY v
+----
+10 30
+10 30
+10 30
+
+# sum() OVER() 不塌缩（每行出值——原全局聚合塌缩 1 行）
+query I
+SELECT count(*) FROM (SELECT sum(v) OVER () FROM wt) w
+----
+5
+
+# named window / frame 拒绝
+statement error
+SELECT sum(v) OVER (ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) FROM wt
