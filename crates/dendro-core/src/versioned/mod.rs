@@ -77,6 +77,19 @@ pub fn row_value(schema: &TableSchema, vals: &[SqlValue]) -> Result<Vec<u8>> {
     Ok(encode_row(vals))
 }
 
+/// 外键约束定义（P0）
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ForeignKeyDef {
+    /// 本表列索引（列名已解析为下标）
+    pub columns: Vec<u16>,
+    /// 父表名
+    pub ref_table: String,
+    /// 父表列索引（v1 限定为父表 PK 列——可点查）
+    pub ref_columns: Vec<u16>,
+    /// ON DELETE 行为（v1 仅 Restrict/NoAction；Cascade 待做）
+    pub on_delete_cascade: bool,
+}
+
 /// catalog 条目（catalog map 的值）：表名 → TableEntry 字节
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TableEntry {
@@ -97,6 +110,9 @@ pub struct TableEntry {
     /// 表属主（S-4 方向4；空 = 引导期建表 = 超户所有——旧 manifest 兼容）
     #[serde(default)]
     pub owner: String,
+    /// 外键约束（P0：REFERENCES 执法；serde default 兼容旧 manifest）
+    #[serde(default)]
+    pub foreign_keys: Vec<ForeignKeyDef>,
     /// 表级 ACL：角色 → 权限位（privs.rs PRIV_*；serde default 兼容旧 manifest）
     #[serde(default)]
     pub acl: std::collections::HashMap<String, u8>,

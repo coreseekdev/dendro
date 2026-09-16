@@ -438,6 +438,7 @@ fn create_kv_table(db: &Arc<Database>, branch: &str) -> Result<u32> {
         col_rows: 0,
         owner: crate::sql::privs::SUPERUSER.into(),
         acl: std::collections::HashMap::new(),
+        foreign_keys: vec![],
     };
     db.cas
         .put_batch(&[schema.to_chunk()], &mut session_chunks)

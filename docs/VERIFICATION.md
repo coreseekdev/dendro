@@ -30,6 +30,14 @@
   Plan::Project 增 names（别名信息）；Filter{Scan} 谓词下传
   selection 提示（点查/派发判定恢复）。
   门禁：clippy 0 / 463 测试 / 31 slt。
+- **2026-09-16 P0 外键 + NOT NULL 执法**：列级 REFERENCES t(c) /
+  表级 FOREIGN KEY (col) REFERENCES t(c) 解析 → ForeignKeyDef 存储
+  （TableEntry.foreign_keys serde default）。INSERT 时 FK 父行三段
+  合成点查（txn 写集 → memtx → prolly 树）；NOT NULL 执法（nullable
+  字段此前全库无读点——INSERT NULL 静默入库）。v1 限定：REFERENCES
+  指向父表 PK（点查效率）；ON DELETE CASCADE 解析但执法待做。
+  测试：constraints.rs 7（合法/违反/NULL 允许/NOT NULL/表级语法/
+  不存在父表/批量原子性）。
 - **2026-09-16 P0 CTE / WITH 非递归内联展开**：expand_ctes（AST
   重写方案 A——评审文档 §3）：WITH c AS (SELECT...) → FROM 中
   Table{c} 替换为 Derived{c.query, alias}。链式 CTE（c2 体内

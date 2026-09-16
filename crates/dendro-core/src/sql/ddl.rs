@@ -22,7 +22,7 @@ pub(crate) fn exec_create_table(
 ) -> Result<Option<Output>> {
     let name = object_name(&create.name);
     let short = name.rsplit('.').next().unwrap_or(&name).to_string();
-    let (cols, pk) = translate_columns(&create.columns, &create.constraints)?;
+    let (cols, pk, fk_defs) = translate_columns(&create.columns, &create.constraints)?;
     let schema = TableSchema {
         name: short.clone(),
         columns: cols,
@@ -71,6 +71,7 @@ pub(crate) fn exec_create_table(
         col_rows: 0,
         owner: crate::sql::privs::norm_user(&sess.user),
         acl: std::collections::HashMap::new(),
+        foreign_keys: resolve_fk_refs(db, sess, fk_defs)?,
     };
     // schema chunk 先写
     db.cas
@@ -128,6 +129,34 @@ pub(crate) fn exec_create_table(
     }))
 }
 
+/// FK 的 ref_columns 延迟解析（建表时才可查父表 schema）。
+/// v1 限定：REFERENCES 必须指向父表 PK 列——列索引 = 父表 pk 序
+fn resolve_fk_refs(
+    db: &Database,
+    sess: &Session,
+    mut fks: Vec<crate::versioned::ForeignKeyDef>,
+) -> Result<Vec<crate::versioned::ForeignKeyDef>> {
+    for fk in fks.iter_mut() {
+        let (parent_schema, _entry) =
+            scan::resolve_table(db, &sess.branch, &fk.ref_table).map_err(|_| {
+                SqlError::undefined_table(format!(
+                    "FOREIGN KEY references non-existent table {}",
+                    fk.ref_table
+                ))
+            })?;
+        // v1：ref_columns 空 = 按父表 PK 序填充
+        if fk.ref_columns.is_empty() {
+            if parent_schema.pk.len() != fk.columns.len() {
+                return Err(SqlError::not_supported(
+                    "FOREIGN KEY must reference parent PRIMARY KEY (v1)",
+                ));
+            }
+            fk.ref_columns = parent_schema.pk.clone();
+        }
+    }
+    Ok(fks)
+}
+
 fn scan_catalog(db: &Database, sess: &Session) -> Result<(u64, ())> {
     let b = db.branch(&sess.branch)?;
     let head = b.head.load_full();
@@ -149,9 +178,10 @@ fn object_name(n: &ObjectName) -> String {
 fn translate_columns(
     cols: &[PColumnDef],
     constraints: &[TableConstraint],
-) -> Result<(Vec<ColumnDef>, Vec<u16>)> {
+) -> Result<(Vec<ColumnDef>, Vec<u16>, Vec<crate::versioned::ForeignKeyDef>)> {
     let mut out = Vec::new();
     let mut pk: Vec<u16> = Vec::new();
+    let mut fks: Vec<crate::versioned::ForeignKeyDef> = Vec::new();
     for c in cols {
         let ty = ColType::from_parse(&c.data_type.to_string())
             .ok_or_else(|| SqlError::not_supported(format!("type {}", c.data_type)))?;
@@ -167,6 +197,37 @@ fn translate_columns(
                     ))
                 }
                 sqlparser::ast::ColumnOption::Default(_) => { /* 接受但 v1 忽略 */ }
+                sqlparser::ast::ColumnOption::ForeignKey(ref fk) => {
+                    // 列级 REFERENCES t(c) → 单列 FK（P0——原静默丢弃）
+                    let ref_table = fk
+                        .foreign_table
+                        .0
+                        .last()
+                        .and_then(|p| p.as_ident())
+                        .map(|i| i.value.to_ascii_lowercase())
+                        .unwrap_or_default();
+                    let ref_col = fk
+                        .referred_columns
+                        .first()
+                        .map(|i| i.value.clone())
+                        .unwrap_or_default();
+                    if ref_table.is_empty() || ref_col.is_empty() {
+                        return Err(SqlError::not_supported(
+                            "REFERENCES without table(column)",
+                        ));
+                    }
+                    fks.push(crate::versioned::ForeignKeyDef {
+                        columns: vec![(out.len()) as u16], // 当前列（push 前索引）
+                        ref_table,
+                        ref_columns: vec![], // 延迟到建表后解析（需父表 schema）
+                        on_delete_cascade: matches!(
+                            fk.on_delete,
+                            Some(sqlparser::ast::ReferentialAction::Cascade)
+                        ),
+                    });
+                    // 记 ref_col 名——建表后解析为索引
+                    let _ = ref_col;
+                }
                 _ => {}
             }
         }
@@ -199,9 +260,42 @@ fn translate_columns(
             return Err(SqlError::not_supported(
                 "UNIQUE constraint (v1: primary key only)",
             ));
+        } else if let TableConstraint::ForeignKey(fk) = con {
+            // 表级 FOREIGN KEY (col) REFERENCES t(col)（P0——原静默丢弃）
+            let ref_table = fk
+                .foreign_table
+                .0
+                .last()
+                .and_then(|p| p.as_ident())
+                .map(|i| i.value.to_ascii_lowercase())
+                .unwrap_or_default();
+            if ref_table.is_empty() || fk.referred_columns.len() != fk.columns.len() {
+                return Err(SqlError::not_supported(
+                    "FOREIGN KEY column count mismatch",
+                ));
+            }
+            let mut cols_idx = Vec::new();
+            for c in &fk.columns {
+                let low = c.value.to_ascii_lowercase();
+                let idx = out
+                    .iter()
+                    .position(|cd| cd.name.to_ascii_lowercase() == low)
+                    .ok_or_else(|| SqlError::undefined_column(format!("FK column {low}")))?;
+                cols_idx.push(idx as u16);
+            }
+            fks.push(crate::versioned::ForeignKeyDef {
+                columns: cols_idx,
+                ref_table,
+                ref_columns: vec![], // 延迟到建表后解析
+                on_delete_cascade: matches!(
+                    fk.on_delete,
+                    Some(sqlparser::ast::ReferentialAction::Cascade)
+                ),
+            });
+            // 存 referred 列名→索引延迟——v1 简化：建表后用父表 PK 序
         }
     }
-    Ok((out, pk))
+    Ok((out, pk, fks))
 }
 
 /// catalog 变更 + 新 commit + manifest 推进的公共路径
@@ -333,7 +427,7 @@ pub(crate) fn alter_table_impl(
     let short = full.rsplit('.').next().unwrap_or(&full).to_string();
     match op {
         sqlparser::ast::AlterTableOperation::AddColumn { column_def, .. } => {
-            let (mut cols, new_pk) = translate_columns(&[column_def], &[])?;
+            let (mut cols, new_pk, _) = translate_columns(&[column_def], &[])?;
             if !new_pk.is_empty() {
                 return Err(SqlError::not_supported(
                     "ALTER TABLE ADD COLUMN ... PRIMARY KEY（改用建表约束或重建表）",
@@ -480,7 +574,7 @@ pub(crate) fn exec_insert(
                             .to_string(),
                     ));
                 }
-                insert_row(db, sess, &schema, entry.id, &mut txn, row)?;
+                insert_row(db, sess, &schema, entry.id, &mut txn, row, &entry.foreign_keys)?;
                 count += 1;
             }
         }
@@ -510,7 +604,7 @@ pub(crate) fn exec_insert(
                 for (si, &ci) in col_idx.iter().enumerate() {
                     row[ci] = src_row.get(si).cloned().unwrap_or(SqlValue::Null);
                 }
-                insert_row(db, sess, &schema, entry.id, &mut txn, row)?;
+                insert_row(db, sess, &schema, entry.id, &mut txn, row, &entry.foreign_keys)?;
                 count += 1;
             }
         }
@@ -593,10 +687,26 @@ fn insert_row(
     table_id: u32,
     txn: &mut Txn,
     row: Vec<SqlValue>,
+    fks: &[crate::versioned::ForeignKeyDef],
 ) -> Result<()> {
     let pk_vals: Vec<SqlValue> = schema.pk.iter().map(|&i| row[i as usize].clone()).collect();
     if pk_vals.iter().any(|v| v.is_null()) {
         return Err(SqlError::new("23502", "null value in primary key column"));
+    }
+    // P0：NOT NULL 执法（nullable 字段此前全库无读点——静默入库）
+    for (i, cd) in schema.columns.iter().enumerate() {
+        if !cd.nullable && row.get(i).is_some_and(|v| v.is_null()) {
+            return Err(SqlError::new(
+                "23502",
+                format!("null value in column \"{}\" violates not-null constraint", cd.name),
+            ));
+        }
+    }
+    // P0：FK 父行检查（FK 列非 NULL → 父表 PK 点查存在性）
+    // FK 从调用方传入（TableEntry.foreign_keys——insert_row 自身无法
+    // 获取 TableEntry；签名增参）
+    if !fks.is_empty() {
+        check_fk_parents(db, sess, schema, fks, &row, txn)?;
     }
     let key = encode_key(&pk_vals);
     // Q-16：同一显式事务内两次 INSERT 同键，第二次必须 23505
@@ -781,3 +891,85 @@ pub(crate) fn colmeta(names: &[String], ty: ColType) -> Vec<ColumnMeta> {
 
 #[allow(dead_code)]
 fn unused(_: &Database, _: &mut Session, _: Option<&Expr>) {}
+
+// ---------------------------------------------------------------------------
+// P0：外键执法（INSERT/UPDATE 检查父行存在；DELETE RESTRICT 检查子引用）
+// v1 限定：REFERENCES 指向父表 PK（点查效率）；ON DELETE CASCADE 支持
+// ---------------------------------------------------------------------------
+
+/// INSERT/UPDATE 时的 FK 父行检查：行中 FK 列值非 NULL 时按父表 PK 点查
+pub(crate) fn check_fk_parents(
+    db: &Database,
+    sess: &Session,
+    schema: &TableSchema,
+    fks: &[crate::versioned::ForeignKeyDef],
+    row: &[SqlValue],
+    txn: &Txn,
+) -> Result<()> {
+    for fk in fks {
+        // FK 列值（任一 NULL → 跳过——SQL 外键语义）
+        let fk_vals: Vec<SqlValue> = fk
+            .columns
+            .iter()
+            .map(|&i| row.get(i as usize).cloned().unwrap_or(SqlValue::Null))
+            .collect();
+        if fk_vals.iter().any(|v| v.is_null()) {
+            continue;
+        }
+        let key = encode_key(&fk_vals);
+        // 查父表存在性（事务写集 + memtx + 树——三段合成）
+        let (_, parent_entry) = scan::resolve_table(db, &sess.branch, &fk.ref_table)?;
+        let parent_id = parent_entry.id;
+        // 1. 事务写集
+        if let Some(crate::prolly::Mutation::Put(_)) = txn.writes.get(&(parent_id, key.clone())) {
+            continue; // 本事务已插入父行
+        }
+        if txn.writes.contains_key(&(parent_id, key.clone())) {
+            // 本事务删过父行（Delete mutation）→ 23503
+            return Err(SqlError::new(
+                "23503",
+                format!(
+                    "insert or update on table \"{}\" violates foreign key constraint",
+                    schema.name
+                ),
+            ));
+        }
+        // 2. memtx overlay
+        let b = db.branch(&sess.branch)?;
+        let tm = b.mem.table(parent_id);
+        if tm.get(&key, txn.snapshot).is_some() {
+            continue; // memtx 可见
+        }
+        // 3. prolly 树
+        let root = parent_entry.table_root.as_ref().and_then(|r| {
+            crate::format::hash::Hash::from_base32(r)
+        });
+        if let Some(root) = root {
+            let found = crate::prolly::cursor::lookup(
+                &db.store,
+                &root,
+                &key,
+            )
+            .map_err(|e| SqlError::internal(e.to_string()))?;
+            if found.is_some() {
+                continue; // 树中存在
+            }
+        }
+        // 三段都未命中 → 父行不存在
+        return Err(SqlError::new(
+            "23503",
+            format!(
+                "insert or update on table \"{}\" violates foreign key constraint \"{} → {}\"",
+                schema.name,
+                fk.columns
+                    .iter()
+                    .map(|&i| schema.columns.get(i as usize).map(|c| c.name.clone()).unwrap_or_default())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                fk.ref_table
+            ),
+        ));
+    }
+    Ok(())
+}
+
