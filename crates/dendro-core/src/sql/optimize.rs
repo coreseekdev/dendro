@@ -441,6 +441,7 @@ fn rewrite_stat_prop_walk(
         | Plan::Limit { input, .. }
         | Plan::Distinct { input }
         | Plan::Window { input, .. } => rewrite_stat_prop_walk(input, db, sess),
+        Plan::SubqueryScan { plan, .. } => rewrite_stat_prop_walk(plan, db, sess),
         Plan::Cte { plan, body, .. } => {
             rewrite_stat_prop_walk(plan, db, sess);
             rewrite_stat_prop_walk(body, db, sess);
@@ -713,6 +714,7 @@ fn has_wildcard_projection(p: &Plan2) -> bool {
         | Plan::Limit { input, .. }
         | Plan::Distinct { input }
         | Plan::Window { input, .. } => has_wildcard_projection(input),
+        Plan::SubqueryScan { plan, .. } => has_wildcard_projection(plan),
         Plan::Cte { plan, body, .. } => {
             has_wildcard_projection(plan) || has_wildcard_projection(body)
         }
@@ -750,6 +752,7 @@ fn rewrite_join_order_walk(
         | Plan::Limit { input, .. }
         | Plan::Distinct { input }
         | Plan::Window { input, .. } => rewrite_join_order_walk(input, db, sess),
+        Plan::SubqueryScan { plan, .. } => rewrite_join_order_walk(plan, db, sess),
         Plan::Cte { plan, body, .. } => {
             rewrite_join_order_walk(plan, db, sess);
             rewrite_join_order_walk(body, db, sess);
@@ -1126,6 +1129,7 @@ fn rewrite_eq_copy_walk(plan: &mut Plan2) {
         | Plan::Limit { input, .. }
         | Plan::Distinct { input }
         | Plan::Window { input, .. } => rewrite_eq_copy_walk(input),
+        Plan::SubqueryScan { plan, .. } => rewrite_eq_copy_walk(plan),
         Plan::Cte { plan, body, .. } => {
             rewrite_eq_copy_walk(plan);
             rewrite_eq_copy_walk(body);
@@ -1333,6 +1337,7 @@ fn rewrite_in_list_walk(plan: &mut Plan2) {
         Plan::Limit { input, .. }
         | Plan::Distinct { input }
         | Plan::Window { input, .. } => rewrite_in_list_walk(input),
+        Plan::SubqueryScan { plan, .. } => rewrite_in_list_walk(plan),
         Plan::Cte { plan, body, .. } => {
             rewrite_in_list_walk(plan);
             rewrite_in_list_walk(body);
@@ -1461,6 +1466,7 @@ fn rewrite_filter_order_walk(plan: &mut Plan2) {
         | Plan::Limit { input, .. }
         | Plan::Distinct { input }
         | Plan::Window { input, .. } => rewrite_filter_order_walk(input),
+        Plan::SubqueryScan { plan, .. } => rewrite_filter_order_walk(plan),
         Plan::Cte { plan, body, .. } => {
             rewrite_filter_order_walk(plan);
             rewrite_filter_order_walk(body);

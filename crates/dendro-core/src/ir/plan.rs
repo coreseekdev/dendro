@@ -110,6 +110,12 @@ pub enum Plan {
         plan: Box<Plan>,
         body: Box<Plan>,
     },
+    /// 派生表因子（FROM (SELECT ...) AS t——阶段5：AST 路径退役前
+    /// 补齐的最后覆盖洞之一；体计划内联求值，布局键 = 别名）
+    SubqueryScan {
+        key: String,
+        plan: Box<Plan>,
+    },
     /// 递归 CTE 不动点（阶段3：执行器驱动 delta 工作集迭代——PG 语义
     /// 递归臂只见上一轮新行；无 VALUES 注入、无 O(n²) 全量重建）
     IterativeScan {
@@ -185,6 +191,12 @@ impl Plan {
             Plan::IterativeScan { base, recursive, .. } => {
                 base.collect_keys(out);
                 recursive.collect_keys(out);
+            }
+            Plan::SubqueryScan { key, plan } => {
+                if !out.contains(key) {
+                    out.push(key.clone());
+                }
+                plan.collect_keys(out);
             }
             Plan::Join { left, right, .. } => {
                 left.collect_keys(out);
@@ -355,18 +367,39 @@ fn build_setexpr(se: &SetExpr) -> Result<Plan> {
     }
 }
 
+/// 表因子 → 计划（Table → Scan；Derived → SubqueryScan——阶段5 补洞）
+fn build_factor(tf: &TableFactor) -> Result<Plan> {
+    match tf {
+        TableFactor::Table { .. } => {
+            let (_key, table, alias, version) =
+                factor_key(tf).ok_or_else(|| crate::error::SqlError::not_supported("plan factor"))?;
+            Ok(Plan::Scan { table, alias, version })
+        }
+        TableFactor::Derived { subquery, alias, .. } => {
+            let key = alias
+                .as_ref()
+                .map(|a| a.name.value.to_ascii_lowercase())
+                .unwrap_or_default();
+            if key.is_empty() {
+                return Err(crate::error::SqlError::not_supported(
+                    "plan: derived table requires alias",
+                ));
+            }
+            Ok(Plan::SubqueryScan {
+                key,
+                plan: Box::new(build_plan(subquery)?),
+            })
+        }
+        _ => Err(crate::error::SqlError::not_supported("plan factor")),
+    }
+}
+
 fn build_select(sel: &sqlparser::ast::Select) -> Result<Plan> {
     // FROM：首因子 + join 链（eval_from 同构）
     let mut plan: Plan = match sel.from.first() {
         None => Plan::Values,
         Some(twj) => {
-            let (_key, table, alias, version) = factor_key(&twj.relation)
-                .ok_or_else(|| crate::error::SqlError::not_supported("plan: derived table"))?;
-            let mut p = Plan::Scan {
-                table,
-                alias,
-                version,
-            };
+            let mut p = build_factor(&twj.relation)?;
             for j in &twj.joins {
                 let kind = match j.join_operator {
                     sqlparser::ast::JoinOperator::Join(_)
@@ -393,17 +426,12 @@ fn build_select(sel: &sqlparser::ast::Select) -> Result<Plan> {
                     },
                     _ => unreachable!(),
                 };
-                let (_, rtable, ralias, rversion) = factor_key(&j.relation)
-                    .ok_or_else(|| crate::error::SqlError::not_supported("plan: derived table"))?;
+                let right = build_factor(&j.relation)?;
                 p = Plan::Join {
                     kind,
                     on,
                     left: Box::new(p),
-                    right: Box::new(Plan::Scan {
-                        table: rtable,
-                        alias: ralias,
-                        version: rversion,
-                    }),
+                    right: Box::new(right),
                 };
             }
             p
@@ -518,9 +546,11 @@ fn build_select(sel: &sqlparser::ast::Select) -> Result<Plan> {
             "plan: mixed qualified wildcard",
         ));
     }
-    // 纯通配（全部项为通配）：wildcard 透传形态；混合通配计划不覆盖
-    let wildcard = wilds > 0 && wilds == sel.projection.len();
-    if wildcard || !prefixes.is_empty() {
+    // 通配：纯通配 = wildcard 透传（exprs/names 空）；混合通配
+    // （SELECT *, x——阶段5 补洞）= wildcard + 追加计算列（执行期
+    // 输入全列在前、计算列在后）；限定通配 prefixes 同理清空
+    let wildcard = wilds > 0;
+    if prefixes.is_empty() && wilds == sel.projection.len() {
         exprs.clear();
         names.clear();
     }
@@ -667,6 +697,7 @@ fn rewrite_walk(plan: &mut Plan, out: &mut Vec<(String, Vec<Expr>)>) {
             rewrite_walk(base, out);
             rewrite_walk(recursive, out);
         }
+        Plan::SubqueryScan { plan, .. } => rewrite_walk(plan, out),
         Plan::Scan { .. } | Plan::Values => {}
     }
 }
@@ -934,6 +965,12 @@ impl<'a> Printer<'a> {
                 self.out.push_str(&format!(
                     "  {id} = cte \"{name}\" ({p_id}){cols_part} body {b_id}\n"
                 ));
+                id
+            }
+            Plan::SubqueryScan { key, plan } => {
+                let i = self.emit(plan);
+                let id = self.next_id(2); // s 池（扫描族）
+                self.out.push_str(&format!("  {id} = subquery {i} as \"{key}\"\n"));
                 id
             }
             Plan::IterativeScan {
@@ -1316,6 +1353,14 @@ pub fn parse_plan(text: &str) -> Option<Plan> {
                 plan,
                 body,
             }
+        } else if let Some(t) = body.strip_prefix("subquery %") {
+            // subquery %inner as "key"
+            let (inner, rest) = t.split_once(" as \"")?;
+            let key = rest.strip_suffix('"')?;
+            Plan::SubqueryScan {
+                key: key.to_string(),
+                plan: Box::new(lookup_node(&nodes, inner)?),
+            }
         } else if let Some(t) = body.strip_prefix("iterate \"") {
             // iterate "name" base %b step %r[ distinct]
             let (name, rest) = t.split_once("\" base ")?;
@@ -1369,6 +1414,9 @@ pub fn verify_plan(p: &Plan) -> bool {
         }
         Plan::IterativeScan { name, base, recursive, .. } => {
             !name.is_empty() && verify_plan(base) && verify_plan(recursive)
+        }
+        Plan::SubqueryScan { key, plan } => {
+            !key.is_empty() && verify_plan(plan)
         }
     }
 }

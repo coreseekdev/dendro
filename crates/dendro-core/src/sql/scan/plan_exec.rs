@@ -361,7 +361,7 @@ pub(crate) fn exec_plan_pub(
 /// O-2c 覆盖判定：查询形态（AST 侧）+ 计划节点集（结构侧）双检
 pub(crate) fn plan_exec_covered(
     plan: &crate::ir::plan::Plan,
-    select: &Select,
+    _select: &Select,
     q: &Query,
 ) -> bool {
     use crate::ir::plan::Plan;
@@ -382,17 +382,10 @@ pub(crate) fn plan_exec_covered(
     // 通配：纯 Wildcard（全部项）→ 计划 wildcard 形态；
     // QualifiedWildcard（o.*——前缀过滤语义）与混合通配 → AST 路径
     //（曾把 o.* 当纯通配 → join 两列全出而非仅 o 列——评审 P0）
-    let n_wild: usize = select
-        .projection
-        .iter()
-        .filter(|item| matches!(item, sqlparser::ast::SelectItem::Wildcard(_)))
-        .count();
     // 阶段2 翻转③：QualifiedWildcard（o.*）→ 计划 prefixes 形态；
     // 混合限定通配 build 失败（build_plan Err → 计划路径整体不适用，
     // AST 路径处理——此处无需形态检查）
-    if n_wild > 0 && n_wild != select.projection.len() {
-        return false; // 混合通配（*, x）
-    }
+    // 混合通配（*, x）：阶段5 起计划支持（wildcard + 计算列追加）
     // 版本子句（FOR SYSTEM_TIME/AS OF）：O-2c+ B 起计划路径携带
     // version（synthetic_tf 重建——HistoryScan 路由不变）
     // 计划结构：节点 ⊆ 可执行集；顶层 Project（Select）或 Sort/SetOp
@@ -425,6 +418,7 @@ pub(crate) fn plan_nodes_exec_ok(p: &crate::ir::plan::Plan) -> bool {
         Plan::Distinct { input } | Plan::Window { input, .. } => {
             plan_nodes_exec_ok(input)
         }
+        Plan::SubqueryScan { plan, .. } => plan_nodes_exec_ok(plan),
         Plan::Cte { plan, body, .. } => plan_nodes_exec_ok(plan) && plan_nodes_exec_ok(body),
         Plan::IterativeScan { base, recursive, .. } => {
             plan_nodes_exec_ok(base) && plan_nodes_exec_ok(recursive)
@@ -475,6 +469,7 @@ pub(crate) fn plan_exprs(plan: &crate::ir::plan::Plan, out: &mut Vec<Expr>) {
             }
             plan_exprs(input, out);
         }
+        Plan::SubqueryScan { plan, .. } => plan_exprs(plan, out),
         Plan::Cte { plan, body, .. } => {
             plan_exprs(plan, out);
             plan_exprs(body, out);
@@ -514,6 +509,7 @@ pub(crate) fn plan_scan_masks(
             Plan::Join { left, right, .. } | Plan::SetOp { left, right, .. } => {
                 has_wildcard(left) || has_wildcard(right)
             }
+            Plan::SubqueryScan { plan, .. } => has_wildcard(plan),
             Plan::Cte { plan, body, .. } => has_wildcard(plan) || has_wildcard(body),
             Plan::IterativeScan { base, recursive, .. } => {
                 has_wildcard(base) || has_wildcard(recursive)
@@ -539,6 +535,10 @@ pub(crate) fn plan_scan_masks(
             | Plan::Aggregate { input, .. } | Plan::Sort { input, .. }
             | Plan::Limit { input, .. } | Plan::Distinct { input }
             | Plan::Window { input, .. } => scans_of(input, out),
+            Plan::SubqueryScan { key, plan } => {
+                out.push((key.clone(), String::new()));
+                scans_of(plan, out)
+            }
             Plan::Cte { plan, body, .. } | Plan::IterativeScan { base: plan, recursive: body, .. } => {
                 scans_of(plan, out);
                 scans_of(body, out);
@@ -671,6 +671,7 @@ pub(crate) fn node_label(p: &crate::ir::plan::Plan) -> String {
         Plan::Limit { .. } => "limit".into(),
         Plan::Distinct { .. } => "distinct".into(),
         Plan::Window { .. } => "window".into(),
+        Plan::SubqueryScan { .. } => "subquery".into(),
         Plan::Cte { name, .. } => format!("cte {name}"),
         Plan::IterativeScan { name, .. } => format!("iterate {name}"),
         Plan::SetOp { op, .. } => format!("setop {op}"),
@@ -853,10 +854,33 @@ pub(crate) fn exec_plan_inner(
             prefixes,
             input,
         } => {
-            if *wildcard {
+            if *wildcard && exprs.is_empty() {
                 // 纯通配：输入透传（全列原名原行）
                 let (tv, _) = exec_plan(db, sess, input, snapshot, &mut cx.child(None, true))?;
                 return Ok((tv, FactorLayout::new()));
+            }
+            if *wildcard && !exprs.is_empty() {
+                // 混合通配（SELECT *, x——阶段5 补洞）：输入全列在前、
+                // 计算列在后（与 AST 路径通配展开同序）
+                let (tv, layout) =
+                    exec_plan(db, sess, input, snapshot, &mut cx.child(None, true))?;
+                let lay = layout.clone();
+                let nms = tv.names.clone();
+                let qres = move |n: &str| resolve_qualified(&lay, &nms, n);
+                let extra = project_exprs(exprs, names, &tv, sess, qres)?;
+                let mut out_names = tv.names.clone();
+                out_names.extend(extra.names);
+                let mut rows = tv.rows;
+                for (r, e) in rows.iter_mut().zip(extra.rows) {
+                    r.extend(e);
+                }
+                return Ok((
+                    TableView {
+                        names: out_names,
+                        rows,
+                    },
+                    FactorLayout::new(),
+                ));
             }
             if !prefixes.is_empty() {
                 // 限定通配（o.*, c.*）：按因子布局区间取列（阶段2 翻转③
@@ -1009,6 +1033,17 @@ pub(crate) fn exec_plan_inner(
                 exec_plan(db, sess, input, snapshot, &mut cx.child(None, true))?;
             let cols = cols_lookup(&tv.names);
             super::window::eval_windows(&mut tv, calls, &cols)?;
+            Ok((tv, layout))
+        }
+        Plan::SubqueryScan { key, plan } => {
+            // 派生表因子：体计划求值即扫描输出（布局键 = 别名）
+            let (tv, _) = exec_plan(db, sess, plan, snapshot, &mut cx.child(None, true))?;
+            let layout = FactorLayout::from([(
+                key.clone(),
+                0usize,
+                tv.names.len(),
+                tv.names.iter().map(|n| n.to_ascii_lowercase()).collect(),
+            )]);
             Ok((tv, layout))
         }
         Plan::Cte {
