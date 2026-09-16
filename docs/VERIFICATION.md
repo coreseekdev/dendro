@@ -30,6 +30,14 @@
   Plan::Project 增 names（别名信息）；Filter{Scan} 谓词下传
   selection 提示（点查/派发判定恢复）。
   门禁：clippy 0 / 463 测试 / 31 slt。
+- **2026-09-16 优化器 O-2c+（远期清单收口）**：A1/A2 SetOp+Sort
+  计划执行（apply_setop 提取共享；Sort{Project} 键回退——镜像
+  order_key_value 语义）；A3 Aggregate 组合模式执行（display→
+  AggCall 结构化；HAVING/投影映射镜像 eval_select——表达式聚合
+  参数与表达式组键在计划路径原生支持）；B Plan::Scan 携带 version
+  （display 重建 TableVersion——历史查询上计划路径）。join 顺序
+  重排明确不做（无选择率统计前置——见 spec 12 §4）。
+  门禁：clippy 0 / 464 测试 / 31 slt。
 - **2026-09-16 优化器量化（bench_optimizer）**：O 系列 on/off 对比
   （50k 宽表 × 200 小表，5 轮中位）：下推 1.58× / top-N 1.09×（另有
   内存 O(n)）/ 裁剪+稀疏读 1.16× / 构建侧 1.21×——
