@@ -68,16 +68,40 @@ fn s2_commit_in_aborted_transaction_discards_writes() {
 }
 
 #[test]
-fn s6_with_cte_reports_feature_not_supported() {
+fn s6_with_cte_now_expands() {
+    // P0：CTE 非递归内联展开（expand_ctes）——原 0A000 拒绝功成身退
     let db = open_mem();
     let mut s = db.new_session();
-    s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY)").unwrap();
-    s.exec("INSERT INTO t VALUES (1)").unwrap();
-    // 曾被静默丢弃（WHERE 丢失 → 全表）：现在必须显式 0A000
-    let e = s
-        .exec("WITH c AS (SELECT id FROM t) SELECT * FROM c")
-        .unwrap_err();
-    assert_eq!(e.state, "0A000", "WITH 必须显式不支持而非静默改写语义");
+    s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v INT)").unwrap();
+    s.exec("INSERT INTO t VALUES (1, 10), (2, 20)").unwrap();
+    // 基础：单 CTE → Derived 展开
+    let out = s.exec("WITH c AS (SELECT id FROM t) SELECT count(*) FROM c").unwrap();
+    match &out[0] {
+        dendro_core::types::Output::Rows(rs) => {
+            assert_eq!(rs.text_rows()[0][0].clone().unwrap(), "2");
+        }
+        _ => panic!(),
+    }
+    // 多 CTE + 引用链（c2 引用 c1）
+    let out2 = s
+        .exec("WITH c1 AS (SELECT v FROM t WHERE id <= 1), c2 AS (SELECT v * 2 AS w FROM c1) SELECT sum(w) FROM c2")
+        .unwrap();
+    match &out2[0] {
+        dendro_core::types::Output::Rows(rs) => {
+            assert_eq!(rs.text_rows()[0][0].clone().unwrap(), "20");
+        }
+        _ => panic!(),
+    }
+    // CTE + JOIN 基表
+    let out3 = s
+        .exec("WITH big AS (SELECT id, v FROM t WHERE v > 15) SELECT count(*) FROM big b JOIN t ON b.id = t.id")
+        .unwrap();
+    match &out3[0] {
+        dendro_core::types::Output::Rows(rs) => {
+            assert_eq!(rs.text_rows()[0][0].clone().unwrap(), "1");
+        }
+        _ => panic!(),
+    }
 }
 
 #[test]

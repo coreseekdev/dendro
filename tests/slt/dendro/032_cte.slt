@@ -1,0 +1,52 @@
+# CTE / WITH 非递归内联展开（P0）
+# WITH c AS (SELECT ...) → FROM 中 Table{c} 替换为 Derived{c.query}
+# 链式 CTE（c2 引用 c1）/ 递归拒绝 / 物化拒绝
+
+statement ok
+CREATE TABLE tt (id BIGINT PRIMARY KEY, grp TEXT, v INT)
+
+statement ok
+INSERT INTO tt VALUES (1,'a',10),(2,'a',20),(3,'b',100),(4,'b',200)
+
+# 基础：单 CTE
+query I
+WITH c AS (SELECT v FROM tt) SELECT count(*) FROM c
+----
+4
+
+# 带过滤的 CTE
+query I
+WITH c AS (SELECT v FROM tt WHERE grp = 'a') SELECT sum(v) FROM c
+----
+30
+
+# 链式 CTE：c2 引用 c1
+query I
+WITH c1 AS (SELECT v FROM tt WHERE grp = 'a'),
+     c2 AS (SELECT v * 2 AS w FROM c1)
+SELECT sum(w) FROM c2
+----
+60
+
+# CTE + JOIN 基表
+query I
+WITH big AS (SELECT id, v FROM tt WHERE v > 50)
+SELECT count(*) FROM big b JOIN tt ON b.id = tt.id
+----
+2
+
+# CTE 在集合操作中使用
+query I
+WITH ca AS (SELECT v FROM tt WHERE grp = 'a'),
+     cb AS (SELECT v FROM tt WHERE grp = 'b')
+SELECT count(*) FROM (SELECT v FROM ca UNION ALL SELECT v FROM cb) u
+----
+4
+
+# 递归 CTE 拒绝
+statement error
+WITH RECURSIVE r AS (SELECT 1 AS n UNION ALL SELECT n + 1 FROM r WHERE n < 5) SELECT sum(n) FROM r
+
+# MATERIALIZED 拒绝
+statement error
+WITH MATERIALIZED c AS (SELECT v FROM tt) SELECT count(*) FROM c

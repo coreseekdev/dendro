@@ -1696,3 +1696,125 @@ fn sql_value_to_expr(v: &crate::types::SqlValue) -> Expr {
     }
 }
 
+
+// ---------------------------------------------------------------------------
+// P0：CTE / WITH 非递归内联展开（AST 重写方案 A——评审文档 §3）
+// `WITH c AS (SELECT ...) SELECT * FROM c JOIN t ON ...`
+//   → 把 FROM 中 Table{name="c"} 替换为 Derived{subquery: c.query,
+//     alias: c.alias}（内联展开——非递归 CTE 的语义 = 派生表）
+// 递归 CTE / MATERIALIZED / 列别名 → not_supported（诚实拒绝）
+// ---------------------------------------------------------------------------
+
+/// CTE 内联展开：返回新 Query（原 q 不变——纯函数）
+pub fn expand_ctes(q: &sqlparser::ast::Query) -> crate::error::Result<sqlparser::ast::Query> {
+    let Some(with) = &q.with else {
+        return Ok(q.clone()); // 无 WITH——原样返回
+    };
+    if with.recursive {
+        return Err(crate::error::SqlError::not_supported(
+            "WITH RECURSIVE (v2: iterative fixpoint)",
+        ));
+    }
+    // 收集 CTE 名 → 查询体（按声明序——后声明可引用先声明）
+    // 链式 CTE：c2 体内 `FROM c1` 也需替换——对每个 CTE 体先应用
+    // 已收集的先前 CTE 替换，再入列
+    let mut ctes: Vec<(String, sqlparser::ast::Query)> = Vec::new();
+    for cte in &with.cte_tables {
+        if cte.materialized.is_some() {
+            return Err(crate::error::SqlError::not_supported(
+                "AS MATERIALIZED / NOT MATERIALIZED",
+            ));
+        }
+        if !cte.alias.columns.is_empty() {
+            return Err(crate::error::SqlError::not_supported(
+                "CTE column aliases (col1, col2)",
+            ));
+        }
+        let name = cte.alias.name.value.to_ascii_lowercase();
+        // 1. 嵌套 WITH 展开（CTE 体内的 WITH）
+        let mut body = expand_ctes(&cte.query)?;
+        // 2. 先前 CTE 引用替换（c2 体内的 FROM c1 → Derived(c1.query)）
+        replace_cte_refs(&mut body, &ctes);
+        ctes.push((name, body));
+    }
+    let mut out = q.clone();
+    out.with = None; // 已消费
+    // 在 body 的 FROM 中替换 CTE 引用
+    replace_cte_refs(&mut out, &ctes);
+    Ok(out)
+}
+
+/// 递归替换 Query body 中所有 CTE 表引用为 Derived 子查询
+fn replace_cte_refs(q: &mut sqlparser::ast::Query, ctes: &[(String, sqlparser::ast::Query)]) {
+    replace_setexpr(&mut q.body, ctes);
+}
+
+fn replace_setexpr(
+    se: &mut Box<sqlparser::ast::SetExpr>,
+    ctes: &[(String, sqlparser::ast::Query)],
+) {
+    match &mut **se {
+        sqlparser::ast::SetExpr::Select(sel) => {
+            replace_in_from(&mut sel.from, ctes);
+        }
+        sqlparser::ast::SetExpr::SetOperation { left, right, .. } => {
+            replace_setexpr(left, ctes);
+            replace_setexpr(right, ctes);
+        }
+        sqlparser::ast::SetExpr::Query(q) => {
+            replace_cte_refs(q, ctes);
+        }
+        _ => {}
+    }
+}
+
+fn replace_in_from(
+    from: &mut [sqlparser::ast::TableWithJoins],
+    ctes: &[(String, sqlparser::ast::Query)],
+) {
+    for twj in from.iter_mut() {
+        replace_in_factor(&mut twj.relation, ctes);
+        for j in twj.joins.iter_mut() {
+            replace_in_factor(&mut j.relation, ctes);
+        }
+    }
+}
+
+fn replace_in_factor(
+    tf: &mut sqlparser::ast::TableFactor,
+    ctes: &[(String, sqlparser::ast::Query)],
+) {
+    match tf {
+        sqlparser::ast::TableFactor::Table { name, alias, .. } => {
+            let short = name
+                .0
+                .last()
+                .and_then(|p| p.as_ident())
+                .map(|i| i.value.to_ascii_lowercase())
+                .unwrap_or_default();
+            // 命中 CTE 名 → 替换为 Derived
+            if let Some((_, cte_q)) = ctes.iter().find(|(n, _)| *n == short) {
+                let alias_str = alias
+                    .as_ref()
+                    .map(|a| a.name.value.clone())
+                    .unwrap_or_else(|| short.clone());
+                *tf = sqlparser::ast::TableFactor::Derived {
+                    lateral: false,
+                    subquery: Box::new(cte_q.clone()),
+                    alias: Some(sqlparser::ast::TableAlias {
+                        explicit: false,
+                        name: sqlparser::ast::Ident::new(alias_str),
+                        columns: vec![],
+                        at: None,
+                    }),
+                    sample: None,
+                };
+            }
+        }
+        sqlparser::ast::TableFactor::Derived { subquery, .. } => {
+            // 嵌套派生表内的 CTE 引用也替换
+            replace_cte_refs(subquery, ctes);
+        }
+        _ => {}
+    }
+}

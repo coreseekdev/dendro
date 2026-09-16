@@ -678,9 +678,7 @@ pub(crate) fn exec_statement(
         Statement::Grant(g) => privs::exec_grant(db, sess, &g),
         Statement::Revoke(r) => privs::exec_revoke(db, sess, &r),
         Statement::Query(q) => {
-            if q.with.is_some() {
-                return Err(SqlError::not_supported("WITH (CTE)"));
-            }
+            // CTE 在 eval_query 内展开（expand_ctes）——此处不再拒绝
             let snap_tx = sess.implicit_snapshot(db)?;
             let out = scan::exec_query(db, sess, *q, snap_tx)?;
             Ok(Some(out))

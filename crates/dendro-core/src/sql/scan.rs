@@ -100,6 +100,16 @@ pub(crate) fn eval_query(
     // 诚实拒绝（真实现 ~300 行——见评审文档 §3）
     reject_window(q)?;
     reject_offset_comma(q)?;
+    // P0：CTE 内联展开（非递归 = Derived 替换；递归/物化/列别名拒绝）
+    // —— 所有递归回 eval_query 的路径（派生表/视图/子查询内联/集合
+    // 操作）自动获益（expand_ctes 纯函数——无副作用）
+    let q_expanded;
+    let q: &Query = if q.with.is_some() {
+        q_expanded = crate::sql::optimize::expand_ctes(q)?;
+        &q_expanded
+    } else {
+        q
+    };
     let set_expr = q.body.as_ref();
     // S-4：UNION / UNION ALL（v1：两侧子查询独立求值 → 拼接；UNION
     // 额外按全行文本去重；列数须匹配，列名取左侧）

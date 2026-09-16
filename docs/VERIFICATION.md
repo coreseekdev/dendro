@@ -30,6 +30,14 @@
   Plan::Project 增 names（别名信息）；Filter{Scan} 谓词下传
   selection 提示（点查/派发判定恢复）。
   门禁：clippy 0 / 463 测试 / 31 slt。
+- **2026-09-16 P0 CTE / WITH 非递归内联展开**：expand_ctes（AST
+  重写方案 A——评审文档 §3）：WITH c AS (SELECT...) → FROM 中
+  Table{c} 替换为 Derived{c.query, alias}。链式 CTE（c2 体内
+  FROM c1——对每个 CTE 体先应用先前 CTE 替换再入列）；递归/
+  MATERIALIZED / 列别名诚实拒绝；所有递归回 eval_query 的路径
+  （派生表/视图/子查询内联/集合操作）自动获益。slt 032_cte.slt
+  （基础/过滤/链式/JOIN/集合操作/递归拒绝/物化拒绝）。
+  门禁：clippy 0 / 502 测试 / 32 slt。
 - **2026-09-16 架构评审止血（3×P0）**：P0-2 apply_predicates_q
   回退分支改 Err 传播（原 matches! 吞 Err → 任何求值错误变静默
   丢行——"求值错误→语句失败"承诺在回退分支同样成立）；窗口函数
