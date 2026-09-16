@@ -158,6 +158,23 @@ fn predicate_eval_error_propagates_not_silent() {
 // ---------- 递归 CTE ----------
 
 #[test]
+fn recursive_cte_divergent_errors() {
+    let d = db(); setup(&d);
+    let mut s = d.new_session();
+    // 无终止条件的递归——必须报错而非静默截断返回部分行
+    let r = s.exec(
+        "WITH RECURSIVE inf AS (SELECT 1 AS n UNION ALL SELECT n + 1 FROM inf) SELECT count(*) FROM inf",
+    );
+    match r {
+        Ok(_) => panic!("发散递归应报错，不应返回部分行"),
+        Err(e) => assert!(
+            e.message.contains("limit") || e.message.contains("recursive"),
+            "应报发散上限错误：{e}"
+        ),
+    }
+}
+
+#[test]
 fn recursive_cte_fibonacci() {
     let d = db(); setup(&d);
     let mut s = d.new_session();

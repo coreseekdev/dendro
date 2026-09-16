@@ -866,9 +866,14 @@ fn insert_row(
     if !check_exprs.is_empty() {
         let colfn = |name: &str| schema.col_index(name);
         for ce in check_exprs {
-            // CHECK 存裸表达式文本——包装为 SELECT 重 parse 求值
-            if let Ok(mut ss) = crate::sql::parse_batch(&format!("SELECT {}", ce), crate::sql::SqlDialect::Pg) {
-                if let Some(sqlparser::ast::Statement::Query(q)) = ss.pop() {
+            // CHECK 存裸表达式文本——包装为 SELECT 重 parse 求值；
+            // parse 失败 = 建表时已接受的约束此刻不可解析，约束静默
+            // 失效不可接受（架构审视 #1），必须报错拒绝写入
+            let ss = crate::sql::parse_batch(&format!("SELECT {}", ce), crate::sql::SqlDialect::Pg)
+                .map_err(|e| SqlError::new("23514", format!("check constraint unparsable: {ce}: {e}")))?;
+            let mut ss = ss;
+            match ss.pop() {
+                Some(sqlparser::ast::Statement::Query(q)) => {
                     if let sqlparser::ast::SetExpr::Select(sel) = *q.body {
                         if let Some(sqlparser::ast::SelectItem::UnnamedExpr(e)) = sel.projection.first().cloned() {
                             let v = expr::eval(&e, &row, &colfn)?;
@@ -880,6 +885,12 @@ fn insert_row(
                             }
                         }
                     }
+                }
+                _ => {
+                    return Err(SqlError::new(
+                        "23514",
+                        format!("check constraint unparsable: {ce}"),
+                    ))
                 }
             }
         }

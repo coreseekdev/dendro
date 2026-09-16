@@ -4949,9 +4949,14 @@ fn eval_recursive_cte(
     // 逐轮迭代：递归臂中 r → Derived(VALUES 已积累行)，求值至不动点
     let mut all_rows = base_tv.rows.clone();
     const MAX_ITER: usize = 200;
-    const MAX_ROWS: usize = 1000; // 行数上限（防发散查询）
+    const MAX_ROWS: usize = 1000; // 发散防护——到顶必须报错（静默截断 =
+    // 不可察觉的错误结果，架构审视 #2），PG 同场景报
+    // "recursive query cancelled" 而非给出部分行
+    let mut hit_limit = false;
+    let mut converged = false;
     for _ in 0..MAX_ITER {
         if all_rows.len() >= MAX_ROWS {
+            hit_limit = true;
             break;
         }
         let mut rec_q = mk_single_query(rec_se);
@@ -4962,10 +4967,8 @@ fn eval_recursive_cte(
             &base_tv.names,
         );
         let rec_tv = eval_query(db, sess, &rec_q, snapshot)?;
-        if rec_tv.rows.is_empty() {
-            break; // 不动点
-        }
         // UNION ALL 追加；UNION DISTINCT 语义按全行文本去重
+        let before = all_rows.len();
         all_rows.extend(rec_tv.rows.iter().cloned());
         let mut seen = std::collections::HashSet::new();
         all_rows.retain(|row| {
@@ -4976,6 +4979,18 @@ fn eval_recursive_cte(
                 .join("\u{1}");
             seen.insert(key)
         });
+        // 全量注入（非 PG 的 delta 工作表）下递归臂每轮重生成旧行，
+        // 产出恒非空——不动点判定必须看"去重后无新行"
+        if all_rows.len() == before {
+            converged = true;
+            break;
+        }
+    }
+    if hit_limit || !converged {
+        return Err(SqlError::not_supported(format!(
+            "recursive CTE exceeded iteration({MAX_ITER})/row({MAX_ROWS}) limit — \
+             divergent or too large; refusing to return partial rows"
+        )));
     }
     // 结果 Query：r 替换为 Derived(VALUES all_rows)，外层查询正常求值
     let mut out = q.clone();
