@@ -1010,7 +1010,7 @@ fn eval_from(
                         return Err(SqlError::syntax("join requires ON"))
                     }
                 };
-                tv = hash_join(tv, right, l, sess.stmt_deadline)?;
+                tv = hash_join(tv, right, l, sess.stmt_deadline, sess.optimize_enabled)?;
             }
             JoinOperator::Left(constraint) | JoinOperator::LeftOuter(constraint) => {
                 let mut right =
@@ -2327,6 +2327,7 @@ fn hash_join(
     r: TableView,
     on: &Expr,
     deadline: Option<std::time::Instant>,
+    build_select: bool,
 ) -> Result<TableView> {
     // 找等值条件 col_l = col_r（支持 AND 链中提取多个；#22 残留合取回收）
     let (eqs, residual) = extract_equi(on, &l.names, &r.names)?;
@@ -2352,9 +2353,20 @@ fn hash_join(
         }
         Some(k)
     };
+    // O-4（spec 12 §4）：INNER join 构建侧按**实际基数**选择——join 时
+    // 两侧均已扫描/下推过滤，行数是精确值；小侧建哈希表（内存 O(min)
+    // 替代 O(right)，probe 侧流式）。输出行恒 left++right（列序与
+    // 因子布局/#28 解析不变），仅产出序随 probe 侧变化——多重集恒等。
+    // build_select=false（optimize off 差分轴）= 原固定建右行为。
+    let build_left = build_select && l.rows.len() < r.rows.len();
+    let (build_rows, build_idx, probe_rows, probe_idx) = if build_left {
+        (&l.rows, &eqs.lidx, &r.rows, &eqs.ridx)
+    } else {
+        (&r.rows, &eqs.ridx, &l.rows, &eqs.lidx)
+    };
     let mut hm: HashMap<Vec<String>, Vec<&Vec<SqlValue>>> = HashMap::new();
     let mut hj_chk = 0usize;
-    for rr in &r.rows {
+    for br in build_rows {
         hj_chk += 1;
         if hj_chk.is_multiple_of(4096) {
             if let Some(d) = deadline {
@@ -2363,20 +2375,28 @@ fn hash_join(
                 }
             }
         }
-        if let Some(key) = mkkey(rr, &eqs.ridx) {
-            hm.entry(key).or_default().push(rr);
+        if let Some(key) = mkkey(br, build_idx) {
+            hm.entry(key).or_default().push(br);
         }
     }
     let mut rows = Vec::new();
-    for lr in &l.rows {
-        let key = match mkkey(lr, &eqs.lidx) {
+    for pr in probe_rows {
+        let key = match mkkey(pr, probe_idx) {
             Some(k) => k,
             None => continue,
         };
         if let Some(matches) = hm.get(&key) {
-            for rr in matches {
-                let mut row = lr.clone();
-                row.extend(rr.iter().cloned());
+            for br in matches {
+                // 输出列序恒 left++right（build 侧决定拼装方向）
+                let row: Vec<SqlValue> = if build_left {
+                    let mut row: Vec<SqlValue> = (**br).clone();
+                    row.extend(pr.iter().cloned());
+                    row
+                } else {
+                    let mut row = pr.clone();
+                    row.extend(br.iter().cloned());
+                    row
+                };
                 // #22：残留合取逐候选对求值（INNER：不成立即丢弃）
                 if !residual_holds(&residual, &row, &res_cols)? {
                     continue;

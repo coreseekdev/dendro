@@ -295,3 +295,53 @@ fn o5_topn_ties_stable_and_offset() {
         .collect();
     assert_eq!(ids, vec![6, 3, 5, 1], "total 升序前四（并列按扫描序）");
 }
+
+// ---------- O-4：INNER join 构建侧按实际基数选择 ----------
+
+#[test]
+fn o4_build_side_selection_asymmetric() {
+    let mut c = setup();
+    // 不对称基数：customers 3 行 × orders 6 行——小侧（customers）建表
+    // 输出多重集必须与 optimize off（固定建右）恒等；列序恒 left++right
+    diff(
+        &mut c,
+        "SELECT o.id, c.region FROM orders o JOIN customers c ON o.cid = c.id",
+    );
+    diff(
+        &mut c,
+        "SELECT o.id, c.id, o.total FROM orders o JOIN customers c ON o.cid = c.id \
+         WHERE c.tier >= 1",
+    );
+    // 反向书写（小表在左——build_left 命中）
+    diff(
+        &mut c,
+        "SELECT c.region, o.id FROM customers c JOIN orders o ON c.id = o.cid \
+         WHERE o.total > 55",
+    );
+    // 带聚合（组首见序随 probe 侧变化——多重集等价）
+    diff(
+        &mut c,
+        "SELECT c.region, count(*) FROM orders o JOIN customers c ON o.cid = c.id \
+         GROUP BY c.region",
+    );
+    // 残留合取（#22 路径在 build 选择下仍逐候选对求值）
+    diff(
+        &mut c,
+        "SELECT o.id FROM orders o JOIN customers c ON o.cid = c.id AND o.total > c.tier * 20",
+    );
+}
+
+#[test]
+fn o4_build_side_column_order_invariant() {
+    let mut c = setup();
+    // 输出列序恒 left++right：限定名解析（#28 布局）在 build 选择下不变
+    let r = c
+        .query("SELECT o.id, c.id, o.note, c.region FROM orders o JOIN customers c ON o.cid = c.id \
+                WHERE o.id = 1")
+        .unwrap();
+    let row = &r.rows[0];
+    assert!(matches!(&row[0], SqlValue::Int64(1)), "o.id：{row:?}");
+    assert!(matches!(&row[1], SqlValue::Int64(1)), "c.id：{row:?}");
+    assert!(matches!(&row[2], SqlValue::Utf8(_)), "o.note：{row:?}");
+    assert!(matches!(&row[3], SqlValue::Utf8(_)), "c.region：{row:?}");
+}
