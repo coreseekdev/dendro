@@ -376,15 +376,12 @@ fn build_factor(tf: &TableFactor) -> Result<Plan> {
             Ok(Plan::Scan { table, alias, version })
         }
         TableFactor::Derived { subquery, alias, .. } => {
+            // 无别名派生表合法（008 既有支持面）：空键 = 无限定引用面
+            //（裸名经视图列名解析；join ON 经末段回退）
             let key = alias
                 .as_ref()
                 .map(|a| a.name.value.to_ascii_lowercase())
                 .unwrap_or_default();
-            if key.is_empty() {
-                return Err(crate::error::SqlError::not_supported(
-                    "plan: derived table requires alias",
-                ));
-            }
             Ok(Plan::SubqueryScan {
                 key,
                 plan: Box::new(build_plan(subquery)?),
@@ -1415,9 +1412,7 @@ pub fn verify_plan(p: &Plan) -> bool {
         Plan::IterativeScan { name, base, recursive, .. } => {
             !name.is_empty() && verify_plan(base) && verify_plan(recursive)
         }
-        Plan::SubqueryScan { key, plan } => {
-            !key.is_empty() && verify_plan(plan)
-        }
+        Plan::SubqueryScan { plan, .. } => verify_plan(plan),
     }
 }
 

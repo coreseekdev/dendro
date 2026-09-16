@@ -152,11 +152,14 @@ fn expression_group_key_falls_back_and_forces_error() {
         .query("SELECT upper(grp), count(*) FROM g GROUP BY upper(grp) ORDER BY 1 NULLS LAST")
         .unwrap();
     assert_eq!(r.row_count(), 3); // A / B / NULL（upper(NULL)=NULL 一组）
+    // 阶段5：force_agg 收编进计划路径 composite——强制不可行按 dispatch
+    // 合同报错（原 composite 静默行式回落使 force 轴失真）
     c.execute("SET dendro.force_agg = 'pipeline'").unwrap();
-    let r2 = c
+    let e = c
         .query("SELECT upper(grp), count(*) FROM g GROUP BY upper(grp) ORDER BY 1 NULLS LAST")
-        .unwrap();
-    assert_eq!(r2.rows, r.rows, "两路径结果一致");
+        .err()
+        .expect("force pipeline + expression key must error");
+    assert!(e.message.contains("force pipeline"), "{e}");
 }
 
 #[test]
@@ -175,11 +178,13 @@ fn expression_agg_arg_falls_back() {
         .collect();
     // a 组非空 v [10,20,10] → sum(v+1)=43；b 组 [100] → 101；NULL 组 [7] → 8
     assert_eq!(sums, vec![43, 101, 8], "{:?}", r.rows);
+    // 阶段5：同上——表达式聚合参数强制 pipeline 按合同报错
     c.execute("SET dendro.force_agg = 'pipeline'").unwrap();
-    let r2 = c
+    let e = c
         .query("SELECT grp, sum(v + 1) FROM g GROUP BY grp ORDER BY 1 NULLS LAST")
-        .unwrap();
-    assert_eq!(r2.rows, r.rows, "两路径结果一致");
+        .err()
+        .expect("force pipeline + expression arg must error");
+    assert!(e.message.contains("force pipeline"), "{e}");
 }
 
 #[test]

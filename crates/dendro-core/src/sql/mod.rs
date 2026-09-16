@@ -815,21 +815,9 @@ pub(crate) fn exec_statement(
                 crate::sql::optimize::rewrite_eq_copy(&mut plan);
                 crate::sql::optimize::rewrite_join_order(&mut plan, db, sess);
                 crate::sql::optimize::rewrite_filter_order(&mut plan);
-                // 覆盖判定复用（Select 形态；集合操作顶等）
-                let covered = match &*q.body {
-                    sqlparser::ast::SetExpr::Select(sel) => {
-                        crate::sql::scan::plan_exec_covered_pub(&plan, sel, &q)
-                    }
-                    _ => {
-                        matches!(
-                            &plan,
-                            crate::ir::plan::Plan::Sort { .. }
-                                | crate::ir::plan::Plan::SetOp { .. }
-                                | crate::ir::plan::Plan::Limit { .. }
-                        ) && crate::sql::scan::plan_nodes_exec_ok_pub(&plan)
-                    }
-                };
-                if !covered {
+                // 阶段5：求值唯一路径 = 计划——结构侧可执行性即唯一门
+                //（覆盖判定函数随 AST 回落退役删除）
+                if !crate::sql::scan::plan_nodes_exec_ok_pub(&plan) {
                     return Err(SqlError::not_supported(
                         "EXPLAIN ANALYZE: plan-covered shapes only",
                     ));

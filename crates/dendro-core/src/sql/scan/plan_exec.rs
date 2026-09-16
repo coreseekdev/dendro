@@ -60,6 +60,7 @@ pub(crate) fn agg_call_from_display(
 /// 一体求值——镜像 eval_select 聚合分支（同 group_aggregate/eval_having/
 /// display-文本映射语义）。返回投影结果。
 pub(crate) fn exec_aggregate_composite(
+    sess: &Session,
     tv_in: &TableView,
     agg: &crate::ir::plan::Plan,
     having: Option<&Expr>,
@@ -72,7 +73,41 @@ pub(crate) fn exec_aggregate_composite(
     // 阶段1：aggs 已结构化（AggCall）——重解析消失
     let calls: Vec<crate::sql::agg::AggCall> = aggs.clone();
     let cols = cols_lookup(&tv_in.names);
-    let res = agg::group_aggregate(tv_in, keys, &calls, &cols)?;
+    // v2c-3 双路径（阶段5 从 eval_select 聚合分支收编——force_agg
+    // 差分轴经计划路径保全）：auto = 资格判定（纯列引用键/参数 →
+    // AggOp 管线），force 可强制（强制不可行 → 报错，不静默回落）
+    let plan = agg_pipeline_plan(keys, &calls, &cols);
+    let res = match (sess.force_agg, plan) {
+        (Some(crate::sql::dispatch::AggPath::Row), _) | (None, None) => {
+            agg::group_aggregate(tv_in, keys, &calls, &cols)?
+        }
+        (Some(crate::sql::dispatch::AggPath::Pipeline), None) => {
+            return Err(SqlError::syntax(
+                "cannot force pipeline: group/agg expressions are not plain column refs",
+            ));
+        }
+        (_, Some((gidx, specs))) => {
+            let mut agg_op = crate::exec::pipeline::AggOp::new(gidx, specs);
+            let mut sink = crate::exec::pipeline::CollectSink::new(None);
+            let batches: Vec<Result<Vec<Vec<SqlValue>>>> = tv_in
+                .rows
+                .chunks(crate::exec::pipeline::ROW_BATCH)
+                .map(|ch| Ok(ch.to_vec()))
+                .collect();
+            let mut it = batches.into_iter();
+            let mut pcx = crate::exec::pipeline::PipeCtx::new(
+                vec![],
+                sess.stmt_deadline,
+                sess.cancel_token.clone(),
+            );
+            crate::exec::pipeline::drive(&mut pcx, &mut it, &mut agg_op, &mut sink)?;
+            let nk = keys.len();
+            agg::AggResult {
+                keys: sink.rows.iter().map(|r| r[..nk].to_vec()).collect(),
+                vals: sink.rows.iter().map(|r| r[nk..].to_vec()).collect(),
+            }
+        }
+    };
     // HAVING 过滤（保留组索引）
     let mut kept: Vec<usize> = Vec::new();
     for i in 0..res.keys.len() {
@@ -333,14 +368,6 @@ pub(crate) fn synthetic_tf(table: &str, version: Option<&str>) -> TableFactor {
     }
 }
 
-/// EXPLAIN ANALYZE 接线口（mod.rs 跨模块）
-pub(crate) fn plan_exec_covered_pub(
-    plan: &crate::ir::plan::Plan,
-    select: &Select,
-    q: &Query,
-) -> bool {
-    plan_exec_covered(plan, select, q)
-}
 
 /// 同 plan_nodes_exec_ok（pub 口）
 pub(crate) fn plan_nodes_exec_ok_pub(p: &crate::ir::plan::Plan) -> bool {
@@ -358,47 +385,6 @@ pub(crate) fn exec_plan_pub(
     exec_plan(db, sess, plan, snapshot, cx)
 }
 
-/// O-2c 覆盖判定：查询形态（AST 侧）+ 计划节点集（结构侧）双检
-pub(crate) fn plan_exec_covered(
-    plan: &crate::ir::plan::Plan,
-    _select: &Select,
-    q: &Query,
-) -> bool {
-    use crate::ir::plan::Plan;
-    // 阶段2 翻转①：DISTINCT 与 sort/limit 共存不再回落——Plan::Distinct
-    // 在 Project 之上、Sort/Limit 之下（dedup→sort→limit 语义序由节点
-    // 层次直接表达；旧回落原因是计划无去重节点、去重在 eval 出口做）
-    // LIMIT/OFFSET 由 Limit 节点承接（含 LIMIT-无-ORDER / OFFSET-only）
-    // 集合操作查询：body 非 Select——只约束 q 级（排序/LIMIT 已成节点）
-    if !matches!(&*q.body, sqlparser::ast::SetExpr::Select(_)) {
-        // SetOp 形态：无 WHERE 级 select 检查——q 级 OFFSET 已排除
-        if matches!(
-            &q.limit_clause,
-            Some(sqlparser::ast::LimitClause::LimitOffset { offset: Some(_), .. })
-        ) {
-            return false;
-        }
-    }
-    // 通配：纯 Wildcard（全部项）→ 计划 wildcard 形态；
-    // QualifiedWildcard（o.*——前缀过滤语义）与混合通配 → AST 路径
-    //（曾把 o.* 当纯通配 → join 两列全出而非仅 o 列——评审 P0）
-    // 阶段2 翻转③：QualifiedWildcard（o.*）→ 计划 prefixes 形态；
-    // 混合限定通配 build 失败（build_plan Err → 计划路径整体不适用，
-    // AST 路径处理——此处无需形态检查）
-    // 混合通配（*, x）：阶段5 起计划支持（wildcard + 计算列追加）
-    // 版本子句（FOR SYSTEM_TIME/AS OF）：O-2c+ B 起计划路径携带
-    // version（synthetic_tf 重建——HistoryScan 路由不变）
-    // 计划结构：节点 ⊆ 可执行集；顶层 Project（Select）或 Sort/SetOp
-    match plan {
-        Plan::Project { exprs, wildcard, .. } if !exprs.is_empty() || *wildcard => {
-            plan_nodes_exec_ok(plan)
-        }
-        Plan::Sort { .. } | Plan::SetOp { .. } | Plan::Limit { .. } => plan_nodes_exec_ok(plan),
-        // 阶段3：WITH 查询顶层为 Cte 包裹（body 顶层恒为 Project）
-        Plan::Cte { .. } | Plan::IterativeScan { .. } => plan_nodes_exec_ok(plan),
-        _ => false,
-    }
-}
 
 /// 计划节点可执行性（exec_plan 覆盖集；Aggregate 待 A3）
 pub(crate) fn plan_nodes_exec_ok(p: &crate::ir::plan::Plan) -> bool {
@@ -916,7 +902,7 @@ pub(crate) fn exec_plan_inner(
                     let t_agg = std::time::Instant::now();
                     let (tv_in, _) =
                         exec_plan(db, sess, a_in, snapshot, &mut cx.child(None, true))?;
-                    let out = exec_aggregate_composite(&tv_in, input, None, exprs, names)?;
+                    let out = exec_aggregate_composite(sess, &tv_in, input, None, exprs, names)?;
                     // 组合内联绕过 exec_plan(Aggregate) 包装——手动记
                     //（rows = HAVING 后组行；project 同值由包装层记）
                     cx.record("aggregate", out.rows.len(), t_agg);
@@ -933,7 +919,7 @@ pub(crate) fn exec_plan_inner(
                     let (tv_in, _) =
                         exec_plan(db, sess, a_in, snapshot, &mut cx.child(None, true))?;
                     let out =
-                        exec_aggregate_composite(&tv_in, inner, Some(pred), exprs, names)?;
+                        exec_aggregate_composite(sess, &tv_in, inner, Some(pred), exprs, names)?;
                     cx.record("aggregate", out.rows.len(), t_agg);
                     return Ok((out, FactorLayout::new()));
                 }
