@@ -1,0 +1,64 @@
+# 优化器 O-1：合取拆分下推 + 账本 #28（join 限定名解析）
+# 语义固化（默认 optimize=on）+ EXPLAIN 注记
+
+statement ok
+CREATE TABLE o (id BIGINT PRIMARY KEY, cid BIGINT, total BIGINT)
+
+statement ok
+CREATE TABLE c (id BIGINT PRIMARY KEY, region TEXT)
+
+statement ok
+INSERT INTO o VALUES (1, 1, 100),(2, 1, 250),(3, 2, 50),(4, NULL, 10)
+
+statement ok
+INSERT INTO c VALUES (1, 'EU'),(2, 'US')
+
+# 双侧下推的 join 查询（o.total → o 因子；c.region → c 因子）
+query I T
+SELECT o.id, c.region FROM o JOIN c ON o.cid = c.id WHERE o.total > 60 AND c.region = 'EU' ORDER BY o.id
+----
+1 EU
+2 EU
+
+# #28：两侧同名列 id 的限定读取（o.id ≠ c.id）
+query II
+SELECT o.id, c.id FROM o JOIN c ON o.cid = c.id WHERE o.total > 60 ORDER BY o.id
+----
+1 1
+2 1
+
+# LEFT JOIN 右侧下推安全（NULL 延展行被 join 后原谓词过滤）
+query II
+SELECT o.id, c.id FROM o LEFT JOIN c ON o.cid = c.id WHERE c.region = 'EU' ORDER BY o.id
+----
+1 1
+2 1
+
+# 跨表谓词留 join 后（o.total > CAST(c.region ...) 不合法——用恒真跨表比较）
+query I
+SELECT o.id FROM o JOIN c ON o.cid = c.id WHERE o.total > c.id ORDER BY o.id
+----
+1
+2
+3
+
+# 裸列名保守不下推（结果不变）
+query I
+SELECT o.id FROM o JOIN c ON o.cid = c.id WHERE total > 60 AND region = 'EU' ORDER BY o.id
+----
+1
+2
+
+# 聚合 + join + 下推
+query TI
+SELECT c.region, count(*), sum(o.total) FROM o JOIN c ON o.cid = c.id WHERE o.total >= 50 GROUP BY c.region ORDER BY c.region
+----
+EU 2 350
+US 1 50
+
+# EXPLAIN 注记（规则可见性）
+query T
+EXPLAIN SELECT o.id FROM o JOIN c ON o.cid = c.id WHERE o.total > 60 AND c.region = 'EU'
+----
+optimizer: pushdown 2 conjunct(s) → o(1), c(1)
+Query (plan detail pending v2c-1 dispatcher)

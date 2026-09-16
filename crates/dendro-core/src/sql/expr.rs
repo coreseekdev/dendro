@@ -22,10 +22,21 @@ pub fn eval(e: &Expr, row: &[SqlValue], cols: &dyn Fn(&str) -> Option<usize>) ->
             })
         }
         Expr::CompoundIdentifier(parts) => {
-            let name = parts.last().map(|p| p.value.clone()).unwrap_or_default();
-            cols(&name).map(|i| row[i].clone()).ok_or_else(|| {
-                SqlError::undefined_column(format!("column \"{name}\" does not exist"))
-            })
+            // #28：全路径优先（限定名解析器按因子布局定位），末段回退
+            //（裸名 resolver 语义不变）——原直接剥前缀使 join 后 o.id
+            // 无法区分两侧同名列
+            let full = parts
+                .iter()
+                .map(|p| p.value.clone())
+                .collect::<Vec<_>>()
+                .join(".");
+            let last = parts.last().map(|p| p.value.clone()).unwrap_or_default();
+            cols(&full)
+                .or_else(|| cols(&last))
+                .map(|i| row[i].clone())
+                .ok_or_else(|| {
+                    SqlError::undefined_column(format!("column \"{last}\" does not exist"))
+                })
         }
         Expr::Wildcard(_) | Expr::QualifiedWildcard(..) => {
             Err(SqlError::syntax("wildcard not allowed in expression"))

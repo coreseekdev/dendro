@@ -686,6 +686,7 @@ impl Database {
             force_source: None,
             force_agg: None,
             user: crate::sql::privs::SUPERUSER.to_string(),
+            optimize_enabled: true,
         }
     }
 
@@ -1590,6 +1591,9 @@ pub struct Session {
     /// 会话用户（S-4：权限门主体；pgwire startup user / embed set_user；
     /// 缺省 = 超户 "dendro"——缺省行为全放行，既有语义不变）
     pub user: String,
+    /// 优化器开关（O-1 / spec 12：默认 on；off = 原路径——差分轴。
+    /// 与 force_* 同为调试面：release 的 SET 处理忽略）
+    pub optimize_enabled: bool,
 }
 
 impl Session {

@@ -324,7 +324,19 @@ pub(crate) fn eval_query(
         }
         _ => None,
     };
-    let mut tv = eval_from(db, sess, select, snapshot, pushdown_limit)?;
+    // O-1 R1+R2：join 查询的合取下推计划（单表无收益——pk/点查机制
+    // 已覆盖；优化关闭时跳过——差分轴 SET dendro.optimize）
+    let pushed_plan: Vec<(String, Vec<Expr>)> = if sess.optimize_enabled {
+        crate::sql::optimize::pushdown_plan(
+            select.from.first().unwrap_or(&EMPTY_TWJ),
+            select.selection.as_ref(),
+        )
+        .0
+    } else {
+        vec![]
+    };
+    let (mut tv, factor_layout) =
+        eval_from(db, sess, select, snapshot, pushdown_limit, &pushed_plan)?;
     // WHERE（v1 规则优化：常量折叠/布尔简化先于求值）
     let selection = select
         .selection
@@ -352,52 +364,11 @@ pub(crate) fn eval_query(
                 _ => {}                                    // 非布尔：走正常过滤（行级报错）
             }
         }
-        let cols = col_lookup(&tv.names);
-        // WHERE 过滤（求值错误 → 语句失败，不静默吞）。
-        // v2b B2：编译优先——谓词编译为 ScalarProgram 逐行步进（ir-spec 03）；
-        // 编译失败（Function/TryCast/Substring 等未覆盖形态）整体回落 AST
-        // 直评，行为与既有路径逐字节一致（B1 差分 + slt 护航）。
-        // v2c-1b：谓词走 push 管线（协议 C3 + eval_chunk v1=C5）。
-        // 单批 v1（tv.rows 本已物化，行移动零拷贝）；批粒度随流式 Source
-        // 到来。语义与手写循环逐字节一致（eval_row + Qual 丢行 + 错误上抛），
-        // 新增：每批 deadline/cancel 检查点（S-3 对齐）。编译失败回落 AST。
-        match crate::sql::scalar::compile_predicate_named(w, &cols, tv.names.len(), &tv.names) {
-            Ok(cp) if tv.rows.len() > 64 => {
-                let mut cx = crate::exec::pipeline::PipeCtx::new(
-                    vec![],
-                    sess.stmt_deadline,
-                    sess.cancel_token.clone(),
-                );
-                let all = std::mem::take(&mut tv.rows);
-                let mut src = std::iter::once(Ok(all));
-                let mut op = crate::exec::pipeline::FilterOp::new(cp.prog);
-                let mut sink = crate::exec::pipeline::CollectSink::new(None);
-                crate::exec::pipeline::drive(&mut cx, &mut src, &mut op, &mut sink)?;
-                tv.rows = sink.rows;
-            }
-            // 小结果集走紧循环（点查 1 行：管线包装的常数开销在 µs 级
-            // 路径不可接受——bench 实证 315k→200k；两路径语义逐字节一致）
-            Ok(cp) => {
-                let mut filtered = Vec::with_capacity(tv.rows.len());
-                for row in tv.rows.drain(..) {
-                    let mut out = SqlValue::Null;
-                    crate::sql::scalar::eval_row(&cp.prog, &row, &[], &mut out)?;
-                    if matches!(out, SqlValue::Bool(true)) {
-                        filtered.push(row);
-                    }
-                }
-                tv.rows = filtered;
-            }
-            Err(_) => {
-                let mut filtered = Vec::with_capacity(tv.rows.len());
-                for row in tv.rows.drain(..) {
-                    if matches!(expr::eval(w, &row, &cols), Ok(SqlValue::Bool(true))) {
-                        filtered.push(row);
-                    }
-                }
-                tv.rows = filtered;
-            }
-        }
+        // #28：join 后限定名按因子布局解析（o.id 不再错读右侧同名列）
+        let lay = factor_layout.clone();
+        let nms = tv.names.clone();
+        let qres = move |n: &str| resolve_qualified(&lay, &nms, n);
+        tv = apply_predicates_q(tv, w, sess, &qres)?;
     }
     // GROUP BY / 聚合 / HAVING（has_agg 已在常量短路判定前计算——#23）
     let group_exprs: Vec<Expr> = match &select.group_by {
@@ -489,8 +460,11 @@ pub(crate) fn eval_query(
         out_rows = rows_out;
         out_names = projection_names(&select.projection, &tv.names, &calls)?;
     } else {
-        // 投影
-        let (names, proj_rows) = project(&select.projection, &tv, sess)?;
+        // 投影（#28：限定名按因子布局解析）
+        let lay = factor_layout.clone();
+        let nms = tv.names.clone();
+        let qres = move |n: &str| resolve_qualified(&lay, &nms, n);
+        let (names, proj_rows) = project(&select.projection, &tv, sess, qres)?;
         out_names = names;
         out_rows = proj_rows;
     }
@@ -559,6 +533,83 @@ pub(crate) fn eval_query(
         names: out_names,
         rows: out_rows,
     })
+}
+
+/// 谓词过滤（WHERE 段原体，O-1 函数化供下推复用；求值错误 → 语句失败
+/// 不静默吞）。
+/// v2b B2：编译优先——谓词编译为 ScalarProgram 逐行步进（ir-spec 03）；
+/// 编译失败（Function/TryCast/Substring 等未覆盖形态）整体回落 AST
+/// 直评，行为与既有路径逐字节一致（B1 差分 + slt 护航）。
+/// v2c-1b：谓词走 push 管线（协议 C3 + eval_chunk v1=C5）。
+/// 单批 v1（tv.rows 本已物化，行移动零拷贝）；批粒度随流式 Source
+/// 到来。语义与手写循环逐字节一致（eval_row + Qual 丢行 + 错误上抛），
+/// 新增：每批 deadline/cancel 检查点（S-3 对齐）。编译失败回落 AST。
+fn apply_predicates(
+    tv: TableView,
+    w: &Expr,
+    sess: &Session,
+) -> Result<TableView> {
+    // 裸名解析（单因子/下推场景；join 后场景用 apply_predicates_q）
+    let names = tv.names.clone();
+    let cols = col_lookup(&names);
+    apply_predicates_q(tv, w, sess, &cols)
+}
+
+/// 同 apply_predicates，携带调用方解析器（#28：join 后限定名按因子
+/// 布局解析——两侧同名列不错读）
+fn apply_predicates_q(
+    mut tv: TableView,
+    w: &Expr,
+    sess: &Session,
+    resolve: &dyn Fn(&str) -> Option<usize>,
+) -> Result<TableView> {
+    // cols 借用收敛在块内（闭包持有生命周期——外提会锁死结尾的 tv 移动）
+    let rows: Vec<Vec<SqlValue>> = {
+        match crate::sql::scalar::compile_predicate_named(
+            w,
+            resolve,
+            tv.names.len(),
+            &tv.names,
+        ) {
+            Ok(cp) if tv.rows.len() > 64 => {
+                let mut cx = crate::exec::pipeline::PipeCtx::new(
+                    vec![],
+                    sess.stmt_deadline,
+                    sess.cancel_token.clone(),
+                );
+                let all = std::mem::take(&mut tv.rows);
+                let mut src = std::iter::once(Ok(all));
+                let mut op = crate::exec::pipeline::FilterOp::new(cp.prog);
+                let mut sink = crate::exec::pipeline::CollectSink::new(None);
+                crate::exec::pipeline::drive(&mut cx, &mut src, &mut op, &mut sink)?;
+                sink.rows
+            }
+            // 小结果集走紧循环（点查 1 行：管线包装的常数开销在 µs 级
+            // 路径不可接受——bench 实证 315k→200k；两路径语义一致）
+            Ok(cp) => {
+                let mut filtered = Vec::with_capacity(tv.rows.len());
+                for row in tv.rows.drain(..) {
+                    let mut out = SqlValue::Null;
+                    crate::sql::scalar::eval_row(&cp.prog, &row, &[], &mut out)?;
+                    if matches!(out, SqlValue::Bool(true)) {
+                        filtered.push(row);
+                    }
+                }
+                filtered
+            }
+            Err(_) => {
+                let mut filtered = Vec::with_capacity(tv.rows.len());
+                for row in tv.rows.drain(..) {
+                    if matches!(expr::eval(w, &row, resolve), Ok(SqlValue::Bool(true))) {
+                        filtered.push(row);
+                    }
+                }
+                filtered
+            }
+        }
+    };
+    tv.rows = rows;
+    Ok(tv)
 }
 
 fn short_str(s: &impl std::fmt::Display) -> String {
@@ -782,6 +833,48 @@ fn cols_lookup(names: &[String]) -> HashMap<String, usize> {
         .collect()
 }
 
+/// join 后的因子列布局（#28 修复）：因子键 → (列区间起点, 区间宽,
+/// 因子内列名)。限定名 `o.id` 先按因子内解析，杜绝跨侧同名列错读
+/// （原 cols_lookup HashMap 重复键 last-wins：o.id 读到右侧 id 列）。
+pub type FactorLayout = Vec<(String, usize, usize, Vec<String>)>;
+
+/// 限定名优先的列解析：`alias.col` / `table.col` → 因子区间内定位；
+/// 裸名 → 全名空间首匹配（现状语义）。因子未命中回退全空间（派生表等）。
+pub fn resolve_qualified(
+    layout: &FactorLayout,
+    names: &[String],
+    name: &str,
+) -> Option<usize> {
+    let low = name.to_ascii_lowercase();
+    if let Some((prefix, col)) = low.split_once('.') {
+        if let Some((_, start, _, local)) = layout.iter().find(|(k, _, _, _)| *k == prefix) {
+            // 因子内定位（start 已是该因子的绝对偏移；local 长度即区间宽）
+            if let Some(i) = local.iter().position(|n| n.eq_ignore_ascii_case(col)) {
+                return Some(start + i);
+            }
+            return None; // 前缀命中但列不在因子内：不回退（防跨侧误读）
+        }
+    }
+    names.iter().position(|n| n.to_ascii_lowercase() == low)
+}
+
+/// 无 FROM 占位（eval_select 的下推计划计算用——from 空时跳过）
+static EMPTY_TWJ: sqlparser::ast::TableWithJoins = sqlparser::ast::TableWithJoins {
+    relation: sqlparser::ast::TableFactor::Table {
+        name: sqlparser::ast::ObjectName(vec![]),
+        alias: None,
+        args: None,
+        with_hints: vec![],
+        version: None,
+        partitions: vec![],
+        with_ordinality: false,
+        sample: None,
+        index_hints: vec![],
+        json_path: None,
+    },
+    joins: vec![],
+};
+
 // ---------- FROM ----------
 
 fn eval_from(
@@ -790,14 +883,18 @@ fn eval_from(
     select: &Select,
     snapshot: u64,
     pushdown_limit: Option<usize>,
-) -> Result<TableView> {
+    pushed: &[(String, Vec<Expr>)],
+) -> Result<(TableView, FactorLayout)> {
     let Some(twj) = select.from.first() else {
         // 无 FROM 常量投影（S 缺口，SELECT -3 / SELECT 1+1）：标准语义 =
         // 单行零列输入——投影/聚合（count(*) → 1）在此行上正常求值
-        return Ok(TableView {
-            names: vec![],
-            rows: vec![vec![]],
-        });
+        return Ok((
+            TableView {
+                names: vec![],
+                rows: vec![vec![]],
+            },
+            FactorLayout::new(),
+        ));
     };
     let mut tv = table_scan_opt(
         db,
@@ -807,12 +904,34 @@ fn eval_from(
         select.selection.as_ref(),
         pushdown_limit,
     )?;
+    // O-1 R2：首因子的下推合取项（join 前过滤——加性，join 后 WHERE
+    // 原样保留，语义合同见 spec 12 §2）
+    if let Some(k) = crate::sql::optimize::factor_key(&twj.relation) {
+        if let Some((_, cs)) = pushed.iter().find(|(key, _)| *key == k) {
+            let combined = crate::sql::optimize::and_all(cs.clone());
+            if let Some(w) = combined {
+                tv = apply_predicates(tv, &w, sess)?;
+            }
+        }
+    }
+    // #28：因子列布局（限定名解析用——首个因子从 0 起）
+    let mut layout: FactorLayout = Vec::new();
+    if let Some(k) = crate::sql::optimize::factor_key(&twj.relation) {
+        layout.push((
+            k,
+            0,
+            tv.names.len(),
+            tv.names.iter().map(|n| n.to_ascii_lowercase()).collect(),
+        ));
+    }
     for j in &twj.joins {
         match &j.join_operator {
             // sqlparser 0.62 区分裸 `JOIN`(Join) 与 `INNER JOIN`(Inner)、
             // 裸 `LEFT JOIN`(Left) 与 `LEFT OUTER JOIN`(LeftOuter)——语义相同
             JoinOperator::Join(constraint) | JoinOperator::Inner(constraint) => {
-                let right = table_scan_opt(db, sess, &j.relation, snapshot, None, None)?;
+                let mut right = table_scan_opt(db, sess, &j.relation, snapshot, None, None)?;
+                right = apply_pushed(db_right_key(&j.relation), right, pushed, sess)?;
+                push_layout(&mut layout, &j.relation, right.names.clone());
                 let (l, _r) = match constraint {
                     sqlparser::ast::JoinConstraint::On(e) => (e, None::<&Expr>),
                     sqlparser::ast::JoinConstraint::Natural => {
@@ -828,7 +947,11 @@ fn eval_from(
                 tv = hash_join(tv, right, l, sess.stmt_deadline)?;
             }
             JoinOperator::Left(constraint) | JoinOperator::LeftOuter(constraint) => {
-                let right = table_scan_opt(db, sess, &j.relation, snapshot, None, None)?;
+                let mut right = table_scan_opt(db, sess, &j.relation, snapshot, None, None)?;
+                // LEFT 右侧下推安全：NULL 扩展行仍被 join 后保留的原谓词
+                // 过滤（NULL 判非真）——与全量右表 + 事后过滤结果一致
+                right = apply_pushed(db_right_key(&j.relation), right, pushed, sess)?;
+                push_layout(&mut layout, &j.relation, right.names.clone());
                 let e = match constraint {
                     sqlparser::ast::JoinConstraint::On(e) => e,
                     _ => return Err(SqlError::not_supported("LEFT JOIN constraint")),
@@ -838,7 +961,47 @@ fn eval_from(
             _other => return Err(SqlError::not_supported("join type")),
         }
     }
+    Ok((tv, layout))
+}
+
+/// join 右因子的布局追加：区间起点 = 既有因子列宽和（join 拼接序），
+/// 局部名列 = 右因子扫描输出列（join 前克隆——hash_join 按值消费）
+fn push_layout(
+    layout: &mut FactorLayout,
+    tf: &sqlparser::ast::TableFactor,
+    local: Vec<String>,
+) {
+    if let Some(k) = crate::sql::optimize::factor_key(tf) {
+        let start: usize = layout.iter().map(|(_, _, l, _)| l).sum();
+        layout.push((
+            k,
+            start,
+            local.len(),
+            local.iter().map(|n| n.to_ascii_lowercase()).collect(),
+        ));
+    }
+}
+
+/// join 右因子的下推应用（与首因子同构；key 来自因子别名/表名）
+fn apply_pushed(
+    key: Option<String>,
+    tv: TableView,
+    pushed: &[(String, Vec<Expr>)],
+    sess: &Session,
+) -> Result<TableView> {
+    if let Some(k) = key {
+        if let Some((_, cs)) = pushed.iter().find(|(key, _)| *key == k) {
+            let combined = crate::sql::optimize::and_all(cs.clone());
+            if let Some(w) = combined {
+                return apply_predicates(tv, &w, sess);
+            }
+        }
+    }
     Ok(tv)
+}
+
+fn db_right_key(tf: &sqlparser::ast::TableFactor) -> Option<String> {
+    crate::sql::optimize::factor_key(tf)
 }
 
 /// 按表名扫描（ddl 的 DELETE/UPDATE 复用）
@@ -2342,12 +2505,15 @@ fn col_pos(e: &Expr, names: &[String]) -> Option<usize> {
 
 // ---------- 投影/聚合 ----------
 
-fn project(
+fn project<R>(
     p: &[SelectItem],
     tv: &TableView,
     sess: &Session,
-) -> Result<(Vec<String>, Vec<Vec<SqlValue>>)> {
-    let cols = cols_lookup(&tv.names);
+    resolve: R,
+) -> Result<(Vec<String>, Vec<Vec<SqlValue>>)>
+where
+    R: Fn(&str) -> Option<usize> + Send + 'static,
+{
     let mut names = Vec::new();
     let mut items: Vec<(Expr, Option<String>)> = Vec::new();
     for item in p {
@@ -2389,10 +2555,10 @@ fn project(
         return Ok((names, vec![]));
     }
     let exprs: Vec<Expr> = items.iter().map(|(e, _)| e.clone()).collect();
-    let cols2 = cols.clone();
     let mut pop = crate::exec::pipeline::ProjectOp {
         exprs,
-        cols: Box::new(move |n: &str| cols2.get(&n.to_ascii_lowercase()).copied()),
+        // #28：限定名按因子布局解析（调用方注入；裸名回退全空间首匹配）
+        cols: Box::new(move |n: &str| resolve(n)),
     };
     let mut sink = crate::exec::pipeline::CollectSink::new(None);
     let batches: Vec<Result<Vec<Vec<SqlValue>>>> = tv

@@ -326,8 +326,25 @@ impl Ctx {
             }
             Expr::Identifier(id) => self.col(&id.value, cols),
             Expr::CompoundIdentifier(parts) => {
-                let name = parts.last().map(|p| p.value.clone()).unwrap_or_default();
-                self.col(&name, cols)
+                // #28：全路径优先（限定名按因子布局定位），末段回退（裸名
+                // resolver 语义不变）——原直接剥前缀使 join 后 o.id 无法
+                // 区分两侧同名列
+                let full = parts
+                    .iter()
+                    .map(|p| p.value.clone())
+                    .collect::<Vec<_>>()
+                    .join(".");
+                let last = parts.last().map(|p| p.value.clone()).unwrap_or_default();
+                match cols(&full).or_else(|| cols(&last)) {
+                    Some(i) => {
+                        let dst = self.reg();
+                        self.emit(ScalarStep::Col { dst, idx: i as u16 });
+                        Ok(dst)
+                    }
+                    None => Err(SqlError::undefined_column(format!(
+                        "column \"{last}\" does not exist"
+                    ))),
+                }
             }
             Expr::Nested(inner) => self.expr(inner, cols),
             Expr::UnaryOp { op, expr } => {

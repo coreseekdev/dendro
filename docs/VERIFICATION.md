@@ -20,6 +20,15 @@
   ④ GRANT/REVOKE 表级 ACL（单点权限门 enforce，exec+prepare 双卡口；
   超户缺省行为不变）。门禁：clippy 0 / 420 测试 / 30 slt 全过。
   下一步：优化器（基于既有逻辑 IR 与 dispatch 纯函数展开）。
+- **2026-09-16 优化器 O-1 + 账本 #28**：规则框架落地（spec 12——
+  确定性/语义保持/差分可枚举/EXPLAIN 可见四合同）；R1 合取拆分 +
+  R2 单源下推（限定名分类，join 前加性过滤，LEFT 右侧下推安全论证）
+  + R3 NOT 消除；`SET dendro.optimize` 差分轴。**#28（差分暴露的
+  既有缺陷）**：join 后限定名列解析在两侧同名列时错读——
+  cols_lookup HashMap 重复键 last-wins + 复合标识符剥前缀取末段，
+  使 `o.id` 读到右侧 id 列；修：因子列布局（eval_from 追踪各因子
+  列区间）+ 全路径优先解析（expr::eval 与标量编译器双侧）。
+  门禁：clippy 0 / 442 测试 / 31 slt。
 - **2026-09-16 评审轮（3 agent 并行）**：修复 **3×P0 权限绕过面**
   （派生表子查询、视图两步链 CREATE VIEW→SELECT v、DROP/ALTER 无
   属主检查——require_owner 原写未接线）；P1：GRANT 读改写竞态

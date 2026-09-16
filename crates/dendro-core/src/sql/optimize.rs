@@ -1,7 +1,8 @@
-//! SQL 表达式规则优化（v1）：AST 级常量折叠 + 布尔简化 + 恒等消除。
+//! 优化器 v1（O-1，spec 12）：表达式级规则 + 计划级合取下推。
 //!
-//! 在 `exec` 前对解析后的 AST 做一遍自底向上重写——消除运行时可预算的
-//! 常量子表达式。v2 方向：prepared statement 缓存、逻辑计划 IR。
+//! 表达式级：AST 自底向上常量折叠 + 布尔简化 + NOT 消除（R3）。
+//! 计划级：R1 合取拆分 + R2 单源合取下推分类（应用点在 eval_from）。
+//! 规则合同（确定性/语义保持/差分可枚举/EXPLAIN 可见）见 spec 12 §1。
 
 use sqlparser::ast::{BinaryOperator as BinOp, Expr, UnaryOperator as UnOp};
 
@@ -142,8 +143,210 @@ fn fold_unary(op: UnOp, inner: &Expr) -> Option<Expr> {
             _ => None,
         },
         UnOp::Plus => Some(inner.clone()),
+        // R3 NOT 消除：NOT NOT x → x；NOT 字面量折叠（原 fold_bool
+        // 只覆盖 AND/OR 侧）
+        UnOp::Not => match inner {
+            Expr::UnaryOp {
+                op: UnOp::Not,
+                expr: inner2,
+            } => Some((**inner2).clone()),
+            Expr::Value(vws) => match &vws.value {
+                sqlparser::ast::Value::Boolean(b) => Some(bool_expr(!b)),
+                _ => None,
+            },
+            _ => None,
+        },
         _ => None,
     }
+}
+
+fn bool_expr(b: bool) -> Expr {
+    Expr::Value(sqlparser::ast::ValueWithSpan {
+        value: sqlparser::ast::Value::Boolean(b),
+        span: sqlparser::tokenizer::Span::empty(),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// R1/R2：合取拆分 + 单源下推分类（spec 12 §2）
+// ---------------------------------------------------------------------------
+
+/// R1：WHERE 谓词拆成合取项（穿透 Nested；OR 不拆——析取保持原子）
+pub fn split_conjuncts(e: &Expr) -> Vec<Expr> {
+    match e {
+        Expr::BinaryOp {
+            op: BinOp::And,
+            left,
+            right,
+        } => {
+            let mut out = split_conjuncts(left);
+            out.extend(split_conjuncts(right));
+            out
+        }
+        Expr::Nested(inner) => split_conjuncts(inner),
+        other => vec![other.clone()],
+    }
+}
+
+/// 表因子键（下推目标的标识）：别名优先，无别名用表短名（小写）
+pub fn factor_key(tf: &sqlparser::ast::TableFactor) -> Option<String> {
+    match tf {
+        sqlparser::ast::TableFactor::Table {
+            name, alias, ..
+        } => {
+            let base = name
+                .0
+                .last()
+                .and_then(|p| p.as_ident())
+                .map(|i| i.value.to_ascii_lowercase())?;
+            let key = alias
+                .as_ref()
+                .map(|a| a.name.value.to_ascii_lowercase())
+                .unwrap_or(base);
+            Some(key)
+        }
+        _ => None, // 派生表等 v1 不作下推目标
+    }
+}
+
+/// 收集表达式内的标识符（限定名保前缀；CompoundIdentifier 取全路径）
+fn expr_idents(e: &Expr, out: &mut Vec<String>) {
+    match e {
+        Expr::Identifier(id) => out.push(id.value.to_ascii_lowercase()),
+        Expr::CompoundIdentifier(parts) => {
+            let path = parts
+                .iter()
+                .map(|i| i.value.to_ascii_lowercase())
+                .collect::<Vec<_>>()
+                .join(".");
+            if !path.is_empty() {
+                out.push(path);
+            }
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            expr_idents(left, out);
+            expr_idents(right, out);
+        }
+        Expr::UnaryOp { expr, .. } | Expr::Nested(expr) | Expr::IsNull(expr)
+        | Expr::IsNotNull(expr) | Expr::IsTrue(expr) | Expr::IsFalse(expr) => {
+            expr_idents(expr, out)
+        }
+        Expr::InList { expr, list, .. } => {
+            expr_idents(expr, out);
+            for i in list {
+                expr_idents(i, out);
+            }
+        }
+        Expr::Between {
+            expr, low, high, ..
+        } => {
+            expr_idents(expr, out);
+            expr_idents(low, out);
+            expr_idents(high, out);
+        }
+        Expr::Cast { expr, .. } => expr_idents(expr, out),
+        Expr::Function(f) => {
+            if let sqlparser::ast::FunctionArguments::List(l) = &f.args {
+                for a in &l.args {
+                    if let sqlparser::ast::FunctionArg::Unnamed(
+                        sqlparser::ast::FunctionArgExpr::Expr(e),
+                    ) = a
+                    {
+                        expr_idents(e, out);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// R2：合取项的下推归属。Some(key) = 全部标识符限定且前缀同因子；
+/// None = 留在 join 后（裸列名歧义 / 跨表 / 含非表因子引用）。
+pub fn conjunct_target(conjunct: &Expr, factor_keys: &[String]) -> Option<String> {
+    let mut idents = Vec::new();
+    expr_idents(conjunct, &mut idents);
+    if idents.is_empty() {
+        return None; // 纯常量项：Q-1 短路已处理，不下推
+    }
+    let mut target: Option<String> = None;
+    for id in &idents {
+        let Some((prefix, _col)) = id.split_once('.') else {
+            return None; // 裸列名：v1 保守不消解（spec 12 §2）
+        };
+        if !factor_keys.iter().any(|k| k == prefix) {
+            return None; // 前缀不是本查询的因子（列别名等）——不推
+        }
+        match &target {
+            None => target = Some(prefix.to_string()),
+            Some(t) if t == prefix => {}
+            _ => return None, // 跨表
+        }
+    }
+    target
+}
+
+/// 合取项重组（单元素直返；空 = None）
+pub fn and_all(mut cs: Vec<Expr>) -> Option<Expr> {
+    if cs.is_empty() {
+        return None;
+    }
+    let mut acc = cs.remove(0);
+    for c in cs {
+        acc = Expr::BinaryOp {
+            left: Box::new(acc),
+            op: BinOp::And,
+            right: Box::new(c),
+        };
+    }
+    Some(acc)
+}
+
+/// 下推计划：因子键 → 下推合取项（R1+R2 组合；join 查询专用——
+/// 单表查询的下推无收益，既有 pk/点查机制已覆盖）。
+/// 返回 (计划, 应用描述——EXPLAIN 注记)。
+pub fn pushdown_plan(
+    from: &sqlparser::ast::TableWithJoins,
+    selection: Option<&Expr>,
+) -> (Vec<(String, Vec<Expr>)>, String) {
+    let mut factors: Vec<String> = Vec::new();
+    if let Some(k) = factor_key(&from.relation) {
+        factors.push(k);
+    }
+    for j in &from.joins {
+        if let Some(k) = factor_key(&j.relation) {
+            factors.push(k);
+        }
+    }
+    if factors.len() < 2 {
+        return (vec![], String::new()); // 无 join：不下推
+    }
+    let Some(w) = selection else {
+        return (vec![], String::new());
+    };
+    let mut plan: Vec<(String, Vec<Expr>)> = Vec::new();
+    let mut counts: Vec<String> = Vec::new();
+    for c in split_conjuncts(w) {
+        if let Some(k) = conjunct_target(&c, &factors) {
+            if let Some(slot) = plan.iter_mut().find(|(key, _)| *key == k) {
+                slot.1.push(c.clone());
+            } else {
+                plan.push((k.clone(), vec![c.clone()]));
+            }
+        }
+    }
+    if plan.is_empty() {
+        return (vec![], String::new());
+    }
+    for (k, cs) in &plan {
+        counts.push(format!("{k}({})", cs.len()));
+    }
+    let desc = format!(
+        "optimizer: pushdown {} conjunct(s) → {}",
+        plan.iter().map(|(_, cs)| cs.len()).sum::<usize>(),
+        counts.join(", ")
+    );
+    (plan, desc)
 }
 
 #[cfg(test)]

@@ -882,6 +882,21 @@ pub(crate) fn exec_statement(
                     }
                 }
             }
+            // O-1（spec 12 §1 合同 4）：优化器注记行——join 查询的
+            // 下推计划人可审（applied 规则可见）
+            if let sqlparser::ast::Statement::Query(q) = &inner {
+                if let sqlparser::ast::SetExpr::Select(sel) = &*q.body {
+                    if sel.from.first().is_some_and(|f| !f.joins.is_empty()) {
+                        let (_, desc) = crate::sql::optimize::pushdown_plan(
+                            sel.from.first().unwrap(),
+                            sel.selection.as_ref(),
+                        );
+                        if !desc.is_empty() {
+                            lines.push(desc);
+                        }
+                    }
+                }
+            }
             if !described {
                 lines.push(format!(
                     "{} (plan detail pending v2c-1 dispatcher)",
@@ -938,6 +953,40 @@ pub(crate) fn exec_statement(
                 }
                 // v2c-3：`SET dendro.force_agg = 'auto|pipeline|row'`（同
                 // force_source 的调试面约定——release 忽略）
+                if name == "dendro.optimize" {
+                    #[cfg(any(debug_assertions, test))]
+                    {
+                        let v = match values.first() {
+                            Some(sqlparser::ast::Expr::Value(v)) => match &v.value.clone() {
+                                PV::SingleQuotedString(sv) => sv.clone(),
+                                PV::DoubleQuotedString(sv) => sv.clone(),
+                                other => other.to_string(),
+                            },
+                            Some(other) => other.to_string(),
+                            None => String::new(),
+                        };
+                        sess.optimize_enabled = match v.to_ascii_lowercase().as_str() {
+                            "on" | "true" => true,
+                            "off" | "false" => false,
+                            other => {
+                                return Err(SqlError::syntax(format!(
+                                    "unknown dendro.optimize value: {other} (on|off)"
+                                )))
+                            }
+                        };
+                        return Ok(Some(Output::Command {
+                            tag: "SET".into(),
+                            affected: 0,
+                        }));
+                    }
+                    #[cfg(not(any(debug_assertions, test)))]
+                    {
+                        return Ok(Some(Output::Command {
+                            tag: "SET".into(),
+                            affected: 0,
+                        }));
+                    }
+                }
                 if name == "dendro.force_agg" {
                     #[cfg(any(debug_assertions, test))]
                     {
