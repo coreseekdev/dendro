@@ -43,6 +43,9 @@ pub enum Plan {
     },
     Project {
         exprs: Vec<Expr>,
+        /// 输出列名（与 exprs 平行；别名信息不在 Expr 上——O-2c 执行
+        /// 期由计划完整重投影所需）
+        names: Vec<String>,
         input: Box<Plan>,
     },
     Sort {
@@ -235,17 +238,28 @@ fn build_select(sel: &sqlparser::ast::Select) -> Result<Plan> {
             plan = Plan::Filter { pred: h.clone(), input: Box::new(plan) };
         }
     }
-    // 投影（表达式展开为文本 expr 集）
-    let exprs: Vec<Expr> = sel
-        .projection
-        .iter()
-        .filter_map(|item| match item {
-            sqlparser::ast::SelectItem::UnnamedExpr(e) => Some(e.clone()),
-            sqlparser::ast::SelectItem::ExprWithAlias { expr, .. } => Some(expr.clone()),
-            _ => None, // 通配——全列（v1 计划不展开 schema 列）
-        })
-        .collect();
-    plan = Plan::Project { exprs, input: Box::new(plan) };
+    // 投影（表达式 + 输出列名——与 project() 命名口径一致：
+    // Unnamed = expr 文本前 40 字符；Alias = 别名）
+    let mut exprs: Vec<Expr> = Vec::new();
+    let mut names: Vec<String> = Vec::new();
+    for item in &sel.projection {
+        match item {
+            sqlparser::ast::SelectItem::UnnamedExpr(e) => {
+                exprs.push(e.clone());
+                names.push(crate::sql::scan::short_str_pub(e));
+            }
+            sqlparser::ast::SelectItem::ExprWithAlias { expr, alias, .. } => {
+                exprs.push(expr.clone());
+                names.push(alias.value.clone());
+            }
+            _ => {} // 通配——计划不展开（含通配的查询由 AST 路径执行）
+        }
+    }
+    plan = Plan::Project {
+        exprs,
+        names,
+        input: Box::new(plan),
+    };
     Ok(plan)
 }
 
@@ -321,18 +335,30 @@ fn rewrite_walk(plan: &mut Plan, out: &mut Vec<(String, Vec<Expr>)>) {
             rewrite_walk(input, out);
             // Filter 直接覆 Join：可下推分类（其他位置不动——投影上方
             // 的谓词可能引用计算列，v1 只处理 join 上方）
-            if matches!(**input, Plan::Join { .. }) {
+            if let Plan::Join { kind, right, .. } = &**input {
                 let keys = input.scan_keys();
                 if keys.len() >= 2 {
+                    // LEFT join 右侧因子的单源合取项**不得移除**——AST
+                    // 路径的下推是加性（join 后保留原谓词过滤 NULL 延展
+                    // 行）；计划重写曾整体搬走 → LEFT 语义破坏（plan-exec
+                    // 差分暴露：6 行 vs 2 行）。修：右侧项下推副本进
+                    // residual 保留（hoist 仅为预过滤）。
+                    let right_keys = right.scan_keys();
+                    let keep_right = *kind == "left";
                     let conjuncts = crate::sql::optimize::split_conjuncts(pred);
                     let mut residual: Vec<Expr> = Vec::new();
                     let mut pushed: Vec<(String, Vec<Expr>)> = Vec::new();
                     for c in conjuncts {
                         match crate::sql::optimize::conjunct_target(&c, &keys) {
-                            Some(k) => match pushed.iter_mut().find(|(key, _)| *key == k) {
-                                Some(slot) => slot.1.push(c),
-                                None => pushed.push((k, vec![c])),
-                            },
+                            Some(k) => {
+                                if keep_right && right_keys.contains(&k) {
+                                    residual.push(c.clone());
+                                }
+                                match pushed.iter_mut().find(|(key, _)| *key == k) {
+                                    Some(slot) => slot.1.push(c),
+                                    None => pushed.push((k, vec![c])),
+                                }
+                            }
                             None => residual.push(c),
                         }
                     }
@@ -340,7 +366,8 @@ fn rewrite_walk(plan: &mut Plan, out: &mut Vec<(String, Vec<Expr>)>) {
                         hoist_filters(input, &pushed);
                         out.extend(pushed);
                         if residual.is_empty() {
-                            // 整体下推完成——Filter 节点消解
+                            // 整体下推完成——Filter 节点消解（LEFT 右侧项
+                            // 已进 residual，不会走到这里）
                             *plan = std::mem::replace(input, Plan::Values);
                         } else {
                             *pred = crate::sql::optimize::and_all(residual)
@@ -515,13 +542,22 @@ impl<'a> Printer<'a> {
                 ));
                 id
             }
-            Plan::Project { exprs, input } => {
+            Plan::Project {
+                exprs,
+                names,
+                input,
+            } => {
                 let i = self.emit(input);
                 let id = self.next_id(6);
                 let es: Vec<String> = exprs.iter().map(|e| e.to_string()).collect();
+                let ns: Vec<String> = names
+                    .iter()
+                    .map(|n| crate::ir::text::escape_sql_text(n))
+                    .collect();
                 self.out.push_str(&format!(
-                    "  {id} = project {i} {{exprs = [{}]}}\n",
-                    es.join(", ")
+                    "  {id} = project {i} {{exprs = [{}], names = [{}]}}\n",
+                    es.join(", "),
+                    ns.join(", ")
                 ));
                 id
             }
@@ -747,12 +783,21 @@ pub fn parse_plan(text: &str) -> Option<Plan> {
         } else if let Some(t) = body.strip_prefix("project %") {
             let (src, attrs) = t.split_once(" {exprs = [")?;
             let input = Box::new(lookup_node(&nodes, src.trim())?);
-            let exprs_s = attrs.strip_suffix("]}")?;
+            let (exprs_s, rest) = attrs.split_once("], names = [")?;
+            let names_s = rest.strip_suffix("]}")?;
             let exprs = split_top_level(exprs_s)?
                 .into_iter()
                 .map(|e| parse_expr_text(&e, false))
                 .collect::<Option<Vec<_>>>()?;
-            Plan::Project { exprs, input }
+            let names = split_top_level(names_s)?
+                .into_iter()
+                .map(|n| unquote(&n))
+                .collect::<Option<Vec<_>>>()?;
+            Plan::Project {
+                exprs,
+                names,
+                input,
+            }
         } else if let Some(t) = body.strip_prefix("sort %") {
             let (src, attrs) = t.split_once(" {keys = [")?;
             let input = Box::new(lookup_node(&nodes, src.trim())?);

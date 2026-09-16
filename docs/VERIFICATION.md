@@ -20,6 +20,16 @@
   ④ GRANT/REVOKE 表级 ACL（单点权限门 enforce，exec+prepare 双卡口；
   超户缺省行为不变）。门禁：clippy 0 / 420 测试 / 30 slt 全过。
   下一步：优化器（基于既有逻辑 IR 与 dispatch 纯函数展开）。
+- **2026-09-16 优化器 O-2c（计划驱动执行 v1）**：覆盖形状
+  （Scan/Filter/Join/Project——无聚合/分组/HAVING/排序/LIMIT/通配/
+  版本子句）由 exec_plan 执行重写后计划（计划=执行序，EXPLAIN 与
+  执行逐节点对应）；其余回落 AST 路径（差分轴不变）。
+  **伴生缺陷修复**：rewrite_pushdown 对 LEFT join 右侧谓词是移动
+  而非复制——计划路径 NULL 延展行不再被过滤（差分 6 vs 2 行暴露；
+  AST 路径原本加性故未现身）；修为右侧项下推副本 + residual 保留。
+  Plan::Project 增 names（别名信息）；Filter{Scan} 谓词下传
+  selection 提示（点查/派发判定恢复）。
+  门禁：clippy 0 / 463 测试 / 31 slt。
 - **2026-09-16 优化器量化（bench_optimizer）**：O 系列 on/off 对比
   （50k 宽表 × 200 小表，5 轮中位）：下推 1.58× / top-N 1.09×（另有
   内存 O(n)）/ 裁剪+稀疏读 1.16× / 构建侧 1.21×——

@@ -10,7 +10,7 @@ plan @q0 {
   %s1 = scan %t1
   %f1 = filter %s1, pred "c.region = 'EU'"
   %j0 = join inner %f0, %f1 on "o.cid = c.id"
-  %p0 = project %j0 {exprs = [o.id]}
+  %p0 = project %j0 {exprs = [o.id], names = ["o.id"]}
   yield %p0
 }
 ; corpus: SELECT o.id FROM orders o JOIN customers c ON o.cid = c.id WHERE o.total > 60 AND o.cid > c.id
@@ -24,7 +24,7 @@ plan @q0 {
   %s1 = scan %t1
   %j0 = join inner %f0, %s1 on "o.cid = c.id"
   %f1 = filter %j0, pred "o.cid > c.id"
-  %p0 = project %f1 {exprs = [o.id]}
+  %p0 = project %f1 {exprs = [o.id], names = ["o.id"]}
   yield %p0
 }
 ; corpus: SELECT o.id FROM orders o LEFT JOIN customers c ON o.cid = c.id WHERE c.region = 'EU' ORDER BY o.id LIMIT 5
@@ -37,7 +37,8 @@ plan @q0 {
   %s1 = scan %t1
   %f0 = filter %s1, pred "c.region = 'EU'"
   %j0 = join left %s0, %f0 on "o.cid = c.id"
-  %p0 = project %j0 {exprs = [o.id]}
+  %f1 = filter %j0, pred "c.region = 'EU'"
+  %p0 = project %f1 {exprs = [o.id], names = ["o.id"]}
   %o0 = sort %p0 {keys = [o.id ASC], limit = 5}
   yield %o0
 }
@@ -53,7 +54,7 @@ plan @q0 {
   %j0 = join inner %f0, %s1 on "o.cid = c.id"
   %a0 = aggregate %j0 {keys = [c.region], aggs = [count(*), sum(o.total)]}
   %f1 = filter %a0, pred "sum(o.total) > 10"
-  %p0 = project %f1 {exprs = [c.region, count(*), sum(o.total)]}
+  %p0 = project %f1 {exprs = [c.region, count(*), sum(o.total)], names = ["c.region", "count(*)", "sum(o.total)"]}
   %o0 = sort %p0 {keys = [c.region ASC]}
   yield %o0
 }
@@ -62,10 +63,10 @@ dendro.ir v1
 plan @q0 {
   %t0 = table "orders" {cols = [id, cid, total], pk = [0]}
   %s0 = scan %t0
-  %p0 = project %s0 {exprs = [id]}
+  %p0 = project %s0 {exprs = [id], names = ["id"]}
   %t1 = table "customers" {cols = [id, region], pk = [0]}
   %s1 = scan %t1
-  %p1 = project %s1 {exprs = [id]}
+  %p1 = project %s1 {exprs = [id], names = ["id"]}
   %u0 = union distinct %p0, %p1
   yield %u0
 }
@@ -74,10 +75,10 @@ dendro.ir v1
 plan @q0 {
   %t0 = table "orders" {cols = [id, cid, total], pk = [0]}
   %s0 = scan %t0
-  %p0 = project %s0 {exprs = [id]}
+  %p0 = project %s0 {exprs = [id], names = ["id"]}
   %t1 = table "customers" {cols = [id, region], pk = [0]}
   %s1 = scan %t1
-  %p1 = project %s1 {exprs = [id]}
+  %p1 = project %s1 {exprs = [id], names = ["id"]}
   %u0 = except all %p0, %p1
   yield %u0
 }
@@ -86,6 +87,6 @@ dendro.ir v1
 plan @q0 {
   %t0 = table "no_table" as "nope" ! unresolved
   %s0 = scan %t0
-  %p0 = project %s0 {exprs = [nope.x]}
+  %p0 = project %s0 {exprs = [nope.x], names = ["nope.x"]}
   yield %p0
 }

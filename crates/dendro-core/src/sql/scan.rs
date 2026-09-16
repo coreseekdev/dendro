@@ -345,17 +345,27 @@ pub(crate) fn eval_query(
         }
         _ => None,
     };
-    // O-2a：下推决策走逻辑计划（build_plan + rewrite_pushdown——O-1 的
-    // AST 走查已迁移；计划构建失败（派生表等）→ 不下推，查询不受影响。
-    // 优化关闭时跳过——差分轴 SET dendro.optimize）
-    let pushed_plan: Vec<(String, Vec<Expr>)> = if sess.optimize_enabled {
-        crate::ir::plan::build_plan(q)
-            .ok()
-            .map(|mut p| crate::ir::plan::rewrite_pushdown(&mut p))
-            .unwrap_or_default()
+    // O-2a/O-2c：计划 = 优化与执行的共同基底。build_plan 失败（派生表等）
+    // → 不下推/不走计划执行，查询不受影响；优化关闭 = AST 路径（差分轴）
+    let mut qplan: Option<crate::ir::plan::Plan> = if sess.optimize_enabled {
+        crate::ir::plan::build_plan(q).ok()
     } else {
-        vec![]
+        None
     };
+    let pushed_plan: Vec<(String, Vec<Expr>)> = match qplan.as_mut() {
+        Some(p) => crate::ir::plan::rewrite_pushdown(p),
+        None => vec![],
+    };
+    // O-2c 覆盖判定：无聚合/分组/HAVING/排序/LIMIT/通配投影，且计划节点
+    // ⊆ {Scan, Filter, Join, Project} → 计划驱动执行（重写后的计划即
+    // 执行序——EXPLAIN 计划块与执行逐节点对应）
+    if let Some(p) = qplan.as_ref() {
+        if plan_exec_covered(p, select, q) {
+            let masks = plan_scan_masks(db, sess, p);
+            let (tv, _layout) = exec_plan(db, sess, p, snapshot, &masks)?;
+            return Ok(tv);
+        }
+    }
     let order_exprs: &[sqlparser::ast::OrderByExpr] =
         match q.order_by.as_ref().map(|o| &o.kind) {
             Some(sqlparser::ast::OrderByKind::Expressions(exprs)) => exprs,
@@ -664,6 +674,10 @@ fn apply_predicates_q(
     };
     tv.rows = rows;
     Ok(tv)
+}
+
+pub(crate) fn short_str_pub(s: &impl std::fmt::Display) -> String {
+    short_str(s)
 }
 
 fn short_str(s: &impl std::fmt::Display) -> String {
@@ -1069,6 +1083,306 @@ fn apply_pushed(
 
 fn db_right_key(tf: &sqlparser::ast::TableFactor) -> Option<String> {
     crate::sql::optimize::factor_key(tf)
+}
+
+// ---------------------------------------------------------------------------
+// O-2c：计划驱动执行（覆盖形状 Scan/Filter/Join/Project——聚合/排序/
+// LIMIT/集合操作由 eval_select 覆盖判定回落 AST 路径）
+// ---------------------------------------------------------------------------
+
+/// 计划 Scan → 合成 TableFactor（视图展开/派发按名工作；alias/版本
+/// 不经此路——布局键取计划，版本子句由覆盖判定排除）
+fn synthetic_tf(table: &str) -> TableFactor {
+    TableFactor::Table {
+        name: sqlparser::ast::ObjectName(vec![sqlparser::ast::ObjectNamePart::Identifier(
+            sqlparser::ast::Ident::new(table.to_string()),
+        )]),
+        alias: None,
+        args: None,
+        version: None,
+        partitions: vec![],
+        with_hints: vec![],
+        with_ordinality: false,
+        sample: None,
+        index_hints: vec![],
+        json_path: None,
+    }
+}
+
+/// O-2c 覆盖判定：查询形态（AST 侧）+ 计划节点集（结构侧）双检
+fn plan_exec_covered(
+    plan: &crate::ir::plan::Plan,
+    select: &Select,
+    q: &Query,
+) -> bool {
+    use crate::ir::plan::Plan;
+    // AST 形态：聚合/分组/HAVING/排序/LIMIT/通配 → AST 路径
+    //（DISTINCT 在 eval_select 入口已显式拒绝）
+    if projection_aggregates(&select.projection).is_some()
+        || select.having.is_some()
+        || !matches!(&select.group_by, sqlparser::ast::GroupByExpr::Expressions(es, _) if es.is_empty())
+        || q.order_by.is_some()
+        || q.limit_clause.is_some()
+    {
+        return false;
+    }
+    if select
+        .projection
+        .iter()
+        .any(|item| {
+            matches!(
+                item,
+                sqlparser::ast::SelectItem::Wildcard(_)
+                    | sqlparser::ast::SelectItem::QualifiedWildcard(..)
+            )
+        })
+    {
+        return false;
+    }
+    // 版本子句（FOR SYSTEM_TIME/AS OF）：Plan::Scan v1 不携带 version——
+    // 历史查询必须走 AST 路径的 tf.version 路由（HistoryScan）
+    if select.from.first().is_some_and(|twj| {
+        matches!(&twj.relation, TableFactor::Table { version: Some(_), .. })
+    }) {
+        return false;
+    }
+    // 计划结构：节点 ⊆ {Scan, Filter, Join, Project}，顶层必为 Project
+    // 且非空（空投影 = 通配形态，上面已排除——防御双检）
+    fn nodes_ok(p: &Plan) -> bool {
+        match p {
+            Plan::Scan { .. } | Plan::Values => true,
+            Plan::Filter { input, .. } | Plan::Project { input, .. } => nodes_ok(input),
+            Plan::Join { left, right, .. } => nodes_ok(left) && nodes_ok(right),
+            _ => false, // Aggregate/Sort/SetOp → AST 路径
+        }
+    }
+    matches!(plan, Plan::Project { exprs, .. } if !exprs.is_empty()) && nodes_ok(plan)
+}
+
+/// 计划内全部表达式（Filter 谓词 / Project 投影 / Sort 键——掩码分析面）
+fn plan_exprs(plan: &crate::ir::plan::Plan, out: &mut Vec<Expr>) {
+    use crate::ir::plan::Plan;
+    match plan {
+        Plan::Filter { pred, input } => {
+            out.push(pred.clone());
+            plan_exprs(input, out);
+        }
+        Plan::Project { exprs, input, .. } => {
+            out.extend(exprs.iter().cloned());
+            plan_exprs(input, out);
+        }
+        Plan::Join { on, left, right, .. } => {
+            out.push(on.clone());
+            plan_exprs(left, out);
+            plan_exprs(right, out);
+        }
+        Plan::Aggregate { keys, input, .. } => {
+            out.extend(keys.iter().cloned());
+            plan_exprs(input, out);
+        }
+        Plan::Sort { keys, input, .. } => {
+            out.extend(keys.iter().map(|(e, _)| e.clone()));
+            plan_exprs(input, out);
+        }
+        Plan::SetOp { left, right, .. } => {
+            plan_exprs(left, out);
+            plan_exprs(right, out);
+        }
+        Plan::Scan { .. } | Plan::Values => {}
+    }
+}
+
+/// 各 scan 因子的列掩码（plan 版 column_mask：全计划表达式引用面走查）
+fn plan_scan_masks(
+    db: &Database,
+    sess: &Session,
+    plan: &crate::ir::plan::Plan,
+) -> std::collections::HashMap<String, Vec<bool>> {
+    use crate::ir::plan::Plan;
+    let mut out = std::collections::HashMap::new();
+    let mut exprs = Vec::new();
+    plan_exprs(plan, &mut exprs);
+    let mut idents = Vec::new();
+    for e in &exprs {
+        crate::sql::optimize::expr_idents_pub(e, &mut idents);
+    }
+    fn scans_of(p: &Plan, out: &mut Vec<(String, String)>) {
+        match p {
+            Plan::Scan { table, alias } => {
+                out.push((alias.clone().unwrap_or_else(|| table.clone()), table.clone()))
+            }
+            Plan::Filter { input, .. } | Plan::Project { input, .. }
+            | Plan::Aggregate { input, .. } | Plan::Sort { input, .. } => scans_of(input, out),
+            Plan::Join { left, right, .. } | Plan::SetOp { left, right, .. } => {
+                scans_of(left, out);
+                scans_of(right, out);
+            }
+            Plan::Values => {}
+        }
+    }
+    let mut scans = Vec::new();
+    scans_of(plan, &mut scans);
+    for (key, table) in scans {
+        if out.contains_key(&key) {
+            continue;
+        }
+        let Ok((schema, _)) = resolve_table(db, &sess.branch, &table) else {
+            continue; // 解析失败 → 无掩码（全解码）
+        };
+        let ncols = schema.columns.len();
+        let mut mask = vec![false; ncols];
+        let mut any = false;
+        for id in &idents {
+            let bare = id.rsplit('.').next().unwrap_or(id);
+            if let Some(i) = schema
+                .columns
+                .iter()
+                .position(|c| c.name.eq_ignore_ascii_case(bare))
+            {
+                mask[i] = true;
+                any = true;
+            }
+        }
+        for &pk in &schema.pk {
+            if (pk as usize) < ncols {
+                mask[pk as usize] = true;
+                any = true;
+            }
+        }
+        if any && mask.iter().any(|&b| !b) {
+            out.insert(key, mask);
+        }
+    }
+    out
+}
+
+/// 计划树求值（O-2c）：(结果, 因子布局)。Filter/投影的限定名按布局解析。
+fn exec_plan(
+    db: &Database,
+    sess: &mut Session,
+    plan: &crate::ir::plan::Plan,
+    snapshot: u64,
+    masks: &std::collections::HashMap<String, Vec<bool>>,
+) -> Result<(TableView, FactorLayout)> {
+    use crate::ir::plan::Plan;
+    match plan {
+        Plan::Values => Ok((
+            TableView { names: vec![], rows: vec![vec![]] },
+            FactorLayout::new(),
+        )),
+        Plan::Scan { table, alias } => {
+            let key = alias.clone().unwrap_or_else(|| table.to_ascii_lowercase());
+            let tf = synthetic_tf(table);
+            let mask = masks.get(&key);
+            let tv = table_scan_opt(db, sess, &tf, snapshot, None, None, mask.map(|v| v.as_slice()))?;
+            let layout = FactorLayout::from([(
+                key,
+                0usize,
+                tv.names.len(),
+                tv.names.iter().map(|n| n.to_ascii_lowercase()).collect(),
+            )]);
+            Ok((tv, layout))
+        }
+        Plan::Filter { pred, input } => {
+            // Filter 直接覆 Scan：谓词下传为 selection 提示（点查/派发
+            // 判定恢复——下推后的计划把 pk 谓词留在了 Scan 紧上方）；
+            // 提示不过滤行，apply_predicates_q 仍执行实际过滤
+            if let Plan::Scan { table, alias } = &**input {
+                let key = alias.clone().unwrap_or_else(|| table.to_ascii_lowercase());
+                let tf = synthetic_tf(table);
+                let mask = masks.get(&key);
+                let mut tv = table_scan_opt(
+                    db,
+                    sess,
+                    &tf,
+                    snapshot,
+                    Some(pred),
+                    None,
+                    mask.map(|v| v.as_slice()),
+                )?;
+                let names: Vec<String> = tv.names.iter().map(|n| n.to_ascii_lowercase()).collect();
+                let layout = FactorLayout::from([(key, 0usize, tv.names.len(), names)]);
+                let lay = layout.clone();
+                let nms = tv.names.clone();
+                let qres = move |n: &str| resolve_qualified(&lay, &nms, n);
+                tv = apply_predicates_q(tv, pred, sess, &qres)?;
+                return Ok((tv, layout));
+            }
+            let (mut tv, layout) = exec_plan(db, sess, input, snapshot, masks)?;
+            let lay = layout.clone();
+            let nms = tv.names.clone();
+            let qres = move |n: &str| resolve_qualified(&lay, &nms, n);
+            tv = apply_predicates_q(tv, pred, sess, &qres)?;
+            Ok((tv, layout))
+        }
+        Plan::Join { kind, on, left, right } => {
+            let (l, mut llayout) = exec_plan(db, sess, left, snapshot, masks)?;
+            let (r, rlayout) = exec_plan(db, sess, right, snapshot, masks)?;
+            let rstart = l.names.len();
+            let tv = if *kind == "left" {
+                hash_join_left(l, r, on, sess.stmt_deadline)?
+            } else {
+                hash_join(l, r, on, sess.stmt_deadline, sess.optimize_enabled)?
+            };
+            // 布局拼接：右因子区间起点 = 左侧列宽（join 拼接序）
+            for (k, _, len, local) in rlayout {
+                llayout.push((k, rstart, len, local));
+            }
+            Ok((tv, llayout))
+        }
+        Plan::Project { exprs, names, input } => {
+            let (tv, layout) = exec_plan(db, sess, input, snapshot, masks)?;
+            let lay = layout.clone();
+            let nms = tv.names.clone();
+            let qres = move |n: &str| resolve_qualified(&lay, &nms, n);
+            let out = project_exprs(exprs, names, &tv, sess, qres)?;
+            Ok((out, FactorLayout::new()))
+        }
+        // 聚合/排序/集合操作：覆盖判定已排除——不可达（防御性回落错误）
+        other => Err(SqlError::internal(format!(
+            "exec_plan: uncovered plan node {other:?}"
+        ))),
+    }
+}
+
+/// 表达式集投影（O-2c 计划路径；与 project() 同机制——ProjectOp 管线）
+fn project_exprs<R>(
+    exprs: &[Expr],
+    names: &[String],
+    tv: &TableView,
+    sess: &Session,
+    resolve: R,
+) -> Result<TableView>
+where
+    R: Fn(&str) -> Option<usize> + Send + 'static,
+{
+    if exprs.is_empty() {
+        return Ok(TableView {
+            names: names.to_vec(),
+            rows: vec![],
+        });
+    }
+    let mut pop = crate::exec::pipeline::ProjectOp {
+        exprs: exprs.to_vec(),
+        cols: Box::new(resolve),
+    };
+    let mut sink = crate::exec::pipeline::CollectSink::new(None);
+    let batches: Vec<Result<Vec<Vec<SqlValue>>>> = tv
+        .rows
+        .chunks(crate::exec::pipeline::ROW_BATCH)
+        .map(|ch| Ok(ch.to_vec()))
+        .collect();
+    let mut it = batches.into_iter();
+    let mut pcx = crate::exec::pipeline::PipeCtx::new(
+        vec![],
+        sess.stmt_deadline,
+        sess.cancel_token.clone(),
+    );
+    crate::exec::pipeline::drive(&mut pcx, &mut it, &mut pop, &mut sink)?;
+    Ok(TableView {
+        names: names.to_vec(),
+        rows: sink.rows,
+    })
 }
 
 /// 按表名扫描（ddl 的 DELETE/UPDATE 复用）

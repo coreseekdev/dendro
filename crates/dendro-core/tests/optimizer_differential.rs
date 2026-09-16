@@ -345,3 +345,25 @@ fn o4_build_side_column_order_invariant() {
     assert!(matches!(&row[2], SqlValue::Utf8(_)), "o.note：{row:?}");
     assert!(matches!(&row[3], SqlValue::Utf8(_)), "c.region：{row:?}");
 }
+
+// ---------- O-2c：计划驱动执行（覆盖形状 Scan/Filter/Join/Project） ----------
+
+#[test]
+fn o2c_plan_exec_covered_shapes() {
+    let mut c = setup();
+    // 别名投影名经计划路径传递（Plan::Project.names）
+    let r = c
+        .query("SELECT o.total AS t, c.region AS r FROM orders o JOIN customers c \
+                ON o.cid = c.id WHERE o.total > 200")
+        .unwrap();
+    assert_eq!(r.columns, vec!["t", "r"], "输出列名：{:?}", r.columns);
+    // 单表 WHERE + 投影（Filter{Scan} 的 selection 提示路径——点查判定恢复）
+    let r = c
+        .query("SELECT note FROM orders WHERE id = 1")
+        .unwrap();
+    assert_eq!(r.rows.len(), 1);
+    assert!(matches!(&r.rows[0][0], SqlValue::Utf8(s) if s == "a"), "{:?}", r.rows);
+    // 聚合/排序/LIMIT 形状回落 AST 路径（结果不变）
+    diff(&mut c, "SELECT c.region, count(*) FROM orders o JOIN customers c ON o.cid = c.id GROUP BY c.region");
+    diff(&mut c, "SELECT o.id FROM orders o ORDER BY o.total DESC LIMIT 3");
+}

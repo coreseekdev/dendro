@@ -210,6 +210,10 @@ pub fn factor_key(tf: &sqlparser::ast::TableFactor) -> Option<String> {
 }
 
 /// 收集表达式内的标识符（限定名保前缀；CompoundIdentifier 取全路径）
+pub(crate) fn expr_idents_pub(e: &Expr, out: &mut Vec<String>) {
+    expr_idents(e, out)
+}
+
 fn expr_idents(e: &Expr, out: &mut Vec<String>) {
     match e {
         Expr::Identifier(id) => out.push(id.value.to_ascii_lowercase()),

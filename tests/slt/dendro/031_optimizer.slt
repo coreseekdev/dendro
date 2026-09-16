@@ -70,6 +70,6 @@ plan @q0 {
   %s1 = scan %t1
   %f1 = filter %s1, pred "c.region = 'EU'"
   %j0 = join inner %f0, %f1 on "o.cid = c.id"
-  %p0 = project %j0 {exprs = [o.id]}
+  %p0 = project %j0 {exprs = [o.id], names = ["o.id"]}
   yield %p0
 }
