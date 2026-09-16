@@ -1746,7 +1746,7 @@ fn exec_plan(
             if let Plan::Project {
                 exprs,
                 names,
-                wildcard: _,
+                wildcard,
                 input: pin,
             } = &**input
             {
@@ -1761,6 +1761,20 @@ fn exec_plan(
                     return Ok((out, FactorLayout::new()));
                 }
                 let (tv_in, layout) = exec_plan(db, sess, pin, snapshot, masks, None)?;
+                // wildcard 透传（键直接对输入列解析——无重投影层）
+                if *wildcard {
+                    let mut out = tv_in;
+                    plan_sort(
+                        keys,
+                        sort_hint,
+                        &mut out.rows,
+                        None,
+                        &out.names,
+                        &[],
+                        sess,
+                    )?;
+                    return Ok((out, FactorLayout::new()));
+                }
                 let lay = layout.clone();
                 let nms = tv_in.names.clone();
                 let qres = move |n: &str| resolve_qualified(&lay, &nms, n);

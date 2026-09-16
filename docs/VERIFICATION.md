@@ -30,6 +30,13 @@
   Plan::Project 增 names（别名信息）；Filter{Scan} 谓词下传
   selection 提示（点查/派发判定恢复）。
   门禁：clippy 0 / 463 测试 / 31 slt。
+- **2026-09-16 计划路径覆盖补全（Limit + 纯通配）**：Plan::Limit
+  {limit, offset}（含 OFFSET-only / LIMIT-无-ORDER；Sort 卸 limit
+  字段——top-N 界经 sort_hint 父子下传保留有界堆）；Plan::Project
+  增 wildcard（纯通配透传；混合通配留 AST）；plan_scan_masks 对
+  wildcard 计划 fail-open 整体禁裁剪（差分首跑即抓 null 列）。
+  AST 回落清单缩至：混合通配 / DISTINCT on SetOp 等罕见形态。
+  门禁：clippy 0 / 465 测试 / 31 slt。
 - **2026-09-16 SELECT DISTINCT 实现**（R21-17 的显式拒绝闭环）：
   投影后 first-seen 去重、ORDER BY 前；键 = 类型标签 + 值 debug
   编码（组键同口径防跨类型碰撞）；计划/AST 双路径同点接入。
