@@ -17,30 +17,39 @@ use sqlparser::ast::{
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// 聚合调用 display 串 → AggCall（O-2c+ A3：计划执行期结构化——
-/// display 由 collect_agg_text 产生，形态 = 合法聚合表达式文本）
-pub(crate) fn parse_plan_agg(display: &str) -> Result<crate::sql::agg::AggCall> {
+/// sqlparser Function → AggCall（阶段1 IR 自足化：display 随结构携带，
+/// 计划构建/round-trip/执行共用——parse_plan_agg 重解析删除）
+pub(crate) fn agg_call_from_fn(
+    display: &str,
+    f: &sqlparser::ast::Function,
+) -> Result<crate::sql::agg::AggCall> {
+    let n = f.name.to_string().to_ascii_lowercase();
+    if !matches!(n.as_str(), "count" | "sum" | "avg" | "min" | "max") {
+        return Err(SqlError::internal(format!("plan agg fn: {display}")));
+    }
+    let (arg, is_star) = match fn_args(f).first() {
+        Some(FunctionArg::Unnamed(FunctionArgExpr::Expr(e))) => (Some(e.clone()), false),
+        Some(FunctionArg::Unnamed(FunctionArgExpr::Wildcard)) => (None, true),
+        _ => (None, false),
+    };
+    Ok(crate::sql::agg::AggCall {
+        func: n,
+        arg,
+        distinct: fn_distinct(f),
+        is_star,
+        display: display.to_string(),
+    })
+}
+
+/// display 串 → AggCall（计划方言 parser 专用——文本经 sqlparser
+/// 回解析为 Function；非热路径）
+pub(crate) fn agg_call_from_display(
+    display: &str,
+) -> Result<crate::sql::agg::AggCall> {
     let e = crate::ir::plan::parse_expr_text_pub(display)
         .ok_or_else(|| SqlError::internal(format!("plan agg parse: {display}")))?;
     match e {
-        Expr::Function(f) => {
-            let n = f.name.to_string().to_ascii_lowercase();
-            if !matches!(n.as_str(), "count" | "sum" | "avg" | "min" | "max") {
-                return Err(SqlError::internal(format!("plan agg fn: {display}")));
-            }
-            let (arg, is_star) = match fn_args(&f).first() {
-                Some(FunctionArg::Unnamed(FunctionArgExpr::Expr(e))) => (Some(e.clone()), false),
-                Some(FunctionArg::Unnamed(FunctionArgExpr::Wildcard)) => (None, true),
-                _ => (None, false),
-            };
-            Ok(crate::sql::agg::AggCall {
-                func: n,
-                arg,
-                distinct: fn_distinct(&f),
-                is_star,
-                display: display.to_string(),
-            })
-        }
+        Expr::Function(f) => agg_call_from_fn(display, &f),
         other => Err(SqlError::internal(format!(
             "plan agg not a function: {other}"
         ))),
@@ -60,8 +69,8 @@ pub(crate) fn exec_aggregate_composite(
     let crate::ir::plan::Plan::Aggregate { keys, aggs, .. } = agg else {
         return Err(SqlError::internal("aggregate composite: 非 Aggregate 节点"));
     };
-    let calls: Vec<crate::sql::agg::AggCall> =
-        aggs.iter().map(|d| parse_plan_agg(d)).collect::<Result<_>>()?;
+    // 阶段1：aggs 已结构化（AggCall）——重解析消失
+    let calls: Vec<crate::sql::agg::AggCall> = aggs.clone();
     let cols = cols_lookup(&tv_in.names);
     let res = agg::group_aggregate(tv_in, keys, &calls, &cols)?;
     // HAVING 过滤（保留组索引）
@@ -423,6 +432,9 @@ pub(crate) fn plan_nodes_exec_ok(p: &crate::ir::plan::Plan) -> bool {
             plan_nodes_exec_ok(left) && plan_nodes_exec_ok(right)
         }
         Plan::Aggregate { input, .. } => plan_nodes_exec_ok(input),
+        // 阶段1：节点已入 IR、exec_plan 已接线，覆盖判定仍排除——
+        // 阶段2 差分对拍后逐项翻转
+        Plan::Distinct { .. } | Plan::Window { .. } => false,
     }
 }
 
@@ -456,6 +468,19 @@ pub(crate) fn plan_exprs(plan: &crate::ir::plan::Plan, out: &mut Vec<Expr>) {
             plan_exprs(left, out);
             plan_exprs(right, out);
         }
+        Plan::Distinct { input } => plan_exprs(input, out),
+        Plan::Window {
+            calls, input, ..
+        } => {
+            for c in calls {
+                if let Some(a) = &c.arg {
+                    out.push(a.clone());
+                }
+                out.extend(c.partition_by.iter().cloned());
+                out.extend(c.order_by.iter().map(|(e, _)| e.clone()));
+            }
+            plan_exprs(input, out);
+        }
         Plan::Scan { .. } | Plan::Values => {}
     }
 }
@@ -476,7 +501,9 @@ pub(crate) fn plan_scan_masks(
             Plan::Filter { input, .. }
             | Plan::Aggregate { input, .. }
             | Plan::Sort { input, .. }
-            | Plan::Limit { input, .. } => has_wildcard(input),
+            | Plan::Limit { input, .. }
+            | Plan::Distinct { input }
+            | Plan::Window { input, .. } => has_wildcard(input),
             Plan::Join { left, right, .. } | Plan::SetOp { left, right, .. } => {
                 has_wildcard(left) || has_wildcard(right)
             }
@@ -499,7 +526,8 @@ pub(crate) fn plan_scan_masks(
             }
             Plan::Filter { input, .. } | Plan::Project { input, .. }
             | Plan::Aggregate { input, .. } | Plan::Sort { input, .. }
-            | Plan::Limit { input, .. } => scans_of(input, out),
+            | Plan::Limit { input, .. } | Plan::Distinct { input }
+            | Plan::Window { input, .. } => scans_of(input, out),
             Plan::Join { left, right, .. } | Plan::SetOp { left, right, .. } => {
                 scans_of(left, out);
                 scans_of(right, out);
@@ -621,6 +649,8 @@ pub(crate) fn node_label(p: &crate::ir::plan::Plan) -> String {
         }
         Plan::Sort { .. } => "sort".into(),
         Plan::Limit { .. } => "limit".into(),
+        Plan::Distinct { .. } => "distinct".into(),
+        Plan::Window { .. } => "window".into(),
         Plan::SetOp { op, .. } => format!("setop {op}"),
     }
 }
@@ -660,7 +690,8 @@ pub(crate) fn exec_plan_inner(
             version,
         } => {
             let key = alias.clone().unwrap_or_else(|| table.to_ascii_lowercase());
-            let tf = synthetic_tf(table, version.as_deref());
+            let ver_s = version.as_ref().map(|v| v.display());
+            let tf = synthetic_tf(table, ver_s.as_deref());
             let mask = cx.masks.get(&key);
             let tv = table_scan_opt(db, sess, &tf, snapshot, None, None, mask.map(|v| v.as_slice()))?;
             // est = 段统计总行数（无过滤；无段 → None）
@@ -696,7 +727,8 @@ pub(crate) fn exec_plan_inner(
             } = &**input
             {
                 let key = alias.clone().unwrap_or_else(|| table.to_ascii_lowercase());
-                let tf = synthetic_tf(table, version.as_deref());
+                let ver_s = version.as_ref().map(|v| v.display());
+            let tf = synthetic_tf(table, ver_s.as_deref());
                 let mask = cx.masks.get(&key);
                 let t_scan = std::time::Instant::now();
                 let mut tv = table_scan_opt(
@@ -880,6 +912,23 @@ pub(crate) fn exec_plan_inner(
                 TableView { names, rows },
                 FactorLayout::new(),
             ))
+        }
+        Plan::Distinct { input } => {
+            // 阶段1 接线（阶段2 翻转覆盖）：实现体 = AST 路径同款
+            // dedup_rows——共享助手，零新语义
+            let (mut tv, layout) =
+                exec_plan(db, sess, input, snapshot, &mut cx.child(None, true))?;
+            dedup_rows(&mut tv.rows);
+            Ok((tv, layout))
+        }
+        Plan::Window { calls, input } => {
+            // 阶段1 接线（阶段2 翻转覆盖）：合成列求值 = AST 路径同款
+            // eval_windows——共享助手，零新语义
+            let (mut tv, layout) =
+                exec_plan(db, sess, input, snapshot, &mut cx.child(None, true))?;
+            let cols = cols_lookup(&tv.names);
+            super::window::eval_windows(&mut tv, calls, &cols)?;
+            Ok((tv, layout))
         }
         Plan::Limit {
             limit,

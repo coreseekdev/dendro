@@ -14,7 +14,52 @@
 
 use crate::engine::{Database, Session};
 use crate::error::Result;
+use crate::sql::agg::AggCall;
 use sqlparser::ast::{Expr, Query, SetExpr, TableFactor};
+
+/// 窗口调用（阶段1 IR 自足化：从 scan/window.rs 升格——计划与 AST
+/// 路径共用同一结构；display 保留原文供打印/匹配）
+#[derive(Debug, Clone)]
+pub struct WindowCall {
+    /// 函数名（row_number / rank / dense_rank / sum / count / min / max / avg）
+    pub func: String,
+    /// 参数（None = 无参如 row_number()；Some = sum(v) 的 v）
+    pub arg: Option<Expr>,
+    /// PARTITION BY 表达式列表
+    pub partition_by: Vec<Expr>,
+    /// ORDER BY 表达式 + ASC 标记
+    pub order_by: Vec<(Expr, bool)>,
+    /// 合成列名（__w0, __w1...——追加到 tv.names）
+    pub synth_col: String,
+    /// 原表达式 display（打印/round-trip 用——与 AggCall.display 同型）
+    pub display: String,
+}
+
+/// 扫描版本子句（阶段1：Option<String> display 文本 → 结构化）
+#[derive(Debug, Clone, PartialEq)]
+pub enum ScanVersion {
+    /// FOR SYSTEM_TIME AS OF <毫秒时间戳>
+    AsOfTime(i64),
+    /// AS OF <hash 文本>（内容寻址快照）
+    AsOfHash(String),
+}
+
+impl ScanVersion {
+    /// 打印/重建 synthetic_tf 用的 display 文本（往返稳定）
+    pub fn display(&self) -> String {
+        match self {
+            ScanVersion::AsOfTime(ms) => ms.to_string(),
+            ScanVersion::AsOfHash(h) => h.clone(),
+        }
+    }
+    /// display 文本 → 结构化（纯数字 = 时间戳；其余 = hash）
+    pub fn parse_display(t: &str) -> ScanVersion {
+        match t.trim().parse::<i64>() {
+            Ok(ms) => ScanVersion::AsOfTime(ms),
+            Err(_) => ScanVersion::AsOfHash(t.trim().to_string()),
+        }
+    }
+}
 
 /// 逻辑计划节点（v1 形状集 = eval 支持的形状；select.from 仅首因子
 /// 与其 join 链——与 eval_from 现状一致，逗号多因子 not_supported）
@@ -25,9 +70,9 @@ pub enum Plan {
     Scan {
         table: String,
         alias: Option<String>,
-        /// 版本子句 display 文本（FOR SYSTEM_TIME AS OF ... / AS OF ...）
-        /// ——历史查询上计划路径（O-2c+ B）；None = 当前读
-        version: Option<String>,
+        /// 版本子句（FOR SYSTEM_TIME AS OF ... / AS OF ...）——历史查询
+        /// 上计划路径（O-2c+ B）；None = 当前读。阶段1 起结构化
+        version: Option<ScanVersion>,
     },
     Filter {
         pred: Expr,
@@ -41,7 +86,19 @@ pub enum Plan {
     },
     Aggregate {
         keys: Vec<Expr>,
-        aggs: Vec<String>,
+        /// 结构化聚合调用（阶段1 IR 自足化——display 文本进 IR 曾使
+        /// sqlparser Display 格式成为语义身份，格式变体即错配）
+        aggs: Vec<AggCall>,
+        input: Box<Plan>,
+    },
+    /// SELECT DISTINCT（去重；阶段2 起入计划路径）
+    Distinct {
+        input: Box<Plan>,
+    },
+    /// 窗口函数（合成列求值；阶段2 起入计划路径——Project 下、
+    /// Filter(谓词) 上）
+    Window {
+        calls: Vec<WindowCall>,
         input: Box<Plan>,
     },
     Project {
@@ -93,7 +150,9 @@ impl Plan {
             | Plan::Aggregate { input, .. }
             | Plan::Project { input, .. }
             | Plan::Sort { input, .. }
-            | Plan::Limit { input, .. } => input.collect_keys(out),
+            | Plan::Limit { input, .. }
+            | Plan::Distinct { input }
+            | Plan::Window { input, .. } => input.collect_keys(out),
             Plan::Join { left, right, .. } => {
                 left.collect_keys(out);
                 right.collect_keys(out);
@@ -110,7 +169,7 @@ impl Plan {
 /// 因子键（与 optimize::factor_key 同口径：别名优先，短表名小写）
 fn factor_key(
     tf: &TableFactor,
-) -> Option<(String, String, Option<String>, Option<String>)> {
+) -> Option<(String, String, Option<String>, Option<ScanVersion>)> {
     match tf {
         TableFactor::Table {
             name, alias, version, ..
@@ -124,11 +183,17 @@ fn factor_key(
                 .as_ref()
                 .map(|a| a.name.value.to_ascii_lowercase())
                 .unwrap_or_else(|| base.clone());
-            let ver = version.as_ref().map(|v| v.to_string());
+            let ver = version.as_ref().map(scan_version_of);
             Some((key, base, alias.as_ref().map(|a| a.name.value.clone()), ver))
         }
         _ => None,
     }
+}
+
+/// sqlparser TableVersion → ScanVersion（display 形态分类）
+fn scan_version_of(v: &sqlparser::ast::TableVersion) -> ScanVersion {
+    let d = v.to_string();
+    ScanVersion::parse_display(&d)
 }
 
 /// Query → Plan（自顶向下：SetOp 递归 / Select 装配链）
@@ -254,6 +319,14 @@ fn build_select(sel: &sqlparser::ast::Select) -> Result<Plan> {
     if let Some(w) = &sel.selection {
         plan = Plan::Filter { pred: w.clone(), input: Box::new(plan) };
     }
+    // 窗口（合成列——Project 之下求值；与 eval_select 同收集口径）
+    let window_calls = crate::sql::scan::collect_window_calls(sel)?;
+    if !window_calls.is_empty() {
+        plan = Plan::Window {
+            calls: window_calls,
+            input: Box::new(plan),
+        };
+    }
     // GROUP BY / 聚合
     let has_agg = crate::sql::scan::projection_aggregates(&sel.projection).is_some()
         || sel.having.as_ref().map(crate::sql::scan::has_agg_expr).unwrap_or(false);
@@ -264,16 +337,16 @@ fn build_select(sel: &sqlparser::ast::Select) -> Result<Plan> {
         }
     };
     if !keys.is_empty() || has_agg {
-        let mut aggs: Vec<String> = Vec::new();
+        let mut aggs: Vec<AggCall> = Vec::new();
         for item in &sel.projection {
             if let sqlparser::ast::SelectItem::UnnamedExpr(e)
             | sqlparser::ast::SelectItem::ExprWithAlias { expr: e, .. } = item
             {
-                collect_agg_text(e, &mut aggs);
+                collect_agg_calls_plan(e, &mut aggs)?;
             }
         }
         if let Some(h) = &sel.having {
-            collect_agg_text(h, &mut aggs);
+            collect_agg_calls_plan(h, &mut aggs)?;
         }
         plan = Plan::Aggregate { keys, aggs, input: Box::new(plan) };
         if let Some(h) = &sel.having {
@@ -309,17 +382,22 @@ fn build_select(sel: &sqlparser::ast::Select) -> Result<Plan> {
         wildcard,
         input: Box::new(plan),
     };
+    // SELECT DISTINCT（Project 之上——投影后按输出行去重）
+    if sel.distinct.is_some() {
+        plan = Plan::Distinct { input: Box::new(plan) };
+    }
     Ok(plan)
 }
 
-fn collect_agg_text(e: &Expr, out: &mut Vec<String>) {
+/// 计划侧聚合调用收集（结构化 AggCall；display 去重口径与原文本版一致）
+fn collect_agg_calls_plan(e: &Expr, out: &mut Vec<AggCall>) -> Result<()> {
     match e {
         Expr::Function(f) => {
             let n = f.name.to_string().to_ascii_lowercase();
             if matches!(n.as_str(), "count" | "sum" | "avg" | "min" | "max") {
                 let d = e.to_string();
-                if !out.contains(&d) {
-                    out.push(d);
+                if !out.iter().any(|c| c.display == d) {
+                    out.push(crate::sql::scan::agg_call_from_fn(&d, f)?);
                 }
             }
             if let sqlparser::ast::FunctionArguments::List(l) = &f.args {
@@ -328,19 +406,20 @@ fn collect_agg_text(e: &Expr, out: &mut Vec<String>) {
                         sqlparser::ast::FunctionArgExpr::Expr(inner),
                     ) = a
                     {
-                        collect_agg_text(inner, out);
+                        collect_agg_calls_plan(inner, out)?;
                     }
                 }
             }
         }
         Expr::BinaryOp { left, right, .. } => {
-            collect_agg_text(left, out);
-            collect_agg_text(right, out);
+            collect_agg_calls_plan(left, out)?;
+            collect_agg_calls_plan(right, out)?;
         }
-        Expr::Nested(i) => collect_agg_text(i, out),
-        Expr::Cast { expr, .. } => collect_agg_text(expr, out),
+        Expr::Nested(i) => collect_agg_calls_plan(i, out)?,
+        Expr::Cast { expr, .. } => collect_agg_calls_plan(expr, out)?,
         _ => {}
     }
+    Ok(())
 }
 
 /// 下推结果的 EXPLAIN 注记（O-1 的 desc 合同不变）
@@ -424,7 +503,9 @@ fn rewrite_walk(plan: &mut Plan, out: &mut Vec<(String, Vec<Expr>)>) {
         Plan::Aggregate { input, .. }
         | Plan::Project { input, .. }
         | Plan::Sort { input, .. }
-        | Plan::Limit { input, .. } => rewrite_walk(input, out),
+        | Plan::Limit { input, .. }
+        | Plan::Distinct { input }
+        | Plan::Window { input, .. } => rewrite_walk(input, out),
         Plan::SetOp { left, right, .. } => {
             rewrite_walk(left, out);
             rewrite_walk(right, out);
@@ -484,7 +565,7 @@ pub fn db_schema_lookup<'a>(
 
 struct Printer<'a> {
     out: String,
-    counters: [usize; 9], // v,t,s,f,j,a,p,o,u
+    counters: [usize; 11], // v,t,s,f,j,a,p,o,u,d,w
     lookup: SchemaLookup<'a>,
     scan_ids: std::collections::HashMap<String, String>, // 因子键 → %sN
 }
@@ -492,7 +573,7 @@ struct Printer<'a> {
 pub fn print_plan(name: &str, plan: &Plan, lookup: SchemaLookup<'_>) -> String {
     let mut p = Printer {
         out: String::new(),
-        counters: [0; 9],
+        counters: [0; 11],
         lookup,
         scan_ids: std::collections::HashMap::new(),
     };
@@ -504,7 +585,7 @@ pub fn print_plan(name: &str, plan: &Plan, lookup: SchemaLookup<'_>) -> String {
     p.out
 }
 
-const KINDS: [&str; 9] = ["v", "t", "s", "f", "j", "a", "p", "o", "u"];
+const KINDS: [&str; 11] = ["v", "t", "s", "f", "j", "a", "p", "o", "u", "d", "w"];
 
 impl<'a> Printer<'a> {
     fn next_id(&mut self, k: usize) -> String {
@@ -533,7 +614,12 @@ impl<'a> Printer<'a> {
                     .unwrap_or_default();
                 let ver_part = version
                     .as_ref()
-                    .map(|v| format!(", version = {}", crate::ir::text::escape_sql_text(v)))
+                    .map(|v| {
+                        format!(
+                            ", version = {}",
+                            crate::ir::text::escape_sql_text(&v.display())
+                        )
+                    })
                     .unwrap_or_default();
                 match (self.lookup)(table) {
                     Some((cols, pk)) => {
@@ -580,10 +666,12 @@ impl<'a> Printer<'a> {
                 let i = self.emit(input);
                 let id = self.next_id(5);
                 let ks: Vec<String> = keys.iter().map(|e| e.to_string()).collect();
+                let aggs_s: Vec<String> =
+                    aggs.iter().map(|a| a.display.clone()).collect();
                 self.out.push_str(&format!(
                     "  {id} = aggregate {i} {{keys = [{}], aggs = [{}]}}\n",
                     ks.join(", "),
-                    aggs.join(", ")
+                    aggs_s.join(", ")
                 ));
                 id
             }
@@ -644,6 +732,25 @@ impl<'a> Printer<'a> {
                 let id = self.next_id(8);
                 let q = if *all { "all" } else { "distinct" };
                 self.out.push_str(&format!("  {id} = {op} {q} {l}, {r}\n"));
+                id
+            }
+            Plan::Distinct { input } => {
+                let i = self.emit(input);
+                let id = self.next_id(9);
+                self.out.push_str(&format!("  {id} = distinct {i}\n"));
+                id
+            }
+            Plan::Window { calls, input } => {
+                let i = self.emit(input);
+                let id = self.next_id(10);
+                let cs: Vec<String> = calls
+                    .iter()
+                    .map(|c| format!("{} AS {}", c.display, c.synth_col))
+                    .collect();
+                self.out.push_str(&format!(
+                    "  {id} = window {i} {{calls = [{}]}}\n",
+                    cs.join(", ")
+                ));
                 id
             }
         }
@@ -786,12 +893,14 @@ pub fn parse_plan(text: &str) -> Option<Plan> {
             // table "name" [as "alias"] {cols = [...], pk = [...]} / ! unresolved
             // cols/pk 不入 Plan（打印时经 lookup 复查）；alias 可选
             let rest = body.strip_prefix("table ")?;
-            fn ver_of(tail: &str) -> Option<Option<String>> {
+            fn ver_of(tail: &str) -> Option<Option<ScanVersion>> {
                 match tail.split_once(", version = ") {
                     Some((_, v)) => {
                         let inner = v.strip_prefix('"')?; // 跳开引号
                         let end = crate::ir::text::find_str_end(inner)?;
-                        Some(Some(crate::ir::text::json_unescape(&inner[..end])?))
+                        Some(Some(ScanVersion::parse_display(&crate::ir::text::json_unescape(
+                            &inner[..end],
+                        )?)))
                     }
                     None => Some(None),
                 }
@@ -860,7 +969,10 @@ pub fn parse_plan(text: &str) -> Option<Plan> {
                 .into_iter()
                 .map(|k| parse_expr_text(&k, false))
                 .collect::<Option<Vec<_>>>()?;
-            let aggs = split_top_level(aggs_s)?;
+            let aggs = split_top_level(aggs_s)?
+                .into_iter()
+                .map(|d| crate::sql::scan::agg_call_from_display(&d).ok())
+                .collect::<Option<Vec<_>>>()?;
             Plan::Aggregate { keys, aggs, input }
         } else if let Some(src) = body.strip_prefix("project %").filter(|_| body.ends_with("{wildcard}")) {
             let input = Box::new(lookup_node(&nodes, src.trim())?);
@@ -941,6 +1053,29 @@ pub fn parse_plan(text: &str) -> Option<Plan> {
                 left: Box::new(lookup_node(&nodes, l)?),
                 right: Box::new(lookup_node(&nodes, r)?),
             }
+        } else if let Some(t) = body.strip_prefix("distinct %") {
+            let input = Box::new(lookup_node(&nodes, t.trim())?);
+            Plan::Distinct { input }
+        } else if let Some(t) = body.strip_prefix("window %") {
+            let (src, attrs) = t.split_once(" {calls = [")?;
+            let input = Box::new(lookup_node(&nodes, src.trim())?);
+            let calls_s = attrs.strip_suffix("]}")?;
+            let calls = split_top_level(calls_s)?
+                .into_iter()
+                .map(|entry| {
+                    // "<display> AS __wN"：display 回解析为 Function →
+                    // WindowCall（synth 列名保留）
+                    let (d, synth) = entry.rsplit_once(" AS __w")?;
+                    let synth = format!("__w{synth}");
+                    let e = parse_expr_text(d, false)?;
+                    let f = match e {
+                        Expr::Function(f) if f.over.is_some() => f,
+                        _ => return None,
+                    };
+                    crate::sql::scan::window_call_from_fn(&f.to_string(), &f, synth).ok()
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Plan::Window { calls, input }
         } else {
             return None; // 未知操作 fail-closed
         };
@@ -962,6 +1097,8 @@ pub fn verify_plan(p: &Plan) -> bool {
         Plan::Sort { keys, input } => !keys.is_empty() && verify_plan(input),
         Plan::Limit { input, .. } => verify_plan(input),
         Plan::SetOp { left, right, .. } => verify_plan(left) && verify_plan(right),
+        Plan::Distinct { input } => verify_plan(input),
+        Plan::Window { calls, input } => !calls.is_empty() && verify_plan(input),
     }
 }
 
@@ -1070,6 +1207,11 @@ mod tests {
             "SELECT id FROM orders UNION SELECT id FROM customers",
             "SELECT id FROM orders EXCEPT ALL SELECT id FROM customers",
             "SELECT nope.x FROM no_table nope",
+            // 阶段1：Distinct / Window 节点打印（结构化 IR）
+            "SELECT DISTINCT cid FROM orders",
+            "SELECT DISTINCT cid FROM orders ORDER BY cid LIMIT 2",
+            "SELECT id, row_number() OVER (ORDER BY total DESC) FROM orders",
+            "SELECT id, sum(total) OVER (PARTITION BY cid ORDER BY id) FROM orders",
         ];
         let mut cur = String::new();
         cur.push_str("; dendro.ir v1 plans golden（生成见 ir/plan.rs tests；人工审阅后提交）\n");
@@ -1111,6 +1253,11 @@ mod tests {
             "SELECT CASE WHEN o.total > 100 THEN 'big' ELSE note END FROM orders o WHERE o.id IN (1, 2, 3) OR o.total BETWEEN 50 AND 60",
             // O-2c+ B：version 属性（display 文本）round-trip
             "SELECT id FROM orders FOR SYSTEM_TIME AS OF 1726400000000",
+            // 阶段1：Distinct / Window / 结构化 AggCall round-trip
+            "SELECT DISTINCT cid FROM orders ORDER BY cid LIMIT 2",
+            "SELECT id, row_number() OVER (ORDER BY total DESC) FROM orders",
+            "SELECT id, sum(total) OVER (PARTITION BY cid ORDER BY id) FROM orders WHERE total > 10",
+            "SELECT c.region, count(*), sum(o.total) FROM orders o JOIN customers c ON o.cid = c.id GROUP BY c.region UNION ALL SELECT region, count(*), sum(id) FROM customers GROUP BY region",
         ];
         for sql in corpus {
             let mut p = plan_of(sql);

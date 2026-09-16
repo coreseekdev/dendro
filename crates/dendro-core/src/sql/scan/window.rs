@@ -2,6 +2,7 @@
 //! 窗口函数求值：分区聚合 + 逐行排名，合成列。
 
 use super::*;
+use crate::ir::plan::WindowCall;
 
 
 use super::agg::{self, AggCall};
@@ -18,19 +19,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 /// 收集 Select 投影中的窗口函数调用
-pub(crate) struct WindowCall {
-    /// 函数名（row_number / rank / dense_rank / sum / count / min / max / avg）
-    pub(crate) func: String,
-    /// 参数（None = 无参如 row_number()；Some = sum(v) 的 v）
-    pub(crate) arg: Option<Expr>,
-    /// PARTITION BY 表达式列表
-    pub(crate) partition_by: Vec<Expr>,
-    /// ORDER BY 表达式 + ASC 标记
-    pub(crate) order_by: Vec<(Expr, bool)>,
-    /// 合成列名（__w0, __w1...——追加到 tv.names）
-    pub(crate) synth_col: String,
-}
-
 /// 表达式内是否含窗口调用（递归——含嵌套形态 `x + row_number() OVER ..`）
 pub(crate) fn expr_has_window(e: &Expr) -> bool {
     match e {
@@ -78,7 +66,13 @@ fn collect_in_expr(e: &Expr, out: &mut Vec<WindowCall>) -> Result<()> {
     match e {
         Expr::Function(f) => {
             if f.over.is_some() {
-                extract_call(f, out)?;
+                let display = f.to_string();
+                let call = window_call_from_fn(
+                    &display,
+                    f,
+                    format!("__w{}", out.len()),
+                )?;
+                out.push(call);
                 // SQL 标准禁止窗口调用嵌套窗口调用——不再下钻参数
             } else {
                 // 标量函数包装形态：coalesce(sum(v) OVER (), 0)
@@ -114,11 +108,17 @@ fn collect_in_expr(e: &Expr, out: &mut Vec<WindowCall>) -> Result<()> {
     Ok(())
 }
 
-/// 单个窗口调用 → WindowCall（校验 + 合成列名分配）
-fn extract_call(f: &sqlparser::ast::Function, out: &mut Vec<WindowCall>) -> Result<()> {
-    let Some(over) = &f.over else {
-        return Ok(());
-    };
+/// 单个窗口调用 → WindowCall（校验；synth 列名/display 由调用方给——
+/// 计划构建与 AST 收集共用）
+pub(crate) fn window_call_from_fn(
+    display: &str,
+    f: &sqlparser::ast::Function,
+    synth_col: String,
+) -> Result<WindowCall> {
+    let over = f
+        .over
+        .as_ref()
+        .ok_or_else(|| SqlError::internal("window_call_from_fn: 无 OVER"))?;
     let sqlparser::ast::WindowType::WindowSpec(spec) = over else {
         return Err(SqlError::not_supported("named window (WINDOW clause)"));
     };
@@ -150,15 +150,14 @@ fn extract_call(f: &sqlparser::ast::Function, out: &mut Vec<WindowCall>) -> Resu
         .iter()
         .map(|o| (o.expr.clone(), o.options.asc.unwrap_or(true)))
         .collect();
-    let synth_col = format!("__w{}", out.len());
-    out.push(WindowCall {
+    Ok(WindowCall {
         func: name,
         arg,
         partition_by: spec.partition_by.clone(),
         order_by,
         synth_col,
-    });
-    Ok(())
+        display: display.to_string(),
+    })
 }
 
 /// 投影表达式内的窗口调用 → Identifier(合成列)。

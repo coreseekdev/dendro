@@ -91,3 +91,41 @@ plan @q0 {
   %p0 = project %s0 {exprs = [nope.x], names = ["nope.x"]}
   yield %p0
 }
+; corpus: SELECT DISTINCT cid FROM orders
+dendro.ir v1
+plan @q0 {
+  %t0 = table "orders" {cols = [id, cid, total], pk = [0]}
+  %s0 = scan %t0
+  %p0 = project %s0 {exprs = [cid], names = ["cid"]}
+  %d0 = distinct %p0
+  yield %d0
+}
+; corpus: SELECT DISTINCT cid FROM orders ORDER BY cid LIMIT 2
+dendro.ir v1
+plan @q0 {
+  %t0 = table "orders" {cols = [id, cid, total], pk = [0]}
+  %s0 = scan %t0
+  %p0 = project %s0 {exprs = [cid], names = ["cid"]}
+  %d0 = distinct %p0
+  %o0 = sort %d0 {keys = [cid ASC]}
+  %f0 = limit %o0 {limit = 2, offset = 0}
+  yield %f0
+}
+; corpus: SELECT id, row_number() OVER (ORDER BY total DESC) FROM orders
+dendro.ir v1
+plan @q0 {
+  %t0 = table "orders" {cols = [id, cid, total], pk = [0]}
+  %s0 = scan %t0
+  %w0 = window %s0 {calls = [row_number() OVER (ORDER BY total DESC) AS __w0]}
+  %p0 = project %w0 {exprs = [id, row_number() OVER (ORDER BY total DESC)], names = ["id", "row_number() OVER (ORDER BY total DESC)"]}
+  yield %p0
+}
+; corpus: SELECT id, sum(total) OVER (PARTITION BY cid ORDER BY id) FROM orders
+dendro.ir v1
+plan @q0 {
+  %t0 = table "orders" {cols = [id, cid, total], pk = [0]}
+  %s0 = scan %t0
+  %w0 = window %s0 {calls = [sum(total) OVER (PARTITION BY cid ORDER BY id) AS __w0]}
+  %p0 = project %w0 {exprs = [id, sum(total) OVER (PARTITION BY cid ORDER BY id)], names = ["id", "sum(total) OVER (PARTITION BY cid ORDER "]}
+  yield %p0
+}

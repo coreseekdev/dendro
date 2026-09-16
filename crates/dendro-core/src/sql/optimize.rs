@@ -438,7 +438,9 @@ fn rewrite_stat_prop_walk(
         | Plan::Project { input, .. }
         | Plan::Aggregate { input, .. }
         | Plan::Sort { input, .. }
-        | Plan::Limit { input, .. } => rewrite_stat_prop_walk(input, db, sess),
+        | Plan::Limit { input, .. }
+        | Plan::Distinct { input }
+        | Plan::Window { input, .. } => rewrite_stat_prop_walk(input, db, sess),
         Plan::SetOp { left, right, .. } => {
             rewrite_stat_prop_walk(left, db, sess);
             rewrite_stat_prop_walk(right, db, sess);
@@ -700,7 +702,9 @@ fn has_wildcard_projection(p: &Plan2) -> bool {
         Plan::Filter { input, .. }
         | Plan::Aggregate { input, .. }
         | Plan::Sort { input, .. }
-        | Plan::Limit { input, .. } => has_wildcard_projection(input),
+        | Plan::Limit { input, .. }
+        | Plan::Distinct { input }
+        | Plan::Window { input, .. } => has_wildcard_projection(input),
         Plan::Join { left, right, .. } | Plan::SetOp { left, right, .. } => {
             has_wildcard_projection(left) || has_wildcard_projection(right)
         }
@@ -729,7 +733,9 @@ fn rewrite_join_order_walk(
         | Plan::Project { input, .. }
         | Plan::Aggregate { input, .. }
         | Plan::Sort { input, .. }
-        | Plan::Limit { input, .. } => rewrite_join_order_walk(input, db, sess),
+        | Plan::Limit { input, .. }
+        | Plan::Distinct { input }
+        | Plan::Window { input, .. } => rewrite_join_order_walk(input, db, sess),
         Plan::SetOp { left, right, .. } => {
             rewrite_join_order_walk(left, db, sess);
             rewrite_join_order_walk(right, db, sess);
@@ -1095,7 +1101,9 @@ fn rewrite_eq_copy_walk(plan: &mut Plan2) {
         | Plan::Project { input, .. }
         | Plan::Aggregate { input, .. }
         | Plan::Sort { input, .. }
-        | Plan::Limit { input, .. } => rewrite_eq_copy_walk(input),
+        | Plan::Limit { input, .. }
+        | Plan::Distinct { input }
+        | Plan::Window { input, .. } => rewrite_eq_copy_walk(input),
         Plan::SetOp { left, right, .. } => {
             rewrite_eq_copy_walk(left);
             rewrite_eq_copy_walk(right);
@@ -1292,7 +1300,9 @@ fn rewrite_in_list_walk(plan: &mut Plan2) {
                 *e = rewrite_in_expr(e);
             }
         }
-        Plan::Limit { input, .. } => rewrite_in_list_walk(input),
+        Plan::Limit { input, .. }
+        | Plan::Distinct { input }
+        | Plan::Window { input, .. } => rewrite_in_list_walk(input),
         Plan::SetOp { left, right, .. } => {
             rewrite_in_list_walk(left);
             rewrite_in_list_walk(right);
@@ -1410,7 +1420,9 @@ fn rewrite_filter_order_walk(plan: &mut Plan2) {
         Plan::Project { input, .. }
         | Plan::Aggregate { input, .. }
         | Plan::Sort { input, .. }
-        | Plan::Limit { input, .. } => rewrite_filter_order_walk(input),
+        | Plan::Limit { input, .. }
+        | Plan::Distinct { input }
+        | Plan::Window { input, .. } => rewrite_filter_order_walk(input),
         Plan::Join { left, right, .. } => {
             rewrite_filter_order_walk(left);
             rewrite_filter_order_walk(right);
