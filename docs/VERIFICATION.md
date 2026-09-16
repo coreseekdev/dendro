@@ -20,6 +20,10 @@
   ④ GRANT/REVOKE 表级 ACL（单点权限门 enforce，exec+prepare 双卡口；
   超户缺省行为不变）。门禁：clippy 0 / 420 测试 / 30 slt 全过。
   下一步：优化器（基于既有逻辑 IR 与 dispatch 纯函数展开）。
+- **2026-09-16 优化器量化（bench_optimizer）**：O 系列 on/off 对比
+  （50k 宽表 × 200 小表，5 轮中位）：下推 1.58× / top-N 1.09×（另有
+  内存 O(n)）/ 裁剪+稀疏读 1.16× / 构建侧 1.21×——
+  benches/results/optimizer.json。
 - **2026-09-16 优化器 O-4 + O-2b + ObjStore 稀疏读**：O-4 INNER
   join 构建侧按实际基数选择（join 时两侧已扫描——rows.len() 即精确
   值；小侧建表 O(min)；输出列序恒 left++right，#28 布局/残留合取
