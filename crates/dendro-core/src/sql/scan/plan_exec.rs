@@ -610,10 +610,11 @@ pub struct ExecCx<'a> {
     ///（子节点经 as_deref_mut 线性共享——兄弟顺序复用同一向量）
     pub metrics: Option<&'a mut Vec<NodeMetric>>,
     pub depth: usize,
-    /// CTE 名绑定（阶段3：Cte/IterativeScan 求值期把体结果绑定到名——
-    /// body/递归臂中的 Scan{同名} 直接取绑定视图，不经 catalog）。
-    /// Rc 共享（多次引用零重算）；child 继承（同查询作用域）
-    pub binding: Option<(String, std::rc::Rc<TableView>)>,
+    /// CTE 名绑定表（阶段3：Cte/IterativeScan 求值期把体结果绑定到名
+    /// ——body/递归臂中的 Scan{同名} 直接取绑定视图，不经 catalog）。
+    /// Rc 共享（多次引用零重算）；child 继承（同查询作用域）；
+    /// 多 CTE（WITH a AS ..., b AS ...）并存——单槽曾使链式引用丢绑定
+    pub bindings: std::collections::HashMap<String, std::rc::Rc<TableView>>,
 }
 
 impl<'a> ExecCx<'a> {
@@ -623,7 +624,7 @@ impl<'a> ExecCx<'a> {
             sort_hint: hint,
             metrics: self.metrics.as_deref_mut(),
             depth: self.depth + usize::from(deeper),
-            binding: self.binding.clone(),
+            bindings: self.bindings.clone(),
         }
     }
     /// 记录节点指标（采集开启时）
@@ -714,17 +715,15 @@ pub(crate) fn exec_plan_inner(
         } => {
             let key = alias.clone().unwrap_or_else(|| table.to_ascii_lowercase());
             // CTE 绑定命中：绑定视图直取（布局与物理扫描同构）
-            if let Some((bname, btv)) = cx.binding.as_ref() {
-                if *bname == table.to_ascii_lowercase() {
-                    let tv = (**btv).clone();
-                    let layout = FactorLayout::from([(
-                        key,
-                        0usize,
-                        tv.names.len(),
-                        tv.names.iter().map(|n| n.to_ascii_lowercase()).collect(),
-                    )]);
-                    return Ok((tv, layout));
-                }
+            if let Some(btv) = cx.bindings.get(&table.to_ascii_lowercase()) {
+                let tv = (**btv).clone();
+                let layout = FactorLayout::from([(
+                    key,
+                    0usize,
+                    tv.names.len(),
+                    tv.names.iter().map(|n| n.to_ascii_lowercase()).collect(),
+                )]);
+                return Ok((tv, layout));
             }
             let ver_s = version.as_ref().map(|v| v.display());
             let tf = synthetic_tf(table, ver_s.as_deref());
@@ -764,10 +763,7 @@ pub(crate) fn exec_plan_inner(
             {
                 let key = alias.clone().unwrap_or_else(|| table.to_ascii_lowercase());
                 // CTE 绑定的 Scan 不走物理扫描捷径（下方通用路径即可）
-                let bound = cx
-                    .binding
-                    .as_ref()
-                    .is_some_and(|(b, _)| *b == table.to_ascii_lowercase());
+                let bound = cx.bindings.contains_key(&table.to_ascii_lowercase());
                 if bound {
                     let (mut tv, layout) =
                         exec_plan(db, sess, input, snapshot, &mut cx.child(None, true))?;
@@ -1059,10 +1055,16 @@ pub(crate) fn exec_plan_inner(
                     tv.names = ns.clone();
                 }
             }
-            let saved = cx.binding.take();
-            cx.binding = Some((name.clone(), std::rc::Rc::new(tv)));
+            let saved = cx.bindings.insert(name.clone(), std::rc::Rc::new(tv));
             let out = exec_plan(db, sess, body, snapshot, &mut cx.child(None, true));
-            cx.binding = saved;
+            match saved {
+                Some(prev) => {
+                    cx.bindings.insert(name.clone(), prev);
+                }
+                None => {
+                    cx.bindings.remove(name);
+                }
+            }
             out
         }
         Plan::IterativeScan {
@@ -1075,7 +1077,6 @@ pub(crate) fn exec_plan_inner(
             // 阶段3：delta 工作集不动点（PG 语义——递归臂只见上一轮
             // 新行；收敛 = 新增空集。无 VALUES 注入/无全量重解析/
             // 无 O(n²) 行克隆）。到顶报错——绝不静默截断
-            let saved_outer = cx.binding.take();
             let (mut all_tv, _) =
                 exec_plan(db, sess, base, snapshot, &mut cx.child(None, true))?;
             // CTE 列别名覆盖（递归臂引用 r.n 的解析依赖）
@@ -1100,16 +1101,22 @@ pub(crate) fn exec_plan_inner(
                     if all_tv.rows.len() >= super::cte::RECURSIVE_MAX_ROWS {
                         break;
                     }
-                    let saved = cx.binding.take();
-                    cx.binding = Some((
+                    let saved = cx.bindings.insert(
                         name.clone(),
                         std::rc::Rc::new(TableView {
                             names: names.clone(),
                             rows: work.clone(),
                         }),
-                    ));
+                    );
                     let res = exec_plan(db, sess, recursive, snapshot, &mut cx.child(None, true));
-                    cx.binding = saved;
+                    match saved {
+                        Some(prev) => {
+                            cx.bindings.insert(name.clone(), prev);
+                        }
+                        None => {
+                            cx.bindings.remove(name);
+                        }
+                    }
                     let (new_tv, _) = res?;
                     let new_rows: Vec<Vec<SqlValue>> = if *distinct {
                         new_tv
@@ -1128,7 +1135,6 @@ pub(crate) fn exec_plan_inner(
                     all_tv.rows.extend(work.iter().cloned());
                 }
             }
-            cx.binding = saved_outer;
             if !converged {
                 return Err(SqlError::not_supported(format!(
                     "recursive CTE exceeded iteration({})/row({}) limit — divergent or too large; refusing to return partial rows",

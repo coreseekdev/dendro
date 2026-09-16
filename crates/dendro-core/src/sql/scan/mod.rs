@@ -149,7 +149,7 @@ pub(crate) fn eval_query(
                     sort_hint: None,
                     metrics: None,
                     depth: 0,
-                    binding: None,
+                    bindings: Default::default(),
                 };
                 let (tv, _) = exec_plan(db, sess, &plan, snapshot, &mut cx)?;
                 return Ok(tv);
@@ -218,7 +218,7 @@ pub(crate) fn eval_query(
                             sort_hint: None,
                             metrics: None,
                             depth: 0,
-                            binding: None,
+                            bindings: Default::default(),
                         };
                         let (tv, _) = exec_plan(db, sess, &plan, snapshot, &mut cx)?;
                         return Ok(tv);
@@ -540,7 +540,7 @@ pub(crate) fn eval_query(
                 sort_hint: None,
                 metrics: None,
                 depth: 0,
-                binding: None,
+                bindings: Default::default(),
             };
             let (mut tv, _layout) = exec_plan(db, sess, p, snapshot, &mut cx)?;
             if distinct {
