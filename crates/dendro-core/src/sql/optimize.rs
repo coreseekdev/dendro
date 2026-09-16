@@ -1453,3 +1453,246 @@ fn reorder_conjuncts(pred: &mut Expr) {
     let reordered: Vec<Expr> = indexed.into_iter().map(|(_, _, e)| e).collect();
     *pred = and_all(reordered).expect("非空合取列表");
 }
+
+// ---------------------------------------------------------------------------
+// P0：子查询内联（非相关子查询 → 常量/值列表——PG SubLink→InitPlan 同构）
+// 在 eval_select 的 WHERE 求值前，遍历谓词：
+// - Expr::Subquery(q) → 求值（单行单列 → 标量常量）
+// - Expr::InSubquery(e, q, neg) → 求值 → InList（值列表）
+// - Expr::Exists(q, neg) → 求值（行数>0 → Bool）
+// 相关子查询（引用外层列）→ not_supported（诚实拒绝——v2 迭代求值）
+// ---------------------------------------------------------------------------
+
+/// 谓词中的非相关子查询内联（WHERE / HAVING / JOIN ON 均经此）
+pub fn inline_subqueries(
+    db: &crate::engine::Database,
+    sess: &mut crate::engine::Session,
+    e: &mut Expr,
+    snapshot: u64,
+) -> Result<(), crate::error::SqlError> {
+    inline_walk(db, sess, e, snapshot)
+}
+
+fn inline_walk(
+    db: &crate::engine::Database,
+    sess: &mut crate::engine::Session,
+    e: &mut Expr,
+    snapshot: u64,
+) -> Result<(), crate::error::SqlError> {
+    use crate::types::SqlValue;
+    // 相关性检测：收集子查询 FROM 表的全部列名（内域），然后检查
+    // WHERE/投影中的限定名前缀是否引用内域外的表（真相关）。
+    // 非限定名视为内域引用（子查询自身列——保守不标相关）。
+    //（v1 的"尝试求值"法：域外列解析 Err 被 apply_predicates 静默
+    // 吞掉 → 空集 → avg=NULL → 恒假——子查询"成功"返回错误结果）
+    match e {
+        // 标量子查询：(SELECT max(v) FROM t) → 常量
+        Expr::Subquery(q) => {
+            if is_correlated(q) {
+                return Err(crate::error::SqlError::not_supported(
+                    "correlated scalar subquery (v2: iterative evaluation)",
+                ));
+            }
+            let tv = match crate::sql::scan::eval_query(db, sess, q, snapshot) {
+                Ok(tv) => tv,
+                Err(e) if e.state == "42703" => {
+                    // 列不存在——外层列引用（相关子查询）
+                    return Err(crate::error::SqlError::not_supported(
+                        "correlated scalar subquery (v2: iterative evaluation)",
+                    ));
+                }
+                Err(e) => return Err(e),
+            };
+            if tv.rows.len() == 1 && tv.names.len() == 1 {
+                let v = tv.rows[0][0].clone();
+                *e = sql_value_to_expr(&v);
+            } else if tv.rows.is_empty() {
+                *e = sql_value_to_expr(&SqlValue::Null);
+            } else {
+                return Err(crate::error::SqlError::not_supported(
+                    "scalar subquery returned multiple rows",
+                ));
+            }
+            Ok(())
+        }
+        // IN 子查询：v IN (SELECT id FROM t) → v IN (v1, v2, ...)
+        Expr::InSubquery {
+            expr,
+            subquery,
+            negated,
+        } => {
+            if is_correlated(subquery) {
+                return Err(crate::error::SqlError::not_supported(
+                    "correlated IN subquery (v2: iterative evaluation)",
+                ));
+            }
+            let tv = match crate::sql::scan::eval_query(db, sess, subquery, snapshot) {
+                Ok(tv) => tv,
+                Err(e) if e.state == "42703" => {
+                    return Err(crate::error::SqlError::not_supported(
+                        "correlated IN subquery (v2: iterative evaluation)",
+                    ));
+                }
+                Err(e) => return Err(e),
+            };
+            let list: Vec<Expr> = tv
+                .rows
+                .iter()
+                .map(|r| sql_value_to_expr(&r[0]))
+                .collect();
+            *e = Expr::InList {
+                expr: expr.clone(),
+                list,
+                negated: *negated,
+            };
+            Ok(())
+        }
+        // EXISTS：EXISTS (SELECT ...) → Bool
+        Expr::Exists {
+            subquery,
+            negated,
+        } => {
+            if is_correlated(subquery) {
+                return Err(crate::error::SqlError::not_supported(
+                    "correlated IN subquery (v2: iterative evaluation)",
+                ));
+            }
+            let tv = match crate::sql::scan::eval_query(db, sess, subquery, snapshot) {
+                Ok(tv) => tv,
+                Err(e) if e.state == "42703" => {
+                    return Err(crate::error::SqlError::not_supported(
+                        "correlated EXISTS (v2: iterative evaluation)",
+                    ));
+                }
+                Err(e) => return Err(e),
+            };
+            let exists = !tv.rows.is_empty();
+            *e = sql_value_to_expr(&SqlValue::Bool(if *negated {
+                !exists
+            } else {
+                exists
+            }));
+            Ok(())
+        }
+        // 递归：二元/嵌套/InList/Case 等容器
+        Expr::BinaryOp {
+            left,
+            right,
+            op: _,
+        } => {
+            inline_walk(db, sess, left, snapshot)?;
+            inline_walk(db, sess, right, snapshot)
+        }
+        Expr::Nested(inner) => inline_walk(db, sess, inner, snapshot),
+        Expr::UnaryOp {
+            expr: inner,
+            op: _,
+        } => inline_walk(db, sess, inner, snapshot),
+        Expr::IsNull(inner) | Expr::IsNotNull(inner) | Expr::IsTrue(inner)
+        | Expr::IsFalse(inner) => inline_walk(db, sess, inner, snapshot),
+        Expr::InList {
+            expr,
+            list,
+            negated: _,
+        } => {
+            inline_walk(db, sess, expr, snapshot)?;
+            for item in list.iter_mut() {
+                inline_walk(db, sess, item, snapshot)?;
+            }
+            Ok(())
+        }
+        Expr::Between {
+            expr,
+            low,
+            high,
+            negated: _,
+        } => {
+            inline_walk(db, sess, expr, snapshot)?;
+            inline_walk(db, sess, low, snapshot)?;
+            inline_walk(db, sess, high, snapshot)
+        }
+        Expr::Cast {
+            expr: inner, ..
+        } => inline_walk(db, sess, inner, snapshot),
+        _ => Ok(()),
+    }
+}
+
+
+/// 子查询相关性检测：收集 FROM 表因子键（内域），检查 WHERE/投影中
+/// 的限定名前缀是否引用内域外的表——真相关（需外层列迭代求值）
+fn is_correlated(q: &sqlparser::ast::Query) -> bool {
+    // 收集 FROM 因子键
+    let mut inner_factors: Vec<String> = Vec::new();
+    if let sqlparser::ast::SetExpr::Select(sel) = &*q.body {
+        for twj in &sel.from {
+            if let Some(k) = crate::sql::optimize::factor_key(&twj.relation) {
+                inner_factors.push(k);
+            }
+        }
+    }
+    // 收集 WHERE/投影中的限定名前缀
+    let mut prefixes: Vec<String> = Vec::new();
+    if let sqlparser::ast::SetExpr::Select(sel) = &*q.body {
+        for item in &sel.projection {
+            if let sqlparser::ast::SelectItem::UnnamedExpr(e)
+            | sqlparser::ast::SelectItem::ExprWithAlias { expr: e, .. } = item
+            {
+                let mut ids = Vec::new();
+                expr_idents_pub(e, &mut ids);
+                for id in ids {
+                    if let Some((prefix, _)) = id.split_once('.') {
+                        let p = prefix.to_string();
+                        if !prefixes.contains(&p) {
+                            prefixes.push(p);
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(w) = &sel.selection {
+            let mut ids = Vec::new();
+            expr_idents_pub(w, &mut ids);
+            for id in ids {
+                if let Some((prefix, _)) = id.split_once('.') {
+                    let p = prefix.to_string();
+                    if !prefixes.contains(&p) {
+                        prefixes.push(p);
+                    }
+                }
+            }
+        }
+    }
+    // 限定名前缀引用了内域外的表 → 相关
+    prefixes.iter().any(|p| !inner_factors.contains(p))
+}
+
+/// SqlValue → 常量 Expr
+fn sql_value_to_expr(v: &crate::types::SqlValue) -> Expr {
+    use crate::types::SqlValue;
+    let vws = |val: sqlparser::ast::Value| {
+        Expr::Value(sqlparser::ast::ValueWithSpan {
+            value: val,
+            span: sqlparser::tokenizer::Span::empty(),
+        })
+    };
+    match v {
+        SqlValue::Null => Expr::Value(sqlparser::ast::ValueWithSpan {
+            value: sqlparser::ast::Value::Null,
+            span: sqlparser::tokenizer::Span::empty(),
+        }),
+        SqlValue::Bool(b) => vws(sqlparser::ast::Value::Boolean(*b)),
+        SqlValue::Int64(i) => vws(sqlparser::ast::Value::Number(i.to_string(), false)),
+        SqlValue::Int32(i) => vws(sqlparser::ast::Value::Number(i.to_string(), false)),
+        SqlValue::Float64(f) => vws(sqlparser::ast::Value::Number(f.to_string(), false)),
+        SqlValue::Utf8(s) => vws(sqlparser::ast::Value::SingleQuotedString(s.clone())),
+        SqlValue::Date32(d) => vws(sqlparser::ast::Value::Number(d.to_string(), false)),
+        SqlValue::TimestampMs(t) => vws(sqlparser::ast::Value::Number(t.to_string(), false)),
+        SqlValue::Bytes(b) => {
+            vws(sqlparser::ast::Value::SingleQuotedString(
+                String::from_utf8_lossy(b).to_string(),
+            ))
+        }
+    }
+}
+

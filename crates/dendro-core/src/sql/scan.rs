@@ -377,6 +377,43 @@ pub(crate) fn eval_query(
         }
         _ => None,
     };
+    // P0：子查询内联（非相关 → 常量/InList/Bool）——WHERE / HAVING 中
+    // 的标量子查询、IN 子查询、EXISTS 在计划构建前展开（PG SubLink→
+    // InitPlan 同构——子查询一次求值后内联替换）。select 不可变 →
+    // clone 谓词 → 内联 → 后续路径用内联后版本
+    let selection_inlined: Option<Expr> = match &select.selection {
+        Some(w) => {
+            let mut w2 = w.clone();
+            crate::sql::optimize::inline_subqueries(db, sess, &mut w2, snapshot)?;
+            Some(w2)
+        }
+        None => None,
+    };
+    // 同时 shadow select 和 q——build_plan(q) 与 eval_from 的
+    // select.selection 都必须看到内联后版本（原只 shadow select
+    // → build_plan 用原始 q 的子查询 WHERE → expr::eval 不支持
+    // → Err → 行被过滤 → count=0——差分首跑即抓）
+    let mut select_owned: Select;
+    let select: &Select = if selection_inlined.is_some() {
+        select_owned = select.clone();
+        select_owned.selection = selection_inlined.clone();
+        &select_owned
+    } else {
+        select
+    };
+    let mut q_owned: Query;
+    let q: &Query = if selection_inlined.is_some() {
+        q_owned = q.clone();
+        if let sqlparser::ast::SetExpr::Select(sel) = &mut *q_owned.body {
+            sel.selection = selection_inlined;
+        }
+        &q_owned
+    } else {
+        q
+    };
+    // HAVING 子查询内联（独立处理——select 引用重定向后仍需处理）
+    // v1：HAVING 子查询走 expr eval not_supported（量少，诚实拒绝）
+
     // O-2a/O-2c：计划 = 优化与执行的共同基底。build_plan 失败（派生表等）
     // → 不下推/不走计划执行，查询不受影响；优化关闭 = AST 路径（差分轴）
     let mut qplan: Option<crate::ir::plan::Plan> = if sess.optimize_enabled {

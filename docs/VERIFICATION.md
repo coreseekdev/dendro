@@ -30,6 +30,20 @@
   Plan::Project 增 names（别名信息）；Filter{Scan} 谓词下传
   selection 提示（点查/派发判定恢复）。
   门禁：clippy 0 / 463 测试 / 31 slt。
+- **2026-09-16 P0 子查询内联 + 解析器架构评审**：WHERE 中非相关
+  标量子查询/IN 子查询/EXISTS → 常量/InList/Bool 内联（PG SubLink→
+  InitPlan 同构）。**伴生缺陷修复（差分 + agent 评审）**：
+  ① build_plan 用原始 q（未内联）→ 计划路径 expr::eval 不支持
+  子查询 → apply_predicates_q 回退分支吞错 → 全行静默丢弃 →
+  count=0。修：select + q 双 shadowing。
+  ② 相关性检测 v1"尝试求值"法：域外列 Err 被 apply_predicates
+  吞掉 → 子查询返回空集 → avg=NULL → 恒假——错误结果。修：FROM
+  域结构化判定（收集内层因子键 → 检查限定名前缀是否域外）。
+  ③ is_correlated 旧 collect_external_refs 死代码清理。
+  测试：subquery.rs 9（标量/IN/EXISTS/NOT EXISTS/嵌套/空集/相关
+  拒绝）；499 测试 + 31 slt 全绿。
+  架构评审（2 agent 并行）产出 14 项缺口清单（见
+  docs/research/解析器架构评审-2026-09-16.md）。
 - **2026-09-16 SOTA 优化器管线全部收口**：IN Clause Rewriter
   （单值→= / 连续整数→范围 / 非连续保持步列表——pushdown 前使
   单值 IN 触发点查下推）+ Reorder Filters（等值<范围<IsNull<
