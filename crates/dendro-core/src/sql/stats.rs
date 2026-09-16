@@ -84,6 +84,14 @@ pub fn range_selectivity(stat: &ColStat, v: &crate::types::SqlValue, op: &str) -
     }
     // 差值整数运算后再转 f64——order 域绝对值（~2^63）超 f64 精度
     //（ulp 2048），先减后除保区间分数精确（stats 差分实证：est=0 假象）
+    //
+    // SOTA 调研结论（docs/research/优化器SOTA调研.md）：DuckDB Ebergen
+    // 的非等值 d^(2/3) 公式是**无范围信息时**的 ndv-only 回退。我们的
+    // CBF footer 提供 min/max 区间（zone map），uniform 区间估计严格
+    // 更优——实证：12000 行 b∈[1,11999] 的 `b > 6000`：
+    //   uniform = 5999（精确命中线性数据）
+    //   d^(2/3) = 11476（保守过度——区间大时 sel ≈ 1-d^(-1/3) ≈ 0.96）
+    // 因此保持 uniform 估计为主；d^(2/3) 留作无 min/max 时的回退位。
     let below = p.saturating_sub(lo);
     let span = hi - lo;
     let frac = (below.min(span) as f64) / (span as f64);

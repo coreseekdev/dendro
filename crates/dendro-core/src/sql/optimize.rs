@@ -397,6 +397,240 @@ pub fn column_mask(
 }
 
 // ---------------------------------------------------------------------------
+// SOTA P2：Statistics Propagation（DuckDB blog 2024-11）
+// 等值 join a.x = b.y → 两列 [min,max] 区间交集 → 较窄侧的区间
+// 作为对侧扫描过滤器注入（Zone Map 剪枝在 CBF 段级已有——这是
+// 计划层的等价物，在无段统计的场景也生效）
+// ---------------------------------------------------------------------------
+
+/// 等值 join 键的区间传播：对每对 (acc_col, new_col)：
+/// 1. 读两侧 ColStat [min, max]（order 域）
+/// 2. 交集 = [max(lo_l, lo_r), min(hi_l, hi_r)]
+/// 3. 若交集严格窄于任一侧 → 较宽侧的 Scan 上方注入范围过滤
+pub fn rewrite_stat_prop(
+    plan: &mut Plan2,
+    db: &crate::engine::Database,
+    sess: &crate::engine::Session,
+) {
+    rewrite_stat_prop_walk(plan, db, sess);
+}
+
+fn rewrite_stat_prop_walk(
+    plan: &mut Plan2,
+    db: &crate::engine::Database,
+    sess: &crate::engine::Session,
+) {
+    use crate::ir::plan::Plan;
+    match plan {
+        Plan::Join { kind, left, right, on } => {
+            rewrite_stat_prop_walk(left, db, sess);
+            rewrite_stat_prop_walk(right, db, sess);
+            if kind == &"inner" {
+                try_propagate_ranges(left, right, on, db, sess);
+            }
+        }
+        Plan::Filter { input, .. }
+        | Plan::Project { input, .. }
+        | Plan::Aggregate { input, .. }
+        | Plan::Sort { input, .. }
+        | Plan::Limit { input, .. } => rewrite_stat_prop_walk(input, db, sess),
+        Plan::SetOp { left, right, .. } => {
+            rewrite_stat_prop_walk(left, db, sess);
+            rewrite_stat_prop_walk(right, db, sess);
+        }
+        Plan::Scan { .. } | Plan::Values => {}
+    }
+}
+
+/// 对一个 join 的等值键对做区间传播
+fn try_propagate_ranges(
+    left: &mut Plan2,
+    right: &mut Plan2,
+    on: &Expr,
+    db: &crate::engine::Database,
+    sess: &crate::engine::Session,
+) {
+    // 提取 ON 的等值对（复用 join_estimate 的解析形态）
+    let pairs = extract_eq_pairs(on);
+    if pairs.is_empty() {
+        return;
+    }
+    for (l_id, r_id) in pairs {
+        // 定位两侧（限定名格式 "alias.col"）
+        let l_parts: Vec<&str> = l_id.split('.').collect();
+        let r_parts: Vec<&str> = r_id.split('.').collect();
+        if l_parts.len() != 2 || r_parts.len() != 2 {
+            continue;
+        }
+        let (l_fk, l_col) = (l_parts[0], l_parts[1]);
+        let (r_fk, r_col) = (r_parts[0], r_parts[1]);
+
+        // 读两侧统计
+        let Some((l_st, _)) = stats_of_node(left, l_fk, db, sess) else {
+            continue;
+        };
+        let Some((r_st, _)) = stats_of_node(right, r_fk, db, sess) else {
+            continue;
+        };
+        let Some(l_cs) = col_stat(&l_st, l_col) else { continue };
+        let Some(r_cs) = col_stat(&r_st, r_col) else { continue };
+
+        // 交集（order 域——保序映射下区间交 = 值域交）
+        let lo = l_cs.min.max(r_cs.min);
+        let hi = l_cs.max.min(r_cs.max);
+        if lo > hi {
+            continue; // 区间不相交——不可能有匹配（谓词传播将产生空集，
+                      // 但生成空过滤器语义危险——v1 跳过）
+        }
+
+        // 对较宽的一侧注入范围过滤（若交集严格窄于该侧原区间）
+        inject_range_filter(left, l_fk, l_col, &l_cs, lo, hi);
+        inject_range_filter(right, r_fk, r_col, &r_cs, lo, hi);
+    }
+}
+
+/// 提取 ON 的等值对（`a.x = b.y` AND 链）
+fn extract_eq_pairs(on: &Expr) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    fn walk(e: &Expr, out: &mut Vec<(String, String)>) {
+        match e {
+            Expr::BinaryOp {
+                left,
+                op: sqlparser::ast::BinaryOperator::And,
+                right,
+            } => {
+                walk(left, out);
+                walk(right, out);
+            }
+            Expr::BinaryOp {
+                left,
+                op: sqlparser::ast::BinaryOperator::Eq,
+                right,
+            } => {
+                let mut il = Vec::new();
+                let mut ir = Vec::new();
+                expr_idents_pub(left, &mut il);
+                expr_idents_pub(right, &mut ir);
+                if let (Some(l), Some(r)) = (il.first(), ir.first()) {
+                    if l.contains('.') && r.contains('.') {
+                        out.push((l.clone(), r.clone()));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    walk(on, &mut out);
+    out
+}
+
+/// 子树内因子键 → 该因子的 TableStats 与表名
+fn stats_of_node(
+    p: &Plan2,
+    factor_key: &str,
+    db: &crate::engine::Database,
+    sess: &crate::engine::Session,
+) -> Option<(crate::sql::stats::TableStats, String)> {
+    use crate::ir::plan::Plan;
+    fn find_scan<'a>(
+        p: &'a Plan2,
+        key: &str,
+    ) -> Option<&'a Plan2> {
+        match p {
+            Plan::Scan { table, alias, .. } => {
+                let k = alias.clone().unwrap_or_else(|| table.clone());
+                if k == key { Some(p) } else { None }
+            }
+            Plan::Filter { input, .. } => find_scan(input, key),
+            Plan::Join { left, right, .. } => {
+                find_scan(left, key).or_else(|| find_scan(right, key))
+            }
+            _ => None,
+        }
+    }
+    let scan = find_scan(p, factor_key)?;
+    let Plan::Scan { table, .. } = scan else { unreachable!() };
+    let st = crate::sql::stats::table_stats(db, sess, table)?;
+    Some((st, table.clone()))
+}
+
+fn col_stat(st: &crate::sql::stats::TableStats, col: &str) -> Option<crate::sql::stats::ColStat> {
+    let idx = st
+        .names
+        .iter()
+        .position(|n| n.eq_ignore_ascii_case(col))?;
+    st.cols.get(idx).copied()
+}
+
+/// 在因子上方注入范围过滤（交集窄于原区间时）——Filter{Scan} 的
+/// pred 追加 AND col >= lo AND col <= hi
+fn inject_range_filter(
+    node: &mut Plan2,
+    _fk: &str,
+    col: &str,
+    cs: &crate::sql::stats::ColStat,
+    lo: u64,
+    hi: u64,
+) {
+    use crate::ir::plan::Plan;
+    // 交集严格窄于原区间才注入
+    if lo <= cs.min && hi >= cs.max {
+        return; // 无收紧
+    }
+    // 定位 Filter{Scan}（有则追加，无则新建）
+    match node {
+        Plan::Filter { pred, input }
+            if matches!(&**input, Plan::Scan { .. }) =>
+        {
+            // 追加（AND 链）
+            let range = range_expr(col, lo, hi);
+            *pred = Expr::BinaryOp {
+                left: Box::new(pred.clone()),
+                op: sqlparser::ast::BinaryOperator::And,
+                right: Box::new(range),
+            };
+        }
+        Plan::Scan { .. } => {
+            // 新建 Filter{Scan}
+            let range = range_expr(col, lo, hi);
+            *node = Plan::Filter {
+                pred: range,
+                input: Box::new(std::mem::replace(node, Plan::Values)),
+            };
+        }
+        _ => {} // 非叶子形态——v1 不注入（reorder 保证叶子，但防御）
+    }
+}
+
+/// order 域区间 → SQL 范围谓词（lo/hi → i64 值域——定点解码）
+fn range_expr(col: &str, lo: u64, hi: u64) -> Expr {
+    // order 域 → i64（v ^ (1<<63) 的逆）
+    let lo_v = (lo ^ (1u64 << 63)) as i64;
+    let hi_v = (hi ^ (1u64 << 63)) as i64;
+    let id = |s: &str| Expr::Identifier(sqlparser::ast::Ident::new(s));
+    let num = |v: i64| {
+        Expr::Value(sqlparser::ast::ValueWithSpan {
+            value: sqlparser::ast::Value::Number(v.to_string(), false),
+            span: sqlparser::tokenizer::Span::empty(),
+        })
+    };
+    // col >= lo AND col <= hi（使用裸列名——Filter{Scan} 内单因子无歧义）
+    Expr::BinaryOp {
+        left: Box::new(Expr::BinaryOp {
+            left: Box::new(id(col)),
+            op: sqlparser::ast::BinaryOperator::GtEq,
+            right: Box::new(num(lo_v)),
+        }),
+        op: sqlparser::ast::BinaryOperator::And,
+        right: Box::new(Expr::BinaryOp {
+            left: Box::new(id(col)),
+            op: sqlparser::ast::BinaryOperator::LtEq,
+            right: Box::new(num(hi_v)),
+        }),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // O-4'：join reorder（INNER 链贪心重排——spec 12 §4 前置收口）
 // ---------------------------------------------------------------------------
 

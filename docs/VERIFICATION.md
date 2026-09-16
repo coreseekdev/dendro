@@ -30,6 +30,14 @@
   Plan::Project 增 names（别名信息）；Filter{Scan} 谓词下传
   selection 提示（点查/派发判定恢复）。
   门禁：clippy 0 / 463 测试 / 31 slt。
+- **2026-09-16 SOTA P2 落地：Statistics Propagation**：等值 join
+  两侧列 [min,max] 区间交集 → 较宽侧注入范围谓词（`ref_id >= lo
+  AND ref_id <= hi`——裸名，Filter{Scan} 单因子内无歧义）。CBF
+  zone map 的计划层等价物（段级剪枝已有，这是扫描前的逻辑层）。
+  d^(2/3)（SOTA P1）实证**不采用**：有 min/max 区间信息时 uniform
+  估计严格更优（12000 行 b>6000：uniform=5999 精确 vs d^(2/3)=11476
+  保守过度）。SOTA 调研记录：docs/research/优化器SOTA调研.md。
+  门禁：clippy 0 / 482 测试 / 31 slt。
 - **2026-09-16 优化器评审轮（2 agent 并行 + SOTA 调研）**：3×P0
   + 4×P1 + 2×P2 修复。P0：DISTINCT+LIMIT 语义序（去重须先于 top-N
   截断——[a,a,a,b] LIMIT 2 曾得 [a] 而非 [a,b]，覆盖判定门控）；

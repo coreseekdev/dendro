@@ -248,3 +248,75 @@ fn p1_scan_est_with_pushdown_now_effective() {
         "限定名匹配修后 est 应反映谓词选择率：est={est}"
     );
 }
+
+// ---------- SOTA P2：Statistics Propagation（等值 join 区间传播） ----------
+
+#[test]
+fn stat_prop_injects_range_on_wider_side() {
+    // orders.cid ∈ [0, 199]（id%200）join customers.id ∈ [0, 199]
+    // → 交集 = [0,199]（无收紧——两区间相同）。构造不对称：
+    // orders 前 6000 行（cid ∈ [0,199]）× customers 仅前 50 行
+    //（id ∈ [0,49]）→ 交集 [0,49] 收紧 orders 侧
+    let db = Database::open(DbOptions {
+        store: StoreConfig::Memory,
+        ..Default::default()
+    })
+    .unwrap();
+    db.set_columnar(Arc::new(dendro_columnar::integrate::CbfColumnar {
+        row_group_rows: 4096,
+    }));
+    let mut s = db.new_session();
+    s.exec("CREATE TABLE big (id BIGINT PRIMARY KEY, ref_id BIGINT, v BIGINT)").unwrap();
+    s.exec("CREATE TABLE small (id BIGINT PRIMARY KEY, w BIGINT)").unwrap();
+    // big: 12k 行 ref_id ∈ [0, 199]
+    for chunk in 0..12 {
+        let vals: Vec<String> = (0..1000)
+            .map(|i| {
+                let id = chunk * 1000 + i + 1;
+                format!("({id}, {}, {})", id % 200, i)
+            })
+            .collect();
+        s.exec(&format!("INSERT INTO big VALUES {}", vals.join(",")))
+            .unwrap();
+    }
+    // small: 50 行 id ∈ [0, 49]
+    {
+        let vals: Vec<String> = (0..50).map(|i| format!("({i}, {i})")).collect();
+        s.exec(&format!("INSERT INTO small VALUES {}", vals.join(",")))
+            .unwrap();
+    }
+    s.exec("CHECKPOINT").unwrap();
+    // 差分：等值 join 的结果两路径等价（传播产生的过滤器不改语义）
+    let mut s_on = db.new_session();
+    s_on.exec("SET dendro.optimize = 'on'").unwrap();
+    let on = rows_of(&s_on.exec("SELECT count(*) FROM big b JOIN small s ON b.ref_id = s.id").unwrap());
+    let mut s_off = db.new_session();
+    s_off.exec("SET dendro.optimize = 'off'").unwrap();
+    let off = rows_of(&s_off.exec("SELECT count(*) FROM big b JOIN small s ON b.ref_id = s.id").unwrap());
+    // 期望：每 small.id（50 个）× big 中 ref_id=i 的行数（12000/200=60）= 3000
+    assert_rows_equiv("stat_prop join equivalence", &on.0, &on.1, &off.0, &off.1, false);
+    // EXPLAIN 验证：big 侧的 scan 应出现传播产生的范围过滤（est 更小）
+    let text = {
+        let r = s_on
+            .exec("EXPLAIN ANALYZE SELECT count(*) FROM big b JOIN small s ON b.ref_id = s.id")
+            .unwrap();
+        match &r[0] {
+            Output::Rows(rs) => rs
+                .text_rows()
+                .iter()
+                .map(|r| r[0].clone().unwrap_or_default())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            _ => panic!(),
+        }
+    };
+    // 传播后 big 的 est 应显著小于 12000（受 [0,49] 交集收紧）
+    let est: u64 = text
+        .lines()
+        .find(|l| l.contains("scan big"))
+        .and_then(|l| l.split("est=").nth(1))
+        .and_then(|e| e.split(|c: char| !c.is_ascii_digit()).next())
+        .and_then(|e| e.parse().ok())
+        .unwrap_or(u64::MAX);
+    assert!(est < 12000, "传播后 est 应收紧：est={est} (full=12000)\n{text}");
+}
