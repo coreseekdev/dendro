@@ -320,3 +320,86 @@ fn stat_prop_injects_range_on_wider_side() {
         .unwrap_or(u64::MAX);
     assert!(est < 12000, "传播后 est 应收紧：est={est} (full=12000)\n{text}");
 }
+
+// ---------- SOTA P3：等值谓词复制下推 ----------
+
+#[test]
+fn eq_copy_pushes_constant_through_join() {
+    let db = fixture();
+    // WHERE o.total = 500 → ON o.cid = c.id → 复制 c.id = 500 不正确
+    //（o.total 与 c.id 无等值对）。构造正确场景：
+    // WHERE o.cid = 5 → ON o.cid = c.id → 复制 c.id = 5 到 c 侧
+    let mut s = db.new_session();
+    s.exec("SET dendro.optimize = 'on'").unwrap();
+    let r = s
+        .exec("SELECT count(*) FROM orders o JOIN customers c ON o.cid = c.id WHERE o.cid = 5")
+        .unwrap();
+    let on = match &r[0] {
+        Output::Rows(rs) => rs.text_rows()[0][0].clone().unwrap(),
+        _ => panic!(),
+    };
+    // 差分
+    let mut s_off = db.new_session();
+    s_off.exec("SET dendro.optimize = 'off'").unwrap();
+    let r_off = s_off
+        .exec("SELECT count(*) FROM orders o JOIN customers c ON o.cid = c.id WHERE o.cid = 5")
+        .unwrap();
+    let off = match &r_off[0] {
+        Output::Rows(rs) => rs.text_rows()[0][0].clone().unwrap(),
+        _ => panic!(),
+    };
+    assert_eq!(on, off, "eq_copy 差分");
+    // 期望：12000 行中 cid=5 的有 60 行（12000/200）
+    assert_eq!(on.parse::<i64>().unwrap(), 60, "cid=5 匹配 60 行");
+    // EXPLAIN ANALYZE：c 侧 est 应显著收紧（=5 → 200 行中 1 行）
+    let text = {
+        let r = s
+            .exec("EXPLAIN ANALYZE SELECT count(*) FROM orders o JOIN customers c ON o.cid = c.id WHERE o.cid = 5")
+            .unwrap();
+        match &r[0] {
+            Output::Rows(rs) => rs
+                .text_rows()
+                .iter()
+                .map(|r| r[0].clone().unwrap_or_default())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            _ => panic!(),
+        }
+    };
+    let c_est: u64 = text
+        .lines()
+        .find(|l| l.contains("scan customers") && l.contains("est="))
+        .and_then(|l| l.split("est=").nth(1))
+        .and_then(|e| e.split(|c: char| !c.is_ascii_digit()).next())
+        .and_then(|e| e.parse().ok())
+        .unwrap_or(u64::MAX);
+    assert!(
+        c_est < 200,
+        "eq_copy 后 customers est 应收紧：est={c_est} (full=200)\n{text}"
+    );
+}
+
+#[test]
+fn eq_copy_range_predicates() {
+    let db = fixture();
+    // WHERE o.cid >= 190 → ON o.cid = c.id → 复制 c.id >= 190
+    let mut s_on = db.new_session();
+    s_on.exec("SET dendro.optimize = 'on'").unwrap();
+    let r = s_on
+        .exec("SELECT count(*) FROM orders o JOIN customers c ON o.cid = c.id WHERE o.cid >= 190")
+        .unwrap();
+    let on = match &r[0] {
+        Output::Rows(rs) => rs.text_rows()[0][0].clone().unwrap(),
+        _ => panic!(),
+    };
+    let mut s_off = db.new_session();
+    s_off.exec("SET dendro.optimize = 'off'").unwrap();
+    let r_off = s_off
+        .exec("SELECT count(*) FROM orders o JOIN customers c ON o.cid = c.id WHERE o.cid >= 190")
+        .unwrap();
+    let off = match &r_off[0] {
+        Output::Rows(rs) => rs.text_rows()[0][0].clone().unwrap(),
+        _ => panic!(),
+    };
+    assert_eq!(on, off, "范围复制差分");
+}

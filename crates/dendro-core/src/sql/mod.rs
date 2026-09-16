@@ -813,6 +813,7 @@ pub(crate) fn exec_statement(
                 let mut plan = crate::ir::plan::build_plan(&q)?;
                 let pushed = crate::ir::plan::rewrite_pushdown(&mut plan);
                 crate::sql::optimize::rewrite_stat_prop(&mut plan, db, sess);
+                crate::sql::optimize::rewrite_eq_copy(&mut plan);
                 crate::sql::optimize::rewrite_join_order(&mut plan, db, sess);
                 // 覆盖判定复用（Select 形态；集合操作顶等）
                 let covered = match &*q.body {
@@ -974,6 +975,7 @@ pub(crate) fn exec_statement(
                     if let Ok(mut plan) = crate::ir::plan::build_plan(q) {
                         let pushed = crate::ir::plan::rewrite_pushdown(&mut plan);
                         crate::sql::optimize::rewrite_stat_prop(&mut plan, db, sess);
+                crate::sql::optimize::rewrite_eq_copy(&mut plan);
                 crate::sql::optimize::rewrite_join_order(&mut plan, db, sess);
                         let desc = crate::ir::plan::pushdown_desc(&pushed);
                         if !desc.is_empty() {

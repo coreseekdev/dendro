@@ -127,6 +127,42 @@ pub fn estimate_filter_rows(
                         walk(left, stats, names, sels);
                         walk(right, stats, names, sels);
                     }
+                    BO::Eq => {
+                        // 等值：sel ≈ 1/ndv（区间宽 + 1 上界近似——
+                        // eq_copy 复制的 `col = N` 谓词需要此分支）
+                        for (a, b) in [
+                            (left.as_ref(), right.as_ref()),
+                            (right.as_ref(), left.as_ref()),
+                        ] {
+                            let col_name: Option<&String> = match a {
+                                Expr::Identifier(id) => Some(&id.value),
+                                Expr::CompoundIdentifier(parts) => {
+                                    parts.last().as_ref().map(|p| &p.value)
+                                }
+                                _ => None,
+                            };
+                            let val = match b {
+                                Expr::Value(vws) => {
+                                    Some(expr::value_from_parser(vws.value.clone()))
+                                }
+                                _ => None,
+                            };
+                            if let (Some(id), Some(_)) = (col_name, val) {
+                                if let Some(ci) = names
+                                    .iter()
+                                    .position(|n| n.eq_ignore_ascii_case(id))
+                                {
+                                    let cs = &stats.cols[ci];
+                                    if cs.has_data {
+                                        let span =
+                                            cs.max.saturating_sub(cs.min) + 1;
+                                        sels.push(1.0 / (span as f64));
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
                     BO::Gt | BO::GtEq | BO::Lt | BO::LtEq => {
                         let op_s = match op {
                             BO::Gt => ">",

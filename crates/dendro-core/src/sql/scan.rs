@@ -113,6 +113,7 @@ pub(crate) fn eval_query(
                 if let Ok(mut plan) = crate::ir::plan::build_plan(q) {
                     crate::ir::plan::rewrite_pushdown(&mut plan);
                     crate::sql::optimize::rewrite_stat_prop(&mut plan, db, sess);
+                    crate::sql::optimize::rewrite_eq_copy(&mut plan);
                     crate::sql::optimize::rewrite_join_order(&mut plan, db, sess);
                     let top_ok = matches!(
                         &plan,
@@ -386,6 +387,7 @@ pub(crate) fn eval_query(
             let pushed = crate::ir::plan::rewrite_pushdown(p);
             // O-4'：INNER 链贪心重排（估算门控——无统计自动不动）
             crate::sql::optimize::rewrite_stat_prop(p, db, sess);
+            crate::sql::optimize::rewrite_eq_copy(p);
             crate::sql::optimize::rewrite_join_order(p, db, sess);
             pushed
         }

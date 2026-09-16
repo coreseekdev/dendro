@@ -1061,3 +1061,185 @@ mod tests {
         assert!(r.contains("id"), "列引用不应被消除: {r}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// SOTA P3：等值谓词复制下推（DuckDB Filter Pushdown 的等值复制规则）
+// `WHERE a.x = 5 AND a.x = b.y` → pushdown 后 a 侧 Filter{a.x = 5}，
+// ON 等值对 a.x = b.y → 可复制为 b.y = 5（INNER join 语义：
+// 结果只含 a.x = b.y 的对，a.x = 5 的行 join 的对侧必有 b.y = 5）
+// 范围谓词同理（a.x > 10 → b.y > 10：join 结果中 b.y = a.x > 10）
+// ---------------------------------------------------------------------------
+
+/// 等值谓词复制：join ON 等值对 (l.col, r.col)，若 l 侧 Filter 有
+/// 关于 l.col 的常量比较，复制到 r.col 并注入 r 侧 Filter{Scan}
+pub fn rewrite_eq_copy(plan: &mut Plan2) {
+    rewrite_eq_copy_walk(plan);
+}
+
+fn rewrite_eq_copy_walk(plan: &mut Plan2) {
+    use crate::ir::plan::Plan;
+    match plan {
+        Plan::Join { kind, left, right, on } => {
+            rewrite_eq_copy_walk(left);
+            rewrite_eq_copy_walk(right);
+            if kind == &"inner" {
+                try_eq_copy(left, right, on);
+            }
+        }
+        Plan::Filter { input, .. }
+        | Plan::Project { input, .. }
+        | Plan::Aggregate { input, .. }
+        | Plan::Sort { input, .. }
+        | Plan::Limit { input, .. } => rewrite_eq_copy_walk(input),
+        Plan::SetOp { left, right, .. } => {
+            rewrite_eq_copy_walk(left);
+            rewrite_eq_copy_walk(right);
+        }
+        Plan::Scan { .. } | Plan::Values => {}
+    }
+}
+
+/// 一对 (col_id, op, 常量值) ——从 Filter 谓词中提取的可复制比较
+#[derive(Debug, Clone)]
+struct CopyablePred {
+    col: String,  // 限定名 "a.x"
+    op: &'static str, // ">=" | "<=" | "=" (只复制这三类)
+    val: i64,     // 数值常量（order 域无关——直接用 i64 值域）
+}
+
+fn try_eq_copy(left: &mut Plan2, right: &mut Plan2, on: &Expr) {
+    let pairs = extract_eq_pairs(on);
+    if pairs.is_empty() {
+        return;
+    }
+    // 从两侧 Filter 提取可复制谓词
+    let l_preds = extract_copyable(left);
+    let r_preds = extract_copyable(right);
+    for (l_id, r_id) in &pairs {
+        // l → r 方向：l 侧谓词中引用 l_id 的，改列名为 r_id 注入 r 侧
+        for p in &l_preds {
+            if p.col == *l_id {
+                inject_copy(right, r_id, p);
+            }
+        }
+        // r → l 方向
+        for p in &r_preds {
+            if p.col == *r_id {
+                inject_copy(left, l_id, p);
+            }
+        }
+    }
+}
+
+/// 从子树中提取可复制的常量比较（Filter{Scan} 内的合取项）
+fn extract_copyable(node: &Plan2) -> Vec<CopyablePred> {
+    use crate::ir::plan::Plan;
+    let mut out = Vec::new();
+    // 只提取 Filter{Scan} 的谓词（叶子层——可安全改写）
+    if let Plan::Filter { pred, input } = node {
+        if matches!(&**input, Plan::Scan { .. }) {
+            collect_copyable(pred, &mut out);
+        }
+    }
+    out
+}
+
+fn collect_copyable(e: &Expr, out: &mut Vec<CopyablePred>) {
+    match e {
+        Expr::BinaryOp {
+            left,
+            op: sqlparser::ast::BinaryOperator::And,
+            right,
+        } => {
+            collect_copyable(left, out);
+            collect_copyable(right, out);
+        }
+        Expr::BinaryOp { left, op, right } => {
+            use sqlparser::ast::BinaryOperator as BO;
+            let op_s = match op {
+                BO::GtEq => ">=",
+                BO::LtEq => "<=",
+                BO::Eq => "=",
+                _ => return,
+            };
+            // 限定名 op 数值常量（或反向）
+            for (a, b, o) in [
+                (left.as_ref(), right.as_ref(), op_s),
+                (
+                    right.as_ref(),
+                    left.as_ref(),
+                    match op_s {
+                        ">=" => "<=",
+                        "<=" => ">=",
+                        _ => "=",
+                    },
+                ),
+            ] {
+                if let (
+                    Expr::CompoundIdentifier(parts),
+                    Expr::Value(vws),
+                ) = (a, b)
+                {
+                    if parts.len() == 2 {
+                        let col = format!(
+                            "{}.{}",
+                            parts[0].value.to_ascii_lowercase(),
+                            parts[1].value.to_ascii_lowercase()
+                        );
+                        if let sqlparser::ast::Value::Number(n, _) = &vws.value {
+                            if let Ok(v) = n.parse::<i64>() {
+                                out.push(CopyablePred {
+                                    col,
+                                    op: o,
+                                    val: v,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// 将可复制谓词注入对侧（改列名后 AND 到 Filter 或新建 Filter）
+fn inject_copy(node: &mut Plan2, target_id: &str, pred: &CopyablePred) {
+    use crate::ir::plan::Plan;
+    let id = |s: &str| Expr::Identifier(sqlparser::ast::Ident::new(s));
+    let num = |v: i64| {
+        Expr::Value(sqlparser::ast::ValueWithSpan {
+            value: sqlparser::ast::Value::Number(v.to_string(), false),
+            span: sqlparser::tokenizer::Span::empty(),
+        })
+    };
+    let target_col = target_id.split('.').next_back().unwrap_or(target_id);
+    let new_pred = Expr::BinaryOp {
+        left: Box::new(id(target_col)),
+        op: match pred.op {
+            ">=" => sqlparser::ast::BinaryOperator::GtEq,
+            "<=" => sqlparser::ast::BinaryOperator::LtEq,
+            _ => sqlparser::ast::BinaryOperator::Eq,
+        },
+        right: Box::new(num(pred.val)),
+    };
+    match node {
+        Plan::Filter {
+            pred: existing,
+            input,
+        } if matches!(&**input, Plan::Scan { .. }) => {
+            *existing = Expr::BinaryOp {
+                left: Box::new(existing.clone()),
+                op: sqlparser::ast::BinaryOperator::And,
+                right: Box::new(new_pred),
+            };
+        }
+        Plan::Scan { .. } => {
+            *node = Plan::Filter {
+                pred: new_pred,
+                input: Box::new(std::mem::replace(node, Plan::Values)),
+            };
+        }
+        _ => {} // 非叶子——防御
+    }
+}

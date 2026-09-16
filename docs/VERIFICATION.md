@@ -30,6 +30,12 @@
   Plan::Project 增 names（别名信息）；Filter{Scan} 谓词下传
   selection 提示（点查/派发判定恢复）。
   门禁：clippy 0 / 463 测试 / 31 slt。
+- **2026-09-16 SOTA P3 落地：等值谓词复制下推**：`WHERE o.cid = 5
+  AND ON o.cid = c.id` → 复制 `c.id = 5` 注入 c 侧 Filter{Scan}
+  （INNER join 语义：结果只含等值对——一侧常量必传导对侧）。范围
+  谓词同理（o.cid >= 190 → c.id >= 190）。伴生：estimate_filter_rows
+  补 Eq 分支（sel ≈ 1/ndv，区间宽上界近似——eq_copy 复制的 `col = N`
+  谓词需要此分支才能影响 est）。
 - **2026-09-16 SOTA P2 落地：Statistics Propagation**：等值 join
   两侧列 [min,max] 区间交集 → 较宽侧注入范围谓词（`ref_id >= lo
   AND ref_id <= hi`——裸名，Filter{Scan} 单因子内无歧义）。CBF
