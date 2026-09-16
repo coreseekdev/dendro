@@ -1,0 +1,91 @@
+; dendro.ir v1 plans golden（生成见 ir/plan.rs tests；人工审阅后提交）
+; corpus: SELECT o.id FROM orders o JOIN customers c ON o.cid = c.id WHERE o.total > 60 AND c.region = 'EU'
+; optimizer: pushdown 2 conjunct(s) → o(1), c(1)
+dendro.ir v1
+plan @q0 {
+  %t0 = table "orders" as "o" {cols = [id, cid, total], pk = [0]}
+  %s0 = scan %t0
+  %f0 = filter %s0, pred "o.total > 60"
+  %t1 = table "customers" as "c" {cols = [id, region], pk = [0]}
+  %s1 = scan %t1
+  %f1 = filter %s1, pred "c.region = 'EU'"
+  %j0 = join inner %f0, %f1 on "o.cid = c.id"
+  %p0 = project %j0 {exprs = [o.id]}
+  yield %p0
+}
+; corpus: SELECT o.id FROM orders o JOIN customers c ON o.cid = c.id WHERE o.total > 60 AND o.cid > c.id
+; optimizer: pushdown 1 conjunct(s) → o(1)
+dendro.ir v1
+plan @q0 {
+  %t0 = table "orders" as "o" {cols = [id, cid, total], pk = [0]}
+  %s0 = scan %t0
+  %f0 = filter %s0, pred "o.total > 60"
+  %t1 = table "customers" as "c" {cols = [id, region], pk = [0]}
+  %s1 = scan %t1
+  %j0 = join inner %f0, %s1 on "o.cid = c.id"
+  %f1 = filter %j0, pred "o.cid > c.id"
+  %p0 = project %f1 {exprs = [o.id]}
+  yield %p0
+}
+; corpus: SELECT o.id FROM orders o LEFT JOIN customers c ON o.cid = c.id WHERE c.region = 'EU' ORDER BY o.id LIMIT 5
+; optimizer: pushdown 1 conjunct(s) → c(1)
+dendro.ir v1
+plan @q0 {
+  %t0 = table "orders" as "o" {cols = [id, cid, total], pk = [0]}
+  %s0 = scan %t0
+  %t1 = table "customers" as "c" {cols = [id, region], pk = [0]}
+  %s1 = scan %t1
+  %f0 = filter %s1, pred "c.region = 'EU'"
+  %j0 = join left %s0, %f0 on "o.cid = c.id"
+  %p0 = project %j0 {exprs = [o.id]}
+  %o0 = sort %p0 {keys = [o.id ASC], limit = 5}
+  yield %o0
+}
+; corpus: SELECT c.region, count(*), sum(o.total) FROM orders o JOIN customers c ON o.cid = c.id WHERE o.total >= 50 GROUP BY c.region HAVING sum(o.total) > 10 ORDER BY c.region
+; optimizer: pushdown 1 conjunct(s) → o(1)
+dendro.ir v1
+plan @q0 {
+  %t0 = table "orders" as "o" {cols = [id, cid, total], pk = [0]}
+  %s0 = scan %t0
+  %f0 = filter %s0, pred "o.total >= 50"
+  %t1 = table "customers" as "c" {cols = [id, region], pk = [0]}
+  %s1 = scan %t1
+  %j0 = join inner %f0, %s1 on "o.cid = c.id"
+  %a0 = aggregate %j0 {keys = [c.region], aggs = [count(*), sum(o.total)]}
+  %f1 = filter %a0, pred "sum(o.total) > 10"
+  %p0 = project %f1 {exprs = [c.region, count(*), sum(o.total)]}
+  %o0 = sort %p0 {keys = [c.region ASC]}
+  yield %o0
+}
+; corpus: SELECT id FROM orders UNION SELECT id FROM customers
+dendro.ir v1
+plan @q0 {
+  %t0 = table "orders" {cols = [id, cid, total], pk = [0]}
+  %s0 = scan %t0
+  %p0 = project %s0 {exprs = [id]}
+  %t1 = table "customers" {cols = [id, region], pk = [0]}
+  %s1 = scan %t1
+  %p1 = project %s1 {exprs = [id]}
+  %u0 = union distinct %p0, %p1
+  yield %u0
+}
+; corpus: SELECT id FROM orders EXCEPT ALL SELECT id FROM customers
+dendro.ir v1
+plan @q0 {
+  %t0 = table "orders" {cols = [id, cid, total], pk = [0]}
+  %s0 = scan %t0
+  %p0 = project %s0 {exprs = [id]}
+  %t1 = table "customers" {cols = [id, region], pk = [0]}
+  %s1 = scan %t1
+  %p1 = project %s1 {exprs = [id]}
+  %u0 = except all %p0, %p1
+  yield %u0
+}
+; corpus: SELECT nope.x FROM no_table nope
+dendro.ir v1
+plan @q0 {
+  %t0 = table "no_table" as "nope" ! unresolved
+  %s0 = scan %t0
+  %p0 = project %s0 {exprs = [nope.x]}
+  yield %p0
+}

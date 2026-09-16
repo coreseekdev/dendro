@@ -302,53 +302,6 @@ pub fn and_all(mut cs: Vec<Expr>) -> Option<Expr> {
     Some(acc)
 }
 
-/// 下推计划：因子键 → 下推合取项（R1+R2 组合；join 查询专用——
-/// 单表查询的下推无收益，既有 pk/点查机制已覆盖）。
-/// 返回 (计划, 应用描述——EXPLAIN 注记)。
-pub fn pushdown_plan(
-    from: &sqlparser::ast::TableWithJoins,
-    selection: Option<&Expr>,
-) -> (Vec<(String, Vec<Expr>)>, String) {
-    let mut factors: Vec<String> = Vec::new();
-    if let Some(k) = factor_key(&from.relation) {
-        factors.push(k);
-    }
-    for j in &from.joins {
-        if let Some(k) = factor_key(&j.relation) {
-            factors.push(k);
-        }
-    }
-    if factors.len() < 2 {
-        return (vec![], String::new()); // 无 join：不下推
-    }
-    let Some(w) = selection else {
-        return (vec![], String::new());
-    };
-    let mut plan: Vec<(String, Vec<Expr>)> = Vec::new();
-    let mut counts: Vec<String> = Vec::new();
-    for c in split_conjuncts(w) {
-        if let Some(k) = conjunct_target(&c, &factors) {
-            if let Some(slot) = plan.iter_mut().find(|(key, _)| *key == k) {
-                slot.1.push(c.clone());
-            } else {
-                plan.push((k.clone(), vec![c.clone()]));
-            }
-        }
-    }
-    if plan.is_empty() {
-        return (vec![], String::new());
-    }
-    for (k, cs) in &plan {
-        counts.push(format!("{k}({})", cs.len()));
-    }
-    let desc = format!(
-        "optimizer: pushdown {} conjunct(s) → {}",
-        plan.iter().map(|(_, cs)| cs.len()).sum::<usize>(),
-        counts.join(", ")
-    );
-    (plan, desc)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

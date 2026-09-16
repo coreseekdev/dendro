@@ -20,6 +20,13 @@
   ④ GRANT/REVOKE 表级 ACL（单点权限门 enforce，exec+prepare 双卡口；
   超户缺省行为不变）。门禁：clippy 0 / 420 测试 / 30 slt 全过。
   下一步：优化器（基于既有逻辑 IR 与 dispatch 纯函数展开）。
+- **2026-09-16 优化器 O-5 + O-2a**：O-5 SortOp top-N 有界堆
+  （ORDER BY+LIMIT 内存 O(n)；与全量排序前缀逐字节一致——含并列
+  稳定序，单测矩阵差分护航）。O-2a 逻辑计划 IR（ir/plan.rs：Plan
+  构建/下推重写/打印；下推决策从 AST 走查迁到计划走查——既有差分
+  全绿零行为变化；EXPLAIN join/集合操作形态从 "pending" 升级为
+  dendro.ir v1 plan 方言真实计划块；golden tests/golden/plans.ir
+  字节级锁定 7 语料）。门禁：clippy 0 / 450 测试 / 31 slt。
 - **2026-09-16 优化器 O-1 + 账本 #28**：规则框架落地（spec 12——
   确定性/语义保持/差分可枚举/EXPLAIN 可见四合同）；R1 合取拆分 +
   R2 单源下推（限定名分类，join 前加性过滤，LEFT 右侧下推安全论证）

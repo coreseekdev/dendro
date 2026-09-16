@@ -56,9 +56,20 @@ SELECT c.region, count(*), sum(o.total) FROM o JOIN c ON o.cid = c.id WHERE o.to
 EU 2 350
 US 1 50
 
-# EXPLAIN 注记（规则可见性）
+# EXPLAIN：注记行 + 真实逻辑计划块（O-2a——join 形态从 pending 升级）
 query T
 EXPLAIN SELECT o.id FROM o JOIN c ON o.cid = c.id WHERE o.total > 60 AND c.region = 'EU'
 ----
 optimizer: pushdown 2 conjunct(s) → o(1), c(1)
-Query (plan detail pending v2c-1 dispatcher)
+dendro.ir v1
+plan @q0 {
+  %t0 = table "o" {cols = [id, cid, total], pk = [0]}
+  %s0 = scan %t0
+  %f0 = filter %s0, pred "o.total > 60"
+  %t1 = table "c" {cols = [id, region], pk = [0]}
+  %s1 = scan %t1
+  %f1 = filter %s1, pred "c.region = 'EU'"
+  %j0 = join inner %f0, %f1 on "o.cid = c.id"
+  %p0 = project %j0 {exprs = [o.id]}
+  yield %p0
+}

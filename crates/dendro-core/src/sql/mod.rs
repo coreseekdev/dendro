@@ -882,18 +882,36 @@ pub(crate) fn exec_statement(
                     }
                 }
             }
-            // O-1（spec 12 §1 合同 4）：优化器注记行——join 查询的
-            // 下推计划人可审（applied 规则可见）
+            // O-2a（spec 12 §1 合同 4 / spec 09 §2）：join 形态输出
+            // 真实逻辑计划（dendro.ir v1 plan 方言，含下推后的优化形态）
+            // ——替换原 "pending" 占位；单表形态保留既有派发+标量块输出
             if let sqlparser::ast::Statement::Query(q) = &inner {
-                if let sqlparser::ast::SetExpr::Select(sel) = &*q.body {
-                    if sel.from.first().is_some_and(|f| !f.joins.is_empty()) {
-                        let (_, desc) = crate::sql::optimize::pushdown_plan(
-                            sel.from.first().unwrap(),
-                            sel.selection.as_ref(),
-                        );
+                // 计划可建且含 join（Select 形态）或为集合操作 → 打印
+                // 真实计划块；单表/不可建形态保留既有输出
+                let planable = match &*q.body {
+                    sqlparser::ast::SetExpr::Select(sel) => {
+                        sel.from.first().is_some_and(|f| !f.joins.is_empty())
+                    }
+                    sqlparser::ast::SetExpr::SetOperation { .. } => true,
+                    _ => false,
+                };
+                if planable {
+                    if let Ok(mut plan) = crate::ir::plan::build_plan(q) {
+                        let pushed = crate::ir::plan::rewrite_pushdown(&mut plan);
+                        let desc = crate::ir::plan::pushdown_desc(&pushed);
                         if !desc.is_empty() {
                             lines.push(desc);
                         }
+                        let lookup = crate::ir::plan::db_schema_lookup(db, sess);
+                        // 逐行成行（slt/sqllogictest 的行=记录约定；多行
+                        // 单元格不参与比较协议）
+                        lines.extend(
+                            crate::ir::plan::print_plan("q0", &plan, &lookup)
+                                .trim_end()
+                                .lines()
+                                .map(String::from),
+                        );
+                        described = true;
                     }
                 }
             }

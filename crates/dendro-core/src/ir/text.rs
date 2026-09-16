@@ -187,8 +187,14 @@ fn bad(msg: &str) -> SqlError {
     SqlError::internal(format!("dendro.ir: {msg}"))
 }
 
+/// SQL 文本片段的 IR 呈现（JSON 转义包裹——谓词/JOIN ON 的确定性
+/// 文本形态；`;` 经 json_escape 内的 \u003b 分支已出注释域）
+pub(crate) fn escape_sql_text(s: &str) -> String {
+    json_escape(s)
+}
+
 /// JSON 字符串转义（§2 约定；含 ASCII 控制字符与引号/反斜杠）
-fn json_escape(s: &str) -> String {
+pub(crate) fn json_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
     for ch in s.chars() {

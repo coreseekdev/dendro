@@ -345,14 +345,14 @@ pub(crate) fn eval_query(
         }
         _ => None,
     };
-    // O-1 R1+R2：join 查询的合取下推计划（单表无收益——pk/点查机制
-    // 已覆盖；优化关闭时跳过——差分轴 SET dendro.optimize）
+    // O-2a：下推决策走逻辑计划（build_plan + rewrite_pushdown——O-1 的
+    // AST 走查已迁移；计划构建失败（派生表等）→ 不下推，查询不受影响。
+    // 优化关闭时跳过——差分轴 SET dendro.optimize）
     let pushed_plan: Vec<(String, Vec<Expr>)> = if sess.optimize_enabled {
-        crate::sql::optimize::pushdown_plan(
-            select.from.first().unwrap_or(&EMPTY_TWJ),
-            select.selection.as_ref(),
-        )
-        .0
+        crate::ir::plan::build_plan(q)
+            .ok()
+            .map(|mut p| crate::ir::plan::rewrite_pushdown(&mut p))
+            .unwrap_or_default()
     } else {
         vec![]
     };
@@ -841,7 +841,7 @@ fn expr_ty(
     }
 }
 
-fn eval_const(v: &Expr) -> Result<i64> {
+pub(crate) fn eval_const(v: &Expr) -> Result<i64> {
     let v = expr::eval(v, &[], &|_| None)?;
     expr::as_i64(&v)
 }
@@ -900,22 +900,6 @@ pub fn resolve_qualified(
     names.iter().position(|n| n.to_ascii_lowercase() == low)
 }
 
-/// 无 FROM 占位（eval_select 的下推计划计算用——from 空时跳过）
-static EMPTY_TWJ: sqlparser::ast::TableWithJoins = sqlparser::ast::TableWithJoins {
-    relation: sqlparser::ast::TableFactor::Table {
-        name: sqlparser::ast::ObjectName(vec![]),
-        alias: None,
-        args: None,
-        with_hints: vec![],
-        version: None,
-        partitions: vec![],
-        with_ordinality: false,
-        sample: None,
-        index_hints: vec![],
-        json_path: None,
-    },
-    joins: vec![],
-};
 
 // ---------- FROM ----------
 
@@ -2647,7 +2631,7 @@ fn projection_names(p: &[SelectItem], tv: &[String], calls: &[AggCall]) -> Resul
     Ok(names)
 }
 
-fn projection_aggregates(p: &[SelectItem]) -> Option<()> {
+pub(crate) fn projection_aggregates(p: &[SelectItem]) -> Option<()> {
     for item in p {
         let e = match item {
             SelectItem::UnnamedExpr(e) => e,
@@ -2712,7 +2696,7 @@ pub(crate) fn fn_distinct(f: &sqlparser::ast::Function) -> bool {
     }
 }
 
-fn has_agg_expr(e: &Expr) -> bool {
+pub(crate) fn has_agg_expr(e: &Expr) -> bool {
     // 深度优先找聚合函数名
     match e {
         Expr::Function(f) => {
