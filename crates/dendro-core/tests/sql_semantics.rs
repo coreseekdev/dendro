@@ -746,8 +746,9 @@ fn views_persist_across_restart() {
 }
 
 #[test]
-fn r21_distinct_explicit_rejection() {
-    // 第二十一轮 R21-17：SELECT DISTINCT 投影静默忽略 = 语义黑洞，改为 0A000
+fn distinct_semantics_first_seen_dedup() {
+    // R21-17 曾显式拒绝（防静默忽略的语义黑洞）；现实现——投影后
+    // first-seen 去重（保序），与 GROUP BY 等价（差分）
     let db = Database::open(DbOptions::memory()).unwrap();
     let mut s = db.new_session();
     s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
@@ -756,11 +757,31 @@ fn r21_distinct_explicit_rejection() {
         s.exec(&format!("INSERT INTO t VALUES ({}, 'v{}')", i, i % 3))
             .unwrap();
     }
-    let e = match s.exec("SELECT DISTINCT v FROM t") {
-        Ok(_) => panic!("SELECT DISTINCT 应显式拒绝"),
-        Err(e) => e,
+    use dendro_core::types::Output;
+    let mut vs = |sql: &str| -> Vec<String> {
+        match &s.exec(sql).unwrap()[0] {
+            Output::Rows(rs) => rs
+                .text_rows()
+                .iter()
+                .map(|r| r[0].clone().unwrap())
+                .collect(),
+            _ => panic!(),
+        }
     };
-    assert_eq!(e.state, "0A000", "{e}");
+    let d = vs("SELECT DISTINCT v FROM t");
+    assert_eq!(d.len(), 3, "v0/v1/v2 三组：{d:?}");
+    // 等价 GROUP BY 差分（多重集）
+    let g = vs("SELECT v FROM t GROUP BY v ORDER BY v");
+    let mut ds = d.clone();
+    ds.sort();
+    assert_eq!(ds, g, "DISTINCT ≡ GROUP BY");
+    // DISTINCT + WHERE + ORDER BY（去重在排序前）
+    // id≤4：v = id%3 → v1,v2,v0,v1 → 三值
+    let d2 = vs("SELECT DISTINCT v FROM t WHERE id <= 4 ORDER BY v");
+    assert_eq!(d2, vec!["v0", "v1", "v2"], "{d2:?}");
+    // DISTINCT 多列
+    let d3 = vs("SELECT DISTINCT v, id % 2 FROM t WHERE id <= 2");
+    assert_eq!(d3.len(), 2, "{d3:?}");
 }
 
 // ---- P2-6g：PK 范围下推语义回归（含审计 R6-1 P0：矛盾范围 panic）----
@@ -803,6 +824,7 @@ fn seed_range_table(db: &std::sync::Arc<Database>, overlay_rows: usize) {
     ))
     .unwrap();
 }
+
 
 #[test]
 fn pk_range_pushdown_semantics() {

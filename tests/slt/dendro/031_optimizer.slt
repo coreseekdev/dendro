@@ -73,3 +73,31 @@ plan @q0 {
   %p0 = project %j0 {exprs = [o.id], names = ["o.id"]}
   yield %p0
 }
+
+# SELECT DISTINCT（R21-17 拒绝 → 实现：投影后 first-seen 去重）
+statement ok
+CREATE TABLE d (id BIGINT PRIMARY KEY, v TEXT)
+
+statement ok
+INSERT INTO d VALUES (1,'v1'),(2,'v2'),(3,'v0'),(4,'v1'),(5,'v0')
+
+query T
+SELECT DISTINCT v FROM d ORDER BY v
+----
+v0
+v1
+v2
+
+# DISTINCT + WHERE + 多列
+query TT
+SELECT DISTINCT v, id % 2 FROM d WHERE id <= 3 ORDER BY 1, 2
+----
+v0 1
+v1 1
+v2 0
+
+# DISTINCT ≡ GROUP BY（等价性）
+query I
+SELECT count(*) FROM (SELECT DISTINCT v FROM d) x
+----
+3

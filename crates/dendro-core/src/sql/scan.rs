@@ -333,10 +333,13 @@ pub(crate) fn eval_query(
             )))
         }
     };
-    // DISTINCT 投影显式拒绝（第二十一轮 R21-17：静默忽略 = 语义黑洞）
-    if select.distinct.is_some() {
-        return Err(SqlError::not_supported("SELECT DISTINCT"));
-    }
+    // DISTINCT（第二十一轮 R21-17 曾显式拒绝；现实现：投影后 first-seen
+    // 去重、ORDER BY 前——键为类型标签 + 值的 debug 编码（与组键同口径，
+    // 防 Int64(1)↔Utf8("1") 跨类型碰撞）
+    let distinct = select
+        .distinct
+        .as_ref()
+        .is_some_and(|d| matches!(d, sqlparser::ast::Distinct::Distinct));
     // Q-1 LIMIT 下推：无 ORDER BY **且无 WHERE** 时扫描期早停——
     // WHERE 过滤后行数未知，先截断会静默漏行（第十八轮 R18-1 探针实证：
     // WHERE id>=900 LIMIT 5 曾返回 0 行）；有 ORDER BY 需全量排序，不下推
@@ -382,7 +385,10 @@ pub(crate) fn eval_query(
     if let Some(p) = qplan.as_ref() {
         if plan_exec_covered(p, select, q) {
             let masks = plan_scan_masks(db, sess, p);
-            let (tv, _layout) = exec_plan(db, sess, p, snapshot, &masks)?;
+            let (mut tv, _layout) = exec_plan(db, sess, p, snapshot, &masks)?;
+            if distinct {
+                dedup_rows(&mut tv.rows);
+            }
             return Ok(tv);
         }
     }
@@ -530,6 +536,9 @@ pub(crate) fn eval_query(
         let (names, proj_rows) = project(&select.projection, &tv, sess, qres)?;
         out_names = names;
         out_rows = proj_rows;
+    }
+    if distinct {
+        dedup_rows(&mut out_rows);
     }
     let order_exprs: &[OrderByExpr] = match q.order_by.as_ref().map(|o| &o.kind) {
         Some(sqlparser::ast::OrderByKind::Expressions(exprs)) => exprs,
@@ -1190,6 +1199,16 @@ fn exec_aggregate_composite(
         names: proj_names.to_vec(),
         rows,
     })
+}
+
+/// 行集 first-seen 去重（SELECT DISTINCT / 保序；键 = 类型标签 + 值
+/// debug 编码——组键同口径，防跨类型碰撞）
+fn dedup_rows(rows: &mut Vec<Vec<SqlValue>>) {
+    let mut seen = std::collections::HashSet::new();
+    rows.retain(|r| {
+        let key: String = r.iter().map(|v| format!("{v:?}")).collect::<Vec<_>>().join("\u{1}");
+        seen.insert(key)
+    });
 }
 
 /// 集合操作应用（O-2c+ 提取：eval_query 与 exec_plan 共享——防漂移）。

@@ -30,6 +30,10 @@
   Plan::Project 增 names（别名信息）；Filter{Scan} 谓词下传
   selection 提示（点查/派发判定恢复）。
   门禁：clippy 0 / 463 测试 / 31 slt。
+- **2026-09-16 SELECT DISTINCT 实现**（R21-17 的显式拒绝闭环）：
+  投影后 first-seen 去重、ORDER BY 前；键 = 类型标签 + 值 debug
+  编码（组键同口径防跨类型碰撞）；计划/AST 双路径同点接入。
+  语义测试含 DISTINCT ≡ GROUP BY 差分与 WHERE/多列/子查询计数。
 - **2026-09-16 优化器 O-2c+（远期清单收口）**：A1/A2 SetOp+Sort
   计划执行（apply_setop 提取共享；Sort{Project} 键回退——镜像
   order_key_value 语义）；A3 Aggregate 组合模式执行（display→
