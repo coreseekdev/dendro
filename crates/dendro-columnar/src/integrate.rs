@@ -172,10 +172,46 @@ impl ColumnarStore for CbfColumnar {
                     continue;
                 }
             }
-            let data = obj
-                .get(&seg.path)
-                .map_err(|e| SqlError::io(format!("cbf get: {e}")))?;
-            let footer = read_footer(&data).map_err(|e| SqlError::internal(e.to_string()))?;
+            // O-3+ 稀疏读：有裁剪列时 footer 与所需块经 get_range 取
+            //（跳列的 IO 面——不再整文件 get）；无裁剪维持整文件读
+            let pruned = col_mask.is_some_and(|m| m.iter().any(|&b| !b));
+            let data: bytes::Bytes = if pruned {
+                bytes::Bytes::new()
+            } else {
+                obj.get(&seg.path)
+                    .map_err(|e| SqlError::io(format!("cbf get: {e}")))?
+            };
+            let footer = if pruned {
+                let len = obj
+                    .head(&seg.path)
+                    .map_err(|e| SqlError::io(format!("cbf head: {e}")))?
+                    .ok_or_else(|| SqlError::io("cbf segment missing"))?
+                    .len;
+                let tail = obj
+                    .get_range(&seg.path, len - 8, 8)
+                    .map_err(|e| SqlError::io(format!("cbf tail: {e}")))?;
+                let flen = u32::from_le_bytes([tail[0], tail[1], tail[2], tail[3]]) as u64;
+                let fbody = obj
+                    .get_range(&seg.path, len - flen, (flen - 8) as usize)
+                    .map_err(|e| SqlError::io(format!("cbf footer: {e}")))?;
+                crate::footer::parse_footer_from(&tail, &fbody)
+                    .map_err(|e| SqlError::internal(e.to_string()))?
+            } else {
+                read_footer(&data).map_err(|e| SqlError::internal(e.to_string()))?
+            };
+            // 稀疏字节源（块头/块数据/validity 各自 get_range）
+            let sparse_fetch: Option<Box<dyn Fn(u64, usize) -> crate::Result<Vec<u8>> + '_>> =
+                if pruned {
+                    let path = seg.path.clone();
+                    let obj2 = obj.clone();
+                    Some(Box::new(move |off: u64, n: usize| {
+                        obj2.get_range(&path, off, n)
+                            .map(|b| b.to_vec())
+                            .map_err(|e| crate::Error::InvalidInput(format!("range: {e}")))
+                    }))
+                } else {
+                    None
+                };
             for rg in 0..footer.rg_count {
                 let rgm = &footer.rgs[rg];
                 if rgm.cols.is_empty() {
@@ -205,6 +241,10 @@ impl ColumnarStore for CbfColumnar {
                         // 列 chunk；批宽恒 = schema 宽——消费端零映射）
                         use arrow::array::new_null_array;
                         cols.push(new_null_array(&null_ty(), rgm.rows as usize));
+                    } else if let Some(f) = &sparse_fetch {
+                        let arr = crate::reader::read_column_chunk_fetch(f, &footer, rg, ci)
+                            .map_err(|e| SqlError::internal(e.to_string()))?;
+                        cols.push(arr);
                     } else {
                         let arr = read_column_chunk(&data, &footer, rg, ci)
                             .map_err(|e| SqlError::internal(e.to_string()))?;

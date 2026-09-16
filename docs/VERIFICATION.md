@@ -20,6 +20,16 @@
   ④ GRANT/REVOKE 表级 ACL（单点权限门 enforce，exec+prepare 双卡口；
   超户缺省行为不变）。门禁：clippy 0 / 420 测试 / 30 slt 全过。
   下一步：优化器（基于既有逻辑 IR 与 dispatch 纯函数展开）。
+- **2026-09-16 优化器 O-4 + O-2b + ObjStore 稀疏读**：O-4 INNER
+  join 构建侧按实际基数选择（join 时两侧已扫描——rows.len() 即精确
+  值；小侧建表 O(min)；输出列序恒 left++right，#28 布局/残留合取
+  不变；多重集差分）。O-2b plan 方言 parse/verify 闭环（fail-closed；
+  9 语料 parse→verify→再 print 字节恒等——sqlparser Expr
+  Display→parse 稳定性锁定；EXPLAIN 计划块可 parse 回放）。稀疏读：
+  CBF 掩码扫描经 get_range 取 footer+所需块（footer 拆 tail/body
+  解析；decode 走 fetch 闭包；跳列 IO——计数测试：2/5 列掩码
+  读字节 < 全读一半且值一致）。
+  门禁：clippy 0 / 463 测试 / 31 slt。
 - **2026-09-16 优化器 O-3（投影裁剪）**：单表查询列需求位图
   （column_mask：投影/WHERE/GROUP/HAVING/ORDER 全引用面走查 +
   CASE 臂补齐 + pk 恒留 + fail-open——通配/未知名即放弃）；CBF

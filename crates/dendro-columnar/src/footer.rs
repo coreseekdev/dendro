@@ -235,8 +235,20 @@ pub(crate) fn parse_footer(data: &[u8]) -> Result<CbfFooter> {
     if footer_len < 8 || footer_len > data.len() {
         return Err(Error::Corrupt(format!("footer_len {footer_len} invalid")));
     }
-    let footer_offset = (data.len() - footer_len) as u64;
-    let mut c: &[u8] = &data[data.len() - footer_len..data.len() - 8];
+    parse_footer_from(tail, &data[data.len() - footer_len..data.len() - 8])
+}
+
+/// 稀疏读入口（O-3+）：tail（8B）与 footer 体分离取得时解析
+pub(crate) fn parse_footer_from(tail: &[u8], body: &[u8]) -> Result<CbfFooter> {
+    if u32::from_le_bytes([tail[4], tail[5], tail[6], tail[7]]) != FILE_MAGIC {
+        return Err(Error::Corrupt("file magic mismatch".into()));
+    }
+    let footer_len = u32::from_le_bytes([tail[0], tail[1], tail[2], tail[3]]) as usize;
+    if footer_len < 8 || footer_len != body.len() + 8 {
+        return Err(Error::Corrupt(format!("footer_len {footer_len} invalid")));
+    }
+    let footer_offset = 0u64; // 偏移仅元数据展示用途——稀疏路径无全文件基址
+    let mut c: &[u8] = body;
     macro_rules! need {
         ($n:expr, $what:expr) => {
             if c.len() < $n {
