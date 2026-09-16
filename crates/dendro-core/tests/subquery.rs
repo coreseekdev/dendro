@@ -154,3 +154,52 @@ fn predicate_eval_error_propagates_not_silent() {
         "应报列不存在而非静默空集：{e}"
     );
 }
+
+// ---------- 递归 CTE ----------
+
+#[test]
+fn recursive_cte_fibonacci() {
+    let d = db(); setup(&d);
+    let mut s = d.new_session();
+    let r = s.exec(
+        "WITH RECURSIVE fib AS (\
+         SELECT 1 AS n, 0 AS a, 1 AS b \
+         UNION ALL \
+         SELECT n + 1, b, a + b FROM fib WHERE n < 11\
+         ) SELECT a FROM fib WHERE n = 11",
+    );
+    match r {
+        Ok(o) => match &o[0] {
+            dendro_core::types::Output::Rows(rs) => {
+                // 行 n 的 a = fib(n-1)（0 起）：n=11 → fib(10)=55
+                let v = rs.text_rows()[0][0].clone().unwrap();
+                assert_eq!(v, "55", "fib(10) = 55（0 1 1 2 3 5 8 13 21 34 55）");
+            }
+            _ => panic!(),
+        },
+        Err(e) => panic!("{e}"),
+    }
+}
+
+#[test]
+fn recursive_cte_sum() {
+    let d = db(); setup(&d);
+    let mut s = d.new_session();
+    let r = s.exec(
+        "WITH RECURSIVE cnt AS (\
+         SELECT 1 AS n \
+         UNION ALL \
+         SELECT n + 1 FROM cnt WHERE n < 100\
+         ) SELECT sum(n) FROM cnt",
+    );
+    match r {
+        Ok(o) => match &o[0] {
+            dendro_core::types::Output::Rows(rs) => {
+                let v = rs.text_rows()[0][0].clone().unwrap();
+                assert_eq!(v, "5050", "sum(1..100) = 5050");
+            }
+            _ => panic!(),
+        },
+        Err(e) => panic!("{e}"),
+    }
+}

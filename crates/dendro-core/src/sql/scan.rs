@@ -98,12 +98,15 @@ pub(crate) fn eval_query(
     // 窗口函数在 eval_select 投影段处理（真实现——不再拒绝）
 
     reject_offset_comma(q)?;
-    // P0：CTE 内联展开（非递归 = Derived 替换；递归/物化/列别名拒绝）
-    // —— 所有递归回 eval_query 的路径（派生表/视图/子查询内联/集合
-    // 操作）自动获益（expand_ctes 纯函数——无副作用）
+    // P0：CTE 展开——非递归走 expand_ctes（纯函数）；递归走迭代不动点
+    //（需本函数的求值上下文 db/sess/snapshot——optimize 纯函数不可达）
     let q_expanded;
-    let q: &Query = if q.with.is_some() {
-        q_expanded = crate::sql::optimize::expand_ctes(q)?;
+    let q: &Query = if let Some(with) = &q.with {
+        if with.recursive {
+            q_expanded = eval_recursive_cte(db, sess, q, with, snapshot)?;
+        } else {
+            q_expanded = crate::sql::optimize::expand_ctes(q)?;
+        }
         &q_expanded
     } else {
         q
@@ -111,6 +114,20 @@ pub(crate) fn eval_query(
     let set_expr = q.body.as_ref();
     // S-4：UNION / UNION ALL（v1：两侧子查询独立求值 → 拼接；UNION
     // 额外按全行文本去重；列数须匹配，列名取左侧）
+    // P0：VALUES 直接求值（递归 CTE 的迭代轮回 Derived 需要）
+    if let SetExpr::Values(vals) = set_expr {
+        let mut rows = Vec::new();
+        for parens in &vals.rows {
+            let mut row = Vec::new();
+            for e in &parens.content {
+                row.push(expr::eval(e, &[], &|_| None)?);
+            }
+            rows.push(row);
+        }
+        let n = rows.first().map(|r| r.len()).unwrap_or(0);
+        let names: Vec<String> = (0..n).map(|i| format!("column{}", i + 1)).collect();
+        return Ok(TableView { names, rows });
+    }
     let select = match set_expr {
         SetExpr::Select(s) => s.as_ref(),
         SetExpr::SetOperation {
@@ -3440,8 +3457,20 @@ fn table_scan(
             let names = schema.columns.iter().map(|c| c.name.clone()).collect();
             Ok(TableView { names, rows })
         }
-        TableFactor::Derived { subquery, .. } => {
-            let view = eval_query(db, sess, subquery.as_ref(), snapshot)?;
+        TableFactor::Derived { subquery, alias, .. } => {
+            let mut view = eval_query(db, sess, subquery.as_ref(), snapshot)?;
+            // `(VALUES ...) AS r(n, ...)`：alias 列名覆盖子查询输出名
+            // （VALUES 求值产出 column1/column2——不覆盖则外层 WHERE/投影
+            // 按真实列名解析失败；递归 CTE 注入依赖此路径）
+            if let Some(a) = alias {
+                if !a.columns.is_empty() && a.columns.len() == view.names.len() {
+                    view.names = a
+                        .columns
+                        .iter()
+                        .map(|c| c.name.value.clone())
+                        .collect();
+                }
+            }
             Ok(view)
         }
         other => Err(SqlError::not_supported(format!(
@@ -4871,3 +4900,201 @@ fn eval_windows(
     Ok(())
 }
 
+
+// ---------------------------------------------------------------------------
+// P0：递归 CTE（WITH RECURSIVE 迭代不动点）
+// r AS (base UNION [ALL] recursive)
+// → R0 = eval(base)；R(k+1) = eval(recursive, r ← Rk as Derived)
+// → R(k+1) 为空或上限 → 终止；结果 = R0 ∪ R1 ∪ ...
+// 返回的 Query 将 r 替换为 Derived{总结果}（后续走正常查询路径）
+// ---------------------------------------------------------------------------
+
+fn eval_recursive_cte(
+    db: &Database,
+    sess: &mut Session,
+    q: &Query,
+    with: &sqlparser::ast::With,
+    snapshot: u64,
+) -> Result<Query> {
+    let cte = with.cte_tables.first().ok_or_else(|| {
+        SqlError::not_supported("WITH RECURSIVE with no CTE")
+    })?;
+    let r_name = cte.alias.name.value.to_ascii_lowercase();
+    if cte.materialized.is_some() || !cte.alias.columns.is_empty() {
+        return Err(SqlError::not_supported(
+            "WITH RECURSIVE with MATERIALIZED / column aliases",
+        ));
+    }
+    // CTE 体必须是 UNION [ALL]（base 臂 + 递归臂）
+    let (base_se, rec_se, _all) = match &*cte.query.body {
+        sqlparser::ast::SetExpr::SetOperation {
+            op: sqlparser::ast::SetOperator::Union,
+            set_quantifier,
+            left,
+            right,
+        } => (
+            left,
+            right,
+            !matches!(set_quantifier, sqlparser::ast::SetQuantifier::Distinct | sqlparser::ast::SetQuantifier::None),
+        ),
+        _ => {
+            return Err(SqlError::not_supported(
+                "WITH RECURSIVE body must be UNION [ALL]",
+            ))
+        }
+    };
+    // base 求值（不含 r 引用）
+    let base_query = mk_single_query(base_se);
+    let base_tv = eval_query(db, sess, &base_query, snapshot)?;
+    // 逐轮迭代：递归臂中 r → Derived(VALUES 已积累行)，求值至不动点
+    let mut all_rows = base_tv.rows.clone();
+    const MAX_ITER: usize = 200;
+    const MAX_ROWS: usize = 1000; // 行数上限（防发散查询）
+    for _ in 0..MAX_ITER {
+        if all_rows.len() >= MAX_ROWS {
+            break;
+        }
+        let mut rec_q = mk_single_query(rec_se);
+        replace_rec_ref(
+            &mut rec_q,
+            &r_name,
+            rows_to_exprs(&all_rows),
+            &base_tv.names,
+        );
+        let rec_tv = eval_query(db, sess, &rec_q, snapshot)?;
+        if rec_tv.rows.is_empty() {
+            break; // 不动点
+        }
+        // UNION ALL 追加；UNION DISTINCT 语义按全行文本去重
+        all_rows.extend(rec_tv.rows.iter().cloned());
+        let mut seen = std::collections::HashSet::new();
+        all_rows.retain(|row| {
+            let key: String = row
+                .iter()
+                .map(|v| expr::to_text(v.clone()))
+                .collect::<Vec<_>>()
+                .join("\u{1}");
+            seen.insert(key)
+        });
+    }
+    // 结果 Query：r 替换为 Derived(VALUES all_rows)，外层查询正常求值
+    let mut out = q.clone();
+    out.with = None;
+    replace_rec_ref(&mut out, &r_name, rows_to_exprs(&all_rows), &base_tv.names);
+    Ok(out)
+}
+
+/// 行值 → 字面量表达式矩阵（VALUES 注入用）
+fn rows_to_exprs(rows: &[Vec<SqlValue>]) -> Vec<Vec<Expr>> {
+    rows.iter()
+        .map(|row| row.iter().map(value_literal_expr).collect())
+        .collect()
+}
+
+fn value_literal_expr(v: &SqlValue) -> Expr {
+    let value = match v {
+        SqlValue::Int64(i) => sqlparser::ast::Value::Number(i.to_string(), false),
+        SqlValue::Int32(i) => sqlparser::ast::Value::Number(i.to_string(), false),
+        SqlValue::Float64(f) => sqlparser::ast::Value::Number(f.to_string(), false),
+        SqlValue::Utf8(s) => sqlparser::ast::Value::SingleQuotedString(s.clone()),
+        SqlValue::Bool(b) => sqlparser::ast::Value::Boolean(*b),
+        _ => sqlparser::ast::Value::Null,
+    };
+    Expr::Value(sqlparser::ast::ValueWithSpan {
+        value,
+        span: sqlparser::tokenizer::Span::empty(),
+    })
+}
+
+fn mk_single_query(se: &sqlparser::ast::SetExpr) -> Query {
+    Query {
+        with: None,
+        body: Box::new(se.clone()),
+        order_by: None,
+        limit_clause: None,
+        fetch: None,
+        locks: Vec::new(),
+        for_clause: None,
+        settings: None,
+        format_clause: None,
+        pipe_operators: Vec::new(),
+    }
+}
+
+/// 递归臂中 r 的表引用 → Derived(VALUES rows)
+fn replace_rec_ref(
+    q: &mut Query,
+    r_name: &str,
+    rows: Vec<Vec<Expr>>,
+    names: &[String],
+) {
+    if let sqlparser::ast::SetExpr::Select(sel) = &mut *q.body {
+        let derived = mk_values_derived(&rows, names, r_name);
+        for twj in sel.from.iter_mut() {
+            replace_factor_rec(&mut twj.relation, r_name, &derived);
+            for j in twj.joins.iter_mut() {
+                replace_factor_rec(&mut j.relation, r_name, &derived);
+            }
+        }
+    }
+}
+
+fn mk_values_derived(
+    rows: &[Vec<Expr>],
+    names: &[String],
+    r_name: &str,
+) -> TableFactor {
+    // AST 直构 `(VALUES ...) AS r(col, ...)`——零 SQL 文本、零重解析。
+    // （旧方案：UNION ALL of SELECT 文本每轮重 parse 增长中的链，
+    // 迭代上限提到 200 后解析/求值递归栈溢出）
+    TableFactor::Derived {
+        lateral: false,
+        subquery: Box::new(Query {
+            with: None,
+            body: Box::new(sqlparser::ast::SetExpr::Values(sqlparser::ast::Values {
+                explicit_row: false,
+                value_keyword: false,
+                rows: rows
+                    .iter()
+                    .map(|r| sqlparser::ast::Parens::with_empty_span(r.clone()))
+                    .collect(),
+            })),
+            order_by: None,
+            limit_clause: None,
+            fetch: None,
+            locks: Vec::new(),
+            for_clause: None,
+            settings: None,
+            format_clause: None,
+            pipe_operators: Vec::new(),
+        }),
+        alias: Some(sqlparser::ast::TableAlias {
+            explicit: true,
+            name: sqlparser::ast::Ident::new(r_name),
+            columns: names
+                .iter()
+                .map(|n| sqlparser::ast::TableAliasColumnDef::from_name(n.clone()))
+                .collect(),
+            at: None,
+        }),
+        sample: None,
+    }
+}
+
+fn replace_factor_rec(
+    tf: &mut TableFactor,
+    r_name: &str,
+    derived: &TableFactor,
+) {
+    if let TableFactor::Table { name, .. } = tf {
+        let short = name
+            .0
+            .last()
+            .and_then(|p| p.as_ident())
+            .map(|i| i.value.to_ascii_lowercase())
+            .unwrap_or_default();
+        if short == r_name {
+            *tf = derived.clone();
+        }
+    }
+}

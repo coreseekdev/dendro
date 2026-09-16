@@ -205,7 +205,12 @@ pub fn factor_key(tf: &sqlparser::ast::TableFactor) -> Option<String> {
                 .unwrap_or(base);
             Some(key)
         }
-        _ => None, // 派生表等 v1 不作下推目标
+        sqlparser::ast::TableFactor::Derived { alias, .. } => {
+            // 派生表以 alias 名入布局（限定名 `d.col` 解析用；递归 CTE
+            // 注入的 `(VALUES ...) AS r(col,...)` 依赖此键）
+            alias.as_ref().map(|a| a.name.value.to_ascii_lowercase())
+        }
+        _ => None, // 其余因子 v1 不作下推目标
     }
 }
 

@@ -43,9 +43,17 @@ SELECT count(*) FROM (SELECT v FROM ca UNION ALL SELECT v FROM cb) u
 ----
 4
 
-# 递归 CTE 拒绝
-statement error
+# 递归 CTE：1+2+3+4+5 = 15
+query I
 WITH RECURSIVE r AS (SELECT 1 AS n UNION ALL SELECT n + 1 FROM r WHERE n < 5) SELECT sum(n) FROM r
+----
+15
+
+# 递归 CTE：斐波那契（行 n 的 b = fib(n)）
+query I
+WITH RECURSIVE fib AS (SELECT 0 AS a, 1 AS b UNION ALL SELECT b, a + b FROM fib WHERE b < 50) SELECT count(*) FROM fib
+----
+10
 
 # MATERIALIZED 拒绝
 statement error
