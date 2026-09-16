@@ -811,10 +811,12 @@ pub(crate) fn exec_statement(
                     ));
                 };
                 let mut plan = crate::ir::plan::build_plan(&q)?;
+                crate::sql::optimize::rewrite_in_list(&mut plan);
                 let pushed = crate::ir::plan::rewrite_pushdown(&mut plan);
                 crate::sql::optimize::rewrite_stat_prop(&mut plan, db, sess);
                 crate::sql::optimize::rewrite_eq_copy(&mut plan);
                 crate::sql::optimize::rewrite_join_order(&mut plan, db, sess);
+                crate::sql::optimize::rewrite_filter_order(&mut plan);
                 // 覆盖判定复用（Select 形态；集合操作顶等）
                 let covered = match &*q.body {
                     sqlparser::ast::SetExpr::Select(sel) => {

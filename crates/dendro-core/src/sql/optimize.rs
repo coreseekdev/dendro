@@ -1243,3 +1243,213 @@ fn inject_copy(node: &mut Plan2, target_id: &str, pred: &CopyablePred) {
         _ => {} // 非叶子——防御
     }
 }
+
+// ---------------------------------------------------------------------------
+// SOTA 收口：IN Clause Rewriter（DuckDB blog 2024-11 同构）
+// 单值 IN (x) → x = v（等值——可触发 eq_copy / 点查下推）
+// 小范围连续整数 IN (1,2,3) → x >= 1 AND x <= 3（范围——可触发
+// stat_prop / 段级 zone map 剪枝）
+// 其余保持 IN 列表（步列表求值——原有路径）
+// ---------------------------------------------------------------------------
+
+/// IN 列表重写：遍历计划表达式树，找到 `col IN (v1, v2, ...)` 合取项
+pub fn rewrite_in_list(plan: &mut Plan2) {
+    rewrite_in_list_walk(plan);
+}
+
+fn rewrite_in_list_walk(plan: &mut Plan2) {
+    use crate::ir::plan::Plan;
+    match plan {
+        Plan::Filter { pred, input } => {
+            rewrite_in_list_walk(input);
+            *pred = rewrite_in_expr(pred);
+        }
+        Plan::Project { exprs, input, .. } => {
+            rewrite_in_list_walk(input);
+            for e in exprs.iter_mut() {
+                *e = rewrite_in_expr(e);
+            }
+        }
+        Plan::Join { on, left, right, .. } => {
+            rewrite_in_list_walk(left);
+            rewrite_in_list_walk(right);
+            *on = rewrite_in_expr(on);
+        }
+        Plan::Aggregate { keys, input, .. } => {
+            rewrite_in_list_walk(input);
+            for e in keys.iter_mut() {
+                *e = rewrite_in_expr(e);
+            }
+        }
+        Plan::Sort { keys, input, .. } => {
+            rewrite_in_list_walk(input);
+            for (e, _) in keys.iter_mut() {
+                *e = rewrite_in_expr(e);
+            }
+        }
+        Plan::Limit { input, .. } => rewrite_in_list_walk(input),
+        Plan::SetOp { left, right, .. } => {
+            rewrite_in_list_walk(left);
+            rewrite_in_list_walk(right);
+        }
+        Plan::Scan { .. } | Plan::Values => {}
+    }
+}
+
+/// 表达式内 IN 列表重写（递归）
+fn rewrite_in_expr(e: &Expr) -> Expr {
+    match e {
+        Expr::BinaryOp {
+            left,
+            op: sqlparser::ast::BinaryOperator::And,
+            right,
+        } => Expr::BinaryOp {
+            left: Box::new(rewrite_in_expr(left)),
+            op: sqlparser::ast::BinaryOperator::And,
+            right: Box::new(rewrite_in_expr(right)),
+        },
+        Expr::BinaryOp { left, op, right } => Expr::BinaryOp {
+            left: Box::new(rewrite_in_expr(left)),
+            op: op.clone(),
+            right: Box::new(rewrite_in_expr(right)),
+        },
+        Expr::Nested(inner) => Expr::Nested(Box::new(rewrite_in_expr(inner))),
+        // IN 列表重写核心
+        Expr::InList {
+            expr,
+            list,
+            negated: false,
+        } => {
+            // 提取全部数值常量列表项
+            let consts: Vec<i64> = list
+                .iter()
+                .filter_map(|item| match item {
+                    Expr::Value(vws) => match &vws.value {
+                        sqlparser::ast::Value::Number(n, _) => n.parse::<i64>().ok(),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .collect();
+            if consts.len() != list.len() || consts.is_empty() {
+                return e.clone(); // 非全数值或空——不改
+            }
+            if consts.len() == 1 {
+                // 单值 → 等值
+                return Expr::BinaryOp {
+                    left: expr.clone(),
+                    op: sqlparser::ast::BinaryOperator::Eq,
+                    right: Box::new(Expr::Value(sqlparser::ast::ValueWithSpan {
+                        value: sqlparser::ast::Value::Number(
+                            consts[0].to_string(),
+                            false,
+                        ),
+                        span: sqlparser::tokenizer::Span::empty(),
+                    })),
+                };
+            }
+            // 连续整数序列 → 范围
+            let sorted = {
+                let mut s = consts.clone();
+                s.sort();
+                s
+            };
+            let consecutive = sorted.windows(2).all(|w| w[1] == w[0] + 1);
+            if consecutive && sorted.len() >= 2 {
+                let lo = sorted[0];
+                let hi = sorted[sorted.len() - 1];
+                let num = |v: i64| {
+                    Box::new(Expr::Value(sqlparser::ast::ValueWithSpan {
+                        value: sqlparser::ast::Value::Number(v.to_string(), false),
+                        span: sqlparser::tokenizer::Span::empty(),
+                    }))
+                };
+                return Expr::BinaryOp {
+                    left: Box::new(Expr::BinaryOp {
+                        left: expr.clone(),
+                        op: sqlparser::ast::BinaryOperator::GtEq,
+                        right: num(lo),
+                    }),
+                    op: sqlparser::ast::BinaryOperator::And,
+                    right: Box::new(Expr::BinaryOp {
+                        left: expr.clone(),
+                        op: sqlparser::ast::BinaryOperator::LtEq,
+                        right: num(hi),
+                    }),
+                };
+            }
+            e.clone() // 非连续——保持 IN 列表
+        }
+        _ => e.clone(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SOTA 收口：Reorder Filters（廉价谓词先执行——DuckDB blog 2024-11）
+// Filter{Scan} 的合取链重排：等值 → 范围 → 其余（等值最廉价——
+// O(1) 比较；范围次之——cmp_values；表达式求值最贵——函数/算术）
+// 语义安全：AND 交换律（eager 求值下错误行为不变——两侧已求值）
+// ---------------------------------------------------------------------------
+
+pub fn rewrite_filter_order(plan: &mut Plan2) {
+    rewrite_filter_order_walk(plan);
+}
+
+fn rewrite_filter_order_walk(plan: &mut Plan2) {
+    use crate::ir::plan::Plan;
+    match plan {
+        Plan::Filter { pred, input } => {
+            rewrite_filter_order_walk(input);
+            reorder_conjuncts(pred);
+        }
+        Plan::Project { input, .. }
+        | Plan::Aggregate { input, .. }
+        | Plan::Sort { input, .. }
+        | Plan::Limit { input, .. } => rewrite_filter_order_walk(input),
+        Plan::Join { left, right, .. } => {
+            rewrite_filter_order_walk(left);
+            rewrite_filter_order_walk(right);
+        }
+        Plan::SetOp { left, right, .. } => {
+            rewrite_filter_order_walk(left);
+            rewrite_filter_order_walk(right);
+        }
+        Plan::Scan { .. } | Plan::Values => {}
+    }
+}
+
+/// 合取链按代价重排（等值 < 范围 < 表达式）
+fn reorder_conjuncts(pred: &mut Expr) {
+    let conjuncts = split_conjuncts(pred);
+    if conjuncts.len() < 2 {
+        return;
+    }
+    // 代价分级：0 = 等值（col = const）；1 = 范围（col >=/<=/>/< const）；
+    // 2 = IsNull 族（O(1) 判空）；3 = 其他（函数/算术/嵌套）
+    let rank = |e: &Expr| -> u8 {
+        match e {
+            Expr::BinaryOp {
+                op: sqlparser::ast::BinaryOperator::Eq,
+                ..
+            } => 0,
+            Expr::BinaryOp {
+                op: sqlparser::ast::BinaryOperator::GtEq
+                | sqlparser::ast::BinaryOperator::LtEq
+                | sqlparser::ast::BinaryOperator::Gt
+                | sqlparser::ast::BinaryOperator::Lt,
+                ..
+            } => 1,
+            Expr::IsNull(_) | Expr::IsNotNull(_) => 2,
+            _ => 3,
+        }
+    };
+    let mut indexed: Vec<(u8, usize, Expr)> = conjuncts
+        .into_iter()
+        .enumerate()
+        .map(|(i, e)| (rank(&e), i, e))
+        .collect();
+    // 稳定排序：rank 相同按原序（语义等价 + 确定性）
+    indexed.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    let reordered: Vec<Expr> = indexed.into_iter().map(|(_, _, e)| e).collect();
+    *pred = and_all(reordered).expect("非空合取列表");
+}

@@ -111,10 +111,12 @@ pub(crate) fn eval_query(
             // ⊆ 可执行集 + q 级无 OFFSET）；失败/不覆盖回落下方 AST 路径
             if sess.optimize_enabled {
                 if let Ok(mut plan) = crate::ir::plan::build_plan(q) {
+                    crate::sql::optimize::rewrite_in_list(&mut plan);
                     crate::ir::plan::rewrite_pushdown(&mut plan);
                     crate::sql::optimize::rewrite_stat_prop(&mut plan, db, sess);
                     crate::sql::optimize::rewrite_eq_copy(&mut plan);
                     crate::sql::optimize::rewrite_join_order(&mut plan, db, sess);
+                    crate::sql::optimize::rewrite_filter_order(&mut plan);
                     let top_ok = matches!(
                         &plan,
                         crate::ir::plan::Plan::Sort { .. }
@@ -384,11 +386,14 @@ pub(crate) fn eval_query(
     };
     let pushed_plan: Vec<(String, Vec<Expr>)> = match qplan.as_mut() {
         Some(p) => {
+            // IN 重写在 pushdown 前（单值 IN → = 可触发点查下推）；
+            // filter 重排在最后（eq_copy/stat_prop 注入后按代价排序）
+            crate::sql::optimize::rewrite_in_list(p);
             let pushed = crate::ir::plan::rewrite_pushdown(p);
-            // O-4'：INNER 链贪心重排（估算门控——无统计自动不动）
             crate::sql::optimize::rewrite_stat_prop(p, db, sess);
             crate::sql::optimize::rewrite_eq_copy(p);
             crate::sql::optimize::rewrite_join_order(p, db, sess);
+            crate::sql::optimize::rewrite_filter_order(p);
             pushed
         }
         None => vec![],

@@ -30,6 +30,16 @@
   Plan::Project 增 names（别名信息）；Filter{Scan} 谓词下传
   selection 提示（点查/派发判定恢复）。
   门禁：clippy 0 / 463 测试 / 31 slt。
+- **2026-09-16 SOTA 优化器管线全部收口**：IN Clause Rewriter
+  （单值→= / 连续整数→范围 / 非连续保持步列表——pushdown 前使
+  单值 IN 触发点查下推）+ Reorder Filters（等值<范围<IsNull<
+  表达式——AND 交换律下语义不变）+ Filter Pull-Up 确认已由
+  eq_copy+stat_prop 逻辑等价覆盖（DuckDB 需物理移动节点因
+  规则引擎单 pass 跨不了 join 边界；我们直接在对侧注入——
+  SOTA 文档标注）。**优化器管线完整版**：IN rewrite → pushdown
+  → stat_prop → eq_copy → join_order → filter_order → exec_plan
+  （hash_join 内含 join filter pushdown）。
+  门禁：clippy 0 / 490 测试 / 31 slt。
 - **2026-09-16 SOTA P2 落地：Join Filter Pushdown（执行层）**：
   hash_join build 阶段追踪**实际**键 [min,max]（非统计近似——含
   全部过滤效果的最窄区间）；probe 行先做 O(1) 范围检查，界外跳过

@@ -479,3 +479,66 @@ fn join_filter_pushdown_null_keys() {
     // 仅 a.k=5 匹配 b.k=5；NULL 永不匹配
     assert_eq!(n, "1", "NULL 键正确处理");
 }
+
+// ---------- SOTA 收口：IN Clause Rewriter + Filter Reorder ----------
+
+#[test]
+fn in_list_single_value_becomes_equality() {
+    // 单值 IN → =（可触发点查下推——EXPLAIN 应显示 CurrentPoint）
+    let db = Database::open(DbOptions { store: StoreConfig::Memory, ..Default::default() }).unwrap();
+    let mut c = db.new_session();
+    c.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v INT)").unwrap();
+    c.exec("INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)").unwrap();
+    let out = &c.exec("SELECT count(*) FROM t WHERE id IN (2)").unwrap()[0];
+    match out { Output::Rows(rs) => assert_eq!(rs.text_rows()[0][0].clone().unwrap(), "1"), _ => panic!() }
+}
+
+#[test]
+fn in_list_consecutive_becomes_range() {
+    // 连续整数 IN (2,3,4) → >= 2 AND <= 4（范围——段级 zone map 剪枝）
+    let db = Database::open(DbOptions { store: StoreConfig::Memory, ..Default::default() }).unwrap();
+    let mut c = db.new_session();
+    c.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v INT)").unwrap();
+    c.exec("INSERT INTO t VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)").unwrap();
+    let out = &c.exec("SELECT count(*) FROM t WHERE v IN (20, 30, 40)").unwrap()[0];
+    match out { Output::Rows(rs) => assert_eq!(rs.text_rows()[0][0].clone().unwrap(), "3"), _ => panic!() }
+}
+
+#[test]
+fn in_list_non_consecutive_stays_list() {
+    // 非连续 IN (1, 3, 7) 保持步列表
+    let db = Database::open(DbOptions { store: StoreConfig::Memory, ..Default::default() }).unwrap();
+    let mut c = db.new_session();
+    c.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v INT)").unwrap();
+    c.exec("INSERT INTO t VALUES (1, 10), (3, 30), (5, 50), (7, 70)").unwrap();
+    let out = &c.exec("SELECT count(*) FROM t WHERE v IN (10, 30, 70)").unwrap()[0];
+    match out { Output::Rows(rs) => assert_eq!(rs.text_rows()[0][0].clone().unwrap(), "3"), _ => panic!() }
+}
+
+#[test]
+fn filter_reorder_equivalence() {
+    // 廉价谓词先执行——结果不变（AND 交换律）
+    let db = Database::open(DbOptions { store: StoreConfig::Memory, ..Default::default() }).unwrap();
+    let mut c = db.new_session();
+    c.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v INT, note TEXT)").unwrap();
+    for i in 0..100 {
+        c.exec(&format!(
+            "INSERT INTO t VALUES ({}, {}, 'note{}')",
+            i,
+            i % 7,
+            i % 3
+        ))
+        .unwrap();
+    }
+    // 差分：on（filter reorder）vs off
+    let mut s_on = db.new_session();
+    s_on.exec("SET dendro.optimize = 'on'").unwrap();
+    let on = &s_on.exec("SELECT count(*) FROM t WHERE note = 'note1' AND v = 3 AND id > 10").unwrap()[0];
+    let mut s_off = db.new_session();
+    s_off.exec("SET dendro.optimize = 'off'").unwrap();
+    let off = &s_off.exec("SELECT count(*) FROM t WHERE note = 'note1' AND v = 3 AND id > 10").unwrap()[0];
+    match (on, off) {
+        (Output::Rows(a), Output::Rows(b)) => assert_eq!(a.text_rows(), b.text_rows(), "filter reorder 差分"),
+        _ => panic!(),
+    }
+}
