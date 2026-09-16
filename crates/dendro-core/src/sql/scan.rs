@@ -1380,16 +1380,34 @@ fn plan_sort(
     Ok(())
 }
 
-/// 计划 Scan → 合成 TableFactor（视图展开/派发按名工作；alias/版本
-/// 不经此路——布局键取计划，版本子句由覆盖判定排除）
-fn synthetic_tf(table: &str) -> TableFactor {
+/// 计划 Scan → 合成 TableFactor（视图展开/派发按名工作；布局键取计划）。
+/// version（display 文本）经 sqlparser 重建——与表达式 Display→parse
+/// 同稳定性合同（O-2c+ B：历史查询上计划路径）
+fn synthetic_tf(table: &str, version: Option<&str>) -> TableFactor {
+    let ver = version.and_then(|v| {
+        let sql = format!("SELECT * FROM x {v}");
+        let stmts = crate::sql::parse_batch(&sql, crate::sql::SqlDialect::Pg).ok()?;
+        match stmts.into_iter().next()? {
+            sqlparser::ast::Statement::Query(q) => match *q.body {
+                sqlparser::ast::SetExpr::Select(sel) => {
+                    let twj = sel.from.into_iter().next()?;
+                    match twj.relation {
+                        TableFactor::Table { version, .. } => version,
+                        _ => None,
+                    }
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    });
     TableFactor::Table {
         name: sqlparser::ast::ObjectName(vec![sqlparser::ast::ObjectNamePart::Identifier(
             sqlparser::ast::Ident::new(table.to_string()),
         )]),
         alias: None,
         args: None,
-        version: None,
+        version: ver,
         partitions: vec![],
         with_hints: vec![],
         with_ordinality: false,
@@ -1446,13 +1464,8 @@ fn plan_exec_covered(
     {
         return false;
     }
-    // 版本子句（FOR SYSTEM_TIME/AS OF）：Plan::Scan v1 不携带 version——
-    // 历史查询必须走 AST 路径的 tf.version 路由（HistoryScan）
-    if select.from.first().is_some_and(|twj| {
-        matches!(&twj.relation, TableFactor::Table { version: Some(_), .. })
-    }) {
-        return false;
-    }
+    // 版本子句（FOR SYSTEM_TIME/AS OF）：O-2c+ B 起计划路径携带
+    // version（synthetic_tf 重建——HistoryScan 路由不变）
     // 计划结构：节点 ⊆ 可执行集；顶层 Project（Select）或 Sort/SetOp
     match plan {
         Plan::Project { exprs, .. } if !exprs.is_empty() => plan_nodes_exec_ok(plan),
@@ -1525,7 +1538,7 @@ fn plan_scan_masks(
     }
     fn scans_of(p: &Plan, out: &mut Vec<(String, String)>) {
         match p {
-            Plan::Scan { table, alias } => {
+            Plan::Scan { table, alias, .. } => {
                 out.push((alias.clone().unwrap_or_else(|| table.clone()), table.clone()))
             }
             Plan::Filter { input, .. } | Plan::Project { input, .. }
@@ -1587,9 +1600,13 @@ fn exec_plan(
             TableView { names: vec![], rows: vec![vec![]] },
             FactorLayout::new(),
         )),
-        Plan::Scan { table, alias } => {
+        Plan::Scan {
+            table,
+            alias,
+            version,
+        } => {
             let key = alias.clone().unwrap_or_else(|| table.to_ascii_lowercase());
-            let tf = synthetic_tf(table);
+            let tf = synthetic_tf(table, version.as_deref());
             let mask = masks.get(&key);
             let tv = table_scan_opt(db, sess, &tf, snapshot, None, None, mask.map(|v| v.as_slice()))?;
             let layout = FactorLayout::from([(
@@ -1604,9 +1621,14 @@ fn exec_plan(
             // Filter 直接覆 Scan：谓词下传为 selection 提示（点查/派发
             // 判定恢复——下推后的计划把 pk 谓词留在了 Scan 紧上方）；
             // 提示不过滤行，apply_predicates_q 仍执行实际过滤
-            if let Plan::Scan { table, alias } = &**input {
+            if let Plan::Scan {
+                table,
+                alias,
+                version,
+            } = &**input
+            {
                 let key = alias.clone().unwrap_or_else(|| table.to_ascii_lowercase());
-                let tf = synthetic_tf(table);
+                let tf = synthetic_tf(table, version.as_deref());
                 let mask = masks.get(&key);
                 let mut tv = table_scan_opt(
                     db,

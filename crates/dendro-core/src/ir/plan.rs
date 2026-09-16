@@ -25,6 +25,9 @@ pub enum Plan {
     Scan {
         table: String,
         alias: Option<String>,
+        /// 版本子句 display 文本（FOR SYSTEM_TIME AS OF ... / AS OF ...）
+        /// ——历史查询上计划路径（O-2c+ B）；None = 当前读
+        version: Option<String>,
     },
     Filter {
         pred: Expr,
@@ -70,7 +73,7 @@ impl Plan {
     }
     fn collect_keys(&self, out: &mut Vec<String>) {
         match self {
-            Plan::Scan { table, alias } => {
+            Plan::Scan { table, alias, .. } => {
                 let k = alias
                     .clone()
                     .unwrap_or_else(|| table.to_ascii_lowercase());
@@ -96,9 +99,13 @@ impl Plan {
 }
 
 /// 因子键（与 optimize::factor_key 同口径：别名优先，短表名小写）
-fn factor_key(tf: &TableFactor) -> Option<(String, String, Option<String>)> {
+fn factor_key(
+    tf: &TableFactor,
+) -> Option<(String, String, Option<String>, Option<String>)> {
     match tf {
-        TableFactor::Table { name, alias, .. } => {
+        TableFactor::Table {
+            name, alias, version, ..
+        } => {
             let base = name
                 .0
                 .last()
@@ -108,7 +115,8 @@ fn factor_key(tf: &TableFactor) -> Option<(String, String, Option<String>)> {
                 .as_ref()
                 .map(|a| a.name.value.to_ascii_lowercase())
                 .unwrap_or_else(|| base.clone());
-            Some((key, base, alias.as_ref().map(|a| a.name.value.clone())))
+            let ver = version.as_ref().map(|v| v.to_string());
+            Some((key, base, alias.as_ref().map(|a| a.name.value.clone()), ver))
         }
         _ => None,
     }
@@ -166,10 +174,13 @@ fn build_select(sel: &sqlparser::ast::Select) -> Result<Plan> {
     let mut plan: Plan = match sel.from.first() {
         None => Plan::Values,
         Some(twj) => {
-            let (key, table, alias) = factor_key(&twj.relation)
+            let (_key, table, alias, version) = factor_key(&twj.relation)
                 .ok_or_else(|| crate::error::SqlError::not_supported("plan: derived table"))?;
-            let _ = key;
-            let mut p = Plan::Scan { table, alias };
+            let mut p = Plan::Scan {
+                table,
+                alias,
+                version,
+            };
             for j in &twj.joins {
                 let kind = match j.join_operator {
                     sqlparser::ast::JoinOperator::Join(_)
@@ -196,13 +207,17 @@ fn build_select(sel: &sqlparser::ast::Select) -> Result<Plan> {
                     },
                     _ => unreachable!(),
                 };
-                let (_, rtable, ralias) = factor_key(&j.relation)
+                let (_, rtable, ralias, rversion) = factor_key(&j.relation)
                     .ok_or_else(|| crate::error::SqlError::not_supported("plan: derived table"))?;
                 p = Plan::Join {
                     kind,
                     on,
                     left: Box::new(p),
-                    right: Box::new(Plan::Scan { table: rtable, alias: ralias }),
+                    right: Box::new(Plan::Scan {
+                        table: rtable,
+                        alias: ralias,
+                        version: rversion,
+                    }),
                 };
             }
             p
@@ -401,7 +416,7 @@ fn hoist_filters(join: &mut Plan, pushed: &[(String, Vec<Expr>)]) {
         }
         Plan::Scan { .. } => {
             let key = match join {
-                Plan::Scan { table, alias } => alias
+                Plan::Scan { table, alias, .. } => alias
                     .clone()
                     .unwrap_or_else(|| table.to_ascii_lowercase()),
                 _ => unreachable!(),
@@ -480,28 +495,32 @@ impl<'a> Printer<'a> {
                 self.out.push_str(&format!("  {id} = values {{rows = 1}}\n"));
                 id
             }
-            Plan::Scan { table, alias } => {
+            Plan::Scan {
+                table,
+                alias,
+                version,
+            } => {
                 let t_id = self.next_id(1);
+                let alias_part = alias
+                    .as_ref()
+                    .map(|a| format!(" as \"{a}\""))
+                    .unwrap_or_default();
+                let ver_part = version
+                    .as_ref()
+                    .map(|v| format!(", version = {}", crate::ir::text::escape_sql_text(v)))
+                    .unwrap_or_default();
                 match (self.lookup)(table) {
                     Some((cols, pk)) => {
                         let pk_str: Vec<String> =
                             pk.iter().map(|i| i.to_string()).collect();
                         self.out.push_str(&format!(
-                            "  {t_id} = table \"{table}\"{alias_part} {{cols = [{cols_str}], pk = [{pk_str}]}}\n",
-                            alias_part = alias
-                                .as_ref()
-                                .map(|a| format!(" as \"{a}\""))
-                                .unwrap_or_default(),
+                            "  {t_id} = table \"{table}\"{alias_part} {{cols = [{cols_str}], pk = [{pk_str}]{ver_part}}}\n",
                             cols_str = cols.join(", "),
                             pk_str = pk_str.join(", "),
                         ));
                     }
                     None => self.out.push_str(&format!(
-                        "  {t_id} = table \"{table}\"{alias_part} ! unresolved\n",
-                        alias_part = alias
-                            .as_ref()
-                            .map(|a| format!(" as \"{a}\""))
-                            .unwrap_or_default(),
+                        "  {t_id} = table \"{table}\"{alias_part}{ver_part} ! unresolved\n",
                     )),
                 }
                 let s_id = self.next_id(2);
@@ -725,6 +744,16 @@ pub fn parse_plan(text: &str) -> Option<Plan> {
             // table "name" [as "alias"] {cols = [...], pk = [...]} / ! unresolved
             // cols/pk 不入 Plan（打印时经 lookup 复查）；alias 可选
             let rest = body.strip_prefix("table ")?;
+            fn ver_of(tail: &str) -> Option<Option<String>> {
+                match tail.split_once(", version = ") {
+                    Some((_, v)) => {
+                        let inner = v.strip_prefix('"')?; // 跳开引号
+                        let end = crate::ir::text::find_str_end(inner)?;
+                        Some(Some(crate::ir::text::json_unescape(&inner[..end])?))
+                    }
+                    None => Some(None),
+                }
+            }
             if let Some((n, tail)) = rest.split_once(" as ") {
                 let name = unquote(n)?;
                 let alias_s = if let Some((a, _)) = tail.split_once(" !") {
@@ -732,9 +761,11 @@ pub fn parse_plan(text: &str) -> Option<Plan> {
                 } else {
                     tail.split_once("}")?.0
                 };
+                let version = ver_of(tail)?;
                 Plan::Scan {
                     table: name,
                     alias: Some(unquote(alias_s.trim())?),
+                    version,
                 }
             } else {
                 // 无别名：name 后是 {attrs} 或 ! unresolved
@@ -743,13 +774,18 @@ pub fn parse_plan(text: &str) -> Option<Plan> {
                 if !tail.starts_with('{') && !tail.starts_with('!') {
                     return None;
                 }
-                Plan::Scan { table: name, alias: None }
+                let version = ver_of(tail)?;
+                Plan::Scan {
+                    table: name,
+                    alias: None,
+                    version,
+                }
             }
         } else if let Some(t) = body.strip_prefix("scan %") {
             let child = lookup_node(&nodes, t)?;
             // scan 引用的必为 table 节点——结构校验
             match child {
-                Plan::Scan { table, alias } => Plan::Scan { table, alias },
+                p @ Plan::Scan { .. } => p,
                 _ => return None,
             }
         } else if let Some(t) = body.strip_prefix("filter %") {
@@ -1009,6 +1045,8 @@ mod tests {
             "SELECT 1",
             // 复杂表达式形态（CASE / IN / BETWEEN / 算术）穿透 expr 回解析
             "SELECT CASE WHEN o.total > 100 THEN 'big' ELSE note END FROM orders o WHERE o.id IN (1, 2, 3) OR o.total BETWEEN 50 AND 60",
+            // O-2c+ B：version 属性（display 文本）round-trip
+            "SELECT id FROM orders FOR SYSTEM_TIME AS OF 1726400000000",
         ];
         for sql in corpus {
             let mut p = plan_of(sql);
