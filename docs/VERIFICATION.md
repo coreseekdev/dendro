@@ -30,6 +30,11 @@
   Plan::Project 增 names（别名信息）；Filter{Scan} 谓词下传
   selection 提示（点查/派发判定恢复）。
   门禁：clippy 0 / 463 测试 / 31 slt。
+- **2026-09-16 列统计 + Verus L3 首批**：列统计（cd366b4——
+  CBF footer 稀疏聚合 + ColumnarStore::col_stats + order 域选择率
+  （精度修复：差值先于除法，绝对值 ~2^63 超 f64 ulp）+ EXPLAIN
+  ANALYZE est 对 actual）。Verus L3 首批 3 文件（见 §0 L3 行）。
+  门禁：clippy 0 / 473 测试 / 31 slt。
 - **2026-09-16 EXPLAIN ANALYZE**（spec 09 §5.5 / 04 §2 D7 预留位
   落地）：ExecCx 参数收敛（masks/top-N 界/指标/深度）；exec_plan
   包装层逐节点采集（实际输出行数 + 子树墙钟——Filter{Scan} 捷径与
@@ -118,7 +123,19 @@
 - L2（TLA+ 模型检查）：✅ spec/CommitPipeline.tla 首个模型全空间绿
   （1001 状态，5 安全不变式 + StallFreedom 活性），**且已产出实现修复**
   （R8-WM in-flight 摘除不推进水位——TLC 反例→实现修复→回归测试闭环）
-- L3（Verus 函数级证明）：⬜ 未开始（verification/verus/ 留位）
+- L3（Verus 函数级证明）：✅ 首批 3 文件 18 obligations 全证
+  （`scripts/verus.sh`——verus-0.2026.09 + z3-4.16.0，extern 显式注入）：
+  order_domain（10 证：flip 对合/保序/解码往返——zone map 剪枝与
+  选择率 uniform 假设的合法性根基；by(bit_vector) 自足重言式——
+  含跨整型 cast 的混合式不自动位爆炸，实证）；selectivity_core
+  （4 证：clamp 定界 exec + 估算不放大乘法界——非线性分配律经
+  nonlinear_arith；**整除一步机械缺口如实记录**：变量分母×非线
+  性被除数的除法公理不自动实例化，数学上欧几里得除法一步平凡，
+  vstd int::div_mod 可闭合——vstd 链接受阻待修）；
+  norm_user（4 证：幂等/可打印封闭/定点刻画）。**镜像漂移守护**
+  （tests/verus_mirror.rs 3）：证明文件镜像的真实实现（order_domain/
+  norm_user/range_selectivity）按证明所立性质直接断言——源改式未
+  跟证明即刻红。
 - opfuzz：✅ tests/opfuzz.rs（SimObjStore clean 20 + chaos 20 种子全绿）
 
 ## 1. 核心不变式目录（模型检查/证明的对象，R8 分析版）
