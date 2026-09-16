@@ -108,3 +108,39 @@ fn correlated_subquery_rejected() {
         "{e}"
     );
 }
+
+// ---------- 架构评审止血回归 ----------
+
+#[test]
+fn window_function_rejected_not_silently_aggregated() {
+    let d = db(); setup(&d);
+    let mut s = d.new_session();
+    // sum() OVER() 曾被当普通聚合 → 全局塌缩返回 1 行——现在是诚实拒绝
+    let e = s.exec("SELECT sum(total) OVER () FROM orders").unwrap_err();
+    assert!(e.message.contains("window"), "{e}");
+    // row_number() OVER(...) 也拒绝
+    let e2 = s.exec("SELECT row_number() OVER (ORDER BY id) FROM orders").unwrap_err();
+    assert!(e2.message.contains("window"), "{e2}");
+}
+
+#[test]
+fn comma_from_rejected_not_silently_dropped() {
+    let d = db(); setup(&d);
+    let mut s = d.new_session();
+    // FROM t1, t2 曾静默丢 t2——现在是诚实拒绝
+    let e = s.exec("SELECT count(*) FROM orders, customers").unwrap_err();
+    assert!(e.message.contains("comma") || e.message.contains("JOIN"), "{e}");
+}
+
+#[test]
+fn predicate_eval_error_propagates_not_silent() {
+    let d = db(); setup(&d);
+    let mut s = d.new_session();
+    // 非法列引用在 WHERE——原被 apply_predicates 回退分支吞掉返回 0 行
+    // 现在应报"column not found"
+    let e = s.exec("SELECT count(*) FROM orders WHERE nonexistent_col > 5").unwrap_err();
+    assert!(
+        e.message.contains("column") || e.message.contains("exist"),
+        "应报列不存在而非静默空集：{e}"
+    );
+}

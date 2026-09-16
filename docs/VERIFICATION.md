@@ -30,6 +30,16 @@
   Plan::Project 增 names（别名信息）；Filter{Scan} 谓词下传
   selection 提示（点查/派发判定恢复）。
   门禁：clippy 0 / 463 测试 / 31 slt。
+- **2026-09-16 架构评审止血（3×P0）**：P0-2 apply_predicates_q
+  回退分支改 Err 传播（原 matches! 吞 Err → 任何求值错误变静默
+  丢行——"求值错误→语句失败"承诺在回退分支同样成立）；窗口函数
+  reject_window（`sum() OVER()` 曾被当普通聚合 → 全局塌缩 1 行
+  而非 N 行窗口展开——最危险静默错升为诚实拒绝）；P0-5 逗号多
+  因子 FROM reject_multi_from（`FROM t1,t2` 曾静默丢 t2——移到
+  build_plan 前防计划路径绕过）；P0-4 MySQL LIMIT offset,count
+  reject_offset_comma（build_plan 只 match LimitOffset → 分页
+  返回全行）。测试 +3（窗口拒绝/逗号拒绝/求值错误传播）。
+  门禁：clippy 0 / 502 测试 / 31 slt。
 - **2026-09-16 P0 子查询内联 + 解析器架构评审**：WHERE 中非相关
   标量子查询/IN 子查询/EXISTS → 常量/InList/Bool 内联（PG SubLink→
   InitPlan 同构）。**伴生缺陷修复（差分 + agent 评审）**：

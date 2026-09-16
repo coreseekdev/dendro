@@ -95,6 +95,11 @@ pub(crate) fn eval_query(
     q: &Query,
     snapshot: u64,
 ) -> Result<TableView> {
+    // 窗口止血（架构评审 #1——最危险静默错）：`sum() OVER(...)` 被当
+    // 普通聚合 → 全局聚合塌缩返回 1 行而非 N 行窗口展开。此处统一
+    // 诚实拒绝（真实现 ~300 行——见评审文档 §3）
+    reject_window(q)?;
+    reject_offset_comma(q)?;
     let set_expr = q.body.as_ref();
     // S-4：UNION / UNION ALL（v1：两侧子查询独立求值 → 拼接；UNION
     // 额外按全行文本去重；列数须匹配，列名取左侧）
@@ -413,6 +418,9 @@ pub(crate) fn eval_query(
     };
     // HAVING 子查询内联（独立处理——select 引用重定向后仍需处理）
     // v1：HAVING 子查询走 expr eval not_supported（量少，诚实拒绝）
+    // P0-5：逗号多因子 FROM 在计划构建前拒绝（build_plan 只取
+    // from.first()——计划路径会静默丢 t2+；AST 路径 eval_from 同病）
+    reject_multi_from(select)?;
 
     // O-2a/O-2c：计划 = 优化与执行的共同基底。build_plan 失败（派生表等）
     // → 不下推/不走计划执行，查询不受影响；优化关闭 = AST 路径（差分轴）
@@ -753,10 +761,16 @@ fn apply_predicates_q(
                 filtered
             }
             Err(_) => {
+                // P0-2 修（架构评审）：原 matches! 吞 Err → 静默丢行
+                //（count=0 假象——apply_predicates_q 是子查询 bug 的
+                // 最后放大器）。改为首个 Err 上抛——"求值错误 → 语句
+                // 失败 不静默吞"的文档承诺在回退分支同样成立
                 let mut filtered = Vec::with_capacity(tv.rows.len());
                 for row in tv.rows.drain(..) {
-                    if matches!(expr::eval(w, &row, resolve), Ok(SqlValue::Bool(true))) {
-                        filtered.push(row);
+                    match expr::eval(w, &row, resolve) {
+                        Ok(SqlValue::Bool(true)) => filtered.push(row),
+                        Ok(_) => {} // NULL/false → 丢行（正确语义）
+                        Err(e) => return Err(e),
                     }
                 }
                 filtered
@@ -4468,4 +4482,100 @@ pub fn rows_to_record_set(columns: &[ColumnMeta], rows: Vec<Vec<SqlValue>>) -> R
         columns: columns.to_vec(),
         batches: rows_to_batches_typed(columns, &rows),
     }
+}
+
+// ---------------------------------------------------------------------------
+// 架构评审止血：窗口函数诚实拒绝 + FROM/LIMIT 显式拒绝
+// ---------------------------------------------------------------------------
+
+/// 窗口函数检测（止血——防 `sum() OVER()` 被当普通聚合静默塌缩）。
+/// 遍历 Select 的投影/HAVING/ORDER BY，找 `Expr::Function` 带 `over`
+/// 字段（sqlparser 的窗口标记）→ not_supported
+pub(crate) fn reject_window(q: &Query) -> Result<()> {
+    fn has_window_expr(e: &Expr) -> bool {
+        match e {
+            Expr::Function(f) => f.over.is_some(),
+            Expr::BinaryOp { left, right, .. } => {
+                has_window_expr(left) || has_window_expr(right)
+            }
+            Expr::Nested(i) => has_window_expr(i),
+            Expr::Cast { expr, .. } => has_window_expr(expr),
+            _ => false,
+        }
+    }
+    fn check_select(sel: &Select) -> Result<()> {
+        for item in &sel.projection {
+            let e = match item {
+                SelectItem::UnnamedExpr(e) => e,
+                SelectItem::ExprWithAlias { expr, .. } => expr,
+                _ => continue,
+            };
+            if has_window_expr(e) {
+                return Err(SqlError::not_supported(
+                    "window function (OVER clause) — v1 not implemented",
+                ));
+            }
+        }
+        if let Some(h) = &sel.having {
+            if has_window_expr(h) {
+                return Err(SqlError::not_supported(
+                    "window function in HAVING — v1 not implemented",
+                ));
+            }
+        }
+        Ok(())
+    }
+    match &*q.body {
+        SetExpr::Select(sel) => check_select(sel)?,
+        SetExpr::SetOperation { left, right, .. } => {
+            // 递归两侧（mk_query 包装再调 eval_query——此处直接检查）
+            for side in [left, right] {
+                if let SetExpr::Select(sel) = &**side {
+                    check_select(sel)?;
+                }
+            }
+        }
+        _ => {}
+    }
+    // ORDER BY 中的窗口（`ORDER BY row_number() OVER(...)`）
+    if let Some(ob) = &q.order_by {
+        if let sqlparser::ast::OrderByKind::Expressions(exprs) = &ob.kind {
+            for o in exprs {
+                if has_window_expr(&o.expr) {
+                    return Err(SqlError::not_supported(
+                        "window function in ORDER BY — v1 not implemented",
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 逗号多因子 FROM 显式拒绝（P0-5：原静默丢 t2+——`FROM t1,t2` ≡
+/// `FROM t1`，评审确认 eval_from/build_select 均只取 first()）
+pub(crate) fn reject_multi_from(select: &Select) -> Result<()> {
+    if select.from.len() > 1 {
+        return Err(SqlError::not_supported(format!(
+            "comma-separated FROM ({} factors) — use explicit JOIN",
+            select.from.len()
+        )));
+    }
+    Ok(())
+}
+
+/// MySQL `LIMIT offset, count` 变体显式拒绝（P0-4：build_plan 只 match
+/// LimitOffset，OffsetCommaLimit 静默无 Limit 节点 → MySQL 分页返回全行）
+pub(crate) fn reject_offset_comma(q: &Query) -> Result<()> {
+    if let Some(lc) = &q.limit_clause {
+        if matches!(
+            lc,
+            sqlparser::ast::LimitClause::OffsetCommaLimit { .. }
+        ) {
+            return Err(SqlError::not_supported(
+                "LIMIT offset, count (MySQL comma syntax) — use LIMIT n OFFSET m",
+            ));
+        }
+    }
+    Ok(())
 }
