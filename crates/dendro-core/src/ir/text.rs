@@ -299,7 +299,7 @@ fn strip_comment(l: &str) -> &str {
     }
 }
 
-fn split_json_strings(s: &str) -> Option<Vec<String>> {
+pub(crate) fn split_json_strings(s: &str) -> Option<Vec<String>> {
     let mut out = Vec::new();
     let mut rest = s.trim();
     while !rest.is_empty() {
@@ -316,7 +316,7 @@ fn split_json_strings(s: &str) -> Option<Vec<String>> {
 }
 
 /// 找未转义引号的位置
-fn find_str_end(s: &str) -> Option<usize> {
+pub(crate) fn find_str_end(s: &str) -> Option<usize> {
     let b = s.as_bytes();
     let mut i = 0;
     while i < b.len() {
@@ -329,7 +329,7 @@ fn find_str_end(s: &str) -> Option<usize> {
     None
 }
 
-fn json_unescape(s: &str) -> Option<String> {
+pub(crate) fn json_unescape(s: &str) -> Option<String> {
     let mut out = String::with_capacity(s.len());
     let mut it = s.chars();
     while let Some(c) = it.next() {

@@ -49,6 +49,24 @@ fn explain_fallback_shapes_stay_honest() {
         joined.contains("pending") || joined.contains("Seq Scan"),
         "未覆盖形状必须诚实：{joined}"
     );
+    // O-2b：join 形态的计划块必须可 parse 回来（round-trip）
+    let r2 = c
+        .query("EXPLAIN SELECT a.id FROM a JOIN b ON a.id = b.id WHERE a.id = 1")
+        .unwrap();
+    let lines: Vec<String> = r2
+        .rows
+        .iter()
+        .map(|row| match &row[0] {
+            dendro_core::types::SqlValue::Utf8(s) => s.clone(),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    let ir = lines.join("\n");
+    let start = ir.find("dendro.ir v1").expect("计划块：{ir}");
+    let block = &ir[start..];
+    let parsed = dendro_core::ir::plan::parse_plan(block);
+    assert!(parsed.is_some(), "EXPLAIN 计划块必须可 parse：{block}");
+    assert!(dendro_core::ir::plan::verify_plan(&parsed.unwrap()));
     // 无 WHERE：仅扫描行
     let r2 = c.query("EXPLAIN SELECT id FROM a").unwrap();
     assert_eq!(r2.rows.len(), 1);

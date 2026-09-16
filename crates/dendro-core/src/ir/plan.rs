@@ -553,6 +553,269 @@ impl<'a> Printer<'a> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// O-2b：plan 方言 parser（fail-closed；P1 = parse(print(p)) 再 print 字节恒等）
+// ---------------------------------------------------------------------------
+
+/// SQL 表达式文本 → Expr（借道 parse_batch；谓词/投影两种包装）
+fn parse_expr_text(t: &str, as_pred: bool) -> Option<Expr> {
+    let sql = if as_pred {
+        format!("SELECT 1 WHERE {t}")
+    } else {
+        format!("SELECT {t}")
+    };
+    let stmts = crate::sql::parse_batch(&sql, crate::sql::SqlDialect::Pg).ok()?;
+    let q = stmts.into_iter().next()?;
+    match q {
+        sqlparser::ast::Statement::Query(q) => match *q.body {
+            SetExpr::Select(sel) => {
+                if as_pred {
+                    sel.selection
+                } else {
+                    match sel.projection.into_iter().next()? {
+                        sqlparser::ast::SelectItem::UnnamedExpr(e) => Some(e),
+                        sqlparser::ast::SelectItem::ExprWithAlias { expr, .. } => Some(expr),
+                        _ => None,
+                    }
+                }
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// 顶层逗号切分（括号/引号深度感知；aggs/keys/exprs 列表解析用）
+fn split_top_level(s: &str) -> Option<Vec<String>> {
+    let mut out = Vec::new();
+    let b = s.as_bytes();
+    let mut depth = 0i32;
+    let mut in_str = false;
+    let mut start = 0usize;
+    let mut i = 0usize;
+    while i < b.len() {
+        match b[i] {
+            b'\\' if in_str => i += 1,
+            // 开/闭引号都翻转（原守卫 !in_str 使闭引号被忽略——
+            // CASE 'lit' 形态整串判未闭合 → None，round-trip 探针暴露）
+            b'"' | b'\'' => in_str = !in_str,
+            b'(' | b'[' if !in_str => depth += 1,
+            b')' | b']' if !in_str => depth -= 1,
+            b',' if !in_str && depth == 0 => {
+                out.push(s[start..i].trim().to_string());
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    if in_str || depth != 0 {
+        return None;
+    }
+    let last = s[start..].trim();
+    if !last.is_empty() || !out.is_empty() {
+        out.push(last.to_string());
+    }
+    Some(out)
+}
+
+/// 引号串解包："…"（JSON 转义）→ 文本
+fn unquote(t: &str) -> Option<String> {
+    let t = t.trim();
+    let inner = t.strip_prefix('"')?;
+    let end = crate::ir::text::find_str_end(inner)?;
+    crate::ir::text::json_unescape(&inner[..end])
+}
+
+/// 解析 dendro.ir v1 plan 块（fail-closed：任何未知行/坏引用 → None）。
+/// 谓词/键/投影文本经 sqlparser 回解析为 Expr；aggs 保持展示串。
+/// 操作分派长链——question_mark 改写破坏标签一览性（parse_const 同例）
+#[allow(clippy::question_mark)]
+pub fn parse_plan(text: &str) -> Option<Plan> {
+    let mut lines = text
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty());
+    if lines.next()? != "dendro.ir v1" {
+        return None;
+    }
+    let sig = lines.next()?;
+    if !sig.starts_with("plan @") || !sig.ends_with('{') {
+        return None;
+    }
+    // SSA 表：id → 已构建节点（树按定义序装配；子节点必先于父节点）
+    let mut nodes: Vec<(String, Plan)> = Vec::new();
+    let lookup_node = |nodes: &Vec<(String, Plan)>, id: &str| -> Option<Plan> {
+        let id = id.trim();
+        let owned;
+        let key: &str = if id.starts_with('%') {
+            id
+        } else {
+            owned = format!("%{id}");
+            &owned
+        };
+        nodes
+            .iter()
+            .rev()
+            .find(|(k, _)| k == key)
+            .map(|(_, p)| p.clone())
+    };
+    let mut yielded: Option<Plan> = None;
+    for line in lines {
+        if line == "}" {
+            break;
+        }
+        if let Some(rest) = line.strip_prefix("yield %") {
+            if yielded.is_some() || !rest.starts_with(|c: char| c.is_ascii_alphanumeric()) {
+                return None;
+            }
+            yielded = lookup_node(&nodes, &format!("%{rest}"));
+            continue;
+        }
+        let (id, body) = line.split_once(" = ")?;
+        if !id.starts_with('%') {
+            return None;
+        }
+        let node = if let Some(t) = body.strip_prefix("values ") {
+            if t != "{rows = 1}" {
+                return None;
+            }
+            Plan::Values
+        } else if body.starts_with("table ") {
+            // table "name" [as "alias"] {cols = [...], pk = [...]} / ! unresolved
+            // cols/pk 不入 Plan（打印时经 lookup 复查）；alias 可选
+            let rest = body.strip_prefix("table ")?;
+            if let Some((n, tail)) = rest.split_once(" as ") {
+                let name = unquote(n)?;
+                let alias_s = if let Some((a, _)) = tail.split_once(" !") {
+                    a
+                } else {
+                    tail.split_once("}")?.0
+                };
+                Plan::Scan {
+                    table: name,
+                    alias: Some(unquote(alias_s.trim())?),
+                }
+            } else {
+                // 无别名：name 后是 {attrs} 或 ! unresolved
+                let (n, tail) = rest.split_once(' ')?;
+                let name = unquote(n)?;
+                if !tail.starts_with('{') && !tail.starts_with('!') {
+                    return None;
+                }
+                Plan::Scan { table: name, alias: None }
+            }
+        } else if let Some(t) = body.strip_prefix("scan %") {
+            let child = lookup_node(&nodes, t)?;
+            // scan 引用的必为 table 节点——结构校验
+            match child {
+                Plan::Scan { table, alias } => Plan::Scan { table, alias },
+                _ => return None,
+            }
+        } else if let Some(t) = body.strip_prefix("filter %") {
+            let (src, pred) = t.split_once(", pred ")?;
+            let input = Box::new(lookup_node(&nodes, src.trim())?);
+            let pred = parse_expr_text(&unquote(pred)?, true)?;
+            Plan::Filter { pred, input }
+        } else if let Some(t) = body.strip_prefix("join ") {
+            let (kind, rest) = t.split_once(' ')?;
+            let kind = match kind {
+                "inner" => "inner",
+                "left" => "left",
+                _ => return None,
+            };
+            let (lr, on) = rest.split_once(" on ")?;
+            let (l, r) = lr.split_once(", ")?;
+            let on = parse_expr_text(&unquote(on)?, true)?;
+            Plan::Join {
+                kind,
+                on,
+                left: Box::new(lookup_node(&nodes, l)?),
+                right: Box::new(lookup_node(&nodes, r)?),
+            }
+        } else if let Some(t) = body.strip_prefix("aggregate %") {
+            let (src, attrs) = t.split_once(" {keys = [")?;
+            let input = Box::new(lookup_node(&nodes, src.trim())?);
+            let (keys_s, rest) = attrs.split_once("], aggs = [")?;
+            let aggs_s = rest.strip_suffix("]}")?;
+            let keys = split_top_level(keys_s)?
+                .into_iter()
+                .map(|k| parse_expr_text(&k, false))
+                .collect::<Option<Vec<_>>>()?;
+            let aggs = split_top_level(aggs_s)?;
+            Plan::Aggregate { keys, aggs, input }
+        } else if let Some(t) = body.strip_prefix("project %") {
+            let (src, attrs) = t.split_once(" {exprs = [")?;
+            let input = Box::new(lookup_node(&nodes, src.trim())?);
+            let exprs_s = attrs.strip_suffix("]}")?;
+            let exprs = split_top_level(exprs_s)?
+                .into_iter()
+                .map(|e| parse_expr_text(&e, false))
+                .collect::<Option<Vec<_>>>()?;
+            Plan::Project { exprs, input }
+        } else if let Some(t) = body.strip_prefix("sort %") {
+            let (src, attrs) = t.split_once(" {keys = [")?;
+            let input = Box::new(lookup_node(&nodes, src.trim())?);
+            let (keys_s, rest) = attrs.split_once("]")?;
+            let rest = rest.strip_suffix('}').unwrap_or(rest);
+            let limit = if rest.is_empty() {
+                None
+            } else {
+                Some(rest.strip_prefix(", limit = ")?.parse().ok()?)
+            };
+            let keys = split_top_level(keys_s)?
+                .into_iter()
+                .map(|entry| {
+                    if let Some(e) = entry.strip_suffix(" ASC") {
+                        parse_expr_text(e, false).map(|x| (x, true))
+                    } else if let Some(e) = entry.strip_suffix(" DESC") {
+                        parse_expr_text(e, false).map(|x| (x, false))
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Plan::Sort { keys, limit, input }
+        } else if let Some(t) = ["union ", "except ", "intersect "]
+            .iter()
+            .find_map(|p| body.strip_prefix(p))
+        {
+            let op = match body.split(' ').next()? {
+                "union" => "union",
+                "except" => "except",
+                _ => "intersect",
+            };
+            let (q, rest) = t.split_once(' ')?;
+            let (l, r) = rest.split_once(", ")?;
+            Plan::SetOp {
+                op,
+                all: q == "all",
+                left: Box::new(lookup_node(&nodes, l)?),
+                right: Box::new(lookup_node(&nodes, r)?),
+            }
+        } else {
+            return None; // 未知操作 fail-closed
+        };
+        nodes.push((id.to_string(), node));
+    }
+    yielded
+}
+
+/// 计划结构校验（§4 共用）：join/集合操作子节点非空、scan 有表名、
+/// sort 键非空
+pub fn verify_plan(p: &Plan) -> bool {
+    match p {
+        Plan::Values => true,
+        Plan::Scan { table, .. } => !table.is_empty(),
+        Plan::Filter { input, .. } => verify_plan(input),
+        Plan::Join { left, right, .. } => verify_plan(left) && verify_plan(right),
+        Plan::Aggregate { keys, input, .. } => keys.len() <= 64 && verify_plan(input),
+        Plan::Project { input, .. } => verify_plan(input),
+        Plan::Sort { keys, input, .. } => !keys.is_empty() && verify_plan(input),
+        Plan::SetOp { left, right, .. } => verify_plan(left) && verify_plan(right),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -680,5 +943,49 @@ mod tests {
         let want = std::fs::read_to_string(path)
             .unwrap_or_else(|e| panic!("golden 缺失（UPDATE_GOLDEN=1 再生成）：{e}"));
         assert_eq!(want, cur, "golden 偏移——优化器计划变更需重生成并人工审阅");
+    }
+
+    /// O-2b P1：parse(print(p)) → verify → 再 print **字节恒等**
+    ///（谓词/键/投影经 sqlparser Display→parse→Display 稳定性由此锁定）
+    #[test]
+    fn plan_roundtrip_byte_equal() {
+        let corpus = [
+            "SELECT o.id FROM orders o JOIN customers c ON o.cid = c.id WHERE o.total > 60 AND c.region = 'EU'",
+            "SELECT o.id FROM orders o JOIN customers c ON o.cid = c.id WHERE o.total > 60 AND o.cid > c.id",
+            "SELECT o.id FROM orders o LEFT JOIN customers c ON o.cid = c.id WHERE c.region = 'EU' ORDER BY o.id DESC LIMIT 5",
+            "SELECT c.region, count(*), sum(o.total) FROM orders o JOIN customers c ON o.cid = c.id WHERE o.total >= 50 GROUP BY c.region HAVING sum(o.total) > 10 ORDER BY c.region",
+            "SELECT id FROM orders UNION SELECT id FROM customers",
+            "SELECT id FROM orders EXCEPT ALL SELECT id FROM customers",
+            "SELECT nope.x FROM no_table nope",
+            "SELECT 1",
+            // 复杂表达式形态（CASE / IN / BETWEEN / 算术）穿透 expr 回解析
+            "SELECT CASE WHEN o.total > 100 THEN 'big' ELSE note END FROM orders o WHERE o.id IN (1, 2, 3) OR o.total BETWEEN 50 AND 60",
+        ];
+        for sql in corpus {
+            let mut p = plan_of(sql);
+            let _ = rewrite_pushdown(&mut p);
+            let t1 = print_plan("q0", &p, &fake_lookup());
+            let p2 = parse_plan(&t1)
+                .unwrap_or_else(|| panic!("parse 失败：{sql}
+{t1}"));
+            assert!(verify_plan(&p2), "verify 失败：{sql}");
+            let t2 = print_plan("q0", &p2, &fake_lookup());
+            assert_eq!(t1, t2, "round-trip 字节不恒等：{sql}");
+        }
+    }
+
+    /// fail-closed：未知操作 / 坏 SSA 引用 / 未闭合 → None
+    #[test]
+    fn plan_parse_fail_closed() {
+        let good = print_plan(
+            "q0",
+            &plan_of("SELECT o.id FROM orders o WHERE o.total > 60"),
+            &fake_lookup(),
+        );
+        assert!(parse_plan(&good).is_some());
+        assert!(parse_plan(&good.replace("scan %t0", "frob %t0")).is_none());
+        assert!(parse_plan(&good.replace("scan %t0", "scan %t9")).is_none());
+        assert!(parse_plan(&good.replace("}\n", "")).is_none());
+        assert!(parse_plan(&good.replace("dendro.ir v1", "dendro.ir v2")).is_none());
     }
 }
