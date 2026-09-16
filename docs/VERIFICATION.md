@@ -30,6 +30,17 @@
   Plan::Project 增 names（别名信息）；Filter{Scan} 谓词下传
   selection 提示（点查/派发判定恢复）。
   门禁：clippy 0 / 463 测试 / 31 slt。
+- **2026-09-16 join reorder（O-4' 收口）+ 账本 #30**：INNER 链
+  （≥3 因子）贪心重排——**待决边模型**（ON 消费于其引用集全部就位
+  的那一步，AND 合并；首放置不消费边；候选必须连通——防笛卡尔积；
+  残留不可判定边 → 不重排）；估算 = scan_est（下推谓词选择率）×
+  join_est（等值键 NDV：pk 精确 = 行数 / 整数区间界 / sqrt 回退）；
+  任一无统计不重排（保守门控）。**#30（差分实证，双侧修）**：
+  多因子 join 的 ON 限定名裸末段解析误中同名列（`o.cid = c.id` 的
+  c.id 误中左侧 r.id / 右侧 o.id——AST 路径与计划路径同族缺陷）；
+  修：col_pos_lay 按侧消歧（左 = FactorLayout 区间精确 / 右 = 单
+  因子键；前缀不属本侧不回退），AST hash_join 与 exec_plan 双侧
+  接线。EXPLAIN 计划块同步反映重排。
 - **2026-09-16 列统计 + Verus L3 首批**：列统计（cd366b4——
   CBF footer 稀疏聚合 + ColumnarStore::col_stats + order 域选择率
   （精度修复：差值先于除法，绝对值 ~2^63 超 f64 ulp）+ EXPLAIN

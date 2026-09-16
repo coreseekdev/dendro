@@ -101,3 +101,49 @@ query I
 SELECT count(*) FROM (SELECT DISTINCT v FROM d) x
 ----
 3
+
+# join reorder（O-4'）：INNER 链贪心重排——多重集等价（行序随 join
+# 序变化是设计内行为；这些查询有 ORDER BY 或 count 锁定结果）
+statement ok
+CREATE TABLE ro (id BIGINT PRIMARY KEY, cid BIGINT, v BIGINT)
+
+statement ok
+CREATE TABLE rc (id BIGINT PRIMARY KEY, rid BIGINT)
+
+statement ok
+CREATE TABLE rr (id BIGINT PRIMARY KEY, name TEXT)
+
+statement ok
+INSERT INTO ro VALUES (1,0,10),(2,1,20),(3,2,30),(4,0,40)
+
+statement ok
+INSERT INTO rc VALUES (0,0),(1,1),(2,0)
+
+statement ok
+INSERT INTO rr VALUES (0,'r0'),(1,'r1')
+
+query TI
+SELECT rr.name, count(*) FROM ro JOIN rc ON ro.cid = rc.id JOIN rr ON rc.rid = rr.id GROUP BY rr.name ORDER BY rr.name
+----
+r0 3
+r1 1
+
+# EXPLAIN 计划块（无段统计 → 不重排，计划=原序；join 查询输出真实
+# 计划块——O-2a 起的行为）
+query T
+EXPLAIN SELECT count(*) FROM ro JOIN rc ON ro.cid = rc.id JOIN rr ON rc.rid = rr.id
+----
+dendro.ir v1
+plan @q0 {
+  %t0 = table "ro" {cols = [id, cid, v], pk = [0]}
+  %s0 = scan %t0
+  %t1 = table "rc" {cols = [id, rid], pk = [0]}
+  %s1 = scan %t1
+  %j0 = join inner %s0, %s1 on "ro.cid = rc.id"
+  %t2 = table "rr" {cols = [id, name], pk = [0]}
+  %s2 = scan %t2
+  %j1 = join inner %j0, %s2 on "rc.rid = rr.id"
+  %a0 = aggregate %j1 {keys = [], aggs = [count(*)]}
+  %p0 = project %a0 {exprs = [count(*)], names = ["count(*)"]}
+  yield %p0
+}

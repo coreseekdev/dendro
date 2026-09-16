@@ -19,9 +19,10 @@ pub struct ColStat {
     pub has_data: bool,
 }
 
-/// 表级列统计（列序 = schema 列序）
+/// 表级列统计（列序 = schema 列序——names 来自 schema，stats 来自段）
 #[derive(Debug, Clone)]
 pub struct TableStats {
+    pub names: Vec<String>,
     pub cols: Vec<ColStat>,
 }
 
@@ -31,13 +32,14 @@ pub fn table_stats(
     sess: &Session,
     table: &str,
 ) -> Option<TableStats> {
-    let (_, entry) = crate::sql::scan::resolve_table(db, &sess.branch, table).ok()?;
+    let (schema, entry) = crate::sql::scan::resolve_table(db, &sess.branch, table).ok()?;
     if entry.col_segments.is_empty() {
         return None;
     }
     let ap = db.columnar()?;
     let cols = ap.col_stats(db.obj_store(), &entry.col_segments)?;
     Some(TableStats {
+        names: schema.columns.iter().map(|c| c.name.clone()).collect(),
         cols: cols
             .into_iter()
             .map(|c| ColStat {
@@ -167,4 +169,71 @@ pub fn estimate_filter_rows(
         est *= f;
     }
     est.round() as u64
+}
+
+// ---------------------------------------------------------------------------
+// join reorder 估算（spec 12 §4 前置收口）：
+// NDV 近似（无持久化 distinct——footer 只存 min/max/null_count/rows）
+// + 等值 join 基数估计 + 扫描估算口
+// ---------------------------------------------------------------------------
+
+/// 整数列 NDV（区间宽上界）：min(max−min+1, 非空行数)；防溢出
+pub fn ndv_range(stat: &ColStat) -> Option<u64> {
+    if !stat.has_data {
+        return None;
+    }
+    let non_null = stat.rows.saturating_sub(stat.nulls);
+    if non_null == 0 {
+        return None;
+    }
+    let span = stat.max.saturating_sub(stat.min);
+    Some(span.min(non_null - 1) + 1)
+}
+
+/// 等值 join 基数估计：|A ⋈ B| ≈ |A|·|B| / max(ndv_l, ndv_r)
+///（均匀假设；双侧缺 ndv 回退 sqrt(小侧)——弱区分度经验值）
+pub fn join_est_rows(
+    rows_l: u64,
+    rows_r: u64,
+    ndv_l: Option<u64>,
+    ndv_r: Option<u64>,
+) -> u64 {
+    let denom = match (ndv_l, ndv_r) {
+        (Some(a), Some(b)) => a.max(b),
+        (Some(a), None) => a,
+        (None, Some(b)) => b,
+        (None, None) => {
+            let s = rows_l.min(rows_r).max(1) as f64;
+            return ((rows_l as f64) * (rows_r as f64) / s.sqrt()) as u64;
+        }
+    };
+    (((rows_l as f64) * (rows_r as f64)) / (denom.max(1)) as f64) as u64
+}
+
+/// 表扫描估算（reorder 用）：段总行数 × 下推谓词选择率
+pub fn scan_est(
+    st: &TableStats,
+    pred: Option<&sqlparser::ast::Expr>,
+) -> u64 {
+    let Some(total) = st.cols.first().map(|c| c.rows) else {
+        return 0;
+    };
+    match pred {
+        Some(p) => estimate_filter_rows(st, &st.names, p, total),
+        None => total,
+    }
+}
+
+/// 列 NDV 查询口（join 键两侧）：pk 精确 = 行数 / 整数区间界 / None
+pub fn col_ndv(st: &TableStats, col: &str, is_pk: bool) -> Option<u64> {
+    let idx = st
+        .names
+        .iter()
+        .position(|n| n.eq_ignore_ascii_case(col))?;
+    let cs = &st.cols.get(idx)?;
+    if is_pk {
+        Some(cs.rows) // 唯一键精确
+    } else {
+        ndv_range(cs)
+    }
 }

@@ -112,6 +112,7 @@ pub(crate) fn eval_query(
             if sess.optimize_enabled {
                 if let Ok(mut plan) = crate::ir::plan::build_plan(q) {
                     crate::ir::plan::rewrite_pushdown(&mut plan);
+                    crate::sql::optimize::rewrite_join_order(&mut plan, db, sess);
                     let top_ok = matches!(
                         &plan,
                         crate::ir::plan::Plan::Sort { .. }
@@ -380,7 +381,12 @@ pub(crate) fn eval_query(
         None
     };
     let pushed_plan: Vec<(String, Vec<Expr>)> = match qplan.as_mut() {
-        Some(p) => crate::ir::plan::rewrite_pushdown(p),
+        Some(p) => {
+            let pushed = crate::ir::plan::rewrite_pushdown(p);
+            // O-4'：INNER 链贪心重排（估算门控——无统计自动不动）
+            crate::sql::optimize::rewrite_join_order(p, db, sess);
+            pushed
+        }
         None => vec![],
     };
     // O-2c 覆盖判定：无聚合/分组/HAVING/排序/LIMIT/通配投影，且计划节点
@@ -1063,7 +1069,18 @@ fn eval_from(
                         return Err(SqlError::syntax("join requires ON"))
                     }
                 };
-                tv = hash_join(tv, right, l, sess.stmt_deadline, sess.optimize_enabled)?;
+                // #30：AST 路径同样消歧（左侧已含多因子——限定名按布局；
+                // 差分实证：3 链 `o.cid = c.id` 曾误中左表 r.id）
+                tv = hash_join(
+                    tv,
+                    right,
+                    l,
+                    sess.stmt_deadline,
+                    sess.optimize_enabled,
+                    Some(&layout),
+                    crate::sql::optimize::factor_key(&j.relation)
+                        .as_deref(),
+                )?;
             }
             JoinOperator::Left(constraint) | JoinOperator::LeftOuter(constraint) => {
                 let mut right =
@@ -1848,7 +1865,16 @@ fn exec_plan_inner(
             let tv = if *kind == "left" {
                 hash_join_left(l, r, on, sess.stmt_deadline)?
             } else {
-                hash_join(l, r, on, sess.stmt_deadline, sess.optimize_enabled)?
+                let rkey = right_scan_key(right);
+                hash_join(
+                    l,
+                    r,
+                    on,
+                    sess.stmt_deadline,
+                    sess.optimize_enabled,
+                    Some(&llayout),
+                    rkey.as_deref(),
+                )?
             };
             // 布局拼接：右因子区间起点 = 左侧列宽（join 拼接序）
             for (k, _, len, local) in rlayout {
@@ -1998,6 +2024,19 @@ fn exec_plan_inner(
         other => Err(SqlError::internal(format!(
             "exec_plan: uncovered plan node {other:?}"
         ))),
+    }
+}
+
+/// 右子树首个 scan 的因子键（rkey 消歧用；非 Scan/Filter{Scan} 叶
+/// → None——历史末段回退行为）
+fn right_scan_key(p: &crate::ir::plan::Plan) -> Option<String> {
+    use crate::ir::plan::Plan;
+    match p {
+        Plan::Scan { table, alias, .. } => {
+            Some(alias.clone().unwrap_or_else(|| table.to_ascii_lowercase()))
+        }
+        Plan::Filter { input, .. } => right_scan_key(input),
+        _ => None,
     }
 }
 
@@ -3298,9 +3337,11 @@ fn hash_join(
     on: &Expr,
     deadline: Option<std::time::Instant>,
     build_select: bool,
+    llay: Option<&FactorLayout>,
+    rkey: Option<&str>,
 ) -> Result<TableView> {
     // 找等值条件 col_l = col_r（支持 AND 链中提取多个；#22 残留合取回收）
-    let (eqs, residual) = extract_equi(on, &l.names, &r.names)?;
+    let (eqs, residual) = extract_equi(on, &l.names, &r.names, llay, rkey)?;
     let mut names = l.names.clone();
     names.extend(r.names.clone());
     // 列名克隆进闭包持有——避免借用 names 阻碍结尾 TableView 移动
@@ -3384,7 +3425,7 @@ fn hash_join_left(
     on: &Expr,
     deadline: Option<std::time::Instant>,
 ) -> Result<TableView> {
-    let (eqs, residual) = extract_equi(on, &l.names, &r.names)?;
+    let (eqs, residual) = extract_equi(on, &l.names, &r.names, None, None)?;
     let mut names = l.names.clone();
     names.extend(r.names.clone());
     // 列名克隆进闭包持有——避免借用 names 阻碍结尾 TableView 移动
@@ -3460,18 +3501,73 @@ fn hash_join_left(
     Ok(TableView { names, rows })
 }
 
+/// 限定名消歧列定位（#30）：前缀必须命中本侧因子（左 = 布局区间
+/// 精确解析；右 = 单因子键），命中即定位、列不在因子内不回退；前缀
+/// 不属本侧 → None（**不得**裸末段回退——曾使 `c.id` 误中右表 o.id
+/// / 左表 r.id，join 键错位——重排差分实证）
+fn col_pos_lay(
+    e: &Expr,
+    names: &[String],
+    layout: Option<&FactorLayout>,
+    rkey: Option<&str>,
+) -> Option<usize> {
+    match e {
+        Expr::Identifier(id) => {
+            let low = id.value.to_ascii_lowercase();
+            names.iter().position(|n| n.to_ascii_lowercase() == low)
+        }
+        Expr::CompoundIdentifier(parts) => {
+            if parts.len() >= 2 {
+                let prefix = parts[0].value.to_ascii_lowercase();
+                let col = parts[1].value.to_ascii_lowercase();
+                if let Some(lay) = layout {
+                    if let Some((_, start, len, local)) =
+                        lay.iter().find(|(k, _, _, _)| *k == prefix)
+                    {
+                        return local
+                            .iter()
+                            .position(|n| *n == col)
+                            .map(|i| start + i)
+                            .filter(|abs| *abs < start + len);
+                    }
+                }
+                if let Some(rk) = rkey {
+                    if prefix == rk {
+                        return names
+                            .iter()
+                            .position(|n| n.to_ascii_lowercase() == col);
+                    }
+                    return None; // 前缀不属右侧因子
+                }
+            }
+            // 无布局无键（历史调用面）——末段回退
+            let last = parts.last()?.value.to_ascii_lowercase();
+            names.iter().position(|n| n.to_ascii_lowercase() == last)
+        }
+        _ => None,
+    }
+}
+
 struct EquiIdx {
     lidx: Vec<usize>,
     ridx: Vec<usize>,
 }
 
 /// 从 ON 条件提取 `l.c = r.c` 等值对（AND 链）
-fn extract_equi(e: &Expr, ln: &[String], rn: &[String]) -> Result<(EquiIdx, Vec<Expr>)> {
+fn extract_equi(
+    e: &Expr,
+    ln: &[String],
+    rn: &[String],
+    llay: Option<&FactorLayout>,
+    rkey: Option<&str>,
+) -> Result<(EquiIdx, Vec<Expr>)> {
     let mut lidx = Vec::new();
     let mut ridx = Vec::new();
     let mut residual: Vec<Expr> = Vec::new();
     // 账本 #22：AND 链中非等值合取曾**静默丢弃**（子节点返回值被无视）。
     // 改为收集残留、逐候选对求值（LEFT：残留不成立=该对不匹配→NULL 延展）
+    #[allow(clippy::too_many_arguments)] // 消歧上下文五元组——内聚于
+    // 递归闭包不可拆（拆参结构反而增加跨闭包状态）
     fn walk(
         e: &Expr,
         ln: &[String],
@@ -3479,6 +3575,8 @@ fn extract_equi(e: &Expr, ln: &[String], rn: &[String]) -> Result<(EquiIdx, Vec<
         li: &mut Vec<usize>,
         ri: &mut Vec<usize>,
         residual: &mut Vec<Expr>,
+        llay: Option<&FactorLayout>,
+        rkey: Option<&str>,
     ) -> Result<bool> {
         match e {
             Expr::BinaryOp {
@@ -3488,11 +3586,11 @@ fn extract_equi(e: &Expr, ln: &[String], rn: &[String]) -> Result<(EquiIdx, Vec<
             } => {
                 // #22：不可提取的子式由**父节点**收集（子式自身只在叶子报
                 // false）；AND 恒真当且仅当全部子式可提取
-                let a = walk(left, ln, rn, li, ri, residual)?;
+                let a = walk(left, ln, rn, li, ri, residual, llay, rkey)?;
                 if !a {
                     residual.push((**left).clone());
                 }
-                let b = walk(right, ln, rn, li, ri, residual)?;
+                let b = walk(right, ln, rn, li, ri, residual, llay, rkey)?;
                 if !b {
                     residual.push((**right).clone());
                 }
@@ -3503,11 +3601,12 @@ fn extract_equi(e: &Expr, ln: &[String], rn: &[String]) -> Result<(EquiIdx, Vec<
                 op: sqlparser::ast::BinaryOperator::Eq,
                 right,
             } => {
-                // 两边各解析出一列：一属左表一属右表
-                let le = col_pos(left, ln);
-                let re = col_pos(right, rn);
-                let lo = col_pos(left, rn);
-                let ro = col_pos(right, ln);
+                // 两边各解析出一列：一属左表一属右表（限定名按侧消歧：
+                // 左侧布局区间 / 右侧单因子键——#30）
+                let le = col_pos_lay(left, ln, llay, None);
+                let re = col_pos_lay(right, rn, None, rkey);
+                let lo = col_pos_lay(left, rn, None, rkey);
+                let ro = col_pos_lay(right, ln, llay, None);
                 if let (Some(a), Some(b)) = (le, re) {
                     li.push(a);
                     ri.push(b);
@@ -3523,7 +3622,7 @@ fn extract_equi(e: &Expr, ln: &[String], rn: &[String]) -> Result<(EquiIdx, Vec<
             _ => Ok(false),
         }
     }
-    let _ = walk(e, ln, rn, &mut lidx, &mut ridx, &mut residual)?;
+    let _ = walk(e, ln, rn, &mut lidx, &mut ridx, &mut residual, llay, rkey)?;
     // 顶层整体不可提取且无任何等值对 → 原错误语义（顶层非等值条件）
     if lidx.is_empty() {
         return Err(SqlError::not_supported(
@@ -3549,20 +3648,6 @@ fn residual_holds(
         }
     }
     Ok(true)
-}
-
-fn col_pos(e: &Expr, names: &[String]) -> Option<usize> {
-    match e {
-        Expr::Identifier(id) => {
-            let low = id.value.to_ascii_lowercase();
-            names.iter().position(|n| n.to_ascii_lowercase() == low)
-        }
-        Expr::CompoundIdentifier(parts) => {
-            let last = parts.last()?.value.to_ascii_lowercase();
-            names.iter().position(|n| n.to_ascii_lowercase() == last)
-        }
-        _ => None,
-    }
 }
 
 // ---------- 投影/聚合 ----------

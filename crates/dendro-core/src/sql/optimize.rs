@@ -396,6 +396,367 @@ pub fn column_mask(
     Some(mask)
 }
 
+// ---------------------------------------------------------------------------
+// O-4'：join reorder（INNER 链贪心重排——spec 12 §4 前置收口）
+// ---------------------------------------------------------------------------
+
+/// 因子槽（重排分析单元：叶子 Scan 或下推后的 Filter{Scan}）
+struct JoinFactor {
+    key: String,
+    node: Plan2,
+    /// 该因子**到达时**的 ON（左深链第 k 步的 ON 归属第 k 个到达因子）
+    on: Expr,
+    est: u64,
+}
+
+/// Plan 局部别名（避免与顶层 Plan 名冲突的占位——实际用 ir::plan::Plan）
+type Plan2 = crate::ir::plan::Plan;
+
+/// ON 的因子引用集（限定名前缀；裸名 → 无法判定归属 → None 即保守放弃）
+fn on_factor_refs(on: &Expr, keys: &[String]) -> Option<Vec<String>> {
+    let mut ids = Vec::new();
+    crate::sql::optimize::expr_idents_pub(on, &mut ids);
+    let mut out = Vec::new();
+    for id in &ids {
+        let Some((prefix, _)) = id.split_once('.') else {
+            return None; // 裸名：归属不明——保守不重排
+        };
+        if !keys.iter().any(|k| k == prefix) {
+            return None; // 引用链外标识（列别名等）——放弃
+        }
+        if !out.iter().any(|k| k == prefix) {
+            out.push(prefix.to_string());
+        }
+    }
+    Some(out)
+}
+
+/// INNER join 链贪心重排（left-deep 保持）：
+/// 1. 链上全部 INNER 且 ≥3 因子；叶子 = Scan / Filter{Scan}；
+///    任一 LEFT / 嵌套非链形态 → 不动
+/// 2. 连通性：每步选「ON 引用 ⊆ 已选集 ∪ 自身」的因子中估算最小者
+/// 3. 估算：scan_est（下推谓词后）× join_est（等值键 NDV：pk 精确/
+///    整数区间/缺省回退）——无统计（est 全 0）不重排
+///
+/// 语义安全性：INNER ⋈ 可交换结合（输出**行序**随序变化——无序多重集
+/// 等价，common §1.1 口径；有 ORDER BY 的查询排序在最终输出前）
+pub fn rewrite_join_order(
+    plan: &mut Plan2,
+    db: &crate::engine::Database,
+    sess: &crate::engine::Session,
+) {
+    rewrite_join_order_walk(plan, db, sess);
+}
+
+fn rewrite_join_order_walk(
+    plan: &mut Plan2,
+    db: &crate::engine::Database,
+    sess: &crate::engine::Session,
+) {
+    use crate::ir::plan::Plan;
+    match plan {
+        Plan::Join { kind, left, right, .. } if kind == &"inner" => {
+            rewrite_join_order_walk(left, db, sess);
+            rewrite_join_order_walk(right, db, sess);
+            try_reorder_chain(plan, db, sess);
+        }
+        Plan::Join { left, right, .. } => {
+            // LEFT：子链内部仍可重排（外层结构不动）
+            rewrite_join_order_walk(left, db, sess);
+            rewrite_join_order_walk(right, db, sess);
+        }
+        Plan::Filter { input, .. }
+        | Plan::Project { input, .. }
+        | Plan::Aggregate { input, .. }
+        | Plan::Sort { input, .. }
+        | Plan::Limit { input, .. } => rewrite_join_order_walk(input, db, sess),
+        Plan::SetOp { left, right, .. } => {
+            rewrite_join_order_walk(left, db, sess);
+            rewrite_join_order_walk(right, db, sess);
+        }
+        Plan::Scan { .. } | Plan::Values => {}
+    }
+}
+
+/// 链提取：Join{Join{...}, leaf_k, on_k}（左深）——叶子带各自到达 ON
+fn try_reorder_chain(
+    plan: &mut Plan2,
+    db: &crate::engine::Database,
+    sess: &crate::engine::Session,
+) {
+    use crate::ir::plan::Plan;
+    // 收集（沿左脊——克隆快照遍历，重排是小树、克隆成本可忽略；
+    // 直接 &mut 左脊遍历与右侧不可变读互斥借用，得不偿失）
+    let mut factors: Vec<JoinFactor> = Vec::new();
+    let mut cursor: &Plan2 = plan;
+    loop {
+        match cursor {
+            Plan::Join { kind, left, right, on } if kind == &"inner" => {
+                // 右因子必须是叶子（Scan / Filter{Scan}）
+                let (key, node) = match &**right {
+                    Plan::Scan { table, alias, .. } => (
+                        alias.clone().unwrap_or_else(|| table.clone()),
+                        (**right).clone(),
+                    ),
+                    Plan::Filter { .. } if matches!(&**right, Plan::Filter { .. }) => {
+                        let Plan::Filter { input, .. } = &**right else {
+                            unreachable!()
+                        };
+                        let Plan::Scan { table, alias, .. } = &**input else {
+                            return // Filter 下非 Scan——非叶子形态
+                        };
+                        (
+                            alias.clone().unwrap_or_else(|| table.clone()),
+                            (**right).clone(),
+                        )
+                    }
+                    _ => return, // 右侧子树非叶子（bushy）——不动
+                };
+                let on = on.clone();
+                factors.push(JoinFactor { key, node, on, est: 0 });
+                cursor = left;
+            }
+            _ => break,
+        }
+    }
+    // 链底（最左因子）
+    let bottom = cursor.clone();
+    let (first_key, first_node) = match &bottom {
+        Plan::Scan { table, alias, .. } => (
+            alias.clone().unwrap_or_else(|| table.clone()),
+            bottom.clone(),
+        ),
+        Plan::Filter { input, .. } if matches!(&**input, Plan::Scan { .. }) => {
+            let Plan::Scan { table, alias, .. } = &**input else { unreachable!() };
+            (
+                alias.clone().unwrap_or_else(|| table.clone()),
+                bottom.clone(),
+            )
+        }
+        _ => return, // 链底非简单叶子——不动
+    };
+    factors.push(JoinFactor {
+        key: first_key,
+        node: first_node,
+        on: Expr::Value(sqlparser::ast::ValueWithSpan {
+            value: sqlparser::ast::Value::Boolean(true),
+            span: sqlparser::tokenizer::Span::empty(),
+        }), // 首因子无到达 ON
+        est: 0,
+    });
+    if factors.len() < 3 {
+        return; // <3 因子：O-4 构建侧已覆盖——不重排（避免无谓行序扰动）
+    }
+    // 估算（无统计 → 全 0 → 不重排）
+    let keys: Vec<String> = factors.iter().map(|f| f.key.clone()).collect();
+    for f in factors.iter_mut() {
+        let (table, alias, pushed_pred) = factor_parts(&f.node);
+        let st = crate::sql::stats::table_stats(db, sess, &table);
+        let est = match &st {
+            Some(st) => {
+                // 下推谓词（Filter{Scan} 形态的 pred）
+                crate::sql::stats::scan_est(st, pushed_pred.as_ref())
+            }
+            None => 0,
+        };
+        let _ = alias;
+        if est == 0 && st.is_some() {
+            return; // 有表无段统计（表名解析失败/无段）——保守不动
+        }
+        f.est = est;
+    }
+    if factors.iter().any(|f| f.est == 0) {
+        return; // 任一无统计 → 放弃（半估半猜的重排比不排危险）
+    }
+    // 待决边模型：ON 不是"因子的到达条件"而是"因子集上的边"——
+    // 消费于其引用集全部就位的那一步（AND 合并为该步 join ON）；
+    // 首放置不消费边（哑 ON 丢弃）；候选必须至少连通一条待决边
+    //（防笛卡尔积）。首因子取最小 est（真实语义：无 ON 约束首步）。
+    let mut pending: Vec<Expr> = factors
+        .iter()
+        .filter(|f| !is_true_expr(&f.on))
+        .map(|f| f.on.clone())
+        .collect();
+    let mut remaining: Vec<JoinFactor> = factors;
+    remaining.sort_by_key(|f| f.est);
+    let first = remaining.remove(0);
+    let mut acc_keys = vec![first.key.clone()];
+    let mut acc_est = first.est;
+    let mut acc_node = first.node;
+    let total = acc_keys.len() + remaining.len();
+    while !remaining.is_empty() {
+        let mut best: Option<(usize, Vec<usize>, u64)> = None; // (因子, 消费边序号, est)
+        for (i, f) in remaining.iter().enumerate() {
+            // 连通性：某条待决边引用 ⊆ acc ∪ {f}
+            let mut consumable: Vec<usize> = Vec::new();
+            for (pi, on) in pending.iter().enumerate() {
+                let Some(refs) = on_factor_refs(on, &keys) else {
+                    continue; // 裸名/外引用边——不可判定（保守：不消费）
+                };
+                if refs.iter().all(|r| r == &f.key || acc_keys.contains(r)) {
+                    consumable.push(pi);
+                }
+            }
+            if consumable.is_empty() {
+                continue; // 不连通——防笛卡尔积
+            }
+            // 估算：消费边中首个可解等值；否则扫描估算回退
+            let est = consumable
+                .iter()
+                .filter_map(|&pi| {
+                    join_estimate(
+                        &pending[pi],
+                        &acc_keys,
+                        &remaining,
+                        i,
+                        db,
+                        sess,
+                        acc_est,
+                    )
+                })
+                .next()
+                .unwrap_or(f.est);
+            if best.as_ref().is_none_or(|(_, _, e)| est < *e) {
+                best = Some((i, consumable, est));
+            }
+        }
+        let Some((bi, consumable, best_est)) = best else {
+            return; // 无候选（连通性锁死）——还原不重排
+        };
+        let f = remaining.remove(bi);
+        // 消费边 AND 合并为该步 ON（保序：pending 序）
+        let mut step_on: Option<Expr> = None;
+        for &pi in consumable.iter().rev() {
+            let on = pending.remove(pi);
+            step_on = Some(match step_on {
+                None => on,
+                Some(acc) => Expr::BinaryOp {
+                    left: Box::new(on),
+                    op: sqlparser::ast::BinaryOperator::And,
+                    right: Box::new(acc),
+                },
+            });
+        }
+        let step_on = step_on.expect("consumable 非空必有 ON");
+        acc_node = Plan::Join {
+            kind: "inner",
+            on: step_on,
+            left: Box::new(acc_node),
+            right: Box::new(f.node),
+        };
+        acc_keys.push(f.key.clone());
+        acc_est = best_est;
+    }
+    if pending.is_empty() && acc_keys.len() == total {
+        *plan = acc_node;
+    }
+    // 残留 pending（不可判定边）→ 不重排（保守）
+}
+
+fn is_true_expr(e: &Expr) -> bool {
+    matches!(
+        e,
+        Expr::Value(vws) if matches!(vws.value, sqlparser::ast::Value::Boolean(true))
+    )
+}
+
+
+/// 叶子因子的 (表名, 别名, 下推谓词)
+fn factor_parts(node: &Plan2) -> (String, Option<String>, Option<Expr>) {
+    use crate::ir::plan::Plan;
+    match node {
+        Plan::Scan { table, alias, .. } => (table.clone(), alias.clone(), None),
+        Plan::Filter { pred, input } => {
+            let Plan::Scan { table, alias, .. } = &**input else {
+                unreachable!()
+            };
+            (table.clone(), alias.clone(), Some(pred.clone()))
+        }
+        _ => unreachable!("factor_parts 只接受叶子"),
+    }
+}
+
+/// 等值 join 估算：ON 的 `a.x = b.y`（一侧在 acc、一侧在新）→
+/// max(ndv) 分数；ON 不可解（非等值/键不可解）→ None（回退扫描估算）
+fn join_estimate(
+    on: &Expr,
+    acc_keys: &[String],
+    remaining: &[JoinFactor],
+    pick: usize,
+    db: &crate::engine::Database,
+    sess: &crate::engine::Session,
+    acc_est: u64,
+) -> Option<u64> {
+    // 等值对提取（单等值；AND 链取首个可解等值——v1）
+    let Expr::BinaryOp {
+        left,
+        op: sqlparser::ast::BinaryOperator::Eq,
+        right,
+    } = on
+    else {
+        return None;
+    };
+    let mut ids_l = Vec::new();
+    let mut ids_r = Vec::new();
+    expr_idents_pub(left, &mut ids_l);
+    expr_idents_pub(right, &mut ids_r);
+    let (id_l, id_r) = (ids_l.first()?, ids_r.first()?);
+    // 归属：一侧 acc 一侧新
+    let new_key = &remaining[pick].key;
+    let (acc_id, new_id) = if id_l.starts_with(&format!("{new_key}.")) {
+        (id_r.clone(), id_l.clone())
+    } else if id_r.starts_with(&format!("{new_key}.")) {
+        (id_l.clone(), id_r.clone())
+    } else {
+        return None; // 双侧同域（acc 内自关联式 ON）——不估
+    };
+    let acc_col = acc_id.split('.').next_back()?.to_string();
+    let acc_fk = acc_id.split('.').next()?.to_string();
+    if !acc_keys.contains(&acc_fk) {
+        return None;
+    }
+    let new_col = new_id.split('.').next_back()?.to_string();
+    // 新因子 NDV
+    let (n_table, _, n_pred) = factor_parts(&remaining[pick].node);
+    let n_st = crate::sql::stats::table_stats(db, sess, &n_table)?;
+    let n_est = crate::sql::stats::scan_est(&n_st, n_pred.as_ref());
+    let n_is_pk = is_pk_col(&n_table, &new_col, db, sess);
+    let n_ndv = crate::sql::stats::col_ndv(&n_st, &new_col, n_is_pk);
+    // acc 侧：因子表定位（列名→表——acc 内哪张表含该键；v1 遍历 acc 因子
+    // 的表名，col_ndv 命中者）——保守：任一 acc 表含列即可
+    let (a_table, _, _) = remaining
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != pick)
+        .find_map(|(_i, f)| {
+            let (t, _, _) = factor_parts(&f.node);
+            let st = crate::sql::stats::table_stats(db, sess, &t)?;
+            (st.names.iter().any(|n| n.eq_ignore_ascii_case(&acc_col)))
+                .then_some::<(String, Option<String>, Option<Expr>)>((t, None, None))
+        })?;
+    let a_st = crate::sql::stats::table_stats(db, sess, &a_table)?;
+    let a_is_pk = is_pk_col(&a_table, &acc_col, db, sess);
+    let a_ndv = crate::sql::stats::col_ndv(&a_st, &acc_col, a_is_pk);
+    Some(crate::sql::stats::join_est_rows(acc_est, n_est, a_ndv, n_ndv))
+}
+
+/// 列是否该表 pk（schema 查询）
+fn is_pk_col(
+    table: &str,
+    col: &str,
+    db: &crate::engine::Database,
+    sess: &crate::engine::Session,
+) -> bool {
+    crate::sql::scan::resolve_table(db, &sess.branch, table)
+        .map(|(schema, _)| {
+            schema
+                .pk
+                .iter()
+                .any(|&p| schema.columns.get(p as usize).is_some_and(|c| c.name.eq_ignore_ascii_case(col)))
+        })
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
