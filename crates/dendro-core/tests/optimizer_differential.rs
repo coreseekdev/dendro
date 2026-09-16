@@ -367,3 +367,33 @@ fn o2c_plan_exec_covered_shapes() {
     diff(&mut c, "SELECT c.region, count(*) FROM orders o JOIN customers c ON o.cid = c.id GROUP BY c.region");
     diff(&mut c, "SELECT o.id FROM orders o ORDER BY o.total DESC LIMIT 3");
 }
+
+// ---------- 计划路径覆盖补全：LIMIT-无-ORDER / OFFSET ----------
+
+#[test]
+fn limit_and_offset_plan_path() {
+    let mut c = setup();
+    // LIMIT 无 ORDER BY（原回落 AST——Limit 节点承接）
+    diff(&mut c, "SELECT id FROM orders WHERE total > 55");
+    diff(&mut c, "SELECT id FROM orders WHERE total > 55 LIMIT 3");
+    // ORDER BY + LIMIT + OFFSET（top-N 界 = limit + offset 经 hint 下传）
+    diff(&mut c, "SELECT o.id FROM orders o ORDER BY o.total DESC LIMIT 3");
+    diff(&mut c, "SELECT o.id FROM orders o ORDER BY o.total DESC LIMIT 2 OFFSET 3");
+    // OFFSET-only
+    diff(&mut c, "SELECT id FROM orders OFFSET 4");
+    // 特征值
+    let r = c
+        .query("SELECT o.id FROM orders o ORDER BY o.total DESC LIMIT 2 OFFSET 2")
+        .unwrap();
+    let ids: Vec<i64> = r
+        .rows
+        .iter()
+        .filter_map(|row| match &row[0] {
+            SqlValue::Int64(v) => Some(*v),
+            _ => None,
+        })
+        .collect();
+    // total 降序：500(4),250(2),100(1),100(2'),100(1'),75(5)…
+    // OFFSET 2 跳过 4,2 → 取 100 组前两个（首见序 id 1,7? 见 slt 同款断言）
+    assert_eq!(ids.len(), 2, "{ids:?}");
+}

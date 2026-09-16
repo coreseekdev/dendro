@@ -53,7 +53,13 @@ pub enum Plan {
     },
     Sort {
         keys: Vec<(Expr, bool)>, // (expr, asc)
+        input: Box<Plan>,
+    },
+    /// LIMIT/OFFSET 终结（含 OFFSET-only；与 Sort 分离——top-N 有界堆
+    /// 经 Limit{Sort} 父子模式在执行期重建：n = limit + offset）
+    Limit {
         limit: Option<usize>,
+        offset: usize,
         input: Box<Plan>,
     },
     SetOp {
@@ -84,7 +90,8 @@ impl Plan {
             Plan::Filter { input, .. }
             | Plan::Aggregate { input, .. }
             | Plan::Project { input, .. }
-            | Plan::Sort { input, .. } => input.collect_keys(out),
+            | Plan::Sort { input, .. }
+            | Plan::Limit { input, .. } => input.collect_keys(out),
             Plan::Join { left, right, .. } => {
                 left.collect_keys(out);
                 right.collect_keys(out);
@@ -136,8 +143,26 @@ pub fn build_plan(q: &Query) -> Result<Plan> {
                 .iter()
                 .map(|o| (o.expr.clone(), o.options.asc.unwrap_or(true)))
                 .collect();
-            let limit = limit_of(q)?;
-            p = Plan::Sort { keys, limit, input: Box::new(p) };
+            p = Plan::Sort { keys, input: Box::new(p) };
+        }
+    }
+    // LIMIT/OFFSET（含 OFFSET-only、LIMIT-无-ORDER）
+    if let Some(sqlparser::ast::LimitClause::LimitOffset { limit, offset, .. }) = &q.limit_clause {
+        let lim = match limit {
+            Some(l) => Some(crate::sql::scan::eval_const(l)? as usize),
+            None => None,
+        };
+        let off = match offset {
+            Some(off) => Some(crate::sql::scan::eval_const(&off.value)? as usize),
+            None => Some(0),
+        }
+        .unwrap_or(0);
+        if lim.is_some() || off > 0 {
+            p = Plan::Limit {
+                limit: lim,
+                offset: off,
+                input: Box::new(p),
+            };
         }
     }
     Ok(p)
@@ -309,15 +334,6 @@ fn collect_agg_text(e: &Expr, out: &mut Vec<String>) {
     }
 }
 
-fn limit_of(q: &Query) -> Result<Option<usize>> {
-    match &q.limit_clause {
-        Some(sqlparser::ast::LimitClause::LimitOffset {
-            limit: Some(l), ..
-        }) => Ok(Some(crate::sql::scan::eval_const(l)? as usize)),
-        _ => Ok(None),
-    }
-}
-
 /// 下推结果的 EXPLAIN 注记（O-1 的 desc 合同不变）
 pub fn pushdown_desc(pushed: &[(String, Vec<Expr>)]) -> String {
     if pushed.is_empty() {
@@ -398,7 +414,8 @@ fn rewrite_walk(plan: &mut Plan, out: &mut Vec<(String, Vec<Expr>)>) {
         }
         Plan::Aggregate { input, .. }
         | Plan::Project { input, .. }
-        | Plan::Sort { input, .. } => rewrite_walk(input, out),
+        | Plan::Sort { input, .. }
+        | Plan::Limit { input, .. } => rewrite_walk(input, out),
         Plan::SetOp { left, right, .. } => {
             rewrite_walk(left, out);
             rewrite_walk(right, out);
@@ -580,20 +597,31 @@ impl<'a> Printer<'a> {
                 ));
                 id
             }
-            Plan::Sort { keys, limit, input } => {
+            Plan::Sort { keys, input } => {
                 let i = self.emit(input);
                 let id = self.next_id(7);
                 let ks: Vec<String> = keys
                     .iter()
                     .map(|(e, asc)| format!("{e} {}", if *asc { "ASC" } else { "DESC" }))
                     .collect();
-                let lim = limit
-                    .map(|n| format!(", limit = {n}"))
-                    .unwrap_or_default();
                 self.out.push_str(&format!(
-                    "  {id} = sort {i} {{keys = [{}]{lim}}}\n",
+                    "  {id} = sort {i} {{keys = [{}]}}\n",
                     ks.join(", ")
                 ));
+                id
+            }
+            Plan::Limit {
+                limit,
+                offset,
+                input,
+            } => {
+                let i = self.emit(input);
+                let id = self.next_id(3); // f 池复用（filter 同前缀族）
+                let attrs = match (limit, offset) {
+                    (Some(l), o) => format!("{{limit = {l}, offset = {o}}}"),
+                    (None, o) => format!("{{offset = {o}}}"),
+                };
+                self.out.push_str(&format!("  {id} = limit {i} {attrs}\n"));
                 id
             }
             Plan::SetOp { op, all, left, right } => {
@@ -841,13 +869,8 @@ pub fn parse_plan(text: &str) -> Option<Plan> {
         } else if let Some(t) = body.strip_prefix("sort %") {
             let (src, attrs) = t.split_once(" {keys = [")?;
             let input = Box::new(lookup_node(&nodes, src.trim())?);
-            let (keys_s, rest) = attrs.split_once("]")?;
-            let rest = rest.strip_suffix('}').unwrap_or(rest);
-            let limit = if rest.is_empty() {
-                None
-            } else {
-                Some(rest.strip_prefix(", limit = ")?.parse().ok()?)
-            };
+            let keys_s = attrs.strip_suffix("]}")?;
+            let _ = attrs;
             let keys = split_top_level(keys_s)?
                 .into_iter()
                 .map(|entry| {
@@ -860,7 +883,24 @@ pub fn parse_plan(text: &str) -> Option<Plan> {
                     }
                 })
                 .collect::<Option<Vec<_>>>()?;
-            Plan::Sort { keys, limit, input }
+            Plan::Sort { keys, input }
+        } else if let Some(t) = body.strip_prefix("limit %") {
+            let (src, attrs) = t.split_once(" {")?;
+            let input = Box::new(lookup_node(&nodes, src.trim())?);
+            let attrs = attrs.strip_suffix('}')?;
+            // {limit = L, offset = O} | {offset = O}
+            let (limit, offset) = if let Some(rest) = attrs.strip_prefix("limit = ") {
+                let (l, rest) = rest.split_once(", offset = ")?;
+                (Some(l.parse().ok()?), rest.parse().ok()?)
+            } else {
+                let o = attrs.strip_prefix("offset = ")?;
+                (None, o.parse().ok()?)
+            };
+            Plan::Limit {
+                limit,
+                offset,
+                input,
+            }
         } else if let Some(t) = ["union ", "except ", "intersect "]
             .iter()
             .find_map(|p| body.strip_prefix(p))
@@ -896,7 +936,8 @@ pub fn verify_plan(p: &Plan) -> bool {
         Plan::Join { left, right, .. } => verify_plan(left) && verify_plan(right),
         Plan::Aggregate { keys, input, .. } => keys.len() <= 64 && verify_plan(input),
         Plan::Project { input, .. } => verify_plan(input),
-        Plan::Sort { keys, input, .. } => !keys.is_empty() && verify_plan(input),
+        Plan::Sort { keys, input } => !keys.is_empty() && verify_plan(input),
+        Plan::Limit { input, .. } => verify_plan(input),
         Plan::SetOp { left, right, .. } => verify_plan(left) && verify_plan(right),
     }
 }

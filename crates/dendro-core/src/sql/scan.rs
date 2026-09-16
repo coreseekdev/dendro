@@ -112,17 +112,15 @@ pub(crate) fn eval_query(
             if sess.optimize_enabled {
                 if let Ok(mut plan) = crate::ir::plan::build_plan(q) {
                     crate::ir::plan::rewrite_pushdown(&mut plan);
-                    let no_offset = !matches!(
-                        &q.limit_clause,
-                        Some(sqlparser::ast::LimitClause::LimitOffset { offset: Some(_), .. })
-                    );
                     let top_ok = matches!(
                         &plan,
-                        crate::ir::plan::Plan::Sort { .. } | crate::ir::plan::Plan::SetOp { .. }
+                        crate::ir::plan::Plan::Sort { .. }
+                            | crate::ir::plan::Plan::SetOp { .. }
+                            | crate::ir::plan::Plan::Limit { .. }
                     );
-                    if no_offset && top_ok && plan_nodes_exec_ok(&plan) {
+                    if top_ok && plan_nodes_exec_ok(&plan) {
                         let masks = plan_scan_masks(db, sess, &plan);
-                        let (tv, _) = exec_plan(db, sess, &plan, snapshot, &masks)?;
+                        let (tv, _) = exec_plan(db, sess, &plan, snapshot, &masks, None)?;
                         return Ok(tv);
                     }
                 }
@@ -385,7 +383,7 @@ pub(crate) fn eval_query(
     if let Some(p) = qplan.as_ref() {
         if plan_exec_covered(p, select, q) {
             let masks = plan_scan_masks(db, sess, p);
-            let (mut tv, _layout) = exec_plan(db, sess, p, snapshot, &masks)?;
+            let (mut tv, _layout) = exec_plan(db, sess, p, snapshot, &masks, None)?;
             if distinct {
                 dedup_rows(&mut tv.rows);
             }
@@ -1445,21 +1443,7 @@ fn plan_exec_covered(
     use crate::ir::plan::Plan;
     // AST 形态：通配/OFFSET → AST 路径（DISTINCT 入口已拒；
     // Plan::Sort v1 不携带 OFFSET；A3 起聚合/分组/HAVING 走计划路径）
-    if matches!(
-        &q.limit_clause,
-        Some(sqlparser::ast::LimitClause::LimitOffset { offset: Some(_), .. })
-    ) {
-        return false;
-    }
-    // LIMIT 无 ORDER BY：build_plan 不产 Sort 节点——limit 会丢失，
-    // 回落 AST 路径（其有 pushdown_limit 早停）
-    let has_order = q
-        .order_by
-        .as_ref()
-        .is_some_and(|o| matches!(&o.kind, sqlparser::ast::OrderByKind::Expressions(es) if !es.is_empty()));
-    if q.limit_clause.is_some() && !has_order {
-        return false;
-    }
+    // LIMIT/OFFSET 由 Limit 节点承接（含 LIMIT-无-ORDER / OFFSET-only）
     // 集合操作查询：body 非 Select——只约束 q 级（排序/LIMIT 已成节点）
     if !matches!(&*q.body, sqlparser::ast::SetExpr::Select(_)) {
         // SetOp 形态：无 WHERE 级 select 检查——q 级 OFFSET 已排除
@@ -1488,7 +1472,7 @@ fn plan_exec_covered(
     // 计划结构：节点 ⊆ 可执行集；顶层 Project（Select）或 Sort/SetOp
     match plan {
         Plan::Project { exprs, .. } if !exprs.is_empty() => plan_nodes_exec_ok(plan),
-        Plan::Sort { .. } | Plan::SetOp { .. } => plan_nodes_exec_ok(plan),
+        Plan::Sort { .. } | Plan::SetOp { .. } | Plan::Limit { .. } => plan_nodes_exec_ok(plan),
         _ => false,
     }
 }
@@ -1501,6 +1485,7 @@ fn plan_nodes_exec_ok(p: &crate::ir::plan::Plan) -> bool {
         Plan::Filter { input, .. } | Plan::Project { input, .. } | Plan::Sort { input, .. } => {
             plan_nodes_exec_ok(input)
         }
+        Plan::Limit { input, .. } => plan_nodes_exec_ok(input),
         Plan::Join { left, right, .. } | Plan::SetOp { left, right, .. } => {
             plan_nodes_exec_ok(left) && plan_nodes_exec_ok(right)
         }
@@ -1529,10 +1514,11 @@ fn plan_exprs(plan: &crate::ir::plan::Plan, out: &mut Vec<Expr>) {
             out.extend(keys.iter().cloned());
             plan_exprs(input, out);
         }
-        Plan::Sort { keys, input, .. } => {
+        Plan::Sort { keys, input } => {
             out.extend(keys.iter().map(|(e, _)| e.clone()));
             plan_exprs(input, out);
         }
+        Plan::Limit { input, .. } => plan_exprs(input, out),
         Plan::SetOp { left, right, .. } => {
             plan_exprs(left, out);
             plan_exprs(right, out);
@@ -1561,7 +1547,8 @@ fn plan_scan_masks(
                 out.push((alias.clone().unwrap_or_else(|| table.clone()), table.clone()))
             }
             Plan::Filter { input, .. } | Plan::Project { input, .. }
-            | Plan::Aggregate { input, .. } | Plan::Sort { input, .. } => scans_of(input, out),
+            | Plan::Aggregate { input, .. } | Plan::Sort { input, .. }
+            | Plan::Limit { input, .. } => scans_of(input, out),
             Plan::Join { left, right, .. } | Plan::SetOp { left, right, .. } => {
                 scans_of(left, out);
                 scans_of(right, out);
@@ -1612,6 +1599,7 @@ fn exec_plan(
     plan: &crate::ir::plan::Plan,
     snapshot: u64,
     masks: &std::collections::HashMap<String, Vec<bool>>,
+    sort_hint: Option<usize>,
 ) -> Result<(TableView, FactorLayout)> {
     use crate::ir::plan::Plan;
     match plan {
@@ -1666,7 +1654,7 @@ fn exec_plan(
                 tv = apply_predicates_q(tv, pred, sess, &qres)?;
                 return Ok((tv, layout));
             }
-            let (mut tv, layout) = exec_plan(db, sess, input, snapshot, masks)?;
+            let (mut tv, layout) = exec_plan(db, sess, input, snapshot, masks, None)?;
             let lay = layout.clone();
             let nms = tv.names.clone();
             let qres = move |n: &str| resolve_qualified(&lay, &nms, n);
@@ -1674,8 +1662,8 @@ fn exec_plan(
             Ok((tv, layout))
         }
         Plan::Join { kind, on, left, right } => {
-            let (l, mut llayout) = exec_plan(db, sess, left, snapshot, masks)?;
-            let (r, rlayout) = exec_plan(db, sess, right, snapshot, masks)?;
+            let (l, mut llayout) = exec_plan(db, sess, left, snapshot, masks, None)?;
+            let (r, rlayout) = exec_plan(db, sess, right, snapshot, masks, None)?;
             let rstart = l.names.len();
             let tv = if *kind == "left" {
                 hash_join_left(l, r, on, sess.stmt_deadline)?
@@ -1698,7 +1686,7 @@ fn exec_plan(
             match &**input {
                 Plan::Aggregate { input: a_in, .. } => {
                     // 聚合的**内层**输入（组合段吃掉 Aggregate 节点自身）
-                    let (tv_in, _) = exec_plan(db, sess, a_in, snapshot, masks)?;
+                    let (tv_in, _) = exec_plan(db, sess, a_in, snapshot, masks, None)?;
                     let out = exec_aggregate_composite(&tv_in, input, None, exprs, names)?;
                     return Ok((out, FactorLayout::new()));
                 }
@@ -1709,21 +1697,21 @@ fn exec_plan(
                     let Plan::Aggregate { input: a_in, .. } = &**inner else {
                         unreachable!()
                     };
-                    let (tv_in, _) = exec_plan(db, sess, a_in, snapshot, masks)?;
+                    let (tv_in, _) = exec_plan(db, sess, a_in, snapshot, masks, None)?;
                     let out =
                         exec_aggregate_composite(&tv_in, inner, Some(pred), exprs, names)?;
                     return Ok((out, FactorLayout::new()));
                 }
                 _ => {}
             }
-            let (tv, layout) = exec_plan(db, sess, input, snapshot, masks)?;
+            let (tv, layout) = exec_plan(db, sess, input, snapshot, masks, None)?;
             let lay = layout.clone();
             let nms = tv.names.clone();
             let qres = move |n: &str| resolve_qualified(&lay, &nms, n);
             let out = project_exprs(exprs, names, &tv, sess, qres)?;
             Ok((out, FactorLayout::new()))
         }
-        Plan::Sort { keys, limit, input } => {
+        Plan::Sort { keys, input } => {
             // A2/A3：排序在投影之上。普通投影保留输入作键回退（投影保行
             // ——未投影列的 ORDER BY 键经输入行求值）；聚合组合形态的
             // 行不与输入对齐（组行）——经 Project 臂组合执行后无回退排序
@@ -1739,18 +1727,18 @@ fn exec_plan(
                         Plan::Filter { input: fi, .. } if matches!(&**fi, Plan::Aggregate { .. })
                     );
                 if agg_composite {
-                    let (mut out, _) = exec_plan(db, sess, input, snapshot, masks)?;
-                    plan_sort(keys, *limit, &mut out.rows, None, &out.names, &[], sess)?;
+                    let (mut out, _) = exec_plan(db, sess, input, snapshot, masks, None)?;
+                    plan_sort(keys, sort_hint, &mut out.rows, None, &out.names, &[], sess)?;
                     return Ok((out, FactorLayout::new()));
                 }
-                let (tv_in, layout) = exec_plan(db, sess, pin, snapshot, masks)?;
+                let (tv_in, layout) = exec_plan(db, sess, pin, snapshot, masks, None)?;
                 let lay = layout.clone();
                 let nms = tv_in.names.clone();
                 let qres = move |n: &str| resolve_qualified(&lay, &nms, n);
                 let mut out = project_exprs(exprs, names, &tv_in, sess, qres)?;
                 plan_sort(
                     keys,
-                    *limit,
+                    sort_hint,
                     &mut out.rows,
                     Some(&tv_in.rows),
                     &out.names,
@@ -1760,22 +1748,42 @@ fn exec_plan(
                 return Ok((out, FactorLayout::new()));
             }
             // 非 Project 输入（集合操作顶等）：无输入回退
-            let (mut tv, _layout) = exec_plan(db, sess, input, snapshot, masks)?;
-            plan_sort(keys, *limit, &mut tv.rows, None, &tv.names, &[], sess)?;
+            let (mut tv, _layout) = exec_plan(db, sess, input, snapshot, masks, None)?;
+            plan_sort(keys, sort_hint, &mut tv.rows, None, &tv.names, &[], sess)?;
             Ok((tv, FactorLayout::new()))
         }
         Plan::SetOp { op, all, left, right } => {
             // A1：两侧子计划求值 → 共享 apply_setop（与 eval_query 逐字节
             // 同语义）
-            let (lt, _) = exec_plan(db, sess, left, snapshot, masks)?;
-            let (rt, _) = exec_plan(db, sess, right, snapshot, masks)?;
+            let (lt, _) = exec_plan(db, sess, left, snapshot, masks, None)?;
+            let (rt, _) = exec_plan(db, sess, right, snapshot, masks, None)?;
             let (names, rows) = apply_setop(op, *all, lt, &rt)?;
             Ok((
                 TableView { names, rows },
                 FactorLayout::new(),
             ))
         }
-        // 聚合：覆盖判定已排除——不可达（防御性回落错误）
+        Plan::Limit {
+            limit,
+            offset,
+            input,
+        } => {
+            // LIMIT/OFFSET 终结。input 为 Sort 时以 n = limit + offset 作
+            // top-N 界下传（有界堆——与 AST 路径 topn 同口径）
+            let hint = match (&**input, limit) {
+                (Plan::Sort { .. }, Some(l)) => Some(l + offset),
+                _ => None,
+            };
+            let (mut tv, _layout) = exec_plan(db, sess, input, snapshot, masks, hint)?;
+            if *offset > 0 {
+                tv.rows = tv.rows.into_iter().skip(*offset).collect();
+            }
+            if let Some(n) = limit {
+                tv.rows.truncate(*n);
+            }
+            Ok((tv, FactorLayout::new()))
+        }
+        // 聚合：组合模式之外的裸 Aggregate——不可达（防御性回落错误）
         other => Err(SqlError::internal(format!(
             "exec_plan: uncovered plan node {other:?}"
         ))),
