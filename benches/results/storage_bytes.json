@@ -1,10 +1,10 @@
 {
   "suite": "storage_bytes",
   "rows": [
-  {"name": "storage_row_bytes", "value": 13994887.000, "unit": "B"},
-  {"name": "storage_col_bytes", "value": 3893149.000, "unit": "B"},
+  {"name": "storage_row_bytes", "value": 13994939.000, "unit": "B"},
+  {"name": "storage_col_bytes", "value": 3892253.000, "unit": "B"},
   {"name": "storage_wal_bytes", "value": 16777216.000, "unit": "B"},
-  {"name": "storage_row_over_col_ratio", "value": 3.595, "unit": "x"},
+  {"name": "storage_row_over_col_ratio", "value": 3.596, "unit": "x"},
   {"name": "storage_total_rows", "value": 205000.000, "unit": "rows"},
   {"name": "storage_delta_tail_pct", "value": 2.439, "unit": "%"},
   {"name": "storage_visible_rows", "value": 205000.000, "unit": "rows"}

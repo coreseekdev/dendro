@@ -465,6 +465,109 @@ pub fn bench_branch() -> BenchResult {
 }
 
 /// AP 列式 vs TP 行式聚合（物化后 CBF 路由）
+/// 优化器 O 系列（spec 12）量化：四项 on/off 对比 + 加速比。
+/// optimize off = `SET dendro.optimize='off'`（下推/裁剪/构建侧选择
+/// 全关的原路径）；数字取中位数（5 轮）。
+pub fn bench_optimizer() -> BenchResult {
+    let mut rows = Vec::new();
+    let dir = std::env::temp_dir().join(format!("dendro-bench-opt-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(dir.clone());
+    let db = Database::open(DbOptions {
+        store: StoreConfig::LocalDir(dir.clone()),
+        durability: Durability::NoWait,
+        wal_flush_interval_ms: 1,
+        wal_segment_bytes: 32 << 20,
+        checkpoint_threshold_bytes: u64::MAX,
+        checkpoint_interval_s: 0,
+        ..Default::default()
+    })
+    .unwrap();
+    db.set_columnar(Arc::new(dendro_columnar::integrate::CbfColumnar {
+        row_group_rows: 8192,
+    }));
+    let mut s = db.new_session();
+    // 夹具：orders 50k（6 列宽表）× customers 200——不对称 join 的典型形
+    s.exec("CREATE TABLE orders (id BIGINT PRIMARY KEY, cid BIGINT, a BIGINT, b BIGINT, c DOUBLE, note TEXT)").unwrap();
+    s.exec("CREATE TABLE customers (id BIGINT PRIMARY KEY, region TEXT, tier INT)").unwrap();
+    const N: usize = 50_000;
+    const CHUNK: usize = 2000;
+    let mut done = 0usize;
+    while done < N {
+        let end = (done + CHUNK).min(N);
+        let mut sql = String::from("INSERT INTO orders VALUES ");
+        for i in done..end {
+            if i > done { sql.push(','); }
+            sql.push_str(&format!(
+                "({i}, {}, {}, {}, {}, 'note-payload-{}')",
+                i % 200, i % 97, i * 3 % 1009, (i % 881) as f64 * 0.25, i % 1000
+            ));
+        }
+        s.exec(&sql).unwrap();
+        done = end;
+    }
+    {
+        let mut sql = String::from("INSERT INTO customers VALUES ");
+        for i in 0..200 {
+            if i > 0 { sql.push(','); }
+            sql.push_str(&format!("({i}, 'r{}', {})", i % 8, i % 5));
+        }
+        s.exec(&sql).unwrap();
+    }
+    s.exec("CHECKPOINT").unwrap(); // orders 物化列存段（AP/裁剪臂）
+
+    fn median_of(
+        s: &mut dendro_core::engine::Session,
+        sql: &str,
+        opt: &str,
+    ) -> f64 {
+        let mut times = Vec::new();
+        for _ in 0..5 {
+            s.exec(&format!("SET dendro.optimize = '{opt}'")).unwrap();
+            let t = Instant::now();
+            s.exec(sql).unwrap();
+            times.push(t.elapsed().as_secs_f64() * 1e3);
+        }
+        times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        times[times.len() / 2]
+    }
+
+    // ① O-1 下推：双侧选择性谓词的 join（off = join 后过滤全量中间态）
+    let q_join = "SELECT count(*) FROM orders o JOIN customers c ON o.cid = c.id                   WHERE o.b < 100 AND c.region = 'r3'";
+    let join_on = median_of(&mut s, q_join, "on");
+    let join_off = median_of(&mut s, q_join, "off");
+    rows.push(BenchRow { name: "opt_join_pushdown_on_ms".into(), value: join_on, unit: "ms" });
+    rows.push(BenchRow { name: "opt_join_pushdown_off_ms".into(), value: join_off, unit: "ms" });
+    rows.push(BenchRow { name: "opt_join_pushdown_speedup".into(), value: join_off / join_on, unit: "x" });
+
+    // ② O-5 top-N：ORDER BY 非索引列 + LIMIT 10（off = 全量排序）
+    let q_topn = "SELECT id, note FROM orders WHERE a > 10 ORDER BY note DESC LIMIT 10";
+    let topn_on = median_of(&mut s, q_topn, "on");
+    let topn_off = median_of(&mut s, q_topn, "off");
+    rows.push(BenchRow { name: "opt_topn_on_ms".into(), value: topn_on, unit: "ms" });
+    rows.push(BenchRow { name: "opt_topn_off_ms".into(), value: topn_off, unit: "ms" });
+    rows.push(BenchRow { name: "opt_topn_speedup".into(), value: topn_off / topn_on, unit: "x" });
+
+    // ③ O-3 裁剪 + 稀疏读：AP 子集列查询（2/6 列 + WHERE 列）
+    let q_prune = "SELECT id, note FROM orders WHERE c > 100.0";
+    let prune_on = median_of(&mut s, q_prune, "on");
+    let prune_off = median_of(&mut s, q_prune, "off");
+    rows.push(BenchRow { name: "opt_prune_on_ms".into(), value: prune_on, unit: "ms" });
+    rows.push(BenchRow { name: "opt_prune_off_ms".into(), value: prune_off, unit: "ms" });
+    rows.push(BenchRow { name: "opt_prune_speedup".into(), value: prune_off / prune_on, unit: "x" });
+
+    // ④ O-4 构建侧：200 小表在左 ⋈ 50k（a<40 过滤后 ~20k）在右——
+    // off 固定建右（20k 行哈希表），on 小侧建表（200 行）
+    let q_build = "SELECT count(*) FROM customers c JOIN orders o ON c.id = o.cid WHERE o.a < 40";
+    let build_on = median_of(&mut s, q_build, "on");
+    let build_off = median_of(&mut s, q_build, "off");
+    rows.push(BenchRow { name: "opt_build_side_on_ms".into(), value: build_on, unit: "ms" });
+    rows.push(BenchRow { name: "opt_build_side_off_ms".into(), value: build_off, unit: "ms" });
+    rows.push(BenchRow { name: "opt_build_side_speedup".into(), value: build_off / build_on, unit: "x" });
+
+    let _ = std::fs::remove_dir_all(dir);
+    BenchResult { suite: "optimizer".into(), rows }
+}
+
 pub fn bench_ap(rows_n: usize) -> BenchResult {
     let mut rows = Vec::new();
     let dir = std::env::temp_dir().join(format!("dendro-bench-ap-{}", std::process::id()));
@@ -686,6 +789,14 @@ pub fn run_all(out_dir: &PathBuf) {
     }
     eprintln!("[bench] recovery starting...");
     let s = bench_recovery();
+    let path = out_dir.join(format!("{}.json", s.suite));
+    std::fs::write(&path, s.to_json()).unwrap();
+    println!("wrote {}", path.display());
+    for r in &s.rows {
+        println!("  {:<48} {:>12.3} {}", r.name, r.value, r.unit);
+    }
+    eprintln!("[bench] optimizer starting...");
+    let s = bench_optimizer();
     let path = out_dir.join(format!("{}.json", s.suite));
     std::fs::write(&path, s.to_json()).unwrap();
     println!("wrote {}", path.display());

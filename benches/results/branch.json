@@ -1,14 +1,14 @@
 {
   "suite": "branch",
   "rows": [
-  {"name": "branch_load_10000_rows_s", "value": 0.031, "unit": "s"},
-  {"name": "branch_create_at_10000_us", "value": 346.763, "unit": "us"},
-  {"name": "branch_merge_diff1000_at_10000_us", "value": 663.941, "unit": "us"},
-  {"name": "branch_load_100000_rows_s", "value": 0.319, "unit": "s"},
-  {"name": "branch_create_at_100000_us", "value": 351.552, "unit": "us"},
-  {"name": "branch_merge_diff1000_at_100000_us", "value": 490.824, "unit": "us"},
-  {"name": "branch_load_500000_rows_s", "value": 1.587, "unit": "s"},
-  {"name": "branch_create_at_500000_us", "value": 409.902, "unit": "us"},
-  {"name": "branch_merge_diff1000_at_500000_us", "value": 402.768, "unit": "us"}
+  {"name": "branch_load_10000_rows_s", "value": 0.168, "unit": "s"},
+  {"name": "branch_create_at_10000_us", "value": 579.846, "unit": "us"},
+  {"name": "branch_merge_diff1000_at_10000_us", "value": 1122.671, "unit": "us"},
+  {"name": "branch_load_100000_rows_s", "value": 1.767, "unit": "s"},
+  {"name": "branch_create_at_100000_us", "value": 771.087, "unit": "us"},
+  {"name": "branch_merge_diff1000_at_100000_us", "value": 1582.360, "unit": "us"},
+  {"name": "branch_load_500000_rows_s", "value": 9.091, "unit": "s"},
+  {"name": "branch_create_at_500000_us", "value": 874.092, "unit": "us"},
+  {"name": "branch_merge_diff1000_at_500000_us", "value": 1070.063, "unit": "us"}
   ]
 }

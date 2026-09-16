@@ -1,0 +1,17 @@
+{
+  "suite": "optimizer",
+  "rows": [
+  {"name": "opt_join_pushdown_on_ms", "value": 74.859, "unit": "ms"},
+  {"name": "opt_join_pushdown_off_ms", "value": 118.536, "unit": "ms"},
+  {"name": "opt_join_pushdown_speedup", "value": 1.583, "unit": "x"},
+  {"name": "opt_topn_on_ms", "value": 138.353, "unit": "ms"},
+  {"name": "opt_topn_off_ms", "value": 151.115, "unit": "ms"},
+  {"name": "opt_topn_speedup", "value": 1.092, "unit": "x"},
+  {"name": "opt_prune_on_ms", "value": 100.418, "unit": "ms"},
+  {"name": "opt_prune_off_ms", "value": 116.041, "unit": "ms"},
+  {"name": "opt_prune_speedup", "value": 1.156, "unit": "x"},
+  {"name": "opt_build_side_on_ms", "value": 107.168, "unit": "ms"},
+  {"name": "opt_build_side_off_ms", "value": 129.321, "unit": "ms"},
+  {"name": "opt_build_side_speedup", "value": 1.207, "unit": "x"}
+  ]
+}
