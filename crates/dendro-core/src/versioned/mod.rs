@@ -113,6 +113,9 @@ pub struct TableEntry {
     /// 外键约束（P0：REFERENCES 执法；serde default 兼容旧 manifest）
     #[serde(default)]
     pub foreign_keys: Vec<ForeignKeyDef>,
+    /// UNIQUE 约束列集（P0；serde default 兼容）
+    #[serde(default)]
+    pub unique_sets: Vec<Vec<u16>>,
     /// 表级 ACL：角色 → 权限位（privs.rs PRIV_*；serde default 兼容旧 manifest）
     #[serde(default)]
     pub acl: std::collections::HashMap<String, u8>,

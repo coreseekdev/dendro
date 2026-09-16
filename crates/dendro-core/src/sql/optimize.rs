@@ -1712,7 +1712,7 @@ pub fn expand_ctes(q: &sqlparser::ast::Query) -> crate::error::Result<sqlparser:
     };
     if with.recursive {
         return Err(crate::error::SqlError::not_supported(
-            "WITH RECURSIVE (v2: iterative fixpoint)",
+            "WITH RECURSIVE (v2: iterative fixpoint needs eval context in expand)",
         ));
     }
     // 收集 CTE 名 → 查询体（按声明序——后声明可引用先声明）

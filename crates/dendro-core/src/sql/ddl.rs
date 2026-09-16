@@ -22,7 +22,7 @@ pub(crate) fn exec_create_table(
 ) -> Result<Option<Output>> {
     let name = object_name(&create.name);
     let short = name.rsplit('.').next().unwrap_or(&name).to_string();
-    let (cols, pk, fk_defs) = translate_columns(&create.columns, &create.constraints)?;
+    let (cols, pk, fk_defs, unique_sets) = translate_columns(&create.columns, &create.constraints)?;
     let schema = TableSchema {
         name: short.clone(),
         columns: cols,
@@ -72,6 +72,7 @@ pub(crate) fn exec_create_table(
         owner: crate::sql::privs::norm_user(&sess.user),
         acl: std::collections::HashMap::new(),
         foreign_keys: resolve_fk_refs(db, sess, fk_defs)?,
+        unique_sets,
     };
     // schema chunk 先写
     db.cas
@@ -178,10 +179,11 @@ fn object_name(n: &ObjectName) -> String {
 fn translate_columns(
     cols: &[PColumnDef],
     constraints: &[TableConstraint],
-) -> Result<(Vec<ColumnDef>, Vec<u16>, Vec<crate::versioned::ForeignKeyDef>)> {
+) -> Result<(Vec<ColumnDef>, Vec<u16>, Vec<crate::versioned::ForeignKeyDef>, Vec<Vec<u16>>)> {
     let mut out = Vec::new();
     let mut pk: Vec<u16> = Vec::new();
     let mut fks: Vec<crate::versioned::ForeignKeyDef> = Vec::new();
+    let mut unique_sets: Vec<Vec<u16>> = Vec::new();
     for c in cols {
         let ty = ColType::from_parse(&c.data_type.to_string())
             .ok_or_else(|| SqlError::not_supported(format!("type {}", c.data_type)))?;
@@ -192,9 +194,7 @@ fn translate_columns(
                 sqlparser::ast::ColumnOption::NotNull => nullable = false,
                 sqlparser::ast::ColumnOption::PrimaryKey(_) => inline_pk = true,
                 sqlparser::ast::ColumnOption::Unique(_) => {
-                    return Err(SqlError::not_supported(
-                        "UNIQUE constraint (v1: primary key only)",
-                    ))
+                    unique_sets.push(vec![(out.len()) as u16]);
                 }
                 sqlparser::ast::ColumnOption::Default(_) => { /* 接受但 v1 忽略 */ }
                 sqlparser::ast::ColumnOption::ForeignKey(ref fk) => {
@@ -256,10 +256,23 @@ fn translate_columns(
                 pk.push(idx as u16);
                 out[idx].nullable = false;
             }
-        } else if matches!(con, TableConstraint::Unique(_)) {
-            return Err(SqlError::not_supported(
-                "UNIQUE constraint (v1: primary key only)",
-            ));
+        } else if let TableConstraint::Unique(u) = con {
+            // P0：UNIQUE 约束——多列 UNIQUE(a,b) 是一个组合集（原误拆
+            // 为单列集：(10,30) 与 (10,20) 的 a=10 冲突——差分实证）
+            let mut cols_idx = Vec::new();
+            for ic in &u.columns {
+                let name = match &ic.column.expr {
+                    Expr::Identifier(id) => id.value.clone(),
+                    other => other.to_string(),
+                };
+                let low = name.to_ascii_lowercase();
+                let idx = out
+                    .iter()
+                    .position(|c| c.name.to_ascii_lowercase() == low)
+                    .ok_or_else(|| SqlError::undefined_column(format!("unique column {name}")))?;
+                cols_idx.push(idx as u16);
+            }
+            unique_sets.push(cols_idx);
         } else if let TableConstraint::ForeignKey(fk) = con {
             // 表级 FOREIGN KEY (col) REFERENCES t(col)（P0——原静默丢弃）
             let ref_table = fk
@@ -295,7 +308,7 @@ fn translate_columns(
             // 存 referred 列名→索引延迟——v1 简化：建表后用父表 PK 序
         }
     }
-    Ok((out, pk, fks))
+    Ok((out, pk, fks, unique_sets))
 }
 
 /// catalog 变更 + 新 commit + manifest 推进的公共路径
@@ -427,7 +440,7 @@ pub(crate) fn alter_table_impl(
     let short = full.rsplit('.').next().unwrap_or(&full).to_string();
     match op {
         sqlparser::ast::AlterTableOperation::AddColumn { column_def, .. } => {
-            let (mut cols, new_pk, _) = translate_columns(&[column_def], &[])?;
+            let (mut cols, new_pk, _, _) = translate_columns(&[column_def], &[])?;
             if !new_pk.is_empty() {
                 return Err(SqlError::not_supported(
                     "ALTER TABLE ADD COLUMN ... PRIMARY KEY（改用建表约束或重建表）",
@@ -574,7 +587,7 @@ pub(crate) fn exec_insert(
                             .to_string(),
                     ));
                 }
-                insert_row(db, sess, &schema, entry.id, &mut txn, row, &entry.foreign_keys)?;
+                insert_row(db, sess, &schema, entry.id, &mut txn, row, &entry.foreign_keys, &entry.unique_sets)?;
                 count += 1;
             }
         }
@@ -604,7 +617,7 @@ pub(crate) fn exec_insert(
                 for (si, &ci) in col_idx.iter().enumerate() {
                     row[ci] = src_row.get(si).cloned().unwrap_or(SqlValue::Null);
                 }
-                insert_row(db, sess, &schema, entry.id, &mut txn, row, &entry.foreign_keys)?;
+                insert_row(db, sess, &schema, entry.id, &mut txn, row, &entry.foreign_keys, &entry.unique_sets)?;
                 count += 1;
             }
         }
@@ -680,6 +693,7 @@ pub(crate) fn coerce_for_column(v: SqlValue, ty: &crate::types::ColType) -> Resu
     })
 }
 
+#[allow(clippy::too_many_arguments)] // 约束执法上下文——FkUnique 结构化不合算
 fn insert_row(
     db: &Database,
     sess: &Session,
@@ -688,6 +702,7 @@ fn insert_row(
     txn: &mut Txn,
     row: Vec<SqlValue>,
     fks: &[crate::versioned::ForeignKeyDef],
+    unique_sets: &[Vec<u16>],
 ) -> Result<()> {
     let pk_vals: Vec<SqlValue> = schema.pk.iter().map(|&i| row[i as usize].clone()).collect();
     if pk_vals.iter().any(|v| v.is_null()) {
@@ -703,10 +718,81 @@ fn insert_row(
         }
     }
     // P0：FK 父行检查（FK 列非 NULL → 父表 PK 点查存在性）
-    // FK 从调用方传入（TableEntry.foreign_keys——insert_row 自身无法
-    // 获取 TableEntry；签名增参）
     if !fks.is_empty() {
         check_fk_parents(db, sess, schema, fks, &row, txn)?;
+    }
+    // P0：UNIQUE 约束检查（v1 全扫树——值组合不得与现有行重复；
+    // NULL 不参与唯一性——SQL 语义；v2 建 unique 索引点查）
+    for us in unique_sets {
+        let uvals: Vec<SqlValue> = us
+            .iter()
+            .map(|&i| row.get(i as usize).cloned().unwrap_or(SqlValue::Null))
+            .collect();
+        if uvals.iter().any(|v| v.is_null()) {
+            continue;
+        }
+        // P0 UNIQUE：同表扫描（memtx overlay + prolly 树——两侧都查；
+        // v1 全扫，v2 建 unique 索引点查）
+        let b = db.branch(&sess.branch)?;
+        // 1. memtx overlay（insert 后未 checkpoint 的数据在此）
+        let tm = b.mem.table(table_id);
+        for (_, v) in tm.snapshot_rows(txn.snapshot) {
+            if let Some(v) = v {
+                if let Ok(existing) = crate::sql::scan::row_from_bytes(schema, &v) {
+                    let dup = us
+                        .iter()
+                        .zip(&uvals)
+                        .all(|(&ci, uv)| existing.get(ci as usize).is_some_and(|x| x == uv));
+                    if dup {
+                        let col_names: Vec<String> = us
+                            .iter()
+                            .filter_map(|&ci| {
+                                schema.columns.get(ci as usize).map(|c| c.name.clone())
+                            })
+                            .collect();
+                        return Err(SqlError::duplicate_key(format!(
+                            "duplicate key value violates unique constraint on \"{}\"",
+                            col_names.join(", ")
+                        )));
+                    }
+                }
+            }
+        }
+        // 2. prolly 树（checkpoint 后数据）
+        let (_, this_entry) = scan::resolve_table(db, &sess.branch, &schema.name)?;
+        let root = this_entry
+            .table_root
+            .as_ref()
+            .and_then(|r| crate::format::hash::Hash::from_base32(r));
+        if let Some(root) = root {
+            for (_, v) in crate::prolly::cursor::range_scan(
+                db.store.clone(),
+                &root,
+                None,
+                None,
+            )
+            .map_err(|e| SqlError::internal(e.to_string()))?
+            {
+                if let Ok(existing) = crate::sql::scan::row_from_bytes(schema, &v) {
+                    let dup = us
+                        .iter()
+                        .zip(&uvals)
+                        .all(|(&ci, uv)| existing.get(ci as usize).is_some_and(|x| x == uv));
+                    if dup {
+                        let col_names: Vec<String> = us
+                            .iter()
+                            .filter_map(|&ci| {
+                                schema.columns.get(ci as usize).map(|c| c.name.clone())
+                            })
+                            .collect();
+                        return Err(SqlError::duplicate_key(format!(
+                            "duplicate key value violates unique constraint on \"{}\"",
+                            col_names.join(", ")
+                        )));
+                    }
+                }
+            }
+        }
     }
     let key = encode_key(&pk_vals);
     // Q-16：同一显式事务内两次 INSERT 同键，第二次必须 23505

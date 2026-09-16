@@ -30,6 +30,13 @@
   Plan::Project 增 names（别名信息）；Filter{Scan} 谓词下传
   selection 提示（点查/派发判定恢复）。
   门禁：clippy 0 / 463 测试 / 31 slt。
+- **2026-09-16 P0 UNIQUE 约束 + 复合集修正**：列级 `col TEXT
+  UNIQUE` / 表级 `UNIQUE(a, b)` 解析 → TableEntry.unique_sets。
+  执法：insert_row 中 memtx overlay + prolly 树双侧全扫（v1——
+  v2 建 unique 索引点查）；NULL 不参与唯一性（SQL 语义）。
+  复合集修正：UNIQUE(a,b) 是一个组合集（原误拆单列集——
+  (10,30) 与 (10,20) 因 a=10 误冲突，差分实证）。
+  测试：constraints +3（列级违反/NULL 允许/复合集）。
 - **2026-09-16 P0 窗口函数真实现**：OVER (PARTITION BY / ORDER BY)
   + row_number/rank/dense_rank + sum/count/min/max/avg OVER。排名逐行
   （行序 + 同序同名次）；聚合分区总计（无 frame → 整分区同值——

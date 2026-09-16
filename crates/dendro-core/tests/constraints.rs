@@ -101,3 +101,37 @@ fn fk_multiple_violations_batch() {
     assert_eq!(e.state, "23503", "{e}");
     assert_eq!(count(&d, "SELECT count(*) FROM orders"), "0"); // 原子性
 }
+
+// ---------- UNIQUE 约束 ----------
+
+#[test]
+fn unique_insert_violation() {
+    let d = db();
+    let mut s = d.new_session();
+    s.exec("CREATE TABLE u (id BIGINT PRIMARY KEY, email TEXT UNIQUE)").unwrap();
+    s.exec("INSERT INTO u VALUES (1, 'a@x.com')").unwrap();
+    let e = err(&d, "INSERT INTO u VALUES (2, 'a@x.com')");
+    assert_eq!(e.state, "23505", "{e}");
+    assert!(e.message.contains("unique"), "{e}");
+}
+
+#[test]
+fn unique_null_allowed_multiple() {
+    let d = db();
+    let mut s = d.new_session();
+    s.exec("CREATE TABLE u (id BIGINT PRIMARY KEY, email TEXT UNIQUE)").unwrap();
+    s.exec("INSERT INTO u VALUES (1, NULL), (2, NULL)").unwrap();
+    assert_eq!(count(&d, "SELECT count(*) FROM u"), "2");
+}
+
+#[test]
+fn unique_table_level() {
+    let d = db();
+    let mut s = d.new_session();
+    s.exec("CREATE TABLE u (id BIGINT PRIMARY KEY, a INT, b INT, UNIQUE(a, b))").unwrap();
+    s.exec("INSERT INTO u VALUES (1, 10, 20)").unwrap();
+    let e = err(&d, "INSERT INTO u VALUES (2, 10, 20)");
+    assert_eq!(e.state, "23505", "{e}");
+    s.exec("INSERT INTO u VALUES (3, 10, 30)").unwrap();
+    assert_eq!(count(&d, "SELECT count(*) FROM u"), "2");
+}
