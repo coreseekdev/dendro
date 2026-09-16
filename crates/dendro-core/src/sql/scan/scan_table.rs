@@ -90,18 +90,13 @@ pub(crate) fn table_scan_opt(
             .collect::<Vec<_>>()
             .join(".");
         if let Some(query_text) = db.manifest().manifest.views.get(&vname) {
-            let query_text = query_text.clone();
-            let stmts = crate::sql::parse_batch(&query_text, sess.dialect)?;
-            if stmts.len() == 1 {
-                if let sqlparser::ast::Statement::Query(sub_query) =
-                    stmts.into_iter().next().unwrap()
-                {
-                    VIEW_DEPTH.with(|d| d.set(cur_depth + 1));
-                    let result = eval_query(db, sess, sub_query.as_ref(), snapshot);
-                    VIEW_DEPTH.with(|d| d.set(cur_depth));
-                    return result;
-                }
-            }
+            // 阶段4：视图体解析结果缓存（键 = 视图文本——文本不可变，
+            // 缓存永不失效；DDL 改视图 = 换文本 = 换键）。执行期零重解析
+            let sub_query = view_query_cached(query_text, sess.dialect)?;
+            VIEW_DEPTH.with(|d| d.set(cur_depth + 1));
+            let result = eval_query(db, sess, sub_query.as_ref(), snapshot);
+            VIEW_DEPTH.with(|d| d.set(cur_depth));
+            return result;
         }
     }
     // v2c-1：派发器决策（ir-spec 05——原快路径 if-else 链的纯函数化）。
@@ -823,4 +818,36 @@ pub fn rows_to_batches_typed(
         batches.push(batch);
     }
     batches
+}
+
+
+// ---------- 视图体解析缓存（阶段4） ----------
+
+type ViewCache = std::sync::Mutex<HashMap<String, std::sync::Arc<Query>>>;
+
+fn view_cache() -> &'static ViewCache {
+    static CACHE: std::sync::OnceLock<ViewCache> = std::sync::OnceLock::new();
+    CACHE.get_or_init(ViewCache::default)
+}
+
+/// 视图文本 → 解析结果（进程级缓存；视图文本不可变 → 键即身份）
+fn view_query_cached(
+    text: &str,
+    dialect: crate::sql::SqlDialect,
+) -> Result<std::sync::Arc<Query>> {
+    if let Some(q) = view_cache().lock().unwrap().get(text) {
+        return Ok(q.clone());
+    }
+    let stmts = crate::sql::parse_batch(text, dialect)?;
+    match stmts.into_iter().next() {
+        Some(sqlparser::ast::Statement::Query(q)) => {
+            let q = std::sync::Arc::new(*q);
+            view_cache()
+                .lock()
+                .unwrap()
+                .insert(text.to_string(), q.clone());
+            Ok(q)
+        }
+        _ => Err(SqlError::syntax("view body is not a query")),
+    }
 }

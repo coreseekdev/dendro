@@ -520,6 +520,138 @@ pub(crate) fn truncate_impl(
     }))
 }
 
+/// 语句级约束守卫（阶段4 约束收口）：
+/// - CHECK：表达式**每语句解析一次**（原每行 parse_batch——热 INSERT
+///   路径每行一次 tokenize+parse；行循环内纯求值）
+/// - UNIQUE：存量键集**每语句一次扫描**构建（memtx overlay + prolly
+///   各一遍喂全部 unique set——原每行全表扫 × set 数；O(行×表) →
+///   O(表 + 行)）；语句内新行键即时登记（同语句重复拦截）
+pub(crate) struct InsertGuard {
+    checks: Vec<(sqlparser::ast::Expr, String)>,
+    unique: Vec<(Vec<u16>, std::collections::HashSet<Vec<String>>)>,
+}
+
+impl InsertGuard {
+    /// 空守卫（无 CHECK/UNIQUE 的表零开销）
+    fn empty() -> Self {
+        Self {
+            checks: Vec::new(),
+            unique: Vec::new(),
+        }
+    }
+
+    /// 行的 unique 键预取（插入前算好——行所有权随后移入 insert_row）
+    fn keys_of(&self, row: &[SqlValue]) -> Vec<Option<Vec<String>>> {
+        self.unique
+            .iter()
+            .map(|(us, _)| {
+                let vals: Vec<&SqlValue> = us.iter().map(|&ci| &row[ci as usize]).collect();
+                if vals.iter().any(|v| v.is_null()) {
+                    return None;
+                }
+                Some(
+                    vals.iter()
+                        .map(|v| crate::sql::scan::join_key_part(v))
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    /// 成功插入后登记预取键（语句内后续行去重）
+    fn record_keys(&mut self, keys: Vec<Option<Vec<String>>>) {
+        for ((_, set), k) in self.unique.iter_mut().zip(keys) {
+            if let Some(k) = k {
+                set.insert(k);
+            }
+        }
+    }
+}
+
+/// 构建语句守卫：CHECK 解析 + UNIQUE 存量键单次扫描
+fn build_insert_guard(
+    db: &Database,
+    sess: &Session,
+    schema: &TableSchema,
+    table_id: u32,
+    unique_sets: &[Vec<u16>],
+    check_exprs: &[String],
+    txn: &Txn,
+) -> Result<InsertGuard> {
+    // CHECK 一次性解析（失败 = 响亮报错——约束不可静默失效）
+    let mut checks = Vec::with_capacity(check_exprs.len());
+    for ce in check_exprs {
+        let ss = crate::sql::parse_batch(&format!("SELECT {ce}"), crate::sql::SqlDialect::Pg)
+            .map_err(|e| SqlError::new("23514", format!("check constraint unparsable: {ce}: {e}")))?;
+        let mut ss = ss;
+        let e = ss.pop().and_then(|st| match st {
+            sqlparser::ast::Statement::Query(q) => match *q.body {
+                sqlparser::ast::SetExpr::Select(sel) => match sel.projection.first().cloned() {
+                    Some(sqlparser::ast::SelectItem::UnnamedExpr(e)) => Some(e),
+                    Some(sqlparser::ast::SelectItem::ExprWithAlias { expr, .. }) => Some(expr),
+                    _ => None,
+                },
+                _ => None,
+            },
+            _ => None,
+        });
+        match e {
+            Some(e) => checks.push((e, ce.clone())),
+            None => {
+                return Err(SqlError::new(
+                    "23514",
+                    format!("check constraint unparsable: {ce}"),
+                ))
+            }
+        }
+    }
+    // UNIQUE 存量键：单次 memtx 快照 + 单次 prolly 扫描喂全部 set
+    let mut unique: Vec<(Vec<u16>, std::collections::HashSet<Vec<String>>)> =
+        unique_sets.iter().map(|us| (us.clone(), Default::default())).collect();
+    if !unique.is_empty() {
+        let mut feed = |existing: &[SqlValue]| {
+            for (us, set) in unique.iter_mut() {
+                let vals: Vec<&SqlValue> = us
+                    .iter()
+                    .map(|&ci| existing.get(ci as usize).unwrap_or(&SqlValue::Null))
+                    .collect();
+                if vals.iter().any(|v| v.is_null()) {
+                    continue;
+                }
+                let key: Vec<String> = vals
+                    .iter()
+                    .map(|v| crate::sql::scan::join_key_part(v))
+                    .collect();
+                set.insert(key);
+            }
+        };
+        let b = db.branch(&sess.branch)?;
+        let tm = b.mem.table(table_id);
+        for (_, v) in tm.snapshot_rows(txn.snapshot) {
+            if let Some(v) = v {
+                if let Ok(existing) = crate::sql::scan::row_from_bytes(schema, &v) {
+                    feed(&existing);
+                }
+            }
+        }
+        let (_, this_entry) = scan::resolve_table(db, &sess.branch, &schema.name)?;
+        let root = this_entry
+            .table_root
+            .as_ref()
+            .and_then(|r| crate::format::hash::Hash::from_base32(r));
+        if let Some(root) = root {
+            for (_, v) in crate::prolly::cursor::range_scan(db.store.clone(), &root, None, None)
+                .map_err(|e| SqlError::internal(e.to_string()))?
+            {
+                if let Ok(existing) = crate::sql::scan::row_from_bytes(schema, &v) {
+                    feed(&existing);
+                }
+            }
+        }
+    }
+    Ok(InsertGuard { checks, unique })
+}
+
 fn schema_of(db: &Database, _sess: &Session, entry: &TableEntry) -> Result<TableSchema> {
     let catalog = crate::versioned::Versioned::new(db.store.clone());
     catalog.load_schema(&entry.schema_addr)
@@ -563,6 +695,21 @@ pub(crate) fn exec_insert(
         .ok_or_else(|| SqlError::syntax("INSERT requires source"))?;
     let snapshot = sess.implicit_snapshot(db)?;
     let mut txn = sess.txn.take().unwrap_or_else(|| Txn::new(snapshot));
+    // 阶段4：语句级约束守卫（CHECK 解析一次 + UNIQUE 存量键单次扫描；
+    // 无 CHECK/UNIQUE 的表零开销）
+    let mut guard = if entry.check_exprs.is_empty() && entry.unique_sets.is_empty() {
+        InsertGuard::empty()
+    } else {
+        build_insert_guard(
+            db,
+            sess,
+            &schema,
+            entry.id,
+            &entry.unique_sets,
+            &entry.check_exprs,
+            &txn,
+        )?
+    };
     let mut count = 0u64;
     let mut seen_keys: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
 
@@ -740,7 +887,9 @@ pub(crate) fn exec_insert(
                     count += delta;
                     continue;
                 }
-                insert_row(db, sess, &schema, entry.id, &mut txn, row, &entry.foreign_keys, &entry.unique_sets, &entry.check_exprs)?;
+                let rec = guard.keys_of(&row);
+                insert_row(db, sess, &schema, entry.id, &mut txn, row, &entry.foreign_keys, &guard)?;
+                guard.record_keys(rec);
                 count += 1;
             }
         }
@@ -770,7 +919,9 @@ pub(crate) fn exec_insert(
                 for (si, &ci) in col_idx.iter().enumerate() {
                     row[ci] = src_row.get(si).cloned().unwrap_or(SqlValue::Null);
                 }
-                insert_row(db, sess, &schema, entry.id, &mut txn, row, &entry.foreign_keys, &entry.unique_sets, &entry.check_exprs)?;
+                let rec = guard.keys_of(&row);
+                insert_row(db, sess, &schema, entry.id, &mut txn, row, &entry.foreign_keys, &guard)?;
+                guard.record_keys(rec);
                 count += 1;
             }
         }
@@ -855,43 +1006,23 @@ fn insert_row(
     txn: &mut Txn,
     row: Vec<SqlValue>,
     fks: &[crate::versioned::ForeignKeyDef],
-    unique_sets: &[Vec<u16>],
-    check_exprs: &[String],
+    guard: &InsertGuard,
 ) -> Result<()> {
     let pk_vals: Vec<SqlValue> = schema.pk.iter().map(|&i| row[i as usize].clone()).collect();
     if pk_vals.iter().any(|v| v.is_null()) {
         return Err(SqlError::new("23502", "null value in primary key column"));
     }
-    // P0：CHECK 约束执法（表达式对行求值——false → 23514）
-    if !check_exprs.is_empty() {
+    // CHECK 约束执法（阶段4：表达式经 InsertGuard 语句级解析——
+    // 行循环内纯求值；false → 23514，UNKNOWN（NULL）通过——SQL 语义）
+    if !guard.checks.is_empty() {
         let colfn = |name: &str| schema.col_index(name);
-        for ce in check_exprs {
-            // CHECK 存裸表达式文本——包装为 SELECT 重 parse 求值；
-            // parse 失败 = 建表时已接受的约束此刻不可解析，约束静默
-            // 失效不可接受（架构审视 #1），必须报错拒绝写入
-            let ss = crate::sql::parse_batch(&format!("SELECT {}", ce), crate::sql::SqlDialect::Pg)
-                .map_err(|e| SqlError::new("23514", format!("check constraint unparsable: {ce}: {e}")))?;
-            let mut ss = ss;
-            match ss.pop() {
-                Some(sqlparser::ast::Statement::Query(q)) => {
-                    if let sqlparser::ast::SetExpr::Select(sel) = *q.body {
-                        if let Some(sqlparser::ast::SelectItem::UnnamedExpr(e)) = sel.projection.first().cloned() {
-                            let v = expr::eval(&e, &row, &colfn)?;
-                            if matches!(v, SqlValue::Bool(false)) {
-                                return Err(SqlError::new(
-                                    "23514",
-                                    format!("new row violates check constraint: {ce}"),
-                                ));
-                            }
-                        }
-                    }
-                }
-                _ => {
-                    return Err(SqlError::new(
-                        "23514",
-                        format!("check constraint unparsable: {ce}"),
-                    ))
-                }
+        for (e, ce) in &guard.checks {
+            let v = expr::eval(e, &row, &colfn)?;
+            if matches!(v, SqlValue::Bool(false)) {
+                return Err(SqlError::new(
+                    "23514",
+                    format!("new row violates check constraint: {ce}"),
+                ));
             }
         }
     }
@@ -908,79 +1039,30 @@ fn insert_row(
     if !fks.is_empty() {
         check_fk_parents(db, sess, schema, fks, &row, txn)?;
     }
-    // P0：UNIQUE 约束检查（v1 全扫树——值组合不得与现有行重复；
-    // NULL 不参与唯一性——SQL 语义；v2 建 unique 索引点查）
-    for us in unique_sets {
-        let uvals: Vec<SqlValue> = us
+    // UNIQUE 约束检查（阶段4：语句级键集点查——存量单次扫描构建；
+    // NULL 不参与唯一性——SQL 语义）
+    for (us, set) in &guard.unique {
+        let vals: Vec<&SqlValue> = us
             .iter()
-            .map(|&i| row.get(i as usize).cloned().unwrap_or(SqlValue::Null))
+            .map(|&ci| &row[ci as usize])
             .collect();
-        if uvals.iter().any(|v| v.is_null()) {
+        if vals.iter().any(|v| v.is_null()) {
             continue;
         }
-        // P0 UNIQUE：同表扫描（memtx overlay + prolly 树——两侧都查；
-        // v1 全扫，v2 建 unique 索引点查）
-        let b = db.branch(&sess.branch)?;
-        // 1. memtx overlay（insert 后未 checkpoint 的数据在此）
-        let tm = b.mem.table(table_id);
-        for (_, v) in tm.snapshot_rows(txn.snapshot) {
-            if let Some(v) = v {
-                if let Ok(existing) = crate::sql::scan::row_from_bytes(schema, &v) {
-                    let dup = us
-                        .iter()
-                        .zip(&uvals)
-                        .all(|(&ci, uv)| existing.get(ci as usize).is_some_and(|x| x == uv));
-                    if dup {
-                        let col_names: Vec<String> = us
-                            .iter()
-                            .filter_map(|&ci| {
-                                schema.columns.get(ci as usize).map(|c| c.name.clone())
-                            })
-                            .collect();
-                        return Err(SqlError::duplicate_key(format!(
-                            "duplicate key value violates unique constraint on \"{}\"",
-                            col_names.join(", ")
-                        )));
-                    }
-                }
-            }
-        }
-        // 2. prolly 树（checkpoint 后数据）
-        let (_, this_entry) = scan::resolve_table(db, &sess.branch, &schema.name)?;
-        let root = this_entry
-            .table_root
-            .as_ref()
-            .and_then(|r| crate::format::hash::Hash::from_base32(r));
-        if let Some(root) = root {
-            for (_, v) in crate::prolly::cursor::range_scan(
-                db.store.clone(),
-                &root,
-                None,
-                None,
-            )
-            .map_err(|e| SqlError::internal(e.to_string()))?
-            {
-                if let Ok(existing) = crate::sql::scan::row_from_bytes(schema, &v) {
-                    let dup = us
-                        .iter()
-                        .zip(&uvals)
-                        .all(|(&ci, uv)| existing.get(ci as usize).is_some_and(|x| x == uv));
-                    if dup {
-                        let col_names: Vec<String> = us
-                            .iter()
-                            .filter_map(|&ci| {
-                                schema.columns.get(ci as usize).map(|c| c.name.clone())
-                            })
-                            .collect();
-                        return Err(SqlError::duplicate_key(format!(
-                            "duplicate key value violates unique constraint on \"{}\"",
-                            col_names.join(", ")
-                        )));
-                    }
-                }
-            }
+        let key: Vec<String> =
+            vals.iter().map(|v| crate::sql::scan::join_key_part(v)).collect();
+        if set.contains(&key) {
+            let col_names: Vec<String> = us
+                .iter()
+                .filter_map(|&ci| schema.columns.get(ci as usize).map(|c| c.name.clone()))
+                .collect();
+            return Err(SqlError::duplicate_key(format!(
+                "duplicate key value violates unique constraint on \"{}\"",
+                col_names.join(", ")
+            )));
         }
     }
+
     let key = encode_key(&pk_vals);
     // Q-16：同一显式事务内两次 INSERT 同键，第二次必须 23505
     //（此前写集不可见 → 静默覆盖）
