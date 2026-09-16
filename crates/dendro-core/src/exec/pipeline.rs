@@ -306,12 +306,62 @@ mod tests {
 /// null-first——reverse 连 null 位一起翻）；键提取由装配层完成
 /// （键-行配对入缓冲），算子只管排与吐。
 pub struct SortOp {
-    /// (sort_key, row) 对；key 为装配层预提取的值向量
+    /// (sort_key, row) 对；key 为装配层预提取的值向量（全量模式）
     buffered: Vec<(Vec<SqlValue>, Vec<SqlValue>)>,
     /// 每键的 ASC 标记（与 key 同长度）
     asc: Vec<bool>,
+    /// O-5 top-N 模式（Some(n)：有界堆只保最终序前 n 行；None：全量）
+    limit: Option<usize>,
+    /// top-N 有界堆（BinaryHeap 是 max-heap——堆顶 = 最终序最大者 =
+    /// 淘汰位；Ord 即最终排序键，seq 保证并列行的稳定序）
+    top: std::collections::BinaryHeap<TopEntry>,
+    /// 压入序（top-N 稳定序的平局裁决——与全量 sort_by（稳定排序）
+    /// 的并列保序逐字节一致）
+    seq: u64,
     /// finish 后是否已推（幂等守卫）
     done: bool,
+}
+
+/// top-N 堆条目：Ord = 最终排序键（键序 + 压入序平局裁决）
+struct TopEntry {
+    key: Vec<SqlValue>,
+    seq: u64,
+    row: Vec<SqlValue>,
+    asc: std::sync::Arc<Vec<bool>>,
+}
+
+impl PartialEq for TopEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == std::cmp::Ordering::Equal
+    }
+}
+impl Eq for TopEntry {}
+impl PartialOrd for TopEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for TopEntry {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        for (i, &asc) in self.asc.iter().enumerate() {
+            let x = &self.key[i];
+            let y = &other.key[i];
+            let ord = if x.is_null() && y.is_null() {
+                std::cmp::Ordering::Equal
+            } else if x.is_null() {
+                std::cmp::Ordering::Greater // null-last（ASC）
+            } else if y.is_null() {
+                std::cmp::Ordering::Less
+            } else {
+                crate::sql::expr::cmp_values(x, y).unwrap_or(std::cmp::Ordering::Equal)
+            };
+            let ord = if asc { ord } else { ord.reverse() };
+            if ord != std::cmp::Ordering::Equal {
+                return ord;
+            }
+        }
+        self.seq.cmp(&other.seq)
+    }
 }
 
 impl SortOp {
@@ -319,6 +369,22 @@ impl SortOp {
         Self {
             buffered: Vec::new(),
             asc,
+            limit: None,
+            top: std::collections::BinaryHeap::new(),
+            seq: 0,
+            done: false,
+        }
+    }
+
+    /// O-5：top-N 模式——内存上界 n 行（ORDER BY + LIMIT：全量缓冲的
+    /// 替代；结果与"全量排序取前 n"逐字节一致，含并列行的稳定序）
+    pub fn with_limit(asc: Vec<bool>, n: usize) -> Self {
+        Self {
+            buffered: Vec::new(),
+            asc,
+            limit: Some(n),
+            top: std::collections::BinaryHeap::new(),
+            seq: 0,
             done: false,
         }
     }
@@ -336,7 +402,28 @@ impl PipeOp<Vec<Vec<SqlValue>>> for SortOp {
         for mut row in batch {
             let klen = self.asc.len();
             let key: Vec<SqlValue> = row.drain(..klen).collect();
-            self.buffered.push((key, row));
+            match self.limit {
+                None => self.buffered.push((key, row)),
+                Some(n) => {
+                    let e = TopEntry {
+                        key,
+                        seq: self.seq,
+                        row,
+                        asc: std::sync::Arc::new(self.asc.clone()),
+                    };
+                    self.seq += 1;
+                    if self.top.len() < n {
+                        self.top.push(e);
+                    } else if self
+                        .top
+                        .peek()
+                        .is_some_and(|worst| e.cmp(worst) == std::cmp::Ordering::Less)
+                    {
+                        self.top.pop();
+                        self.top.push(e);
+                    }
+                }
+            }
         }
         FlowControl::Continue
     }
@@ -346,27 +433,38 @@ impl PipeOp<Vec<Vec<SqlValue>>> for SortOp {
             return FlowControl::Continue;
         }
         self.done = true;
-        self.buffered.sort_by(|(ka, _), (kb, _)| {
-            for (i, &asc) in self.asc.iter().enumerate() {
-                let x = &ka[i];
-                let y = &kb[i];
-                let ord = if x.is_null() && y.is_null() {
+        let rows: Vec<Vec<SqlValue>> = match self.limit {
+            None => {
+                self.buffered.sort_by(|(ka, _), (kb, _)| {
+                    for (i, &asc) in self.asc.iter().enumerate() {
+                        let x = &ka[i];
+                        let y = &kb[i];
+                        let ord = if x.is_null() && y.is_null() {
+                            std::cmp::Ordering::Equal
+                        } else if x.is_null() {
+                            std::cmp::Ordering::Greater // null-last（ASC）
+                        } else if y.is_null() {
+                            std::cmp::Ordering::Less
+                        } else {
+                            crate::sql::expr::cmp_values(x, y)
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        };
+                        let ord = if asc { ord } else { ord.reverse() };
+                        if ord != std::cmp::Ordering::Equal {
+                            return ord;
+                        }
+                    }
                     std::cmp::Ordering::Equal
-                } else if x.is_null() {
-                    std::cmp::Ordering::Greater // null-last（ASC）
-                } else if y.is_null() {
-                    std::cmp::Ordering::Less
-                } else {
-                    crate::sql::expr::cmp_values(x, y).unwrap_or(std::cmp::Ordering::Equal)
-                };
-                let ord = if asc { ord } else { ord.reverse() };
-                if ord != std::cmp::Ordering::Equal {
-                    return ord;
-                }
+                });
+                self.buffered.drain(..).map(|(_, r)| r).collect()
             }
-            std::cmp::Ordering::Equal
-        });
-        let rows: Vec<Vec<SqlValue>> = self.buffered.drain(..).map(|(_, r)| r).collect();
+            // top-N：堆内即最终序前 n（含稳定序平局裁决）——升序排出
+            Some(_) => {
+                let mut kept: Vec<TopEntry> = self.top.drain().collect();
+                kept.sort();
+                kept.into_iter().map(|e| e.row).collect()
+            }
+        };
         if rows.is_empty() {
             return FlowControl::Continue; // D3：零行不推
         }
@@ -1004,5 +1102,72 @@ mod agg_tests {
             SqlValue::Float64(f) => assert!((f - 15.0).abs() < 1e-9, "avg"),
             other => panic!("avg 应为 float：{other:?}"),
         }
+    }
+}
+
+/// O-5 top-N：有界堆 vs 全量排序截断——**行序严格相等**（含并列行的
+/// 压入序稳定；keyed 载荷形态与装配层合同一致：前 k 列键 + 数据）
+#[cfg(test)]
+mod topn_tests {
+    use super::*;
+
+    fn keyed(pairs: &[(i64, Option<i64>, &str)]) -> Vec<Vec<SqlValue>> {
+        // (key, key2 nullable, data)
+        pairs
+            .iter()
+            .map(|(k, k2, d)| {
+                vec![
+                    SqlValue::Int64(*k),
+                    match k2 {
+                        Some(v) => SqlValue::Int64(*v),
+                        None => SqlValue::Null,
+                    },
+                    SqlValue::Utf8(d.to_string()),
+                ]
+            })
+            .collect()
+    }
+
+    fn drive_sorted(op: &mut dyn PipeOp<Vec<Vec<SqlValue>>>, data: Vec<Vec<SqlValue>>) -> Vec<Vec<SqlValue>> {
+        let mut sink = CollectSink::new(None);
+        let src: Vec<Result<Vec<Vec<SqlValue>>>> = vec![Ok(data)];
+        let mut it = src.into_iter();
+        let mut cx = PipeCtx::new(vec![], None, Arc::new(std::sync::atomic::AtomicBool::new(false)));
+        drive(&mut cx, &mut it, op, &mut sink).unwrap();
+        sink.rows
+    }
+
+    #[test]
+    fn topn_equals_full_sort_prefix_with_ties() {
+        // 并列键大量出现（v=5 八行）——稳定序 = 压入序（a..h）
+        let mut pairs: Vec<(i64, Option<i64>, &str)> = vec![
+            (5, Some(1), "a"), (9, None, "b"), (5, Some(2), "c"),
+            (1, Some(3), "d"), (5, None, "e"), (7, Some(4), "f"),
+            (5, Some(5), "g"), (3, None, "h"), (5, Some(6), "i"),
+            (2, Some(7), "j"),
+        ];
+        pairs.sort_by_key(|(k, _, _)| *k); // 与压入无关——压入序即上表序
+        let data = keyed(&pairs);
+        for asc2 in [true, false] {
+            for n in [1usize, 3, 5, 10] {
+                let mut top = SortOp::with_limit(vec![true, asc2], n);
+                let out_top = drive_sorted(&mut top, data.clone());
+                let mut full = SortOp::new(vec![true, asc2]);
+                let mut out_full = drive_sorted(&mut full, data.clone());
+                out_full.truncate(n);
+                assert_eq!(out_top, out_full, "asc2={asc2} n={n}：top-N 必须与全量前缀逐字节一致");
+            }
+        }
+    }
+
+    #[test]
+    fn topn_zero_and_beyond_size() {
+        let data = keyed(&[(3, Some(1), "x"), (1, Some(2), "y")]);
+        // n=0：堆空 → 零行不推（D3）
+        let mut t0 = SortOp::with_limit(vec![true], 0);
+        assert!(drive_sorted(&mut t0, data.clone()).is_empty());
+        // n 超行数：全量
+        let mut t9 = SortOp::with_limit(vec![true], 9);
+        assert_eq!(drive_sorted(&mut t9, data.clone()).len(), 2);
     }
 }

@@ -246,3 +246,52 @@ fn ledger28_where_qualified_reads_correct_side() {
         .unwrap();
     assert_eq!(r.rows[0][0], SqlValue::Int64(2), "c.id=1 且 total>=100：订单 1/2");
 }
+
+// ---------- O-5 top-N（ORDER BY + LIMIT 有界堆） ----------
+
+#[test]
+fn o5_topn_ties_stable_and_offset() {
+    let mut c = setup();
+    // 并列键（total 同值）——稳定序 = 扫描序（pk 序）
+    c.execute("INSERT INTO orders VALUES (7, 1, 100, 'g'),(8, 2, 100, 'h'),(9, 3, 100, 'i')")
+        .unwrap();
+    let r = c
+        .query("SELECT o.id FROM orders o ORDER BY o.total DESC, o.id LIMIT 3")
+        .unwrap();
+    let ids: Vec<i64> = r
+        .rows
+        .iter()
+        .filter_map(|row| match &row[0] {
+            SqlValue::Int64(v) => Some(*v),
+            _ => None,
+        })
+        .collect();
+    // DESC 序：500(4) > 250(2) > 100 组（次键 id：1,7,8,9）
+    assert_eq!(ids, vec![4, 2, 1], "前三大订单（并列 100 按次键 id）");
+    // OFFSET + LIMIT：n = limit + offset 堆，排序后跳过
+    let r = c
+        .query("SELECT o.id FROM orders o ORDER BY o.total DESC, o.id LIMIT 2 OFFSET 2")
+        .unwrap();
+    let ids: Vec<i64> = r
+        .rows
+        .iter()
+        .filter_map(|row| match &row[0] {
+            SqlValue::Int64(v) => Some(*v),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ids, vec![1, 7], "完整序 [4,2,1,7,8,9,...] 的第 3-4 位");
+    // 单键并列（仅 total）——稳定序 = pk 序
+    let r = c
+        .query("SELECT o.id FROM orders o ORDER BY o.total LIMIT 4")
+        .unwrap();
+    let ids: Vec<i64> = r
+        .rows
+        .iter()
+        .filter_map(|row| match &row[0] {
+            SqlValue::Int64(v) => Some(*v),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ids, vec![6, 3, 5, 1], "total 升序前四（并列按扫描序）");
+}

@@ -256,7 +256,28 @@ pub(crate) fn eval_query(
                     kr.extend(row.iter().cloned());
                     keyed.push(kr);
                 }
-                let mut sort_op = crate::exec::pipeline::SortOp::new(asc);
+                // O-5：LIMIT 已知时走 top-N 有界堆（内存上界 n 行；与全量
+                // 排序取前缀逐字节一致——含并列稳定序；n = limit + offset，
+                // 排序后 OFFSET/LIMIT 段照常跳过/截断）
+                let topn: Option<usize> = match &q.limit_clause {
+                    Some(sqlparser::ast::LimitClause::LimitOffset { limit, offset, .. }) => {
+                        let l = limit
+                            .as_ref()
+                            .map(|e| eval_const(e).map(|v| v as usize))
+                            .transpose()?;
+                        let o = offset
+                            .as_ref()
+                            .map(|off| eval_const(&off.value).map(|v| v as usize))
+                            .transpose()?
+                            .unwrap_or(0);
+                        l.map(|l| l + o)
+                    }
+                    _ => None,
+                };
+        let mut sort_op = match topn {
+            Some(n) => crate::exec::pipeline::SortOp::with_limit(asc, n),
+            None => crate::exec::pipeline::SortOp::new(asc),
+        };
                 let mut sink = crate::exec::pipeline::CollectSink::new(None);
                 let src: Vec<Result<Vec<Vec<SqlValue>>>> = vec![Ok(keyed)];
                 let mut it = src.into_iter();
@@ -498,7 +519,28 @@ pub(crate) fn eval_query(
             kr.extend(row.iter().cloned());
             keyed_rows.push(kr);
         }
-        let mut sort_op = crate::exec::pipeline::SortOp::new(asc);
+        // O-5：LIMIT 已知时走 top-N 有界堆（内存上界 n 行；结果与全量
+        // 排序取前缀逐字节一致——含并列稳定序；n = limit + offset，
+        // 排序后 OFFSET/LIMIT 段照常跳过/截断）
+        let topn: Option<usize> = match &q.limit_clause {
+            Some(sqlparser::ast::LimitClause::LimitOffset { limit, offset, .. }) => {
+                let l = limit
+                    .as_ref()
+                    .map(|e| eval_const(e).map(|v| v as usize))
+                    .transpose()?;
+                let o = offset
+                    .as_ref()
+                    .map(|off| eval_const(&off.value).map(|v| v as usize))
+                    .transpose()?
+                    .unwrap_or(0);
+                l.map(|l| l + o)
+            }
+            _ => None,
+        };
+        let mut sort_op = match topn {
+            Some(n) => crate::exec::pipeline::SortOp::with_limit(asc, n),
+            None => crate::exec::pipeline::SortOp::new(asc),
+        };
         let mut sink = crate::exec::pipeline::CollectSink::new(None);
         let src: Vec<Result<Vec<Vec<SqlValue>>>> = vec![Ok(keyed_rows)];
         let mut it = src.into_iter();
