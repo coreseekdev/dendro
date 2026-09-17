@@ -440,6 +440,7 @@ fn create_kv_table(db: &Arc<Database>, branch: &str) -> Result<u32> {
         acl: std::collections::HashMap::new(),
         foreign_keys: vec![],
         unique_sets: vec![],
+        stats_addr: None,
         check_exprs: vec![],
     };
     db.cas

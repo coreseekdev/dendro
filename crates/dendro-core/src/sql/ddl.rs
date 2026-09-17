@@ -71,6 +71,7 @@ pub(crate) fn exec_create_table(
         col_segments: Vec::new(),
         col_deletes: Vec::new(),
         col_rows: 0,
+        stats_addr: None,
         owner: crate::sql::privs::norm_user(&sess.user),
         acl: std::collections::HashMap::new(),
         foreign_keys: resolve_fk_refs(db, sess, fk_defs)?,

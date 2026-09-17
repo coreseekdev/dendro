@@ -11,6 +11,9 @@ pub enum ChunkType {
     Node = 1,
     Commit = 2,
     Schema = 3,
+    /// ANALYZE 统计侧车（JSON；TableEntry.stats_addr 引用——内容寻址
+    /// 不可变，重分析 = 新对象新地址）
+    Stats = 4,
 }
 
 pub struct Chunk {
@@ -53,6 +56,7 @@ impl CasStore {
             1 => ChunkType::Node,
             2 => ChunkType::Commit,
             3 => ChunkType::Schema,
+            4 => ChunkType::Stats,
             other => return Err(super::ObjError::Corrupt(format!("bad chunk tag {other}"))),
         };
         Ok((ty, b.slice(1..)))

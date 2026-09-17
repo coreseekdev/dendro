@@ -113,6 +113,10 @@ pub struct TableEntry {
     /// 外键约束（P0：REFERENCES 执法；serde default 兼容旧 manifest）
     #[serde(default)]
     pub foreign_keys: Vec<ForeignKeyDef>,
+    /// ANALYZE 统计侧车地址（base32 CAS chunk；None=未分析——估算走
+    /// footer zone-map uniform 回退）
+    #[serde(default)]
+    pub stats_addr: Option<String>,
     /// UNIQUE 约束列集（P0；serde default 兼容）
     #[serde(default)]
     pub unique_sets: Vec<Vec<u16>>,

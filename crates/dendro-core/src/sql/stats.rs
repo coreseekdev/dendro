@@ -98,6 +98,79 @@ pub fn range_selectivity(stat: &ColStat, v: &crate::types::SqlValue, op: &str) -
     }
 }
 
+/// 等值选择率：MCV 精确频次 → 1/精确 NDV → footer 1/区间宽
+pub fn eq_selectivity(
+    cs: &ColStat,
+    an: Option<&ColAnalyze>,
+    an_rows: u64,
+    v: &crate::types::SqlValue,
+) -> Option<f64> {
+    if let Some(an) = an {
+        if an.ndv > 0 {
+            if let Some(k) = val_key(v) {
+                if let Some((_, c)) = an.mcv.iter().find(|(mk, _)| *mk == k) {
+                    return Some(*c as f64 / an_rows.max(1) as f64);
+                }
+            }
+            return Some(1.0 / an.ndv as f64);
+        }
+        return None;
+    }
+    if cs.has_data {
+        let span = cs.max.saturating_sub(cs.min) + 1;
+        return Some(1.0 / (span as f64));
+    }
+    None
+}
+
+/// 范围选择率（分析优先）：等高直方图插值（桶间均匀），无直方图回退
+/// footer uniform。直方图空/退化 → 回退
+pub fn range_selectivity_ex(
+    cs: &ColStat,
+    hist: Option<&ColHistogram>,
+    an_rows: u64,
+    v: &crate::types::SqlValue,
+    op: &str,
+) -> Option<f64> {
+    if let Some(h) = hist {
+        if h.counts.len() >= 2 && an_rows > 0 {
+            let p = val_order(v)?;
+            let edges = &h.edges;
+            let counts = &h.counts;
+            let n_b = counts.len();
+            let (lo, hi) = (edges[0], edges[n_b]);
+            if p <= lo {
+                return match op {
+                    ">" | ">=" => Some(1.0),
+                    "<" | "<=" => Some(0.0),
+                    _ => None,
+                };
+            }
+            if p >= hi {
+                return match op {
+                    ">" | ">=" => Some(0.0),
+                    "<" | "<=" => Some(1.0),
+                    _ => None,
+                };
+            }
+            // 定位桶：最后一个 edge ≤ p 的桶（(edge_i, edge_{i+1}]）
+            let idx = edges.partition_point(|&e| e <= p) - 1;
+            let idx = idx.min(n_b - 1);
+            let (blo, bhi) = (edges[idx], edges[idx + 1].max(edges[idx] + 1));
+            let within = (p.saturating_sub(blo)) as f64 / ((bhi - blo) as f64);
+            let in_bucket = counts[idx] as f64;
+            let above: f64 = counts[idx + 1..].iter().sum::<u64>() as f64;
+            let ge_frac = (above + in_bucket * (1.0 - within)) / an_rows as f64;
+            return match op {
+                ">" | ">=" => Some(ge_frac),
+                "<" | "<=" => Some((1.0 - ge_frac).max(0.0)),
+                _ => None,
+            };
+        }
+    }
+    range_selectivity(cs, v, op)
+}
+
 /// 谓词（下推到 scan 的 Filter）估算基数：行数 × 各数值范围合取项
 /// 选择率连乘（不可估项忽略——只放大不缩零；非数值/复杂形态保守 1）
 pub fn estimate_filter_rows(
@@ -106,17 +179,36 @@ pub fn estimate_filter_rows(
     pred: &sqlparser::ast::Expr,
     total_rows: u64,
 ) -> u64 {
+    estimate_filter_rows_ex(stats, None, names, pred, total_rows)
+}
+
+/// 带 ANALYZE 统计的估算（消费优先级：MCV 等值精确频次 → 1/精确 NDV
+/// → footer 1/区间宽；范围：等高直方图插值 → footer uniform——
+/// 偏斜数据下两者差距即本批的动机）
+pub fn estimate_filter_rows_ex(
+    stats: &TableStats,
+    an: Option<&TableAnalyze>,
+    names: &[String],
+    pred: &sqlparser::ast::Expr,
+    total_rows: u64,
+) -> u64 {
     // 收集 `col op 数值常量` 合取项
     let mut sels: Vec<f64> = Vec::new();
-    fn walk(e: &sqlparser::ast::Expr, stats: &TableStats, names: &[String], sels: &mut Vec<f64>) {
+    fn walk(
+        e: &sqlparser::ast::Expr,
+        stats: &TableStats,
+        an: Option<&TableAnalyze>,
+        names: &[String],
+        sels: &mut Vec<f64>,
+    ) {
         use sqlparser::ast::Expr;
         match e {
             Expr::BinaryOp { left, op, right } => {
                 use sqlparser::ast::BinaryOperator as BO;
                 match op {
                     BO::And => {
-                        walk(left, stats, names, sels);
-                        walk(right, stats, names, sels);
+                        walk(left, stats, an, names, sels);
+                        walk(right, stats, an, names, sels);
                     }
                     BO::Eq => {
                         // 等值：sel ≈ 1/ndv（区间宽 + 1 上界近似——
@@ -138,14 +230,19 @@ pub fn estimate_filter_rows(
                                 }
                                 _ => None,
                             };
-                            if let (Some(id), Some(_)) = (col_name, val) {
+                            if let (Some(id), Some(v)) = (col_name, val) {
                                 if let Some(ci) =
                                     names.iter().position(|n| n.eq_ignore_ascii_case(id))
                                 {
                                     let cs = &stats.cols[ci];
-                                    if cs.has_data {
-                                        let span = cs.max.saturating_sub(cs.min) + 1;
-                                        sels.push(1.0 / (span as f64));
+                                    let an_col = an.and_then(|a| a.cols.get(ci));
+                                    if let Some(f) = eq_selectivity(
+                                        cs,
+                                        an_col,
+                                        an.map(|a| a.rows).unwrap_or(0),
+                                        &v,
+                                    ) {
+                                        sels.push(f);
                                     }
                                 }
                                 break;
@@ -188,11 +285,18 @@ pub fn estimate_filter_rows(
                                 _ => None,
                             };
                             if let (Some(id), Some(v)) = (col_name, val) {
-                                let _ = o;
                                 if let Some(ci) =
                                     names.iter().position(|n| n.eq_ignore_ascii_case(id))
                                 {
-                                    if let Some(f) = range_selectivity(&stats.cols[ci], &v, o) {
+                                    let an_col = an.and_then(|a| a.cols.get(ci));
+                                    let f = range_selectivity_ex(
+                                        &stats.cols[ci],
+                                        an_col.and_then(|c| c.hist.as_ref()),
+                                        an.map(|a| a.rows).unwrap_or(0),
+                                        &v,
+                                        o,
+                                    );
+                                    if let Some(f) = f {
                                         sels.push(f);
                                     }
                                 }
@@ -203,11 +307,11 @@ pub fn estimate_filter_rows(
                     _ => {}
                 }
             }
-            Expr::Nested(i) => walk(i, stats, names, sels),
+            Expr::Nested(i) => walk(i, stats, an, names, sels),
             _ => {}
         }
     }
-    walk(pred, stats, names, &mut sels);
+    walk(pred, stats, an, names, &mut sels);
     let mut est = total_rows as f64;
     for f in sels {
         est *= f;
@@ -269,4 +373,199 @@ pub fn col_ndv(st: &TableStats, col: &str, is_pk: bool) -> Option<u64> {
     } else {
         ndv_range(cs)
     }
+}
+
+// ---------------------------------------------------------------------------
+// ANALYZE：等高直方图 + MCV + 精确 NDV（性能批 P1；Leis 2025"CE 质量
+// 是最高杠杆"的直接落地）。存储 = CAS 侧车 chunk（ChunkType::Stats，
+// JSON v1），TableEntry.stats_addr 引用——内容寻址不可变，重分析 =
+// 新对象新地址；估算消费按 addr 进程级缓存（视图缓存同式）
+// ---------------------------------------------------------------------------
+
+/// 等高直方图（order 域）：K 个桶，边界 edges[K+1]（首尾 = min/max），
+/// counts[i] = (edges[i], edges[i+1]] 内样本数（末桶含 hi）
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ColHistogram {
+    pub edges: Vec<u64>,
+    pub counts: Vec<u64>,
+}
+
+/// 单列分析产物（文本列无直方图，仅 MCV/NDV）
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ColAnalyze {
+    pub ndv: u64,
+    pub nulls: u64,
+    /// 最频值（键口径 = 值规范键，同 eq 估算），上限 32
+    pub mcv: Vec<(String, u64)>,
+    pub hist: Option<ColHistogram>,
+}
+
+/// 表级分析产物（列序 = schema 列序）
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TableAnalyze {
+    pub rows: u64,
+    pub cols: Vec<ColAnalyze>,
+}
+
+const HIST_BUCKETS: usize = 64;
+const MCV_MAX: usize = 32;
+
+/// 值 → 规范键（eq 估算/MCV 统一口径；整数宽度归一同 join 键）
+fn val_key(v: &crate::types::SqlValue) -> Option<String> {
+    Some(match v {
+        crate::types::SqlValue::Utf8(t) => format!("s:{t}"),
+        crate::types::SqlValue::Bool(b) => format!("b:{b}"),
+        other => format!("o:{}", val_order(other)?),
+    })
+}
+
+/// 值 → order 域（直方图插值口径；数值族同 range_selectivity）
+fn val_order(v: &crate::types::SqlValue) -> Option<u64> {
+    match v {
+        crate::types::SqlValue::Int32(i) => Some((*i as i64 ^ i64::MIN) as u64),
+        crate::types::SqlValue::Int64(i) => Some((*i ^ i64::MIN) as u64),
+        crate::types::SqlValue::Date32(d) => Some((*d as i64 ^ i64::MIN) as u64),
+        crate::types::SqlValue::TimestampMs(t) => Some((*t ^ i64::MIN) as u64),
+        crate::types::SqlValue::Float64(f) => Some(f.to_bits()), // 有序浮点位型
+        _ => None,
+    }
+}
+
+/// ANALYZE TABLE：全量扫描当前可见行 → 每列 NDV/MCV/等高直方图 →
+/// CAS 侧车 + catalog 引用提交。陈旧性 = 手动重分析（v1 合同）；
+/// 估算侧对 row_count 偏差不做衰减——消费面仅 EXPLAIN est 与 reorder
+pub fn analyze_impl(
+    db: &crate::engine::Database,
+    sess: &mut crate::engine::Session,
+    table: &str,
+) -> crate::error::Result<Option<crate::types::Output>> {
+    use crate::types::Output;
+    let (schema, entry) = crate::sql::scan::resolve_table(db, &sess.branch, table)?;
+    if sess.txn.is_some() {
+        return Err(crate::error::SqlError::new(
+            "25001",
+            "ANALYZE cannot run inside a transaction",
+        ));
+    }
+    let snapshot = sess.implicit_snapshot(db)?;
+    let q = format!("SELECT * FROM {table}");
+    let stmts = crate::sql::parse_batch(&q, crate::sql::SqlDialect::Pg)?;
+    let Some(sqlparser::ast::Statement::Query(q)) = stmts.into_iter().next() else {
+        return Err(crate::error::SqlError::internal("analyze parse"));
+    };
+    let tv = crate::sql::scan::eval_query(db, sess, &q, snapshot)?;
+    let ncols = schema.columns.len();
+    let rows = tv.rows.len() as u64;
+    // 逐列收集：键 → 频次（MCV/NDV）+ order 域样本（直方图）
+    let mut cols_out = Vec::with_capacity(ncols);
+    for c in 0..ncols {
+        let mut freq: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+        let mut nulls = 0u64;
+        let mut orders: Vec<u64> = Vec::new();
+        for row in &tv.rows {
+            let v = row.get(c).cloned().unwrap_or(crate::types::SqlValue::Null);
+            if v.is_null() {
+                nulls += 1;
+                continue;
+            }
+            if let Some(k) = val_key(&v) {
+                *freq.entry(k).or_insert(0) += 1;
+            }
+            if let Some(o) = val_order(&v) {
+                orders.push(o);
+            }
+        }
+        let ndv = freq.len() as u64;
+        let mut mcv: Vec<(String, u64)> = freq.into_iter().collect();
+        mcv.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0))); // 频次降序，键升序破平
+        mcv.truncate(MCV_MAX);
+        let hist = if orders.len() >= HIST_BUCKETS * 4 {
+            orders.sort_unstable();
+            let n = orders.len();
+            let mut edges = vec![orders[0]];
+            for b in 0..HIST_BUCKETS {
+                let hi_rank = (n * (b + 1)) / HIST_BUCKETS; // 等高边界秩
+                let edge = if b + 1 == HIST_BUCKETS {
+                    orders[n - 1]
+                } else {
+                    orders[hi_rank.min(n - 1)]
+                };
+                edges.push(edge);
+            }
+            // 边界（去重的升序边）上按 (prev, cur] 归属计数
+            let mut c2 = vec![0u64; HIST_BUCKETS];
+            for &o in &orders {
+                // 二分找首个 > o 的边界索引
+                let idx = edges.partition_point(|&e| e <= o) - 1;
+                let idx = idx.min(HIST_BUCKETS - 1);
+                c2[idx] += 1;
+            }
+            Some(ColHistogram { edges, counts: c2 })
+        } else {
+            None
+        };
+        cols_out.push(ColAnalyze {
+            ndv,
+            nulls,
+            mcv,
+            hist,
+        });
+    }
+    let an = TableAnalyze {
+        rows,
+        cols: cols_out,
+    };
+    let data = serde_json::to_vec(&an)
+        .map_err(|e| crate::error::SqlError::io(format!("analyze serde: {e}")))?;
+    let chunk = crate::objstore::cas::Chunk {
+        ty: crate::objstore::cas::ChunkType::Stats,
+        data,
+    };
+    let chunk_addr = chunk.addr();
+    let mut seen = std::collections::HashSet::new();
+    db.cas
+        .put_batch(&[chunk], &mut seen)
+        .map_err(crate::error::SqlError::from)?;
+    let ne = crate::versioned::TableEntry {
+        stats_addr: Some(chunk_addr.to_base32()),
+        ..entry
+    };
+    crate::sql::ddl::catalog_commit(db, sess, vec![(schema.name.clone(), Some(ne))], "ANALYZE")?;
+    // 引用切换后清缓存（旧 addr 条目自然失效；新 addr 首读加载）
+    analyze_cache().lock().unwrap().clear();
+    Ok(Some(Output::Command {
+        tag: "ANALYZE".into(),
+        affected: 0,
+    }))
+}
+
+/// addr → 分析产物（进程级缓存；内容寻址不可变 ⇒ 键即身份）
+fn analyze_cache(
+) -> &'static std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<TableAnalyze>>> {
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<TableAnalyze>>>,
+    > = std::sync::OnceLock::new();
+    CACHE.get_or_init(Default::default)
+}
+
+/// 读取表的分析统计（未分析/不可达 → None——估算回退 footer uniform）
+pub fn load_analyze(
+    db: &crate::engine::Database,
+    sess: &crate::engine::Session,
+    table: &str,
+) -> Option<std::sync::Arc<TableAnalyze>> {
+    let (_, entry) = crate::sql::scan::resolve_table(db, &sess.branch, table).ok()?;
+    let addr = entry.stats_addr.as_ref()?;
+    if let Some(a) = analyze_cache().lock().unwrap().get(addr) {
+        return Some(a.clone());
+    }
+    let hash = crate::format::hash::Hash::from_base32(addr)?;
+    let (_ty, data) = db.cas.get(&hash).ok()?;
+    let an: TableAnalyze = serde_json::from_slice(&data).ok()?;
+    let an = std::sync::Arc::new(an);
+    analyze_cache()
+        .lock()
+        .unwrap()
+        .insert(addr.clone(), an.clone());
+    Some(an)
 }

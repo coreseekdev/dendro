@@ -586,6 +586,7 @@ fn is_ddl(stmt: &Statement) -> bool {
             | Statement::AlterTable { .. }
             | Statement::Drop { .. }
             | Statement::Truncate { .. } // 第二十轮 R20-1：truncate_impl 同样 catalog_commit
+            | Statement::Analyze { .. } // ANALYZE 写 catalog（stats_addr）
             | Statement::CreateView { .. } // 第二十一轮 R21-16：CREATE VIEW 也是 catalog 写
             | Statement::Grant { .. } // S-4：GRANT 也是 catalog 写（同 Q-10 口径）
             | Statement::Revoke { .. }
@@ -792,6 +793,19 @@ pub(crate) fn exec_statement(
             }
         }
         Statement::Truncate(tr) => ddl::truncate_impl(db, sess, tr.table_names),
+        Statement::Analyze(a) => {
+            let Some(tn) = &a.table_name else {
+                return Err(SqlError::not_supported(
+                    "ANALYZE requires a table name (database-wide not supported)",
+                ));
+            };
+            let name =
+                tn.0.iter()
+                    .filter_map(|p| p.as_ident().map(|i| i.value.clone()))
+                    .collect::<Vec<_>>()
+                    .join(".");
+            stats::analyze_impl(db, sess, &name)
+        }
         Statement::Explain {
             analyze, statement, ..
         } => {

@@ -808,8 +808,13 @@ pub(crate) fn exec_plan_inner(
                 let est = cx.metrics.as_ref().and_then(|_| {
                     let st = crate::sql::stats::table_stats(db, sess, table)?;
                     let total = st.cols.first()?.rows;
-                    Some(crate::sql::stats::estimate_filter_rows(
-                        &st, &tv.names, pred, total,
+                    let an = crate::sql::stats::load_analyze(db, sess, table);
+                    Some(crate::sql::stats::estimate_filter_rows_ex(
+                        &st,
+                        an.as_deref(),
+                        &tv.names,
+                        pred,
+                        total,
                     ))
                 });
                 cx.record_est(&format!("scan {table}"), tv.rows.len(), t_scan, est);
