@@ -1842,6 +1842,52 @@ pub(crate) fn is_correlated(q: &sqlparser::ast::Query) -> bool {
     let mut prefixes: Vec<String> = Vec::new();
     collect_scope(q, &mut factors, &mut prefixes);
     prefixes.iter().any(|p| !factors.contains(p))
+        // 保守面：派生表因子体内含限定引用——按 UNION 臂独立作用域
+        // 精确判定需完整词法作用域分析；保守判相关（多走 L2 迭代
+        // 求值路径，memo 下无损；真遮蔽场景代入也不命中，等价）
+        || has_derived_qualref(&q.body)
+}
+
+/// 查询体内任一派生表因子体含限定名引用（递归含嵌套派生/子查询）
+fn has_derived_qualref(se: &sqlparser::ast::SetExpr) -> bool {
+    match se {
+        sqlparser::ast::SetExpr::Select(sel) => {
+            for twj in &sel.from {
+                if let sqlparser::ast::TableFactor::Derived { subquery, .. } = &twj.relation {
+                    if query_has_qualref(subquery) || has_derived_qualref(&subquery.body) {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+        sqlparser::ast::SetExpr::SetOperation { left, right, .. } => {
+            has_derived_qualref(left) || has_derived_qualref(right)
+        }
+        sqlparser::ast::SetExpr::Query(inner) => has_derived_qualref(&inner.body),
+        _ => false,
+    }
+}
+
+/// 表达式树中是否存在限定名引用（保守检测——派生表体有外层引用
+/// 迹象即触发相关路径）
+fn query_has_qualref(q: &sqlparser::ast::Query) -> bool {
+    fn expr_qual(e: &Expr) -> bool {
+        let mut ids = Vec::new();
+        expr_idents_pub(e, &mut ids);
+        ids.iter().any(|i| i.contains('.'))
+    }
+    match &*q.body {
+        sqlparser::ast::SetExpr::Select(sel) => {
+            sel.selection.as_ref().is_some_and(expr_qual)
+                || sel.projection.iter().any(|item| match item {
+                    sqlparser::ast::SelectItem::UnnamedExpr(e)
+                    | sqlparser::ast::SelectItem::ExprWithAlias { expr: e, .. } => expr_qual(e),
+                    _ => false,
+                })
+        }
+        _ => false,
+    }
 }
 
 /// 查询树作用域收集：因子（FROM 键）+ 限定前缀（含嵌套子查询递归）

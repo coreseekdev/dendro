@@ -1390,6 +1390,101 @@ pub(crate) fn expr_has_subquery(e: &Expr) -> bool {
     }
 }
 
+fn subst_in_expr(
+    e: &mut Expr,
+    inner: &[String],
+    row: &[SqlValue],
+    resolve: &dyn Fn(&str) -> Option<usize>,
+    bound: &mut Vec<String>,
+) {
+    match e {
+        Expr::CompoundIdentifier(parts) if parts.len() == 2 => {
+            let (p, c) = (&parts[0].value, &parts[1].value);
+            let pq = format!("{p}.{c}");
+            if !inner.iter().any(|f| f.eq_ignore_ascii_case(p)) {
+                if let Some(i) = resolve(&pq) {
+                    bound.push(crate::sql::scan::join_key_part(&row[i]));
+                    *e = crate::sql::optimize::sql_value_to_expr(&row[i]);
+                }
+                // resolve 不到 = 非外层引用（或拼错）——留原样，
+                // 子查询内求值按 undefined_column 响亮报错
+            }
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            subst_in_expr(left, inner, row, resolve, bound);
+            subst_in_expr(right, inner, row, resolve, bound);
+        }
+        Expr::Nested(i) | Expr::IsNotNull(i) | Expr::IsNull(i) => {
+            subst_in_expr(i, inner, row, resolve, bound)
+        }
+        Expr::UnaryOp { expr, .. } | Expr::Cast { expr, .. } => {
+            subst_in_expr(expr, inner, row, resolve, bound)
+        }
+        Expr::InList { expr, list, .. } => {
+            subst_in_expr(expr, inner, row, resolve, bound);
+            for item in list.iter_mut() {
+                subst_in_expr(item, inner, row, resolve, bound);
+            }
+        }
+        Expr::Between {
+            expr, low, high, ..
+        } => {
+            subst_in_expr(expr, inner, row, resolve, bound);
+            subst_in_expr(low, inner, row, resolve, bound);
+            subst_in_expr(high, inner, row, resolve, bound);
+        }
+        Expr::Case {
+            operand,
+            conditions,
+            else_result,
+            ..
+        } => {
+            if let Some(o) = operand {
+                subst_in_expr(o, inner, row, resolve, bound);
+            }
+            for cw in conditions.iter_mut() {
+                subst_in_expr(&mut cw.condition, inner, row, resolve, bound);
+                subst_in_expr(&mut cw.result, inner, row, resolve, bound);
+            }
+            if let Some(er) = else_result {
+                subst_in_expr(er, inner, row, resolve, bound);
+            }
+        }
+        Expr::Function(f) => {
+            for a in crate::sql::scan::fn_args_mut(f) {
+                if let sqlparser::ast::FunctionArg::Unnamed(
+                    sqlparser::ast::FunctionArgExpr::Expr(inner_e),
+                ) = a
+                {
+                    subst_in_expr(inner_e, inner, row, resolve, bound);
+                }
+            }
+        }
+        // 嵌套子查询位（跨层相关——孙代引用祖父列）：以同一外层行
+        // 代入，但按嵌套查询自身的内域收集（递归 subst_outer_refs）
+        Expr::Subquery(q) => {
+            if let Ok((nq, nb)) = subst_outer_refs(q, row, resolve) {
+                **q = nq;
+                bound.extend(nb);
+            }
+        }
+        Expr::Exists { subquery, .. } => {
+            if let Ok((nq, nb)) = subst_outer_refs(subquery, row, resolve) {
+                **subquery = nq;
+                bound.extend(nb);
+            }
+        }
+        Expr::InSubquery { expr, subquery, .. } => {
+            subst_in_expr(expr, inner, row, resolve, bound);
+            if let Ok((nq, nb)) = subst_outer_refs(subquery, row, resolve) {
+                **subquery = nq;
+                bound.extend(nb);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// 子查询内的外层限定引用代入为行值字面量（返回代入值序列——memo 键）
 fn subst_outer_refs(
     q: &sqlparser::ast::Query,
@@ -1407,129 +1502,70 @@ fn subst_outer_refs(
         }
     }
     let mut bound: Vec<String> = Vec::new();
-    fn subst_in_expr(
-        e: &mut Expr,
-        inner: &[String],
-        row: &[SqlValue],
-        resolve: &dyn Fn(&str) -> Option<usize>,
-        bound: &mut Vec<String>,
-    ) {
-        match e {
-            Expr::CompoundIdentifier(parts) if parts.len() == 2 => {
-                let (p, c) = (&parts[0].value, &parts[1].value);
-                let pq = format!("{p}.{c}");
-                if !inner.iter().any(|f| f.eq_ignore_ascii_case(p)) {
-                    if let Some(i) = resolve(&pq) {
-                        bound.push(crate::sql::scan::join_key_part(&row[i]));
-                        *e = crate::sql::optimize::sql_value_to_expr(&row[i]);
-                    }
-                    // resolve 不到 = 非外层引用（或拼错）——留原样，
-                    // 子查询内求值按 undefined_column 响亮报错
-                }
-            }
-            Expr::BinaryOp { left, right, .. } => {
-                subst_in_expr(left, inner, row, resolve, bound);
-                subst_in_expr(right, inner, row, resolve, bound);
-            }
-            Expr::Nested(i) | Expr::IsNotNull(i) | Expr::IsNull(i) => {
-                subst_in_expr(i, inner, row, resolve, bound)
-            }
-            Expr::UnaryOp { expr, .. } | Expr::Cast { expr, .. } => {
-                subst_in_expr(expr, inner, row, resolve, bound)
-            }
-            Expr::InList { expr, list, .. } => {
-                subst_in_expr(expr, inner, row, resolve, bound);
-                for item in list.iter_mut() {
-                    subst_in_expr(item, inner, row, resolve, bound);
-                }
-            }
-            Expr::Between {
-                expr, low, high, ..
-            } => {
-                subst_in_expr(expr, inner, row, resolve, bound);
-                subst_in_expr(low, inner, row, resolve, bound);
-                subst_in_expr(high, inner, row, resolve, bound);
-            }
-            Expr::Case {
-                operand,
-                conditions,
-                else_result,
-                ..
-            } => {
-                if let Some(o) = operand {
-                    subst_in_expr(o, inner, row, resolve, bound);
-                }
-                for cw in conditions.iter_mut() {
-                    subst_in_expr(&mut cw.condition, inner, row, resolve, bound);
-                    subst_in_expr(&mut cw.result, inner, row, resolve, bound);
-                }
-                if let Some(er) = else_result {
-                    subst_in_expr(er, inner, row, resolve, bound);
-                }
-            }
-            Expr::Function(f) => {
-                for a in crate::sql::scan::fn_args_mut(f) {
-                    if let sqlparser::ast::FunctionArg::Unnamed(
-                        sqlparser::ast::FunctionArgExpr::Expr(inner_e),
-                    ) = a
-                    {
-                        subst_in_expr(inner_e, inner, row, resolve, bound);
-                    }
-                }
-            }
-            // 嵌套子查询位（跨层相关——孙代引用祖父列）：以同一外层行
-            // 代入，但按嵌套查询自身的内域收集（递归 subst_outer_refs）
-            Expr::Subquery(q) => {
-                if let Ok((nq, nb)) = subst_outer_refs(q, row, resolve) {
-                    **q = nq;
-                    bound.extend(nb);
-                }
-            }
-            Expr::Exists { subquery, .. } => {
-                if let Ok((nq, nb)) = subst_outer_refs(subquery, row, resolve) {
-                    **subquery = nq;
-                    bound.extend(nb);
-                }
-            }
-            Expr::InSubquery { expr, subquery, .. } => {
-                subst_in_expr(expr, inner, row, resolve, bound);
-                if let Ok((nq, nb)) = subst_outer_refs(subquery, row, resolve) {
-                    **subquery = nq;
-                    bound.extend(nb);
-                }
-            }
-            _ => {}
-        }
-    }
-    match &mut *qc.body {
+    subst_setexpr(&mut qc.body, &inner_factors, row, resolve, &mut bound);
+    Ok((qc, bound))
+}
+
+/// SetExpr 下穿（含集合操作臂——臂可为 Select 直臂或 Query 包裹，
+/// 两者均须以**该臂自身内域**重收集后递归代入）
+fn subst_setexpr(
+    se: &mut sqlparser::ast::SetExpr,
+    _parent_factors: &[String],
+    row: &[SqlValue],
+    resolve: &dyn Fn(&str) -> Option<usize>,
+    bound: &mut Vec<String>,
+) {
+    match se {
         sqlparser::ast::SetExpr::Select(sel) => {
+            // 派生表因子体下穿（相关引用可穿透任意深度——派生表非
+            // 作用域黑盒，外层限定名按逐层解析规则可达）
+            for twj in sel.from.iter_mut() {
+                if let sqlparser::ast::TableFactor::Derived { subquery, .. } = &mut twj.relation {
+                    if let Ok((dq, db)) = subst_outer_refs(subquery, row, resolve) {
+                        bound.extend(db);
+                        **subquery = dq;
+                    }
+                }
+            }
             if let Some(w) = sel.selection.as_mut() {
-                subst_in_expr(w, &inner_factors, row, resolve, &mut bound);
+                // Select 直臂：重收集本臂内域（from 因子），表达式代入
+                let mut arm_factors: Vec<String> = Vec::new();
+                for twj in &sel.from {
+                    if let Some(k) = crate::sql::optimize::factor_key(&twj.relation) {
+                        arm_factors.push(k);
+                    }
+                }
+                subst_in_expr(w, &arm_factors, row, resolve, bound);
             }
             for item in sel.projection.iter_mut() {
                 match item {
                     sqlparser::ast::SelectItem::UnnamedExpr(e)
                     | sqlparser::ast::SelectItem::ExprWithAlias { expr: e, .. } => {
-                        subst_in_expr(e, &inner_factors, row, resolve, &mut bound);
+                        let mut arm_factors: Vec<String> = Vec::new();
+                        for twj in &sel.from {
+                            if let Some(k) = crate::sql::optimize::factor_key(&twj.relation) {
+                                arm_factors.push(k);
+                            }
+                        }
+                        subst_in_expr(e, &arm_factors, row, resolve, bound);
                     }
                     _ => {}
                 }
             }
         }
         sqlparser::ast::SetExpr::SetOperation { left, right, .. } => {
-            // 集合操作臂内的外层引用经子 Query 重写（递归降一层——
-            // 臂本身是 Query，须重新收集内域）
-            for arm in [left, right] {
-                if let sqlparser::ast::SetExpr::Query(inner) = arm.as_mut() {
-                    let (iq, ib) = subst_outer_refs(inner, row, resolve)?;
-                    bound.extend(ib);
-                    **arm = sqlparser::ast::SetExpr::Query(Box::new(iq));
-                }
+            subst_setexpr(left, &[], row, resolve, bound);
+            subst_setexpr(right, &[], row, resolve, bound);
+        }
+        sqlparser::ast::SetExpr::Query(inner) => {
+            // Query 包裹臂：整体走 subst_outer_refs（重收集内域 + 代入）
+            if let Ok((iq, ib)) = subst_outer_refs(inner, row, resolve) {
+                bound.extend(ib);
+                *se = sqlparser::ast::SetExpr::Query(Box::new(iq));
             }
         }
         _ => {}
     }
-    Ok((qc, bound))
 }
 
 /// 求值（代入后的）子查询 → 行集；memo 命中直取
