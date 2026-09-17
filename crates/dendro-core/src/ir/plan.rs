@@ -84,6 +84,18 @@ pub enum Plan {
         left: Box<Plan>,
         right: Box<Plan>,
     },
+    /// 半连接 / 反半连接（L1：IN 子查询合取项下沉）。
+    /// `key IN (SELECT c FROM ..)` 合取项 → 输入行按 key 对 build 侧
+    /// 首列做成员探测：negated=false 保命中行（半连接）；true 保未
+    /// 命中且两侧皆无 NULL 的行（反半连接——NOT IN 三值语义）。
+    /// build 侧单次求值（子计划），探测 int/text 快路径哈希、其余
+    /// 线性 cmp_values（与 InList 位级同语义）
+    SemiJoin {
+        key: Expr,
+        negated: bool,
+        sub: Box<Plan>,
+        input: Box<Plan>,
+    },
     Aggregate {
         keys: Vec<Expr>,
         /// 结构化聚合调用（阶段1 IR 自足化——display 文本进 IR 曾使
@@ -170,9 +182,7 @@ impl Plan {
     fn collect_keys(&self, out: &mut Vec<String>) {
         match self {
             Plan::Scan { table, alias, .. } => {
-                let k = alias
-                    .clone()
-                    .unwrap_or_else(|| table.to_ascii_lowercase());
+                let k = alias.clone().unwrap_or_else(|| table.to_ascii_lowercase());
                 if !out.contains(&k) {
                     out.push(k);
                 }
@@ -188,7 +198,9 @@ impl Plan {
                 plan.collect_keys(out);
                 body.collect_keys(out);
             }
-            Plan::IterativeScan { base, recursive, .. } => {
+            Plan::IterativeScan {
+                base, recursive, ..
+            } => {
                 base.collect_keys(out);
                 recursive.collect_keys(out);
             }
@@ -197,6 +209,10 @@ impl Plan {
                     out.push(key.clone());
                 }
                 plan.collect_keys(out);
+            }
+            Plan::SemiJoin { sub, input, .. } => {
+                input.collect_keys(out);
+                sub.collect_keys(out);
             }
             Plan::Join { left, right, .. } => {
                 left.collect_keys(out);
@@ -212,12 +228,13 @@ impl Plan {
 }
 
 /// 因子键（与 optimize::factor_key 同口径：别名优先，短表名小写）
-fn factor_key(
-    tf: &TableFactor,
-) -> Option<(String, String, Option<String>, Option<ScanVersion>)> {
+fn factor_key(tf: &TableFactor) -> Option<(String, String, Option<String>, Option<ScanVersion>)> {
     match tf {
         TableFactor::Table {
-            name, alias, version, ..
+            name,
+            alias,
+            version,
+            ..
         } => {
             let base = name
                 .0
@@ -267,8 +284,7 @@ pub fn build_plan(q: &Query) -> Result<Plan> {
                         op: sqlparser::ast::SetOperator::Union,
                         ..
                     }
-                )
-            {
+                ) {
                 let SetExpr::SetOperation {
                     set_quantifier,
                     left,
@@ -308,15 +324,21 @@ fn build_plan_body(q: &Query) -> Result<Plan> {
     // ORDER BY / LIMIT（Query 级）
     let order: &[(Expr, bool)] = &[]; // OrderByExpr → (expr, asc) 在下方转换
     let _ = order;
-    if let sqlparser::ast::OrderByKind::Expressions(exprs) =
-        q.order_by.as_ref().map(|o| &o.kind).unwrap_or(&sqlparser::ast::OrderByKind::Expressions(vec![]))
+    if let sqlparser::ast::OrderByKind::Expressions(exprs) = q
+        .order_by
+        .as_ref()
+        .map(|o| &o.kind)
+        .unwrap_or(&sqlparser::ast::OrderByKind::Expressions(vec![]))
     {
         if !exprs.is_empty() {
             let keys: Vec<(Expr, bool)> = exprs
                 .iter()
                 .map(|o| (o.expr.clone(), o.options.asc.unwrap_or(true)))
                 .collect();
-            p = Plan::Sort { keys, input: Box::new(p) };
+            p = Plan::Sort {
+                keys,
+                input: Box::new(p),
+            };
         }
     }
     // LIMIT/OFFSET（含 OFFSET-only、LIMIT-无-ORDER）
@@ -344,7 +366,12 @@ fn build_plan_body(q: &Query) -> Result<Plan> {
 fn build_setexpr(se: &SetExpr) -> Result<Plan> {
     match se {
         SetExpr::Select(sel) => build_select(sel),
-        SetExpr::SetOperation { op, set_quantifier, left, right } => {
+        SetExpr::SetOperation {
+            op,
+            set_quantifier,
+            left,
+            right,
+        } => {
             use sqlparser::ast::{SetOperator, SetQuantifier};
             let name = match op {
                 SetOperator::Union => "union",
@@ -352,7 +379,10 @@ fn build_setexpr(se: &SetExpr) -> Result<Plan> {
                 SetOperator::Intersect => "intersect",
                 SetOperator::Minus => "except",
             };
-            let all = !matches!(set_quantifier, SetQuantifier::Distinct | SetQuantifier::None);
+            let all = !matches!(
+                set_quantifier,
+                SetQuantifier::Distinct | SetQuantifier::None
+            );
             Ok(Plan::SetOp {
                 op: name,
                 all,
@@ -371,11 +401,17 @@ fn build_setexpr(se: &SetExpr) -> Result<Plan> {
 fn build_factor(tf: &TableFactor) -> Result<Plan> {
     match tf {
         TableFactor::Table { .. } => {
-            let (_key, table, alias, version) =
-                factor_key(tf).ok_or_else(|| crate::error::SqlError::not_supported("plan factor"))?;
-            Ok(Plan::Scan { table, alias, version })
+            let (_key, table, alias, version) = factor_key(tf)
+                .ok_or_else(|| crate::error::SqlError::not_supported("plan factor"))?;
+            Ok(Plan::Scan {
+                table,
+                alias,
+                version,
+            })
         }
-        TableFactor::Derived { subquery, alias, .. } => {
+        TableFactor::Derived {
+            subquery, alias, ..
+        } => {
             // 无别名派生表合法（008 既有支持面）：空键 = 无限定引用面
             //（裸名经视图列名解析；join ON 经末段回退）
             let key = alias
@@ -403,11 +439,7 @@ fn build_select(sel: &sqlparser::ast::Select) -> Result<Plan> {
                     | sqlparser::ast::JoinOperator::Inner(_) => "inner",
                     sqlparser::ast::JoinOperator::Left(_)
                     | sqlparser::ast::JoinOperator::LeftOuter(_) => "left",
-                    _ => {
-                        return Err(crate::error::SqlError::not_supported(
-                            "plan: join type",
-                        ))
-                    }
+                    _ => return Err(crate::error::SqlError::not_supported("plan: join type")),
                 };
                 let on = match &j.join_operator {
                     sqlparser::ast::JoinOperator::Join(c)
@@ -434,9 +466,33 @@ fn build_select(sel: &sqlparser::ast::Select) -> Result<Plan> {
             p
         }
     };
-    // WHERE
+    // WHERE（L1：InSubquery 合取项先落 SemiJoin，残余谓词再上 Filter——
+    // 半连接在过滤之下，行进 SemiJoin 前不被残余谓词裁剪）
     if let Some(w) = &sel.selection {
-        plan = Plan::Filter { pred: w.clone(), input: Box::new(plan) };
+        let conjuncts = crate::sql::optimize::flatten_and(w);
+        let mut residual: Vec<Expr> = Vec::new();
+        for c in &conjuncts {
+            if let Some((key, subq, negated)) = crate::sql::optimize::as_semi_candidate(c) {
+                // 相关子查询不在此下沉（子计划无外层行上下文）——
+                // 留在残余谓词，Filter 执行臂迭代求值
+                if !crate::sql::optimize::is_correlated(&subq) {
+                    plan = Plan::SemiJoin {
+                        key,
+                        negated,
+                        sub: Box::new(build_plan(&subq)?),
+                        input: Box::new(plan),
+                    };
+                    continue;
+                }
+            }
+            residual.push(c.clone());
+        }
+        if let Some(pred) = crate::sql::optimize::fold_and(residual) {
+            plan = Plan::Filter {
+                pred,
+                input: Box::new(plan),
+            };
+        }
     }
     // 窗口（合成列——Project 之下求值；与 eval_select 同收集口径）
     let window_calls = crate::sql::scan::collect_window_calls(sel)?;
@@ -456,7 +512,11 @@ fn build_select(sel: &sqlparser::ast::Select) -> Result<Plan> {
     }
     // GROUP BY / 聚合
     let has_agg = crate::sql::scan::projection_aggregates(&sel.projection).is_some()
-        || sel.having.as_ref().map(crate::sql::scan::has_agg_expr).unwrap_or(false);
+        || sel
+            .having
+            .as_ref()
+            .map(crate::sql::scan::has_agg_expr)
+            .unwrap_or(false);
     let keys: Vec<Expr> = match &sel.group_by {
         sqlparser::ast::GroupByExpr::Expressions(es, _) => es.clone(),
         sqlparser::ast::GroupByExpr::All(_) => {
@@ -475,9 +535,16 @@ fn build_select(sel: &sqlparser::ast::Select) -> Result<Plan> {
         if let Some(h) = &sel.having {
             collect_agg_calls_plan(h, &mut aggs)?;
         }
-        plan = Plan::Aggregate { keys, aggs, input: Box::new(plan) };
+        plan = Plan::Aggregate {
+            keys,
+            aggs,
+            input: Box::new(plan),
+        };
         if let Some(h) = &sel.having {
-            plan = Plan::Filter { pred: h.clone(), input: Box::new(plan) };
+            plan = Plan::Filter {
+                pred: h.clone(),
+                input: Box::new(plan),
+            };
         }
     }
     // 投影（表达式 + 输出列名——与 project() 命名口径一致：
@@ -523,11 +590,10 @@ fn build_select(sel: &sqlparser::ast::Select) -> Result<Plan> {
                 if let Some(sqlparser::ast::SelectItemQualifiedWildcardKind::ObjectName(o)) =
                     Some(kind)
                 {
-                    if let Some(k) = o
-                        .0
-                        .last()
-                        .and_then(|p| p.as_ident())
-                        .map(|i| i.value.to_ascii_lowercase())
+                    if let Some(k) =
+                        o.0.last()
+                            .and_then(|p| p.as_ident())
+                            .map(|i| i.value.to_ascii_lowercase())
                     {
                         prefixes.push(k);
                     }
@@ -560,7 +626,9 @@ fn build_select(sel: &sqlparser::ast::Select) -> Result<Plan> {
     };
     // SELECT DISTINCT（Project 之上——投影后按输出行去重）
     if sel.distinct.is_some() {
-        plan = Plan::Distinct { input: Box::new(plan) };
+        plan = Plan::Distinct {
+            input: Box::new(plan),
+        };
     }
     Ok(plan)
 }
@@ -608,7 +676,10 @@ pub fn pushdown_desc(pushed: &[(String, Vec<Expr>)]) -> String {
         .iter()
         .map(|(k, cs)| format!("{k}({})", cs.len()))
         .collect();
-    format!("optimizer: pushdown {total} conjunct(s) → {}", parts.join(", "))
+    format!(
+        "optimizer: pushdown {total} conjunct(s) → {}",
+        parts.join(", ")
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -690,11 +761,20 @@ fn rewrite_walk(plan: &mut Plan, out: &mut Vec<(String, Vec<Expr>)>) {
             rewrite_walk(plan, out);
             rewrite_walk(body, out);
         }
-        Plan::IterativeScan { base, recursive, .. } => {
+        Plan::IterativeScan {
+            base, recursive, ..
+        } => {
             rewrite_walk(base, out);
             rewrite_walk(recursive, out);
         }
         Plan::SubqueryScan { plan, .. } => rewrite_walk(plan, out),
+        // SemiJoin：build 侧是独立查询作用域——内部 Filter(Join)
+        // 下推照常（desc 共享）；外层 Filter 不越过 SemiJoin 下推
+        //（input 非 Join 形态，上方分类自然不动）
+        Plan::SemiJoin { sub, input, .. } => {
+            rewrite_walk(input, out);
+            rewrite_walk(sub, out);
+        }
         Plan::Scan { .. } | Plan::Values => {}
     }
 }
@@ -708,14 +788,17 @@ fn hoist_filters(join: &mut Plan, pushed: &[(String, Vec<Expr>)]) {
         }
         Plan::Scan { .. } => {
             let key = match join {
-                Plan::Scan { table, alias, .. } => alias
-                    .clone()
-                    .unwrap_or_else(|| table.to_ascii_lowercase()),
+                Plan::Scan { table, alias, .. } => {
+                    alias.clone().unwrap_or_else(|| table.to_ascii_lowercase())
+                }
                 _ => unreachable!(),
             };
             if let Some((_, cs)) = pushed.iter().find(|(k, _)| *k == key) {
                 if let Some(w) = crate::sql::optimize::and_all(cs.clone()) {
-                    *join = Plan::Filter { pred: w, input: Box::new(std::mem::replace(join, Plan::Values)) };
+                    *join = Plan::Filter {
+                        pred: w,
+                        input: Box::new(std::mem::replace(join, Plan::Values)),
+                    };
                 }
             }
         }
@@ -750,7 +833,7 @@ pub fn db_schema_lookup<'a>(
 
 struct Printer<'a> {
     out: String,
-    counters: [usize; 13], // v,t,s,f,j,a,p,o,u,d,w,c,i
+    counters: [usize; 14], // v,t,s,f,j,a,p,o,u,d,w,c,i,m
     lookup: SchemaLookup<'a>,
     scan_ids: std::collections::HashMap<String, String>, // 因子键 → %sN
 }
@@ -758,7 +841,7 @@ struct Printer<'a> {
 pub fn print_plan(name: &str, plan: &Plan, lookup: SchemaLookup<'_>) -> String {
     let mut p = Printer {
         out: String::new(),
-        counters: [0; 13],
+        counters: [0; 14],
         lookup,
         scan_ids: std::collections::HashMap::new(),
     };
@@ -770,7 +853,9 @@ pub fn print_plan(name: &str, plan: &Plan, lookup: SchemaLookup<'_>) -> String {
     p.out
 }
 
-const KINDS: [&str; 13] = ["v", "t", "s", "f", "j", "a", "p", "o", "u", "d", "w", "c", "i"];
+const KINDS: [&str; 14] = [
+    "v", "t", "s", "f", "j", "a", "p", "o", "u", "d", "w", "c", "i", "m",
+];
 
 impl<'a> Printer<'a> {
     fn next_id(&mut self, k: usize) -> String {
@@ -784,7 +869,8 @@ impl<'a> Printer<'a> {
         match plan {
             Plan::Values => {
                 let id = self.next_id(0);
-                self.out.push_str(&format!("  {id} = values {{rows = 1}}\n"));
+                self.out
+                    .push_str(&format!("  {id} = values {{rows = 1}}\n"));
                 id
             }
             Plan::Scan {
@@ -808,8 +894,7 @@ impl<'a> Printer<'a> {
                     .unwrap_or_default();
                 match (self.lookup)(table) {
                     Some((cols, pk)) => {
-                        let pk_str: Vec<String> =
-                            pk.iter().map(|i| i.to_string()).collect();
+                        let pk_str: Vec<String> = pk.iter().map(|i| i.to_string()).collect();
                         self.out.push_str(&format!(
                             "  {t_id} = table \"{table}\"{alias_part} {{cols = [{cols_str}], pk = [{pk_str}]{ver_part}}}\n",
                             cols_str = cols.join(", "),
@@ -822,9 +907,7 @@ impl<'a> Printer<'a> {
                 }
                 let s_id = self.next_id(2);
                 self.out.push_str(&format!("  {s_id} = scan {t_id}\n"));
-                let key = alias
-                    .clone()
-                    .unwrap_or_else(|| table.to_ascii_lowercase());
+                let key = alias.clone().unwrap_or_else(|| table.to_ascii_lowercase());
                 self.scan_ids.insert(key, s_id.clone());
                 s_id
             }
@@ -837,7 +920,12 @@ impl<'a> Printer<'a> {
                 ));
                 id
             }
-            Plan::Join { kind, on, left, right } => {
+            Plan::Join {
+                kind,
+                on,
+                left,
+                right,
+            } => {
                 let l = self.emit(left);
                 let r = self.emit(right);
                 let id = self.next_id(4);
@@ -847,12 +935,26 @@ impl<'a> Printer<'a> {
                 ));
                 id
             }
+            Plan::SemiJoin {
+                key,
+                negated,
+                sub,
+                input,
+            } => {
+                let i = self.emit(input);
+                let s = self.emit(sub);
+                let id = self.next_id(13);
+                self.out.push_str(&format!(
+                    "  {id} = semijoin {i}, {s} {{negated = {negated}, key = {}}}\n",
+                    crate::ir::text::escape_sql_text(&key.to_string())
+                ));
+                id
+            }
             Plan::Aggregate { keys, aggs, input } => {
                 let i = self.emit(input);
                 let id = self.next_id(5);
                 let ks: Vec<String> = keys.iter().map(|e| e.to_string()).collect();
-                let aggs_s: Vec<String> =
-                    aggs.iter().map(|a| a.display.clone()).collect();
+                let aggs_s: Vec<String> = aggs.iter().map(|a| a.display.clone()).collect();
                 self.out.push_str(&format!(
                     "  {id} = aggregate {i} {{keys = [{}], aggs = [{}]}}\n",
                     ks.join(", "),
@@ -870,7 +972,8 @@ impl<'a> Printer<'a> {
                 let i = self.emit(input);
                 let id = self.next_id(6);
                 if *wildcard {
-                    self.out.push_str(&format!("  {id} = project {i} {{wildcard}}\n"));
+                    self.out
+                        .push_str(&format!("  {id} = project {i} {{wildcard}}\n"));
                     return id;
                 }
                 if !prefixes.is_empty() {
@@ -919,7 +1022,12 @@ impl<'a> Printer<'a> {
                 self.out.push_str(&format!("  {id} = limit {i} {attrs}\n"));
                 id
             }
-            Plan::SetOp { op, all, left, right } => {
+            Plan::SetOp {
+                op,
+                all,
+                left,
+                right,
+            } => {
                 let l = self.emit(left);
                 let r = self.emit(right);
                 let id = self.next_id(8);
@@ -967,7 +1075,8 @@ impl<'a> Printer<'a> {
             Plan::SubqueryScan { key, plan } => {
                 let i = self.emit(plan);
                 let id = self.next_id(2); // s 池（扫描族）
-                self.out.push_str(&format!("  {id} = subquery {i} as \"{key}\"\n"));
+                self.out
+                    .push_str(&format!("  {id} = subquery {i} as \"{key}\"\n"));
                 id
             }
             Plan::IterativeScan {
@@ -1077,10 +1186,7 @@ fn unquote(t: &str) -> Option<String> {
 /// 操作分派长链——question_mark 改写破坏标签一览性（parse_const 同例）
 #[allow(clippy::question_mark)]
 pub fn parse_plan(text: &str) -> Option<Plan> {
-    let mut lines = text
-        .lines()
-        .map(|l| l.trim())
-        .filter(|l| !l.is_empty());
+    let mut lines = text.lines().map(|l| l.trim()).filter(|l| !l.is_empty());
     if lines.next()? != "dendro.ir v1" {
         return None;
     }
@@ -1135,9 +1241,9 @@ pub fn parse_plan(text: &str) -> Option<Plan> {
                     Some((_, v)) => {
                         let inner = v.strip_prefix('"')?; // 跳开引号
                         let end = crate::ir::text::find_str_end(inner)?;
-                        Some(Some(ScanVersion::parse_display(&crate::ir::text::json_unescape(
-                            &inner[..end],
-                        )?)))
+                        Some(Some(ScanVersion::parse_display(
+                            &crate::ir::text::json_unescape(&inner[..end])?,
+                        )))
                     }
                     None => Some(None),
                 }
@@ -1197,6 +1303,23 @@ pub fn parse_plan(text: &str) -> Option<Plan> {
                 left: Box::new(lookup_node(&nodes, l)?),
                 right: Box::new(lookup_node(&nodes, r)?),
             }
+        } else if let Some(t) = body.strip_prefix("semijoin ") {
+            // semijoin %input, %sub {negated = bool, key = "…"}
+            let (lr, attrs) = t.split_once(" {negated = ")?;
+            let (l, s) = lr.split_once(", ")?;
+            let (neg_s, key_s) = attrs.rsplit_once(", key = ")?;
+            let negated = match neg_s.trim() {
+                "true" => true,
+                "false" => false,
+                _ => return None,
+            };
+            let key = parse_expr_text(&unquote(key_s.trim().strip_suffix('}')?)?, false)?;
+            Plan::SemiJoin {
+                key,
+                negated,
+                sub: Box::new(lookup_node(&nodes, s)?),
+                input: Box::new(lookup_node(&nodes, l)?),
+            }
         } else if let Some(t) = body.strip_prefix("aggregate %") {
             let (src, attrs) = t.split_once(" {keys = [")?;
             let input = Box::new(lookup_node(&nodes, src.trim())?);
@@ -1211,7 +1334,10 @@ pub fn parse_plan(text: &str) -> Option<Plan> {
                 .map(|d| crate::sql::scan::agg_call_from_display(&d).ok())
                 .collect::<Option<Vec<_>>>()?;
             Plan::Aggregate { keys, aggs, input }
-        } else if let Some(src) = body.strip_prefix("project %").filter(|_| body.ends_with("{wildcard}")) {
+        } else if let Some(src) = body
+            .strip_prefix("project %")
+            .filter(|_| body.ends_with("{wildcard}"))
+        {
             let input = Box::new(lookup_node(&nodes, src.trim())?);
             Plan::Project {
                 exprs: vec![],
@@ -1399,6 +1525,7 @@ pub fn verify_plan(p: &Plan) -> bool {
         Plan::Scan { table, .. } => !table.is_empty(),
         Plan::Filter { input, .. } => verify_plan(input),
         Plan::Join { left, right, .. } => verify_plan(left) && verify_plan(right),
+        Plan::SemiJoin { sub, input, .. } => verify_plan(sub) && verify_plan(input),
         Plan::Aggregate { keys, input, .. } => keys.len() <= 64 && verify_plan(input),
         Plan::Project { input, .. } => verify_plan(input),
         Plan::Sort { keys, input } => !keys.is_empty() && verify_plan(input),
@@ -1406,12 +1533,15 @@ pub fn verify_plan(p: &Plan) -> bool {
         Plan::SetOp { left, right, .. } => verify_plan(left) && verify_plan(right),
         Plan::Distinct { input } => verify_plan(input),
         Plan::Window { calls, input } => !calls.is_empty() && verify_plan(input),
-        Plan::Cte { name, plan, body, .. } => {
-            !name.is_empty() && verify_plan(plan) && verify_plan(body)
-        }
-        Plan::IterativeScan { name, base, recursive, .. } => {
-            !name.is_empty() && verify_plan(base) && verify_plan(recursive)
-        }
+        Plan::Cte {
+            name, plan, body, ..
+        } => !name.is_empty() && verify_plan(plan) && verify_plan(body),
+        Plan::IterativeScan {
+            name,
+            base,
+            recursive,
+            ..
+        } => !name.is_empty() && verify_plan(base) && verify_plan(recursive),
         Plan::SubqueryScan { plan, .. } => verify_plan(plan),
     }
 }
@@ -1423,18 +1553,14 @@ mod tests {
     /// 假 schema：orders(id,cid,total) / customers(id,region)
     fn fake_lookup() -> impl Fn(&str) -> Option<(Vec<String>, Vec<u16>)> {
         |t: &str| match t {
-            "orders" => Some((
-                vec!["id".into(), "cid".into(), "total".into()],
-                vec![0],
-            )),
+            "orders" => Some((vec!["id".into(), "cid".into(), "total".into()], vec![0])),
             "customers" => Some((vec!["id".into(), "region".into()], vec![0])),
             _ => None,
         }
     }
 
     fn plan_of(sql: &str) -> Plan {
-        let stmts =
-            crate::sql::parse_batch(sql, crate::sql::SqlDialect::Pg).unwrap();
+        let stmts = crate::sql::parse_batch(sql, crate::sql::SqlDialect::Pg).unwrap();
         match &stmts[0] {
             sqlparser::ast::Statement::Query(q) => build_plan(q).unwrap(),
             _ => panic!("expected query"),
@@ -1529,6 +1655,10 @@ mod tests {
             // 阶段3：Cte / IterativeScan 打印
             "WITH RECURSIVE fib(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM fib WHERE n < 5) SELECT sum(n) FROM fib",
             "WITH big AS (SELECT id FROM orders WHERE total > 100) SELECT count(*) FROM big",
+            // L1：SemiJoin 打印（IN 子查询合取项 + NOT IN 反半 + 残余 Filter 混合）
+            "SELECT id FROM orders WHERE cid IN (SELECT id FROM customers)",
+            "SELECT id FROM orders WHERE total > 10 AND cid NOT IN (SELECT id FROM customers WHERE region = 'EU')",
+            "SELECT id FROM orders WHERE NOT (cid IN (SELECT id FROM customers)) AND total > 5",
         ];
         let mut cur = String::new();
         cur.push_str("; dendro.ir v1 plans golden（生成见 ir/plan.rs tests；人工审阅后提交）\n");
@@ -1578,14 +1708,21 @@ mod tests {
             // 阶段3：Cte / IterativeScan round-trip
             "WITH RECURSIVE fib(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM fib WHERE n < 5) SELECT sum(n) FROM fib",
             "WITH big AS (SELECT id FROM orders WHERE total > 100) SELECT count(*) FROM big",
+            // L1：SemiJoin round-trip（含 NOT 归一反半 + 残余谓词）
+            "SELECT id FROM orders WHERE cid IN (SELECT id FROM customers)",
+            "SELECT id FROM orders WHERE total > 10 AND cid NOT IN (SELECT id FROM customers WHERE region = 'EU')",
+            "SELECT id FROM orders WHERE NOT (cid IN (SELECT id FROM customers)) AND total > 5",
         ];
         for sql in corpus {
             let mut p = plan_of(sql);
             let _ = rewrite_pushdown(&mut p);
             let t1 = print_plan("q0", &p, &fake_lookup());
-            let p2 = parse_plan(&t1)
-                .unwrap_or_else(|| panic!("parse 失败：{sql}
-{t1}"));
+            let p2 = parse_plan(&t1).unwrap_or_else(|| {
+                panic!(
+                    "parse 失败：{sql}
+{t1}"
+                )
+            });
             assert!(verify_plan(&p2), "verify 失败：{sql}");
             let t2 = print_plan("q0", &p2, &fake_lookup());
             assert_eq!(t1, t2, "round-trip 字节不恒等：{sql}");

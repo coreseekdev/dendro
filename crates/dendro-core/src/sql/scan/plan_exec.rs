@@ -3,7 +3,6 @@
 
 use super::*;
 
-
 use super::agg::{self, AggCall};
 use super::expr;
 use crate::engine::{Database, Session};
@@ -43,9 +42,7 @@ pub(crate) fn agg_call_from_fn(
 
 /// display 串 → AggCall（计划方言 parser 专用——文本经 sqlparser
 /// 回解析为 Function；非热路径）
-pub(crate) fn agg_call_from_display(
-    display: &str,
-) -> Result<crate::sql::agg::AggCall> {
+pub(crate) fn agg_call_from_display(display: &str) -> Result<crate::sql::agg::AggCall> {
     let e = crate::ir::plan::parse_expr_text_pub(display)
         .ok_or_else(|| SqlError::internal(format!("plan agg parse: {display}")))?;
     match e {
@@ -270,7 +267,10 @@ pub(crate) fn plan_order_key(
         Expr::Value(vws) => match &vws.value {
             sqlparser::ast::Value::Number(n, _) => {
                 let idx: usize = n.parse().unwrap_or(1);
-                Ok(out_row.get(idx.wrapping_sub(1)).cloned().unwrap_or(SqlValue::Null))
+                Ok(out_row
+                    .get(idx.wrapping_sub(1))
+                    .cloned()
+                    .unwrap_or(SqlValue::Null))
             }
             _ => Ok(SqlValue::Null),
         },
@@ -321,11 +321,8 @@ pub(crate) fn plan_sort(
     let mut sink = crate::exec::pipeline::CollectSink::new(None);
     let src: Vec<Result<Vec<Vec<SqlValue>>>> = vec![Ok(keyed)];
     let mut it = src.into_iter();
-    let mut pcx = crate::exec::pipeline::PipeCtx::new(
-        vec![],
-        sess.stmt_deadline,
-        sess.cancel_token.clone(),
-    );
+    let mut pcx =
+        crate::exec::pipeline::PipeCtx::new(vec![], sess.stmt_deadline, sess.cancel_token.clone());
     crate::exec::pipeline::drive(&mut pcx, &mut it, &mut sort_op, &mut sink)?;
     *out_rows = sink.rows;
     Ok(())
@@ -368,7 +365,6 @@ pub(crate) fn synthetic_tf(table: &str, version: Option<&str>) -> TableFactor {
     }
 }
 
-
 /// 同 plan_nodes_exec_ok（pub 口）
 pub(crate) fn plan_nodes_exec_ok_pub(p: &crate::ir::plan::Plan) -> bool {
     plan_nodes_exec_ok(p)
@@ -385,7 +381,6 @@ pub(crate) fn exec_plan_pub(
     exec_plan(db, sess, plan, snapshot, cx)
 }
 
-
 /// 计划节点可执行性（exec_plan 覆盖集；Aggregate 待 A3）
 pub(crate) fn plan_nodes_exec_ok(p: &crate::ir::plan::Plan) -> bool {
     use crate::ir::plan::Plan;
@@ -401,14 +396,13 @@ pub(crate) fn plan_nodes_exec_ok(p: &crate::ir::plan::Plan) -> bool {
         Plan::Aggregate { input, .. } => plan_nodes_exec_ok(input),
         // 阶段2 翻转：Distinct/Window 入可执行集（实现 = AST 路径
         // 同款共享助手；差分轴对拍护航）
-        Plan::Distinct { input } | Plan::Window { input, .. } => {
-            plan_nodes_exec_ok(input)
-        }
+        Plan::Distinct { input } | Plan::Window { input, .. } => plan_nodes_exec_ok(input),
         Plan::SubqueryScan { plan, .. } => plan_nodes_exec_ok(plan),
+        Plan::SemiJoin { sub, input, .. } => plan_nodes_exec_ok(input) && plan_nodes_exec_ok(sub),
         Plan::Cte { plan, body, .. } => plan_nodes_exec_ok(plan) && plan_nodes_exec_ok(body),
-        Plan::IterativeScan { base, recursive, .. } => {
-            plan_nodes_exec_ok(base) && plan_nodes_exec_ok(recursive)
-        }
+        Plan::IterativeScan {
+            base, recursive, ..
+        } => plan_nodes_exec_ok(base) && plan_nodes_exec_ok(recursive),
     }
 }
 
@@ -424,7 +418,9 @@ pub(crate) fn plan_exprs(plan: &crate::ir::plan::Plan, out: &mut Vec<Expr>) {
             out.extend(exprs.iter().cloned());
             plan_exprs(input, out);
         }
-        Plan::Join { on, left, right, .. } => {
+        Plan::Join {
+            on, left, right, ..
+        } => {
             out.push(on.clone());
             plan_exprs(left, out);
             plan_exprs(right, out);
@@ -443,9 +439,7 @@ pub(crate) fn plan_exprs(plan: &crate::ir::plan::Plan, out: &mut Vec<Expr>) {
             plan_exprs(right, out);
         }
         Plan::Distinct { input } => plan_exprs(input, out),
-        Plan::Window {
-            calls, input, ..
-        } => {
+        Plan::Window { calls, input, .. } => {
             for c in calls {
                 if let Some(a) = &c.arg {
                     out.push(a.clone());
@@ -456,11 +450,20 @@ pub(crate) fn plan_exprs(plan: &crate::ir::plan::Plan, out: &mut Vec<Expr>) {
             plan_exprs(input, out);
         }
         Plan::SubqueryScan { plan, .. } => plan_exprs(plan, out),
+        Plan::SemiJoin {
+            key, sub, input, ..
+        } => {
+            out.push(key.clone());
+            plan_exprs(input, out);
+            plan_exprs(sub, out);
+        }
         Plan::Cte { plan, body, .. } => {
             plan_exprs(plan, out);
             plan_exprs(body, out);
         }
-        Plan::IterativeScan { base, recursive, .. } => {
+        Plan::IterativeScan {
+            base, recursive, ..
+        } => {
             plan_exprs(base, out);
             plan_exprs(recursive, out);
         }
@@ -495,11 +498,12 @@ pub(crate) fn plan_scan_masks(
             Plan::Join { left, right, .. } | Plan::SetOp { left, right, .. } => {
                 has_wildcard(left) || has_wildcard(right)
             }
+            Plan::SemiJoin { sub, input, .. } => has_wildcard(input) || has_wildcard(sub),
             Plan::SubqueryScan { plan, .. } => has_wildcard(plan),
             Plan::Cte { plan, body, .. } => has_wildcard(plan) || has_wildcard(body),
-            Plan::IterativeScan { base, recursive, .. } => {
-                has_wildcard(base) || has_wildcard(recursive)
-            }
+            Plan::IterativeScan {
+                base, recursive, ..
+            } => has_wildcard(base) || has_wildcard(recursive),
             Plan::Scan { .. } | Plan::Values => false,
         }
     }
@@ -514,24 +518,37 @@ pub(crate) fn plan_scan_masks(
     }
     fn scans_of(p: &Plan, out: &mut Vec<(String, String)>) {
         match p {
-            Plan::Scan { table, alias, .. } => {
-                out.push((alias.clone().unwrap_or_else(|| table.clone()), table.clone()))
-            }
-            Plan::Filter { input, .. } | Plan::Project { input, .. }
-            | Plan::Aggregate { input, .. } | Plan::Sort { input, .. }
-            | Plan::Limit { input, .. } | Plan::Distinct { input }
+            Plan::Scan { table, alias, .. } => out.push((
+                alias.clone().unwrap_or_else(|| table.clone()),
+                table.clone(),
+            )),
+            Plan::Filter { input, .. }
+            | Plan::Project { input, .. }
+            | Plan::Aggregate { input, .. }
+            | Plan::Sort { input, .. }
+            | Plan::Limit { input, .. }
+            | Plan::Distinct { input }
             | Plan::Window { input, .. } => scans_of(input, out),
             Plan::SubqueryScan { key, plan } => {
                 out.push((key.clone(), String::new()));
                 scans_of(plan, out)
             }
-            Plan::Cte { plan, body, .. } | Plan::IterativeScan { base: plan, recursive: body, .. } => {
+            Plan::Cte { plan, body, .. }
+            | Plan::IterativeScan {
+                base: plan,
+                recursive: body,
+                ..
+            } => {
                 scans_of(plan, out);
                 scans_of(body, out);
             }
             Plan::Join { left, right, .. } | Plan::SetOp { left, right, .. } => {
                 scans_of(left, out);
                 scans_of(right, out);
+            }
+            Plan::SemiJoin { sub, input, .. } => {
+                scans_of(input, out);
+                scans_of(sub, out);
             }
             Plan::Values => {}
         }
@@ -619,13 +636,7 @@ impl<'a> ExecCx<'a> {
     }
 
     /// 同上，携带估算行数（scan 节点——列统计消费面）
-    fn record_est(
-        &mut self,
-        label: &str,
-        rows: usize,
-        t: std::time::Instant,
-        est: Option<u64>,
-    ) {
+    fn record_est(&mut self, label: &str, rows: usize, t: std::time::Instant, est: Option<u64>) {
         if let Some(ms) = self.metrics.as_mut() {
             ms.push(NodeMetric {
                 label: label.to_string(),
@@ -645,6 +656,7 @@ pub(crate) fn node_label(p: &crate::ir::plan::Plan) -> String {
         Plan::Values => "values".into(),
         Plan::Scan { table, .. } => format!("scan {table}"),
         Plan::Filter { .. } => "filter".into(),
+        Plan::SemiJoin { .. } => "semijoin".into(),
         Plan::Join { kind, .. } => format!("join {kind}"),
         Plan::Aggregate { .. } => "aggregate".into(),
         Plan::Project { wildcard, .. } => {
@@ -691,7 +703,10 @@ pub(crate) fn exec_plan_inner(
     use crate::ir::plan::Plan;
     match plan {
         Plan::Values => Ok((
-            TableView { names: vec![], rows: vec![vec![]] },
+            TableView {
+                names: vec![],
+                rows: vec![vec![]],
+            },
             FactorLayout::new(),
         )),
         Plan::Scan {
@@ -714,7 +729,15 @@ pub(crate) fn exec_plan_inner(
             let ver_s = version.as_ref().map(|v| v.display());
             let tf = synthetic_tf(table, ver_s.as_deref());
             let mask = cx.masks.get(&key);
-            let tv = table_scan_opt(db, sess, &tf, snapshot, None, None, mask.map(|v| v.as_slice()))?;
+            let tv = table_scan_opt(
+                db,
+                sess,
+                &tf,
+                snapshot,
+                None,
+                None,
+                mask.map(|v| v.as_slice()),
+            )?;
             // est = 段统计总行数（无过滤；无段 → None）
             let est = cx.metrics.as_ref().and_then(|_| {
                 crate::sql::stats::table_stats(db, sess, table)
@@ -738,6 +761,14 @@ pub(crate) fn exec_plan_inner(
             Ok((tv, layout))
         }
         Plan::Filter { pred, input } => {
+            // L2：谓词含子查询位（相关子查询——lowering 透传至此；
+            // 非相关合取位已由 SemiJoin 承接）→ 逐行代入迭代求值。
+            // 先于 Scan 捷径分派（子查询谓词不做扫描提示分析）
+            if expr_has_subquery(pred) {
+                let (tv, layout) = exec_plan(db, sess, input, snapshot, &mut cx.child(None, true))?;
+                let tv = apply_predicates_subquery(db, sess, snapshot, tv, &layout, pred)?;
+                return Ok((tv, layout));
+            }
             // Filter 直接覆 Scan：谓词下传为 selection 提示（点查/派发
             // 判定恢复——下推后的计划把 pk 谓词留在了 Scan 紧上方）；
             // 提示不过滤行，apply_predicates_q 仍执行实际过滤
@@ -760,7 +791,7 @@ pub(crate) fn exec_plan_inner(
                     return Ok((tv, layout));
                 }
                 let ver_s = version.as_ref().map(|v| v.display());
-            let tf = synthetic_tf(table, ver_s.as_deref());
+                let tf = synthetic_tf(table, ver_s.as_deref());
                 let mask = cx.masks.get(&key);
                 let t_scan = std::time::Instant::now();
                 let mut tv = table_scan_opt(
@@ -797,7 +828,12 @@ pub(crate) fn exec_plan_inner(
             tv = apply_predicates_q(tv, pred, sess, &qres)?;
             Ok((tv, layout))
         }
-        Plan::Join { kind, on, left, right } => {
+        Plan::Join {
+            kind,
+            on,
+            left,
+            right,
+        } => {
             let (l, mut llayout) = exec_plan(db, sess, left, snapshot, &mut cx.child(None, true))?;
             let (r, rlayout) = exec_plan(db, sess, right, snapshot, &mut cx.child(None, true))?;
             let rstart = l.names.len();
@@ -829,6 +865,96 @@ pub(crate) fn exec_plan_inner(
             }
             Ok((tv, llayout))
         }
+        Plan::SemiJoin {
+            key,
+            negated,
+            sub,
+            input,
+        } => {
+            // L1：IN 子查询合取项 → 半/反半连接。build 侧单次求值取首列；
+            // 探测语义与 InList 位级一致（expr.rs InList：probe NULL →
+            // 不保；命中 → 正 IN 保行、NOT IN 弃行；未命中 + 任一侧
+            // NULL → 三值 Null → 不保）。哈希快路径仅在 build 同源
+            // 数值/文本且 probe 同类时启用，否则线性 cmp_values（跨型
+            // 比较错误照旧上抛——两路径零分叉）
+            let (mut tv, layout) = exec_plan(db, sess, input, snapshot, &mut cx.child(None, true))?;
+            let (stv, _) = exec_plan(db, sess, sub, snapshot, &mut cx.child(None, true))?;
+            let vals: Vec<SqlValue> = stv.rows.iter().filter_map(|r| r.first().cloned()).collect();
+            let null_present = vals.iter().any(SqlValue::is_null);
+            let int_of = |v: &SqlValue| -> Option<i128> {
+                match v {
+                    SqlValue::Int32(i) => Some(*i as i128),
+                    SqlValue::Int64(i) => Some(*i as i128),
+                    _ => None,
+                }
+            };
+            let int_set: Option<std::collections::HashSet<i128>> = {
+                let mut s = std::collections::HashSet::with_capacity(vals.len());
+                vals.iter().all(|v| int_of(v).is_some()).then(|| {
+                    s.extend(vals.iter().filter_map(int_of));
+                    s
+                })
+            };
+            let txt_set: Option<std::collections::HashSet<String>> = {
+                let mut s = std::collections::HashSet::with_capacity(vals.len());
+                vals.iter()
+                    .all(|v| matches!(v, SqlValue::Utf8(_)))
+                    .then(|| {
+                        s.extend(vals.iter().map(|v| match v {
+                            SqlValue::Utf8(t) => t.to_string(),
+                            _ => unreachable!(),
+                        }));
+                        s
+                    })
+            };
+            let lay = layout.clone();
+            let nms = tv.names.clone();
+            let qres = move |n: &str| resolve_qualified(&lay, &nms, n);
+            let linear = |v: &SqlValue| -> Result<bool> {
+                for iv in &vals {
+                    if iv.is_null() {
+                        continue;
+                    }
+                    if crate::sql::expr::cmp_values(v, iv)? == std::cmp::Ordering::Equal {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            };
+            let mut kept = Vec::with_capacity(tv.rows.len());
+            for row in tv.rows.drain(..) {
+                let v = crate::sql::expr::eval(key, &row, &qres)?;
+                let found = if v.is_null() {
+                    false
+                } else if let Some(iv) = int_of(&v) {
+                    match &int_set {
+                        Some(s) => s.contains(&iv),
+                        None => linear(&v)?,
+                    }
+                } else if let SqlValue::Utf8(t) = &v {
+                    match &txt_set {
+                        Some(s) => s.contains(t.as_str()),
+                        None => linear(&v)?,
+                    }
+                } else {
+                    linear(&v)?
+                };
+                // 真值表（与 expr.rs InList 对拍）：v NULL → 正/反皆弃
+                //（NULL IN .. 非 true；NULL NOT IN .. = NULL）；
+                // NOT IN 命中 → false 弃；未命中且 build 含 NULL → NULL
+                // 弃；未命中且无 NULL → true 保
+                let keep = if *negated {
+                    !found && !null_present && !v.is_null()
+                } else {
+                    found
+                };
+                if keep {
+                    kept.push(row);
+                }
+            }
+            tv.rows = kept;
+            Ok((tv, layout))
+        }
         Plan::Project {
             exprs,
             names,
@@ -844,8 +970,7 @@ pub(crate) fn exec_plan_inner(
             if *wildcard && !exprs.is_empty() {
                 // 混合通配（SELECT *, x——阶段5 补洞）：输入全列在前、
                 // 计算列在后（与 AST 路径通配展开同序）
-                let (tv, layout) =
-                    exec_plan(db, sess, input, snapshot, &mut cx.child(None, true))?;
+                let (tv, layout) = exec_plan(db, sess, input, snapshot, &mut cx.child(None, true))?;
                 let lay = layout.clone();
                 let nms = tv.names.clone();
                 let qres = move |n: &str| resolve_qualified(&lay, &nms, n);
@@ -867,13 +992,11 @@ pub(crate) fn exec_plan_inner(
             if !prefixes.is_empty() {
                 // 限定通配（o.*, c.*）：按因子布局区间取列（阶段2 翻转③
                 // ——前缀 = 因子键；区间外列丢弃）
-                let (tv, layout) =
-                    exec_plan(db, sess, input, snapshot, &mut cx.child(None, true))?;
+                let (tv, layout) = exec_plan(db, sess, input, snapshot, &mut cx.child(None, true))?;
                 let mut names_out: Vec<String> = Vec::new();
                 let mut idx: Vec<usize> = Vec::new();
                 for pre in prefixes {
-                    if let Some((_, start, len, _)) =
-                        layout.iter().find(|(k, _, _, _)| *k == *pre)
+                    if let Some((_, start, len, _)) = layout.iter().find(|(k, _, _, _)| *k == *pre)
                     {
                         for i in *start..(*start + *len) {
                             idx.push(i);
@@ -908,10 +1031,9 @@ pub(crate) fn exec_plan_inner(
                     cx.record("aggregate", out.rows.len(), t_agg);
                     return Ok((out, FactorLayout::new()));
                 }
-                Plan::Filter {
-                    pred,
-                    input: inner,
-                } if matches!(&**inner, Plan::Aggregate { .. }) => {
+                Plan::Filter { pred, input: inner }
+                    if matches!(&**inner, Plan::Aggregate { .. }) =>
+                {
                     let Plan::Aggregate { input: a_in, .. } = &**inner else {
                         unreachable!()
                     };
@@ -950,11 +1072,21 @@ pub(crate) fn exec_plan_inner(
                         Plan::Filter { input: fi, .. } if matches!(&**fi, Plan::Aggregate { .. })
                     );
                 if agg_composite {
-                    let (mut out, _) = exec_plan(db, sess, input, snapshot, &mut cx.child(None, true))?;
-                    plan_sort(keys, cx.sort_hint, &mut out.rows, None, &out.names, &[], sess)?;
+                    let (mut out, _) =
+                        exec_plan(db, sess, input, snapshot, &mut cx.child(None, true))?;
+                    plan_sort(
+                        keys,
+                        cx.sort_hint,
+                        &mut out.rows,
+                        None,
+                        &out.names,
+                        &[],
+                        sess,
+                    )?;
                     return Ok((out, FactorLayout::new()));
                 }
-                let (tv_in, layout) = exec_plan(db, sess, pin, snapshot, &mut cx.child(None, true))?;
+                let (tv_in, layout) =
+                    exec_plan(db, sess, pin, snapshot, &mut cx.child(None, true))?;
                 // wildcard 透传（键直接对输入列解析——无重投影层）
                 if *wildcard {
                     let mut out = tv_in;
@@ -985,34 +1117,35 @@ pub(crate) fn exec_plan_inner(
                 return Ok((out, FactorLayout::new()));
             }
             // 非 Project 输入（集合操作顶等）：无输入回退
-            let (mut tv, _layout) = exec_plan(db, sess, input, snapshot, &mut cx.child(None, true))?;
+            let (mut tv, _layout) =
+                exec_plan(db, sess, input, snapshot, &mut cx.child(None, true))?;
             plan_sort(keys, cx.sort_hint, &mut tv.rows, None, &tv.names, &[], sess)?;
             Ok((tv, FactorLayout::new()))
         }
-        Plan::SetOp { op, all, left, right } => {
+        Plan::SetOp {
+            op,
+            all,
+            left,
+            right,
+        } => {
             // A1：两侧子计划求值 → 共享 apply_setop（与 eval_query 逐字节
             // 同语义）
             let (lt, _) = exec_plan(db, sess, left, snapshot, &mut cx.child(None, true))?;
             let (rt, _) = exec_plan(db, sess, right, snapshot, &mut cx.child(None, true))?;
             let (names, rows) = apply_setop(op, *all, lt, &rt)?;
-            Ok((
-                TableView { names, rows },
-                FactorLayout::new(),
-            ))
+            Ok((TableView { names, rows }, FactorLayout::new()))
         }
         Plan::Distinct { input } => {
             // 阶段1 接线（阶段2 翻转覆盖）：实现体 = AST 路径同款
             // dedup_rows——共享助手，零新语义
-            let (mut tv, layout) =
-                exec_plan(db, sess, input, snapshot, &mut cx.child(None, true))?;
+            let (mut tv, layout) = exec_plan(db, sess, input, snapshot, &mut cx.child(None, true))?;
             dedup_rows(&mut tv.rows);
             Ok((tv, layout))
         }
         Plan::Window { calls, input } => {
             // 阶段1 接线（阶段2 翻转覆盖）：合成列求值 = AST 路径同款
             // eval_windows——共享助手，零新语义
-            let (mut tv, layout) =
-                exec_plan(db, sess, input, snapshot, &mut cx.child(None, true))?;
+            let (mut tv, layout) = exec_plan(db, sess, input, snapshot, &mut cx.child(None, true))?;
             let cols = cols_lookup(&tv.names);
             super::window::eval_windows(&mut tv, calls, &cols)?;
             Ok((tv, layout))
@@ -1063,8 +1196,7 @@ pub(crate) fn exec_plan_inner(
             // 阶段3：delta 工作集不动点（PG 语义——递归臂只见上一轮
             // 新行；收敛 = 新增空集。无 VALUES 注入/无全量重解析/
             // 无 O(n²) 行克隆）。到顶报错——绝不静默截断
-            let (mut all_tv, _) =
-                exec_plan(db, sess, base, snapshot, &mut cx.child(None, true))?;
+            let (mut all_tv, _) = exec_plan(db, sess, base, snapshot, &mut cx.child(None, true))?;
             // CTE 列别名覆盖（递归臂引用 r.n 的解析依赖）
             if let Some(ns) = names {
                 if ns.len() == all_tv.names.len() {
@@ -1143,7 +1275,8 @@ pub(crate) fn exec_plan_inner(
             };
             let t0 = std::time::Instant::now();
             let _ = t0;
-            let (mut tv, _layout) = exec_plan(db, sess, input, snapshot, &mut cx.child(hint, false))?;
+            let (mut tv, _layout) =
+                exec_plan(db, sess, input, snapshot, &mut cx.child(hint, false))?;
             if *offset > 0 {
                 tv.rows = tv.rows.into_iter().skip(*offset).collect();
             }
@@ -1200,14 +1333,393 @@ where
         .map(|ch| Ok(ch.to_vec()))
         .collect();
     let mut it = batches.into_iter();
-    let mut pcx = crate::exec::pipeline::PipeCtx::new(
-        vec![],
-        sess.stmt_deadline,
-        sess.cancel_token.clone(),
-    );
+    let mut pcx =
+        crate::exec::pipeline::PipeCtx::new(vec![], sess.stmt_deadline, sess.cancel_token.clone());
     crate::exec::pipeline::drive(&mut pcx, &mut it, &mut pop, &mut sink)?;
     Ok(TableView {
         names: names.to_vec(),
         rows: sink.rows,
     })
+}
+
+// ---------------------------------------------------------------------------
+// L2：谓词中的相关子查询迭代求值（v2——消除"correlated subquery"诚实拒绝）。
+// 机制：Filter 执行臂逐行把子查询中的**外层限定引用**（[prefix, col] 且
+// prefix ∉ 子查询内域因子——与 is_correlated 同保守口径）代入为行值
+// 字面量，再经 eval_query 求值；memo 以（子查询文本 + 代入值序列 [+ 探
+// 测值]）为键——非相关子查询全行同键单次求值，相关子查询按外层元组
+// 去重求值（PG cached-SubPlan 同构）
+// ---------------------------------------------------------------------------
+
+/// 表达式中是否含子查询位（Filter 臂分派开关）
+pub(crate) fn expr_has_subquery(e: &Expr) -> bool {
+    match e {
+        Expr::Subquery(_) | Expr::Exists { .. } | Expr::InSubquery { .. } => true,
+        Expr::BinaryOp { left, right, .. } => expr_has_subquery(left) || expr_has_subquery(right),
+        Expr::Nested(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => {
+            expr_has_subquery(inner)
+        }
+        Expr::UnaryOp { expr, .. } | Expr::Cast { expr, .. } => expr_has_subquery(expr),
+        Expr::InList { expr, list, .. } => {
+            expr_has_subquery(expr) || list.iter().any(expr_has_subquery)
+        }
+        Expr::Between {
+            expr, low, high, ..
+        } => expr_has_subquery(expr) || expr_has_subquery(low) || expr_has_subquery(high),
+        Expr::Case {
+            operand,
+            conditions,
+            else_result,
+            ..
+        } => {
+            operand.as_ref().is_some_and(|o| expr_has_subquery(o))
+                || conditions
+                    .iter()
+                    .any(|cw| expr_has_subquery(&cw.condition) || expr_has_subquery(&cw.result))
+                || else_result.as_ref().is_some_and(|e| expr_has_subquery(e))
+        }
+        Expr::Function(f) => crate::sql::scan::fn_args(f).iter().any(|a| {
+            matches!(
+                a,
+                sqlparser::ast::FunctionArg::Unnamed(
+                    sqlparser::ast::FunctionArgExpr::Expr(inner)
+                ) if expr_has_subquery(inner)
+            )
+        }),
+        _ => false,
+    }
+}
+
+/// 子查询内的外层限定引用代入为行值字面量（返回代入值序列——memo 键）
+fn subst_outer_refs(
+    q: &sqlparser::ast::Query,
+    row: &[SqlValue],
+    resolve: &dyn Fn(&str) -> Option<usize>,
+) -> Result<(sqlparser::ast::Query, Vec<String>)> {
+    let mut qc = q.clone();
+    // 内域因子（与 is_correlated 同收集口径）
+    let mut inner_factors: Vec<String> = Vec::new();
+    if let sqlparser::ast::SetExpr::Select(sel) = &*qc.body {
+        for twj in &sel.from {
+            if let Some(k) = crate::sql::optimize::factor_key(&twj.relation) {
+                inner_factors.push(k);
+            }
+        }
+    }
+    let mut bound: Vec<String> = Vec::new();
+    fn subst_in_expr(
+        e: &mut Expr,
+        inner: &[String],
+        row: &[SqlValue],
+        resolve: &dyn Fn(&str) -> Option<usize>,
+        bound: &mut Vec<String>,
+    ) {
+        match e {
+            Expr::CompoundIdentifier(parts) if parts.len() == 2 => {
+                let (p, c) = (&parts[0].value, &parts[1].value);
+                let pq = format!("{p}.{c}");
+                if !inner.iter().any(|f| f.eq_ignore_ascii_case(p)) {
+                    if let Some(i) = resolve(&pq) {
+                        bound.push(crate::sql::scan::join_key_part(&row[i]));
+                        *e = crate::sql::optimize::sql_value_to_expr(&row[i]);
+                    }
+                    // resolve 不到 = 非外层引用（或拼错）——留原样，
+                    // 子查询内求值按 undefined_column 响亮报错
+                }
+            }
+            Expr::BinaryOp { left, right, .. } => {
+                subst_in_expr(left, inner, row, resolve, bound);
+                subst_in_expr(right, inner, row, resolve, bound);
+            }
+            Expr::Nested(i) | Expr::IsNotNull(i) | Expr::IsNull(i) => {
+                subst_in_expr(i, inner, row, resolve, bound)
+            }
+            Expr::UnaryOp { expr, .. } | Expr::Cast { expr, .. } => {
+                subst_in_expr(expr, inner, row, resolve, bound)
+            }
+            Expr::InList { expr, list, .. } => {
+                subst_in_expr(expr, inner, row, resolve, bound);
+                for item in list.iter_mut() {
+                    subst_in_expr(item, inner, row, resolve, bound);
+                }
+            }
+            Expr::Between {
+                expr, low, high, ..
+            } => {
+                subst_in_expr(expr, inner, row, resolve, bound);
+                subst_in_expr(low, inner, row, resolve, bound);
+                subst_in_expr(high, inner, row, resolve, bound);
+            }
+            Expr::Case {
+                operand,
+                conditions,
+                else_result,
+                ..
+            } => {
+                if let Some(o) = operand {
+                    subst_in_expr(o, inner, row, resolve, bound);
+                }
+                for cw in conditions.iter_mut() {
+                    subst_in_expr(&mut cw.condition, inner, row, resolve, bound);
+                    subst_in_expr(&mut cw.result, inner, row, resolve, bound);
+                }
+                if let Some(er) = else_result {
+                    subst_in_expr(er, inner, row, resolve, bound);
+                }
+            }
+            Expr::Function(f) => {
+                for a in crate::sql::scan::fn_args_mut(f) {
+                    if let sqlparser::ast::FunctionArg::Unnamed(
+                        sqlparser::ast::FunctionArgExpr::Expr(inner_e),
+                    ) = a
+                    {
+                        subst_in_expr(inner_e, inner, row, resolve, bound);
+                    }
+                }
+            }
+            // 嵌套子查询位（跨层相关——孙代引用祖父列）：以同一外层行
+            // 代入，但按嵌套查询自身的内域收集（递归 subst_outer_refs）
+            Expr::Subquery(q) => {
+                if let Ok((nq, nb)) = subst_outer_refs(q, row, resolve) {
+                    **q = nq;
+                    bound.extend(nb);
+                }
+            }
+            Expr::Exists { subquery, .. } => {
+                if let Ok((nq, nb)) = subst_outer_refs(subquery, row, resolve) {
+                    **subquery = nq;
+                    bound.extend(nb);
+                }
+            }
+            Expr::InSubquery { expr, subquery, .. } => {
+                subst_in_expr(expr, inner, row, resolve, bound);
+                if let Ok((nq, nb)) = subst_outer_refs(subquery, row, resolve) {
+                    **subquery = nq;
+                    bound.extend(nb);
+                }
+            }
+            _ => {}
+        }
+    }
+    match &mut *qc.body {
+        sqlparser::ast::SetExpr::Select(sel) => {
+            if let Some(w) = sel.selection.as_mut() {
+                subst_in_expr(w, &inner_factors, row, resolve, &mut bound);
+            }
+            for item in sel.projection.iter_mut() {
+                match item {
+                    sqlparser::ast::SelectItem::UnnamedExpr(e)
+                    | sqlparser::ast::SelectItem::ExprWithAlias { expr: e, .. } => {
+                        subst_in_expr(e, &inner_factors, row, resolve, &mut bound);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        sqlparser::ast::SetExpr::SetOperation { left, right, .. } => {
+            // 集合操作臂内的外层引用经子 Query 重写（递归降一层——
+            // 臂本身是 Query，须重新收集内域）
+            for arm in [left, right] {
+                if let sqlparser::ast::SetExpr::Query(inner) = arm.as_mut() {
+                    let (iq, ib) = subst_outer_refs(inner, row, resolve)?;
+                    bound.extend(ib);
+                    **arm = sqlparser::ast::SetExpr::Query(Box::new(iq));
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok((qc, bound))
+}
+
+/// 求值（代入后的）子查询 → 行集；memo 命中直取
+fn eval_sub_memo(
+    db: &Database,
+    sess: &mut Session,
+    snapshot: u64,
+    q: &sqlparser::ast::Query,
+    key: String,
+    memo: &mut std::collections::HashMap<String, TableView>,
+) -> Result<TableView> {
+    if let Some(tv) = memo.get(&key) {
+        return Ok(tv.clone());
+    }
+    let tv = crate::sql::scan::eval_query(db, sess, q, snapshot)?;
+    memo.insert(key, tv.clone());
+    Ok(tv)
+}
+
+/// 谓词子查询位逐行代入 + 求值 → 字面量替换（Subquery/InSubquery/Exists）
+fn subst_subquery_exprs(
+    db: &Database,
+    sess: &mut Session,
+    snapshot: u64,
+    e: &mut Expr,
+    row: &[SqlValue],
+    resolve: &dyn Fn(&str) -> Option<usize>,
+    memo: &mut (
+        std::collections::HashMap<String, TableView>,
+        std::collections::HashMap<String, Expr>,
+    ),
+) -> Result<()> {
+    match e {
+        Expr::Subquery(q) => {
+            let (qs, bound) = subst_outer_refs(q, row, resolve)?;
+            let key = format!("{}\u{1}{}", q, bound.join("\u{2}"));
+            let tv = eval_sub_memo(db, sess, snapshot, &qs, key, &mut memo.0)?;
+            if tv.rows.is_empty() {
+                *e = crate::sql::optimize::sql_value_to_expr(&SqlValue::Null);
+            } else if tv.rows.len() == 1 && tv.names.len() == 1 {
+                *e = crate::sql::optimize::sql_value_to_expr(&tv.rows[0][0]);
+            } else {
+                return Err(SqlError::not_supported(
+                    "scalar subquery returned multiple rows",
+                ));
+            }
+            Ok(())
+        }
+        Expr::InSubquery {
+            expr,
+            subquery,
+            negated,
+        } => {
+            // 探测键先行（键内嵌套子查询同经代入）
+            subst_subquery_exprs(db, sess, snapshot, expr, row, resolve, memo)?;
+            let v = crate::sql::expr::eval(expr, row, resolve)?;
+            let (qs, bound) = subst_outer_refs(subquery, row, resolve)?;
+            let key = format!(
+                "{}\u{1}{}\u{3}{}",
+                subquery,
+                bound.join("\u{2}"),
+                crate::sql::scan::join_key_part(&v)
+            );
+            let tv = eval_sub_memo(db, sess, snapshot, &qs, key, &mut memo.0)?;
+            // InList 语义（expr.rs 同款三值逻辑）
+            let mut found = false;
+            let mut has_null = v.is_null();
+            for r in &tv.rows {
+                if let Some(iv) = r.first() {
+                    if iv.is_null() {
+                        has_null = true;
+                    } else if !v.is_null()
+                        && crate::sql::expr::cmp_values(&v, iv)? == std::cmp::Ordering::Equal
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            let res = if found {
+                SqlValue::Bool(true)
+            } else if has_null {
+                SqlValue::Null
+            } else {
+                SqlValue::Bool(false)
+            };
+            let out = match res {
+                SqlValue::Null => SqlValue::Null,
+                SqlValue::Bool(b) => SqlValue::Bool(b != *negated),
+                _ => unreachable!(),
+            };
+            *e = crate::sql::optimize::sql_value_to_expr(&out);
+            Ok(())
+        }
+        Expr::Exists { subquery, negated } => {
+            let (qs, bound) = subst_outer_refs(subquery, row, resolve)?;
+            let key = format!("{}\u{1}{}", subquery, bound.join("\u{2}"));
+            let tv = eval_sub_memo(db, sess, snapshot, &qs, key, &mut memo.0)?;
+            let exists = !tv.rows.is_empty();
+            *e = crate::sql::optimize::sql_value_to_expr(&SqlValue::Bool(if *negated {
+                !exists
+            } else {
+                exists
+            }));
+            Ok(())
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            subst_subquery_exprs(db, sess, snapshot, left, row, resolve, memo)?;
+            subst_subquery_exprs(db, sess, snapshot, right, row, resolve, memo)
+        }
+        Expr::Nested(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => {
+            subst_subquery_exprs(db, sess, snapshot, inner, row, resolve, memo)
+        }
+        Expr::UnaryOp { expr: inner, .. } | Expr::Cast { expr: inner, .. } => {
+            subst_subquery_exprs(db, sess, snapshot, inner, row, resolve, memo)
+        }
+        Expr::InList { expr, list, .. } => {
+            subst_subquery_exprs(db, sess, snapshot, expr, row, resolve, memo)?;
+            for item in list.iter_mut() {
+                subst_subquery_exprs(db, sess, snapshot, item, row, resolve, memo)?;
+            }
+            Ok(())
+        }
+        Expr::Between {
+            expr, low, high, ..
+        } => {
+            subst_subquery_exprs(db, sess, snapshot, expr, row, resolve, memo)?;
+            subst_subquery_exprs(db, sess, snapshot, low, row, resolve, memo)?;
+            subst_subquery_exprs(db, sess, snapshot, high, row, resolve, memo)
+        }
+        Expr::Case {
+            operand,
+            conditions,
+            else_result,
+            ..
+        } => {
+            if let Some(o) = operand {
+                subst_subquery_exprs(db, sess, snapshot, o, row, resolve, memo)?;
+            }
+            for cw in conditions.iter_mut() {
+                subst_subquery_exprs(db, sess, snapshot, &mut cw.condition, row, resolve, memo)?;
+                subst_subquery_exprs(db, sess, snapshot, &mut cw.result, row, resolve, memo)?;
+            }
+            if let Some(er) = else_result {
+                subst_subquery_exprs(db, sess, snapshot, er, row, resolve, memo)?;
+            }
+            Ok(())
+        }
+        Expr::Function(f) => {
+            for a in crate::sql::scan::fn_args_mut(f) {
+                if let sqlparser::ast::FunctionArg::Unnamed(
+                    sqlparser::ast::FunctionArgExpr::Expr(inner_e),
+                ) = a
+                {
+                    subst_subquery_exprs(db, sess, snapshot, inner_e, row, resolve, memo)?;
+                }
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+/// L2 主口：含子查询位的谓词逐行迭代求值（代入 → 整谓词 eval →
+/// Bool(true) 保行；NULL/false 弃——apply_predicates_q 回退分支同口径）
+fn apply_predicates_subquery(
+    db: &Database,
+    sess: &mut Session,
+    snapshot: u64,
+    mut tv: TableView,
+    layout: &FactorLayout,
+    pred: &Expr,
+) -> Result<TableView> {
+    let lay = layout.clone();
+    let nms = tv.names.clone();
+    let qres = move |n: &str| resolve_qualified(&lay, &nms, n);
+    let mut memo = (
+        std::collections::HashMap::new(),
+        std::collections::HashMap::new(),
+    );
+    let mut kept = Vec::with_capacity(tv.rows.len());
+    for row in std::mem::take(&mut tv.rows) {
+        let mut local = pred.clone();
+        subst_subquery_exprs(db, sess, snapshot, &mut local, &row, &qres, &mut memo)?;
+        match crate::sql::expr::eval(&local, &row, &qres) {
+            Ok(SqlValue::Bool(true)) => kept.push(row),
+            Ok(_) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    tv.rows = kept;
+    Ok(tv)
 }

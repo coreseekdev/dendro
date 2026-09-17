@@ -7,35 +7,34 @@ use crate::engine::{Database, Session};
 use crate::error::{Result, SqlError};
 use crate::types::{ColType, ColumnMeta, Output, RecordSet, SqlValue};
 use sqlparser::ast::{
-    Expr, FunctionArg, FunctionArgExpr, Query,
-    Select, SelectItem, SetExpr, TableFactor, Value as PV,
+    Expr, FunctionArg, FunctionArgExpr, Query, Select, SelectItem, SetExpr, TableFactor,
+    Value as PV,
 };
 use std::collections::HashMap;
 
-
 // ---------- 阶段0 拆分（架构审视 §3.1）：子模块 + 再导出 ----------
 // 纯移动零语义变更；子模块经 use super::* 互见，外部 scan::X 路径不变
-mod plan_exec;
-mod project;
-mod scan_table;
-mod point;
+mod cte;
 mod history;
 mod join;
+mod plan_exec;
+mod point;
+mod project;
 mod pseudo;
+mod scan_table;
 mod window;
-mod cte;
-pub use project::rows_to_record_set;
+pub(crate) use history::*;
+pub(crate) use join::*;
+pub(crate) use plan_exec::*;
+pub(crate) use point::*;
 pub use project::has_column_ref;
+pub use project::rows_to_record_set;
+pub(crate) use project::*;
+pub(crate) use pseudo::*;
 pub use scan_table::resolve_table;
 pub use scan_table::rows_to_batches;
 pub use scan_table::rows_to_batches_typed;
-pub(crate) use plan_exec::*;
-pub(crate) use project::*;
 pub(crate) use scan_table::*;
-pub(crate) use point::*;
-pub(crate) use history::*;
-pub(crate) use join::*;
-pub(crate) use pseudo::*;
 pub(crate) use window::*;
 
 /// 扫描出来的表视图
@@ -189,10 +188,27 @@ fn lower_subqueries(
         SetExpr::Select(sel) => {
             reject_multi_from(sel)?;
             if let Some(w) = sel.selection.as_mut() {
-                crate::sql::optimize::inline_subqueries(db, sess, w, snapshot)?;
+                // L1/L2：WHERE 合取位的 InSubquery 保留在谓词——
+                // 非相关由 build_select 落 SemiJoin（单次求值 + 哈希
+                // 探测，免 InList 字面量物化）；其余合取项与相关
+                // 透传（Filter 执行臂迭代求值）交由 inline 处理
+                let conjuncts = crate::sql::optimize::flatten_and(w);
+                let mut out: Vec<Expr> = Vec::with_capacity(conjuncts.len());
+                for c in conjuncts {
+                    if crate::sql::optimize::as_semi_candidate(&c).is_some() {
+                        out.push(c);
+                    } else {
+                        let mut c = c;
+                        crate::sql::optimize::inline_subqueries(db, sess, &mut c, snapshot, true)?;
+                        out.push(c);
+                    }
+                }
+                *w = crate::sql::optimize::fold_and(out)
+                    .expect("flatten_and 对 Some 谓词必产出非空序列");
             }
             if let Some(h) = sel.having.as_mut() {
-                crate::sql::optimize::inline_subqueries(db, sess, h, snapshot)?;
+                // HAVING 位：聚合输出层无外层行上下文——相关即拒绝
+                crate::sql::optimize::inline_subqueries(db, sess, h, snapshot, false)?;
             }
         }
         SetExpr::SetOperation { left, right, .. } => {
@@ -207,8 +223,6 @@ fn lower_subqueries(
     Ok(())
 }
 
-
-
 /// 同 apply_predicates，携带调用方解析器（#28：join 后限定名按因子
 /// 布局解析——两侧同名列不错读）
 fn apply_predicates_q(
@@ -219,12 +233,7 @@ fn apply_predicates_q(
 ) -> Result<TableView> {
     // cols 借用收敛在块内（闭包持有生命周期——外提会锁死结尾的 tv 移动）
     let rows: Vec<Vec<SqlValue>> = {
-        match crate::sql::scalar::compile_predicate_named(
-            w,
-            resolve,
-            tv.names.len(),
-            &tv.names,
-        ) {
+        match crate::sql::scalar::compile_predicate_named(w, resolve, tv.names.len(), &tv.names) {
             Ok(cp) if tv.rows.len() > 64 => {
                 let mut cx = crate::exec::pipeline::PipeCtx::new(
                     vec![],
@@ -504,11 +513,7 @@ pub type FactorLayout = Vec<(String, usize, usize, Vec<String>)>;
 
 /// 限定名优先的列解析：`alias.col` / `table.col` → 因子区间内定位；
 /// 裸名 → 全名空间首匹配（现状语义）。因子未命中回退全空间（派生表等）。
-pub fn resolve_qualified(
-    layout: &FactorLayout,
-    names: &[String],
-    name: &str,
-) -> Option<usize> {
+pub fn resolve_qualified(layout: &FactorLayout, names: &[String], name: &str) -> Option<usize> {
     let low = name.to_ascii_lowercase();
     if let Some((prefix, col)) = low.split_once('.') {
         if let Some((_, start, _, local)) = layout.iter().find(|(k, _, _, _)| *k == prefix) {
@@ -521,7 +526,6 @@ pub fn resolve_qualified(
     }
     names.iter().position(|n| n.to_ascii_lowercase() == low)
 }
-
 
 // ---------- FROM ----------
 
@@ -543,10 +547,7 @@ pub(crate) fn reject_multi_from(select: &Select) -> Result<()> {
 /// LimitOffset，OffsetCommaLimit 静默无 Limit 节点 → MySQL 分页返回全行）
 pub(crate) fn reject_offset_comma(q: &Query) -> Result<()> {
     if let Some(lc) = &q.limit_clause {
-        if matches!(
-            lc,
-            sqlparser::ast::LimitClause::OffsetCommaLimit { .. }
-        ) {
+        if matches!(lc, sqlparser::ast::LimitClause::OffsetCommaLimit { .. }) {
             return Err(SqlError::not_supported(
                 "LIMIT offset, count (MySQL comma syntax) — use LIMIT n OFFSET m",
             ));

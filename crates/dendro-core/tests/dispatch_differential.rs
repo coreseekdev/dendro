@@ -137,21 +137,18 @@ fn explain_shows_dispatch() {
     let outs = s.exec("EXPLAIN SELECT v FROM t WHERE id = 500").unwrap();
     let (cols, rows) = rows_of(&outs);
     assert_eq!(cols, vec!["QUERY PLAN"]);
+    // L4 统一：dendro.ir v1 计划方言（派发标签退役——可观测面由
+    // EXPLAIN ANALYZE 的 est/actual 与 force 轴差分承接）
     let joined = format!("{rows:?}");
-    assert!(joined.contains("Seq Scan on t"), "{joined}");
-    assert!(
-        joined.contains("dispatch: CurrentPoint"),
-        "派发理由行：{joined}"
-    );
-    // 强制标记可见
+    assert!(joined.contains("dendro.ir v1"), "{joined}");
+    assert!(joined.contains("table "), "{joined}");
+    assert!(joined.contains("pred "), "{joined}");
+    // 强制轴：计划文本与 auto 一致（force 是物理执行轴，不进逻辑计划）
     let mut s2 = db.new_session();
     s2.exec("SET dendro.force_source = 'main'").unwrap();
     let outs2 = s2.exec("EXPLAIN SELECT v FROM t WHERE id = 500").unwrap();
     let j2 = format!("{:?}", rows_of(&outs2).1);
-    assert!(
-        j2.contains("dispatch: MainPlusDelta [forced: MainPlusDelta]"),
-        "强制派发必须标注：{j2}"
-    );
+    assert_eq!(j2, joined, "force_source 不改变逻辑计划输出");
 }
 
 /// AS OF（HistoryScan 臂）：auto 与 forced prolly 在带版本子句查询上等价。
@@ -253,7 +250,8 @@ fn streaming_source_multi_segment_overlay_txn_matrix() {
             row_group_rows: 4096,
         }));
         let mut s = db.new_session();
-        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v INT)").unwrap();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v INT)")
+            .unwrap();
         for chunk in 0..12 {
             let vals: Vec<String> = (0..1000)
                 .map(|i| {
@@ -265,24 +263,28 @@ fn streaming_source_multi_segment_overlay_txn_matrix() {
                 .unwrap();
         }
         db.checkpoint_branch("main").unwrap(); // 段1：12k
-        // 增量：更新段1内 100 行（同键新版本）、插入 1k 新行、删除 50 行
-        s.exec("UPDATE t SET v = v + 100000 WHERE id <= 100").unwrap();
+                                               // 增量：更新段1内 100 行（同键新版本）、插入 1k 新行、删除 50 行
+        s.exec("UPDATE t SET v = v + 100000 WHERE id <= 100")
+            .unwrap();
         let ins: Vec<String> = (0..1000)
             .map(|i| format!("({}, {})", 20000 + i, 20000 + i))
             .collect();
         s.exec(&format!("INSERT INTO t VALUES {}", ins.join(",")))
             .unwrap();
-        s.exec("DELETE FROM t WHERE id BETWEEN 5000 AND 5049").unwrap();
+        s.exec("DELETE FROM t WHERE id BETWEEN 5000 AND 5049")
+            .unwrap();
         db.checkpoint_branch("main").unwrap(); // 段2 + col_deletes
-        // overlay 尾巴：重插一个 col_deletes 键（段源抑制不波及尾巴）+
-        // 常规更新 + 墓碑
+                                               // overlay 尾巴：重插一个 col_deletes 键（段源抑制不波及尾巴）+
+                                               // 常规更新 + 墓碑
         s.exec("INSERT INTO t VALUES (5005, 777777)").unwrap();
-        s.exec("UPDATE t SET v = v + 200000 WHERE id = 10001").unwrap();
+        s.exec("UPDATE t SET v = v + 200000 WHERE id = 10001")
+            .unwrap();
         s.exec("DELETE FROM t WHERE id = 10002").unwrap();
         // 显式事务写（未提交；Q-14——AP 路径读事务的写）。
         // 断言必须在事务存活期内做（session drop = 回滚）
         s.exec("BEGIN").unwrap();
-        s.exec("UPDATE t SET v = v + 300000 WHERE id = 10003").unwrap();
+        s.exec("UPDATE t SET v = v + 300000 WHERE id = 10003")
+            .unwrap();
         s.exec("DELETE FROM t WHERE id = 10004").unwrap();
         s.exec("SET dendro.force_source = 'main'").unwrap();
         let r = s.exec("SELECT v FROM t WHERE id = 10003").unwrap();
@@ -319,10 +321,18 @@ fn streaming_source_multi_segment_overlay_txn_matrix() {
     assert_eq!(q("SELECT id, v FROM t WHERE id = 5005"), vec![777777]);
     // 删除区间外相邻键正常（5050；区间内 5004 不可见）
     assert_eq!(q("SELECT id, v FROM t WHERE id = 5050"), vec![5050]);
-    assert_eq!(run(&db, "main", "SELECT id FROM t WHERE id = 5004").1.len(), 0);
+    assert_eq!(
+        run(&db, "main", "SELECT id FROM t WHERE id = 5004").1.len(),
+        0
+    );
     // overlay 更新 + 墓碑
     assert_eq!(q("SELECT id, v FROM t WHERE id = 10001"), vec![210001]);
-    assert_eq!(run(&db, "main", "SELECT id FROM t WHERE id = 10002").1.len(), 0);
+    assert_eq!(
+        run(&db, "main", "SELECT id FROM t WHERE id = 10002")
+            .1
+            .len(),
+        0
+    );
     // 事务已回滚（fixture 尾部 ROLLBACK）——写不可见
     assert_eq!(q("SELECT id, v FROM t WHERE id = 10003"), vec![10003]);
     assert_eq!(q("SELECT id, v FROM t WHERE id = 10004"), vec![10004]);

@@ -81,3 +81,102 @@ query I
 SELECT count(*) FROM jt2 o JOIN (SELECT 1 AS n UNION ALL SELECT 2) r ON o.id = r.n
 ----
 2
+
+# ---------- L1/L2：IN 子查询 semi-join 化 + 相关子查询迭代求值 ----------
+
+statement ok
+CREATE TABLE sj_o (id BIGINT PRIMARY KEY, cid BIGINT, total BIGINT)
+
+statement ok
+CREATE TABLE sj_c (id BIGINT PRIMARY KEY, region TEXT)
+
+statement ok
+INSERT INTO sj_o VALUES (1, 1, 100), (2, 2, 250), (3, 1, 50), (4, 3, 80), (5, NULL, 10)
+
+statement ok
+INSERT INTO sj_c VALUES (1, 'EU'), (2, 'US'), (3, 'EU')
+
+# IN 合取项 → SemiJoin（哈希探测）
+query TI rowsort
+SELECT id, total FROM sj_o WHERE cid IN (SELECT id FROM sj_c WHERE region = 'EU') ORDER BY id
+----
+1 100
+3 50
+4 80
+
+# NOT IN 反半连接
+query I rowsort
+SELECT id FROM sj_o WHERE cid NOT IN (SELECT id FROM sj_c WHERE region = 'EU') ORDER BY id
+----
+2
+
+# probe 侧 NULL：NULL NOT IN = NULL → 弃（id 5 不出现）
+query I rowsort
+SELECT id FROM sj_o WHERE cid NOT IN (SELECT id FROM sj_c) ORDER BY id
+----
+
+# NOT(x IN ..) 归一反半 + 残余谓词混合（cid 全部 ∈ {1,2,3} 或
+# NULL——反半连接空集；NULL 行三值逻辑亦弃）
+query I rowsort
+SELECT id FROM sj_o WHERE NOT (cid IN (SELECT id FROM sj_c)) AND total > 20 ORDER BY id
+----
+
+# OR 位保留 InList 内联（两种机制共存）
+query I rowsort
+SELECT id FROM sj_o WHERE cid IN (SELECT id FROM sj_c WHERE region = 'US') OR total > 200 ORDER BY id
+----
+2
+
+# 相关 EXISTS（迭代求值 + memo）
+query I rowsort
+SELECT id FROM sj_o o WHERE EXISTS (SELECT 1 FROM sj_c c WHERE c.id = o.cid AND c.region = 'EU') ORDER BY id
+----
+1
+3
+4
+
+# 相关标量子查询
+query I rowsort
+SELECT id FROM sj_o o WHERE o.total < (SELECT c.id * 100 FROM sj_c c WHERE c.id = o.cid) ORDER BY id
+----
+3
+4
+
+# 相关 IN（双层嵌套相关）
+query I rowsort
+SELECT id FROM sj_o o WHERE o.cid IN (SELECT c.id FROM sj_c c WHERE c.region = (SELECT x.region FROM sj_c x WHERE x.id = o.cid)) ORDER BY id
+----
+1
+2
+3
+4
+
+# CTE 引用子查询（计划期绑定可达——此前 lowering 期求值 42P01）
+query I rowsort
+WITH eu AS (SELECT id FROM sj_c WHERE region = 'EU') SELECT id FROM sj_o WHERE cid IN (SELECT id FROM eu) ORDER BY id
+----
+1
+3
+4
+
+# EXPLAIN（L4 统一）：IN 子查询 → semijoin 节点入计划方言
+query T
+EXPLAIN SELECT id FROM sj_o WHERE cid IN (SELECT id FROM sj_c)
+----
+dendro.ir v1
+plan @q0 {
+  %t0 = table "sj_o" {cols = [id, cid, total], pk = [0]}
+  %s0 = scan %t0
+  %t1 = table "sj_c" {cols = [id, region], pk = [0]}
+  %s1 = scan %t1
+  %p0 = project %s1 {exprs = [id], names = ["id"]}
+  %m0 = semijoin %s0, %p0 {negated = false, key = "cid"}
+  %p1 = project %m0 {exprs = [id], names = ["id"]}
+  yield %p1
+}
+
+statement ok
+DROP TABLE sj_o
+
+statement ok
+DROP TABLE sj_c

@@ -55,8 +55,8 @@ pub fn parse_only(sql: &str, d: SqlDialect) -> std::result::Result<String, Strin
 pub mod dispatch;
 /// v2b B1：标量层步列表（编译 + eval_row）。compile-or-fallback 合同。
 pub mod privs;
-pub mod stats;
 pub mod scalar;
+pub mod stats;
 
 pub(crate) fn parse_batch(sql: &str, d: SqlDialect) -> Result<Vec<Statement>> {
     let dialect: &dyn sqlparser::dialect::Dialect = match d {
@@ -793,9 +793,7 @@ pub(crate) fn exec_statement(
         }
         Statement::Truncate(tr) => ddl::truncate_impl(db, sess, tr.table_names),
         Statement::Explain {
-            analyze,
-            statement,
-            ..
+            analyze, statement, ..
         } => {
             // EXPLAIN ANALYZE（spec 09 §5.5 / 04 §2 D7）：执行 + 逐节点
             // 实际行数/子树墙钟（`!` 注解通道）。SELECT 且计划覆盖形态；
@@ -808,6 +806,12 @@ pub(crate) fn exec_statement(
                         "EXPLAIN ANALYZE: SELECT statements only",
                     ));
                 };
+                // 执行前置守卫（eval_query 同口径——逗号多 FROM 等
+                // lowering 期拒绝形状不得静默执行残缺计划）
+                if let sqlparser::ast::SetExpr::Select(sel) = &*q.body {
+                    crate::sql::scan::reject_multi_from(sel)?
+                }
+                crate::sql::scan::reject_offset_comma(&q)?;
                 let mut plan = crate::ir::plan::build_plan(&q)?;
                 crate::sql::optimize::rewrite_in_list(&mut plan);
                 let pushed = crate::ir::plan::rewrite_pushdown(&mut plan);
@@ -840,10 +844,7 @@ pub(crate) fn exec_statement(
                     lines.push(desc);
                 }
                 for m in &metrics {
-                    let est = m
-                        .est
-                        .map(|e| format!(" est={e}"))
-                        .unwrap_or_default();
+                    let est = m.est.map(|e| format!(" est={e}")).unwrap_or_default();
                     lines.push(format!(
                         "{}! actual: {} rows={} time={}us{}",
                         "  ".repeat(m.depth),
@@ -859,113 +860,32 @@ pub(crate) fn exec_statement(
                     lines.into_iter().map(|l| vec![SqlValue::Utf8(l)]).collect(),
                 ))));
             }
-            // v2b B4：真实计划输出（步列表段）。派发器/树形摘要层是 v2c-1
-            //（05 §5/Q16）——当前输出 = 扫描形状 + WHERE 的 ScalarProgram
-            // 反汇编（可 round-trip，reparse 即当时谓词程序）。
+            // L4（遗留项收口）：EXPLAIN 统一为 dendro.ir v1 计划方言
+            // 输出（原单表形态的 "Seq Scan" + dispatch + 标量块退役——
+            // 与 join/集合操作形态同一输出面；派发/标量可观测面由
+            // EXPLAIN ANALYZE 的 est/actual 与 force 轴差分承接）
             let inner = *statement;
             let mut lines: Vec<String> = Vec::new();
             let mut described = false;
             if let sqlparser::ast::Statement::Query(q) = &inner {
-                if let sqlparser::ast::SetExpr::Select(sel) = &*q.body {
-                    // 单表扫描形状（join/派生表的形状行留给 v2c-1 派发器）
-                    if sel.from.len() == 1 && sel.from[0].joins.is_empty() {
-                        if let sqlparser::ast::TableFactor::Table { name, .. } =
-                            &sel.from[0].relation
-                        {
-                            let full = name
-                                .0
-                                .iter()
-                                .filter_map(|p| p.as_ident().map(|i| i.value.clone()))
-                                .collect::<Vec<_>>()
-                                .join(".");
-                            let short = full.rsplit('.').next().unwrap_or(&full).to_string();
-                            lines.push(format!("Seq Scan on {short}"));
-                            if let Some(w) = sel.selection.as_ref() {
-                                if let Ok((schema, _)) =
-                                    crate::sql::scan::resolve_table(db, &sess.branch, &short)
-                                {
-                                    let names: Vec<String> =
-                                        schema.columns.iter().map(|c| c.name.clone()).collect();
-                                    let lookup = |n: &str| {
-                                        names.iter().position(|c| c.eq_ignore_ascii_case(n))
-                                    };
-                                    // 05 §5：派发理由行（规则式代价的可观测化）
-                                    let alt = crate::sql::dispatch::dispatch_scan(
-                                        db,
-                                        sess,
-                                        &sqlparser::ast::TableFactor::Table {
-                                            alias: None,
-                                            name: name.clone(),
-                                            args: None,
-                                            with_hints: vec![],
-                                            version: None,
-                                            with_ordinality: false,
-                                            partitions: vec![],
-                                            json_path: None,
-                                            sample: None,
-                                            index_hints: vec![],
-                                        },
-                                        Some(w),
-                                        0,
-                                    )
-                                    .map(|a| a.label().to_string())
-                                    .unwrap_or_else(|_| "n/a".into());
-                                    let forced = sess
-                                        .force_source
-                                        .map(|f| format!(" [forced: {}]", f.label()))
-                                        .unwrap_or_default();
-                                    lines.push(format!("dispatch: {alt}{forced}"));
-                                    match crate::sql::scalar::compile_predicate_named(
-                                        w,
-                                        &lookup,
-                                        names.len(),
-                                        &names,
-                                    ) {
-                                        Ok(p) => {
-                                            lines.push(format!("Filter: {w}"));
-                                            // v1 文本 IR（spec 09）：dendro.ir v1
-                                            // 标量块，可 parse 回当时的谓词程序
-                                            lines.push(
-                                                crate::ir::text::print_scalar("pred", &p.prog)
-                                                    .unwrap_or_else(|_| {
-                                                        "scalar @pred (ir: n/a)".into()
-                                                    })
-                                                    .trim_end()
-                                                    .to_string(),
-                                            );
-                                        }
-                                        Err(_) => lines.push(format!(
-                                            "Filter: {w} (steps: n/a — falls back to AST path)"
-                                        )),
-                                    }
-                                } else {
-                                    lines.push(format!("Filter: {w} (table unresolved)"));
-                                }
-                            }
-                            described = true;
+                // 执行前置守卫（eval_query 同口径）：逗号多 FROM 等在
+                // lowering 期拒绝的形状不得在 EXPLAIN 里静默建残缺计划
+                let guard_ok = crate::sql::scan::reject_offset_comma(q).is_ok()
+                    && match &*q.body {
+                        sqlparser::ast::SetExpr::Select(sel) => {
+                            crate::sql::scan::reject_multi_from(sel).is_ok()
                         }
-                    }
-                }
-            }
-            // O-2a（spec 12 §1 合同 4 / spec 09 §2）：join 形态输出
-            // 真实逻辑计划（dendro.ir v1 plan 方言，含下推后的优化形态）
-            // ——替换原 "pending" 占位；单表形态保留既有派发+标量块输出
-            if let sqlparser::ast::Statement::Query(q) = &inner {
-                // 计划可建且含 join（Select 形态）或为集合操作 → 打印
-                // 真实计划块；单表/不可建形态保留既有输出
-                let planable = match &*q.body {
-                    sqlparser::ast::SetExpr::Select(sel) => {
-                        sel.from.first().is_some_and(|f| !f.joins.is_empty())
-                    }
-                    sqlparser::ast::SetExpr::SetOperation { .. } => true,
-                    _ => false,
-                };
-                if planable {
+                        _ => true,
+                    };
+                if guard_ok {
                     if let Ok(mut plan) = crate::ir::plan::build_plan(q) {
+                        // 与执行路径同一重写链（EXPLAIN = 执行计划的镜像）
+                        crate::sql::optimize::rewrite_in_list(&mut plan);
                         let pushed = crate::ir::plan::rewrite_pushdown(&mut plan);
                         crate::sql::optimize::rewrite_stat_prop(&mut plan, db, sess);
-                crate::sql::optimize::rewrite_eq_copy(&mut plan);
-                crate::sql::optimize::rewrite_join_order(&mut plan, db, sess);
+                        crate::sql::optimize::rewrite_eq_copy(&mut plan);
+                        crate::sql::optimize::rewrite_join_order(&mut plan, db, sess);
+                        crate::sql::optimize::rewrite_filter_order(&mut plan);
                         let desc = crate::ir::plan::pushdown_desc(&pushed);
                         if !desc.is_empty() {
                             lines.push(desc);
@@ -985,7 +905,7 @@ pub(crate) fn exec_statement(
             }
             if !described {
                 lines.push(format!(
-                    "{} (plan detail pending v2c-1 dispatcher)",
+                    "{} (plan build not supported for this shape)",
                     stmt_kind_label(&inner)
                 ));
             }

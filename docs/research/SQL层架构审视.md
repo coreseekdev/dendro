@@ -536,14 +536,28 @@ ScopeDB 主引擎闭源且无版本化模型，可借鉴的是**原则**而非�
 
 ### 遗留项（迁移中识别、独立排期）
 
-1. **子查询计划化下沉**（原阶段 3.1 的 InitPlan/半连接形态）：
-   当前非相关子查询经 inline_subqueries 以 InList 字面量内联
-   （AST lowering 步骤）——语义正确，大 IN 子查询仍有内存物化
-   代价。后续可为 Filter 谓词中的 InSubquery 构建 semi-join 节点
-2. **相关子查询**：诚实拒绝（v2 迭代求值）——Plan 层已具备
-   Lateral/NestedLoop 位置，增量实现
-3. **CHECK 目录级结构化绑定**（serde AST / ScalarProgram 键控
-   schema_version）：语句级绑定已消除行级解析；目录级可再省每语句
-   1 次 parse
-4. **EXPLAIN 单表形态**：仍输出 legacy "Seq Scan" 块——可统一为
-   计划方言输出
+1. **子查询计划化下沉** ✅（L1 收口）：Filter 谓词中的 InSubquery
+   合取项经 `as_semi_candidate` 识别（含 `NOT(x IN ..)` 归一）保留
+   至计划期，`build_select` 落 **Plan::SemiJoin**（非相关：build 侧
+   子计划单次求值 + 首列哈希集探测；int/text 快路径线性 cmp_values
+   兜底——与 InList 位级同语义，含 NOT IN 三值逻辑与跨整型宽度归
+   一）。OR 位/标量/EXISTS 仍走内联。方言 `%m = semijoin %i, %s
+   {negated, key}` 入 golden + round-trip
+2. **相关子查询** ✅（L2 收口）：不再诚实拒绝——Filter 执行臂逐行
+   把子查询中的外层限定引用代入为行值字面量（`subst_outer_refs`，
+   与 is_correlated 同保守口径）再经 eval_query 求值；memo 以
+   （子查询文本 + 代入值序列 + 探测值）为键——非相关单次求值、
+   相关按外层元组去重（PG cached-SubPlan 同构）。嵌套子查询递归
+   代入（跨层相关）；is_correlated 升为全域作用域收集（原实现不下
+   穿 Expr::Subquery，双层相关被误判非相关）。HAVING 位相关仍拒
+   绝（聚合输出层无外层行上下文）；非限定名外层引用为响亮 42703
+3. **CHECK 目录级结构化绑定** ✅（L3 收口，进程级缓存形态）：
+   约束文本随表不可变 → `check_expr_cached` 以文本为身份键进程内
+   解析一次（视图缓存同式），每语句 1 次 parse 归零。serde AST
+   落盘形态不引入（缓存已达同效，免目录格式变更）
+4. **EXPLAIN 单表形态** ✅（L4 收口）：legacy "Seq Scan" +
+   dispatch + 标量块退役，全部 SELECT 形态统一输出 dendro.ir v1
+   计划方言（与执行同一重写链）；补执行前置守卫（逗号多 FROM/
+   OFFSET 逗号形态不得在 EXPLAIN/ANALYZE 静默建残缺计划——原
+   ANALYZE 无守卫为顺带修复）。派发可观测面移交 EXPLAIN ANALYZE
+   的 est/actual 与 force 轴差分

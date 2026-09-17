@@ -160,3 +160,42 @@ plan @q0 {
   %c0 = cte "big" (%p0) body %p1
   yield %c0
 }
+; corpus: SELECT id FROM orders WHERE cid IN (SELECT id FROM customers)
+dendro.ir v1
+plan @q0 {
+  %t0 = table "orders" {cols = [id, cid, total], pk = [0]}
+  %s0 = scan %t0
+  %t1 = table "customers" {cols = [id, region], pk = [0]}
+  %s1 = scan %t1
+  %p0 = project %s1 {exprs = [id], names = ["id"]}
+  %m0 = semijoin %s0, %p0 {negated = false, key = "cid"}
+  %p1 = project %m0 {exprs = [id], names = ["id"]}
+  yield %p1
+}
+; corpus: SELECT id FROM orders WHERE total > 10 AND cid NOT IN (SELECT id FROM customers WHERE region = 'EU')
+dendro.ir v1
+plan @q0 {
+  %t0 = table "orders" {cols = [id, cid, total], pk = [0]}
+  %s0 = scan %t0
+  %t1 = table "customers" {cols = [id, region], pk = [0]}
+  %s1 = scan %t1
+  %f0 = filter %s1, pred "region = 'EU'"
+  %p0 = project %f0 {exprs = [id], names = ["id"]}
+  %m0 = semijoin %s0, %p0 {negated = true, key = "cid"}
+  %f1 = filter %m0, pred "total > 10"
+  %p1 = project %f1 {exprs = [id], names = ["id"]}
+  yield %p1
+}
+; corpus: SELECT id FROM orders WHERE NOT (cid IN (SELECT id FROM customers)) AND total > 5
+dendro.ir v1
+plan @q0 {
+  %t0 = table "orders" {cols = [id, cid, total], pk = [0]}
+  %s0 = scan %t0
+  %t1 = table "customers" {cols = [id, region], pk = [0]}
+  %s1 = scan %t1
+  %p0 = project %s1 {exprs = [id], names = ["id"]}
+  %m0 = semijoin %s0, %p0 {negated = true, key = "cid"}
+  %f0 = filter %m0, pred "total > 5"
+  %p1 = project %f0 {exprs = [id], names = ["id"]}
+  yield %p1
+}

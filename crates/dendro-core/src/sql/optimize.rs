@@ -191,9 +191,7 @@ pub fn split_conjuncts(e: &Expr) -> Vec<Expr> {
 /// 表因子键（下推目标的标识）：别名优先，无别名用表短名（小写）
 pub fn factor_key(tf: &sqlparser::ast::TableFactor) -> Option<String> {
     match tf {
-        sqlparser::ast::TableFactor::Table {
-            name, alias, ..
-        } => {
+        sqlparser::ast::TableFactor::Table { name, alias, .. } => {
             let base = name
                 .0
                 .last()
@@ -236,10 +234,12 @@ fn expr_idents(e: &Expr, out: &mut Vec<String>) {
             expr_idents(left, out);
             expr_idents(right, out);
         }
-        Expr::UnaryOp { expr, .. } | Expr::Nested(expr) | Expr::IsNull(expr)
-        | Expr::IsNotNull(expr) | Expr::IsTrue(expr) | Expr::IsFalse(expr) => {
-            expr_idents(expr, out)
-        }
+        Expr::UnaryOp { expr, .. }
+        | Expr::Nested(expr)
+        | Expr::IsNull(expr)
+        | Expr::IsNotNull(expr)
+        | Expr::IsTrue(expr)
+        | Expr::IsFalse(expr) => expr_idents(expr, out),
         Expr::InList { expr, list, .. } => {
             expr_idents(expr, out);
             for i in list {
@@ -347,7 +347,8 @@ pub fn column_mask(
     for item in &select.projection {
         if matches!(
             item,
-            sqlparser::ast::SelectItem::Wildcard(_) | sqlparser::ast::SelectItem::QualifiedWildcard(..)
+            sqlparser::ast::SelectItem::Wildcard(_)
+                | sqlparser::ast::SelectItem::QualifiedWildcard(..)
         ) {
             return None;
         }
@@ -427,7 +428,12 @@ fn rewrite_stat_prop_walk(
 ) {
     use crate::ir::plan::Plan;
     match plan {
-        Plan::Join { kind, left, right, on } => {
+        Plan::Join {
+            kind,
+            left,
+            right,
+            on,
+        } => {
             rewrite_stat_prop_walk(left, db, sess);
             rewrite_stat_prop_walk(right, db, sess);
             if kind == &"inner" {
@@ -442,11 +448,17 @@ fn rewrite_stat_prop_walk(
         | Plan::Distinct { input }
         | Plan::Window { input, .. } => rewrite_stat_prop_walk(input, db, sess),
         Plan::SubqueryScan { plan, .. } => rewrite_stat_prop_walk(plan, db, sess),
+        Plan::SemiJoin { sub, input, .. } => {
+            rewrite_stat_prop_walk(input, db, sess);
+            rewrite_stat_prop_walk(sub, db, sess);
+        }
         Plan::Cte { plan, body, .. } => {
             rewrite_stat_prop_walk(plan, db, sess);
             rewrite_stat_prop_walk(body, db, sess);
         }
-        Plan::IterativeScan { base, recursive, .. } => {
+        Plan::IterativeScan {
+            base, recursive, ..
+        } => {
             rewrite_stat_prop_walk(base, db, sess);
             rewrite_stat_prop_walk(recursive, db, sess);
         }
@@ -488,8 +500,12 @@ fn try_propagate_ranges(
         let Some((r_st, _)) = stats_of_node(right, r_fk, db, sess) else {
             continue;
         };
-        let Some(l_cs) = col_stat(&l_st, l_col) else { continue };
-        let Some(r_cs) = col_stat(&r_st, r_col) else { continue };
+        let Some(l_cs) = col_stat(&l_st, l_col) else {
+            continue;
+        };
+        let Some(r_cs) = col_stat(&r_st, r_col) else {
+            continue;
+        };
 
         // 交集（order 域——保序映射下区间交 = 值域交）
         let lo = l_cs.min.max(r_cs.min);
@@ -548,14 +564,15 @@ fn stats_of_node(
     sess: &crate::engine::Session,
 ) -> Option<(crate::sql::stats::TableStats, String)> {
     use crate::ir::plan::Plan;
-    fn find_scan<'a>(
-        p: &'a Plan2,
-        key: &str,
-    ) -> Option<&'a Plan2> {
+    fn find_scan<'a>(p: &'a Plan2, key: &str) -> Option<&'a Plan2> {
         match p {
             Plan::Scan { table, alias, .. } => {
                 let k = alias.clone().unwrap_or_else(|| table.clone());
-                if k == key { Some(p) } else { None }
+                if k == key {
+                    Some(p)
+                } else {
+                    None
+                }
             }
             Plan::Filter { input, .. } => find_scan(input, key),
             Plan::Join { left, right, .. } => {
@@ -565,16 +582,15 @@ fn stats_of_node(
         }
     }
     let scan = find_scan(p, factor_key)?;
-    let Plan::Scan { table, .. } = scan else { unreachable!() };
+    let Plan::Scan { table, .. } = scan else {
+        unreachable!()
+    };
     let st = crate::sql::stats::table_stats(db, sess, table)?;
     Some((st, table.clone()))
 }
 
 fn col_stat(st: &crate::sql::stats::TableStats, col: &str) -> Option<crate::sql::stats::ColStat> {
-    let idx = st
-        .names
-        .iter()
-        .position(|n| n.eq_ignore_ascii_case(col))?;
+    let idx = st.names.iter().position(|n| n.eq_ignore_ascii_case(col))?;
     st.cols.get(idx).copied()
 }
 
@@ -595,9 +611,7 @@ fn inject_range_filter(
     }
     // 定位 Filter{Scan}（有则追加，无则新建）
     match node {
-        Plan::Filter { pred, input }
-            if matches!(&**input, Plan::Scan { .. }) =>
-        {
+        Plan::Filter { pred, input } if matches!(&**input, Plan::Scan { .. }) => {
             // 追加（AND 链）
             let range = range_expr(col, lo, hi);
             *pred = Expr::BinaryOp {
@@ -707,7 +721,9 @@ pub fn rewrite_join_order(
 fn has_wildcard_projection(p: &Plan2) -> bool {
     use crate::ir::plan::Plan;
     match p {
-        Plan::Project { wildcard, input, .. } => *wildcard || has_wildcard_projection(input),
+        Plan::Project {
+            wildcard, input, ..
+        } => *wildcard || has_wildcard_projection(input),
         Plan::Filter { input, .. }
         | Plan::Aggregate { input, .. }
         | Plan::Sort { input, .. }
@@ -715,12 +731,15 @@ fn has_wildcard_projection(p: &Plan2) -> bool {
         | Plan::Distinct { input }
         | Plan::Window { input, .. } => has_wildcard_projection(input),
         Plan::SubqueryScan { plan, .. } => has_wildcard_projection(plan),
+        Plan::SemiJoin { sub, input, .. } => {
+            has_wildcard_projection(input) || has_wildcard_projection(sub)
+        }
         Plan::Cte { plan, body, .. } => {
             has_wildcard_projection(plan) || has_wildcard_projection(body)
         }
-        Plan::IterativeScan { base, recursive, .. } => {
-            has_wildcard_projection(base) || has_wildcard_projection(recursive)
-        }
+        Plan::IterativeScan {
+            base, recursive, ..
+        } => has_wildcard_projection(base) || has_wildcard_projection(recursive),
         Plan::Join { left, right, .. } | Plan::SetOp { left, right, .. } => {
             has_wildcard_projection(left) || has_wildcard_projection(right)
         }
@@ -735,7 +754,9 @@ fn rewrite_join_order_walk(
 ) {
     use crate::ir::plan::Plan;
     match plan {
-        Plan::Join { kind, left, right, .. } if kind == &"inner" => {
+        Plan::Join {
+            kind, left, right, ..
+        } if kind == &"inner" => {
             rewrite_join_order_walk(left, db, sess);
             rewrite_join_order_walk(right, db, sess);
             try_reorder_chain(plan, db, sess);
@@ -753,11 +774,17 @@ fn rewrite_join_order_walk(
         | Plan::Distinct { input }
         | Plan::Window { input, .. } => rewrite_join_order_walk(input, db, sess),
         Plan::SubqueryScan { plan, .. } => rewrite_join_order_walk(plan, db, sess),
+        Plan::SemiJoin { sub, input, .. } => {
+            rewrite_join_order_walk(input, db, sess);
+            rewrite_join_order_walk(sub, db, sess);
+        }
         Plan::Cte { plan, body, .. } => {
             rewrite_join_order_walk(plan, db, sess);
             rewrite_join_order_walk(body, db, sess);
         }
-        Plan::IterativeScan { base, recursive, .. } => {
+        Plan::IterativeScan {
+            base, recursive, ..
+        } => {
             rewrite_join_order_walk(base, db, sess);
             rewrite_join_order_walk(recursive, db, sess);
         }
@@ -782,7 +809,12 @@ fn try_reorder_chain(
     let mut cursor: &Plan2 = plan;
     loop {
         match cursor {
-            Plan::Join { kind, left, right, on } if kind == &"inner" => {
+            Plan::Join {
+                kind,
+                left,
+                right,
+                on,
+            } if kind == &"inner" => {
                 // 右因子必须是叶子（Scan / Filter{Scan}）
                 let (key, node) = match &**right {
                     Plan::Scan { table, alias, .. } => (
@@ -794,7 +826,7 @@ fn try_reorder_chain(
                             unreachable!()
                         };
                         let Plan::Scan { table, alias, .. } = &**input else {
-                            return // Filter 下非 Scan——非叶子形态
+                            return; // Filter 下非 Scan——非叶子形态
                         };
                         (
                             alias.clone().unwrap_or_else(|| table.clone()),
@@ -804,7 +836,12 @@ fn try_reorder_chain(
                     _ => return, // 右侧子树非叶子（bushy）——不动
                 };
                 let on = on.clone();
-                factors.push(JoinFactor { key, node, on, est: 0 });
+                factors.push(JoinFactor {
+                    key,
+                    node,
+                    on,
+                    est: 0,
+                });
                 cursor = left;
             }
             _ => break,
@@ -818,7 +855,9 @@ fn try_reorder_chain(
             bottom.clone(),
         ),
         Plan::Filter { input, .. } if matches!(&**input, Plan::Scan { .. }) => {
-            let Plan::Scan { table, alias, .. } = &**input else { unreachable!() };
+            let Plan::Scan { table, alias, .. } = &**input else {
+                unreachable!()
+            };
             (
                 alias.clone().unwrap_or_else(|| table.clone()),
                 bottom.clone(),
@@ -957,7 +996,6 @@ fn is_true_expr(e: &Expr) -> bool {
     )
 }
 
-
 /// 叶子因子的 (表名, 别名, 下推谓词)
 fn factor_parts(node: &Plan2) -> (String, Option<String>, Option<Expr>) {
     use crate::ir::plan::Plan;
@@ -1035,7 +1073,9 @@ fn join_estimate(
     }
     let a_is_pk = is_pk_col(&a_table, &acc_col, db, sess);
     let a_ndv = crate::sql::stats::col_ndv(&a_st, &acc_col, a_is_pk);
-    Some(crate::sql::stats::join_est_rows(acc_est, n_est, a_ndv, n_ndv))
+    Some(crate::sql::stats::join_est_rows(
+        acc_est, n_est, a_ndv, n_ndv,
+    ))
 }
 
 /// 列是否该表 pk（schema 查询）
@@ -1047,10 +1087,12 @@ fn is_pk_col(
 ) -> bool {
     crate::sql::scan::resolve_table(db, &sess.branch, table)
         .map(|(schema, _)| {
-            schema
-                .pk
-                .iter()
-                .any(|&p| schema.columns.get(p as usize).is_some_and(|c| c.name.eq_ignore_ascii_case(col)))
+            schema.pk.iter().any(|&p| {
+                schema
+                    .columns
+                    .get(p as usize)
+                    .is_some_and(|c| c.name.eq_ignore_ascii_case(col))
+            })
         })
         .unwrap_or(false)
 }
@@ -1115,7 +1157,12 @@ pub fn rewrite_eq_copy(plan: &mut Plan2) {
 fn rewrite_eq_copy_walk(plan: &mut Plan2) {
     use crate::ir::plan::Plan;
     match plan {
-        Plan::Join { kind, left, right, on } => {
+        Plan::Join {
+            kind,
+            left,
+            right,
+            on,
+        } => {
             rewrite_eq_copy_walk(left);
             rewrite_eq_copy_walk(right);
             if kind == &"inner" {
@@ -1130,11 +1177,17 @@ fn rewrite_eq_copy_walk(plan: &mut Plan2) {
         | Plan::Distinct { input }
         | Plan::Window { input, .. } => rewrite_eq_copy_walk(input),
         Plan::SubqueryScan { plan, .. } => rewrite_eq_copy_walk(plan),
+        Plan::SemiJoin { sub, input, .. } => {
+            rewrite_eq_copy_walk(input);
+            rewrite_eq_copy_walk(sub);
+        }
         Plan::Cte { plan, body, .. } => {
             rewrite_eq_copy_walk(plan);
             rewrite_eq_copy_walk(body);
         }
-        Plan::IterativeScan { base, recursive, .. } => {
+        Plan::IterativeScan {
+            base, recursive, ..
+        } => {
             rewrite_eq_copy_walk(base);
             rewrite_eq_copy_walk(recursive);
         }
@@ -1149,9 +1202,9 @@ fn rewrite_eq_copy_walk(plan: &mut Plan2) {
 /// 一对 (col_id, op, 常量值) ——从 Filter 谓词中提取的可复制比较
 #[derive(Debug, Clone)]
 struct CopyablePred {
-    col: String,  // 限定名 "a.x"
+    col: String,      // 限定名 "a.x"
     op: &'static str, // ">=" | "<=" | "=" (只复制这三类)
-    val: i64,     // 数值常量（order 域无关——直接用 i64 值域）
+    val: i64,         // 数值常量（order 域无关——直接用 i64 值域）
 }
 
 fn try_eq_copy(left: &mut Plan2, right: &mut Plan2, on: &Expr) {
@@ -1222,11 +1275,7 @@ fn collect_copyable(e: &Expr, out: &mut Vec<CopyablePred>) {
                     },
                 ),
             ] {
-                if let (
-                    Expr::CompoundIdentifier(parts),
-                    Expr::Value(vws),
-                ) = (a, b)
-                {
+                if let (Expr::CompoundIdentifier(parts), Expr::Value(vws)) = (a, b) {
                     if parts.len() == 2 {
                         let col = format!(
                             "{}.{}",
@@ -1235,11 +1284,7 @@ fn collect_copyable(e: &Expr, out: &mut Vec<CopyablePred>) {
                         );
                         if let sqlparser::ast::Value::Number(n, _) = &vws.value {
                             if let Ok(v) = n.parse::<i64>() {
-                                out.push(CopyablePred {
-                                    col,
-                                    op: o,
-                                    val: v,
-                                });
+                                out.push(CopyablePred { col, op: o, val: v });
                             }
                         }
                     }
@@ -1317,10 +1362,19 @@ fn rewrite_in_list_walk(plan: &mut Plan2) {
                 *e = rewrite_in_expr(e);
             }
         }
-        Plan::Join { on, left, right, .. } => {
+        Plan::Join {
+            on, left, right, ..
+        } => {
             rewrite_in_list_walk(left);
             rewrite_in_list_walk(right);
             *on = rewrite_in_expr(on);
+        }
+        Plan::SemiJoin {
+            key, sub, input, ..
+        } => {
+            rewrite_in_list_walk(input);
+            rewrite_in_list_walk(sub);
+            *key = rewrite_in_expr(key);
         }
         Plan::Aggregate { keys, input, .. } => {
             rewrite_in_list_walk(input);
@@ -1334,15 +1388,17 @@ fn rewrite_in_list_walk(plan: &mut Plan2) {
                 *e = rewrite_in_expr(e);
             }
         }
-        Plan::Limit { input, .. }
-        | Plan::Distinct { input }
-        | Plan::Window { input, .. } => rewrite_in_list_walk(input),
+        Plan::Limit { input, .. } | Plan::Distinct { input } | Plan::Window { input, .. } => {
+            rewrite_in_list_walk(input)
+        }
         Plan::SubqueryScan { plan, .. } => rewrite_in_list_walk(plan),
         Plan::Cte { plan, body, .. } => {
             rewrite_in_list_walk(plan);
             rewrite_in_list_walk(body);
         }
-        Plan::IterativeScan { base, recursive, .. } => {
+        Plan::IterativeScan {
+            base, recursive, ..
+        } => {
             rewrite_in_list_walk(base);
             rewrite_in_list_walk(recursive);
         }
@@ -1398,10 +1454,7 @@ fn rewrite_in_expr(e: &Expr) -> Expr {
                     left: expr.clone(),
                     op: sqlparser::ast::BinaryOperator::Eq,
                     right: Box::new(Expr::Value(sqlparser::ast::ValueWithSpan {
-                        value: sqlparser::ast::Value::Number(
-                            consts[0].to_string(),
-                            false,
-                        ),
+                        value: sqlparser::ast::Value::Number(consts[0].to_string(), false),
                         span: sqlparser::tokenizer::Span::empty(),
                     })),
                 };
@@ -1467,11 +1520,17 @@ fn rewrite_filter_order_walk(plan: &mut Plan2) {
         | Plan::Distinct { input }
         | Plan::Window { input, .. } => rewrite_filter_order_walk(input),
         Plan::SubqueryScan { plan, .. } => rewrite_filter_order_walk(plan),
+        Plan::SemiJoin { sub, input, .. } => {
+            rewrite_filter_order_walk(input);
+            rewrite_filter_order_walk(sub);
+        }
         Plan::Cte { plan, body, .. } => {
             rewrite_filter_order_walk(plan);
             rewrite_filter_order_walk(body);
         }
-        Plan::IterativeScan { base, recursive, .. } => {
+        Plan::IterativeScan {
+            base, recursive, ..
+        } => {
             rewrite_filter_order_walk(base);
             rewrite_filter_order_walk(recursive);
         }
@@ -1502,10 +1561,11 @@ fn reorder_conjuncts(pred: &mut Expr) {
                 ..
             } => 0,
             Expr::BinaryOp {
-                op: sqlparser::ast::BinaryOperator::GtEq
-                | sqlparser::ast::BinaryOperator::LtEq
-                | sqlparser::ast::BinaryOperator::Gt
-                | sqlparser::ast::BinaryOperator::Lt,
+                op:
+                    sqlparser::ast::BinaryOperator::GtEq
+                    | sqlparser::ast::BinaryOperator::LtEq
+                    | sqlparser::ast::BinaryOperator::Gt
+                    | sqlparser::ast::BinaryOperator::Lt,
                 ..
             } => 1,
             Expr::IsNull(_) | Expr::IsNotNull(_) => 2,
@@ -1532,14 +1592,19 @@ fn reorder_conjuncts(pred: &mut Expr) {
 // 相关子查询（引用外层列）→ not_supported（诚实拒绝——v2 迭代求值）
 // ---------------------------------------------------------------------------
 
-/// 谓词中的非相关子查询内联（WHERE / HAVING / JOIN ON 均经此）
+/// 谓词中的非相关子查询内联（WHERE / HAVING 均经此）
+/// `allow_correlated`：true（WHERE 位）= 相关子查询**保留原样**——
+/// L1 由 build_select 落 SemiJoin（IN 合取项）、L2 由 Filter 执行臂
+/// 迭代求值；false（HAVING 位）= 相关即响亮拒绝（聚合输出层无外层
+/// 行上下文，迭代求值不可达）
 pub fn inline_subqueries(
     db: &crate::engine::Database,
     sess: &mut crate::engine::Session,
     e: &mut Expr,
     snapshot: u64,
+    allow_correlated: bool,
 ) -> Result<(), crate::error::SqlError> {
-    inline_walk(db, sess, e, snapshot)
+    inline_walk(db, sess, e, snapshot, allow_correlated)
 }
 
 fn inline_walk(
@@ -1547,6 +1612,7 @@ fn inline_walk(
     sess: &mut crate::engine::Session,
     e: &mut Expr,
     snapshot: u64,
+    allow_correlated: bool,
 ) -> Result<(), crate::error::SqlError> {
     use crate::types::SqlValue;
     // 相关性检测：收集子查询 FROM 表的全部列名（内域），然后检查
@@ -1558,16 +1624,22 @@ fn inline_walk(
         // 标量子查询：(SELECT max(v) FROM t) → 常量
         Expr::Subquery(q) => {
             if is_correlated(q) {
+                if allow_correlated {
+                    return Ok(());
+                }
                 return Err(crate::error::SqlError::not_supported(
-                    "correlated scalar subquery (v2: iterative evaluation)",
+                    "correlated scalar subquery in HAVING (v2: iterative evaluation)",
                 ));
             }
             let tv = match crate::sql::scan::eval_query(db, sess, q, snapshot) {
                 Ok(tv) => tv,
                 Err(e) if e.state == "42703" => {
                     // 列不存在——外层列引用（相关子查询）
+                    if allow_correlated {
+                        return Ok(());
+                    }
                     return Err(crate::error::SqlError::not_supported(
-                        "correlated scalar subquery (v2: iterative evaluation)",
+                        "correlated scalar subquery in HAVING (v2: iterative evaluation)",
                     ));
                 }
                 Err(e) => return Err(e),
@@ -1585,30 +1657,34 @@ fn inline_walk(
             Ok(())
         }
         // IN 子查询：v IN (SELECT id FROM t) → v IN (v1, v2, ...)
+        //（合取项位的非相关形态不走此——lower_subqueries 保留给
+        // build_select 落 SemiJoin；这里只兜非合取位/HAVING 位）
         Expr::InSubquery {
             expr,
             subquery,
             negated,
         } => {
             if is_correlated(subquery) {
+                if allow_correlated {
+                    return Ok(());
+                }
                 return Err(crate::error::SqlError::not_supported(
-                    "correlated IN subquery (v2: iterative evaluation)",
+                    "correlated IN subquery in HAVING (v2: iterative evaluation)",
                 ));
             }
             let tv = match crate::sql::scan::eval_query(db, sess, subquery, snapshot) {
                 Ok(tv) => tv,
                 Err(e) if e.state == "42703" => {
+                    if allow_correlated {
+                        return Ok(());
+                    }
                     return Err(crate::error::SqlError::not_supported(
-                        "correlated IN subquery (v2: iterative evaluation)",
+                        "correlated IN subquery in HAVING (v2: iterative evaluation)",
                     ));
                 }
                 Err(e) => return Err(e),
             };
-            let list: Vec<Expr> = tv
-                .rows
-                .iter()
-                .map(|r| sql_value_to_expr(&r[0]))
-                .collect();
+            let list: Vec<Expr> = tv.rows.iter().map(|r| sql_value_to_expr(&r[0])).collect();
             *e = Expr::InList {
                 expr: expr.clone(),
                 list,
@@ -1617,56 +1693,52 @@ fn inline_walk(
             Ok(())
         }
         // EXISTS：EXISTS (SELECT ...) → Bool
-        Expr::Exists {
-            subquery,
-            negated,
-        } => {
+        Expr::Exists { subquery, negated } => {
             if is_correlated(subquery) {
+                if allow_correlated {
+                    return Ok(());
+                }
                 return Err(crate::error::SqlError::not_supported(
-                    "correlated IN subquery (v2: iterative evaluation)",
+                    "correlated EXISTS in HAVING (v2: iterative evaluation)",
                 ));
             }
             let tv = match crate::sql::scan::eval_query(db, sess, subquery, snapshot) {
                 Ok(tv) => tv,
                 Err(e) if e.state == "42703" => {
+                    if allow_correlated {
+                        return Ok(());
+                    }
                     return Err(crate::error::SqlError::not_supported(
-                        "correlated EXISTS (v2: iterative evaluation)",
+                        "correlated EXISTS in HAVING (v2: iterative evaluation)",
                     ));
                 }
                 Err(e) => return Err(e),
             };
             let exists = !tv.rows.is_empty();
-            *e = sql_value_to_expr(&SqlValue::Bool(if *negated {
-                !exists
-            } else {
-                exists
-            }));
+            *e = sql_value_to_expr(&SqlValue::Bool(if *negated { !exists } else { exists }));
             Ok(())
         }
         // 递归：二元/嵌套/InList/Case 等容器
-        Expr::BinaryOp {
-            left,
-            right,
-            op: _,
-        } => {
-            inline_walk(db, sess, left, snapshot)?;
-            inline_walk(db, sess, right, snapshot)
+        Expr::BinaryOp { left, right, op: _ } => {
+            inline_walk(db, sess, left, snapshot, allow_correlated)?;
+            inline_walk(db, sess, right, snapshot, allow_correlated)
         }
-        Expr::Nested(inner) => inline_walk(db, sess, inner, snapshot),
-        Expr::UnaryOp {
-            expr: inner,
-            op: _,
-        } => inline_walk(db, sess, inner, snapshot),
-        Expr::IsNull(inner) | Expr::IsNotNull(inner) | Expr::IsTrue(inner)
-        | Expr::IsFalse(inner) => inline_walk(db, sess, inner, snapshot),
+        Expr::Nested(inner) => inline_walk(db, sess, inner, snapshot, allow_correlated),
+        Expr::UnaryOp { expr: inner, op: _ } => {
+            inline_walk(db, sess, inner, snapshot, allow_correlated)
+        }
+        Expr::IsNull(inner)
+        | Expr::IsNotNull(inner)
+        | Expr::IsTrue(inner)
+        | Expr::IsFalse(inner) => inline_walk(db, sess, inner, snapshot, allow_correlated),
         Expr::InList {
             expr,
             list,
             negated: _,
         } => {
-            inline_walk(db, sess, expr, snapshot)?;
+            inline_walk(db, sess, expr, snapshot, allow_correlated)?;
             for item in list.iter_mut() {
-                inline_walk(db, sess, item, snapshot)?;
+                inline_walk(db, sess, item, snapshot, allow_correlated)?;
             }
             Ok(())
         }
@@ -1676,68 +1748,220 @@ fn inline_walk(
             high,
             negated: _,
         } => {
-            inline_walk(db, sess, expr, snapshot)?;
-            inline_walk(db, sess, low, snapshot)?;
-            inline_walk(db, sess, high, snapshot)
+            inline_walk(db, sess, expr, snapshot, allow_correlated)?;
+            inline_walk(db, sess, low, snapshot, allow_correlated)?;
+            inline_walk(db, sess, high, snapshot, allow_correlated)
         }
-        Expr::Cast {
-            expr: inner, ..
-        } => inline_walk(db, sess, inner, snapshot),
+        Expr::Cast { expr: inner, .. } => inline_walk(db, sess, inner, snapshot, allow_correlated),
         _ => Ok(()),
     }
 }
 
+// ---------------------------------------------------------------------------
+// L1/L2：WHERE 合取位子查询下沉——合取拆分与半连接候选识别。
+// lower_subqueries（AST 期）与 build_select（计划期）共用同一识别口径：
+// - AST 期：合取位的 InSubquery（含 NOT(x IN ..) 归一）保留在谓词里
+//   ——非相关 → SemiJoin；相关 → Filter 执行臂迭代求值
+// - 计划期：仅非相关者落 SemiJoin（is_correlated 判定），相关者留在
+//   残余 Filter 谓词中
+// ---------------------------------------------------------------------------
 
-/// 子查询相关性检测：收集 FROM 表因子键（内域），检查 WHERE/投影中
-/// 的限定名前缀是否引用内域外的表——真相关（需外层列迭代求值）
-fn is_correlated(q: &sqlparser::ast::Query) -> bool {
-    // 收集 FROM 因子键
-    let mut inner_factors: Vec<String> = Vec::new();
-    if let sqlparser::ast::SetExpr::Select(sel) = &*q.body {
-        for twj in &sel.from {
-            if let Some(k) = crate::sql::optimize::factor_key(&twj.relation) {
-                inner_factors.push(k);
-            }
+/// AND 树展平为合取项序列（括号透明：Nested(And) 同样展开）
+pub(crate) fn flatten_and(e: &Expr) -> Vec<Expr> {
+    match e {
+        Expr::BinaryOp {
+            left,
+            op: sqlparser::ast::BinaryOperator::And,
+            right,
+        } => {
+            let mut out = flatten_and(left);
+            out.extend(flatten_and(right));
+            out
         }
+        Expr::Nested(inner) => flatten_and(inner),
+        _ => vec![e.clone()],
     }
-    // 收集 WHERE/投影中的限定名前缀
-    let mut prefixes: Vec<String> = Vec::new();
-    if let sqlparser::ast::SetExpr::Select(sel) = &*q.body {
-        for item in &sel.projection {
-            if let sqlparser::ast::SelectItem::UnnamedExpr(e)
-            | sqlparser::ast::SelectItem::ExprWithAlias { expr: e, .. } = item
-            {
-                let mut ids = Vec::new();
-                expr_idents_pub(e, &mut ids);
-                for id in ids {
-                    if let Some((prefix, _)) = id.split_once('.') {
-                        let p = prefix.to_string();
-                        if !prefixes.contains(&p) {
-                            prefixes.push(p);
-                        }
-                    }
-                }
-            }
-        }
-        if let Some(w) = &sel.selection {
-            let mut ids = Vec::new();
-            expr_idents_pub(w, &mut ids);
-            for id in ids {
-                if let Some((prefix, _)) = id.split_once('.') {
-                    let p = prefix.to_string();
-                    if !prefixes.contains(&p) {
-                        prefixes.push(p);
-                    }
-                }
-            }
-        }
-    }
-    // 限定名前缀引用了内域外的表 → 相关
-    prefixes.iter().any(|p| !inner_factors.contains(p))
 }
 
-/// SqlValue → 常量 Expr
-fn sql_value_to_expr(v: &crate::types::SqlValue) -> Expr {
+/// 合取项折叠回 AND 树（空序列 = None 谓词）
+pub(crate) fn fold_and(mut conjuncts: Vec<Expr>) -> Option<Expr> {
+    let last = conjuncts.pop()?;
+    Some(
+        conjuncts
+            .into_iter()
+            .rev()
+            .fold(last, |acc, c| Expr::BinaryOp {
+                left: Box::new(c),
+                op: sqlparser::ast::BinaryOperator::And,
+                right: Box::new(acc),
+            }),
+    )
+}
+
+/// 半连接候选识别：`e IN (SELECT ..)`（括号透明、Not 翻转取反）
+pub(crate) fn as_semi_candidate(e: &Expr) -> Option<(Expr, sqlparser::ast::Query, bool)> {
+    let inner = match e {
+        Expr::Nested(i) => i.as_ref(),
+        other => other,
+    };
+    match inner {
+        Expr::InSubquery {
+            expr,
+            subquery,
+            negated,
+        } => Some(((**expr).clone(), (**subquery).clone(), *negated)),
+        Expr::UnaryOp {
+            expr: subj,
+            op: sqlparser::ast::UnaryOperator::Not,
+        } => {
+            // NOT(x IN (SELECT ..)) → 反半连接（negated 翻转）
+            let subj = match subj.as_ref() {
+                Expr::Nested(i) => i.as_ref(),
+                other => other,
+            };
+            match subj {
+                Expr::InSubquery {
+                    expr,
+                    subquery,
+                    negated,
+                } => Some(((**expr).clone(), (**subquery).clone(), !*negated)),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// 子查询相关性检测：收集子查询树**全部嵌套层**的 FROM 因子（内域全
+/// 域）与 WHERE/投影中的限定名前缀（含嵌套子查询内的引用——原实现不
+/// 下穿 Expr::Subquery，双层相关 `IN (SELECT .. WHERE x = (SELECT ..
+/// WHERE y = o.k))` 被误判非相关）。保守口径不变：非限定名视为内域
+/// 引用。L1/L2 共用（build_select 落 SemiJoin 前判相关）
+pub(crate) fn is_correlated(q: &sqlparser::ast::Query) -> bool {
+    let mut factors: Vec<String> = Vec::new();
+    let mut prefixes: Vec<String> = Vec::new();
+    collect_scope(q, &mut factors, &mut prefixes);
+    prefixes.iter().any(|p| !factors.contains(p))
+}
+
+/// 查询树作用域收集：因子（FROM 键）+ 限定前缀（含嵌套子查询递归）
+fn collect_scope(q: &sqlparser::ast::Query, factors: &mut Vec<String>, prefixes: &mut Vec<String>) {
+    collect_setexpr(&q.body, factors, prefixes);
+}
+
+fn collect_setexpr(
+    se: &sqlparser::ast::SetExpr,
+    factors: &mut Vec<String>,
+    prefixes: &mut Vec<String>,
+) {
+    match se {
+        sqlparser::ast::SetExpr::Select(sel) => {
+            for twj in &sel.from {
+                if let Some(k) = factor_key(&twj.relation) {
+                    if !factors.contains(&k) {
+                        factors.push(k);
+                    }
+                }
+            }
+            for item in &sel.projection {
+                if let sqlparser::ast::SelectItem::UnnamedExpr(e)
+                | sqlparser::ast::SelectItem::ExprWithAlias { expr: e, .. } = item
+                {
+                    collect_scope_expr(e, factors, prefixes);
+                }
+            }
+            if let Some(w) = &sel.selection {
+                collect_scope_expr(w, factors, prefixes);
+            }
+        }
+        sqlparser::ast::SetExpr::SetOperation { left, right, .. } => {
+            collect_setexpr(left, factors, prefixes);
+            collect_setexpr(right, factors, prefixes);
+        }
+        sqlparser::ast::SetExpr::Query(inner) => collect_scope(inner, factors, prefixes),
+        _ => {}
+    }
+}
+
+fn collect_scope_expr(e: &Expr, factors: &mut Vec<String>, prefixes: &mut Vec<String>) {
+    fn push_prefix(prefixes: &mut Vec<String>, id: &str) {
+        if let Some((p, _)) = id.split_once('.') {
+            let p = p.to_ascii_lowercase();
+            if !prefixes.contains(&p) {
+                prefixes.push(p);
+            }
+        }
+    }
+    let mut ids = Vec::new();
+    expr_idents_pub(e, &mut ids);
+    for id in &ids {
+        push_prefix(prefixes, id);
+    }
+    // 子查询位：内域因子并入全域，引用面递归（嵌套层相关可见）
+    match e {
+        Expr::Subquery(q) => collect_scope(q, factors, prefixes),
+        Expr::InSubquery { expr, subquery, .. } => {
+            collect_scope_expr(expr, factors, prefixes);
+            collect_scope(subquery, factors, prefixes);
+        }
+        Expr::Exists { subquery, .. } => collect_scope(subquery, factors, prefixes),
+        Expr::BinaryOp { left, right, .. } => {
+            collect_scope_expr(left, factors, prefixes);
+            collect_scope_expr(right, factors, prefixes);
+        }
+        Expr::Nested(inner)
+        | Expr::UnaryOp { expr: inner, .. }
+        | Expr::IsNull(inner)
+        | Expr::IsNotNull(inner)
+        | Expr::IsTrue(inner)
+        | Expr::IsFalse(inner)
+        | Expr::Cast { expr: inner, .. } => collect_scope_expr(inner, factors, prefixes),
+        Expr::InList { expr, list, .. } => {
+            collect_scope_expr(expr, factors, prefixes);
+            for i in list {
+                collect_scope_expr(i, factors, prefixes);
+            }
+        }
+        Expr::Between {
+            expr, low, high, ..
+        } => {
+            collect_scope_expr(expr, factors, prefixes);
+            collect_scope_expr(low, factors, prefixes);
+            collect_scope_expr(high, factors, prefixes);
+        }
+        Expr::Case {
+            operand,
+            conditions,
+            else_result,
+            ..
+        } => {
+            if let Some(o) = operand {
+                collect_scope_expr(o, factors, prefixes);
+            }
+            for cw in conditions {
+                collect_scope_expr(&cw.condition, factors, prefixes);
+                collect_scope_expr(&cw.result, factors, prefixes);
+            }
+            if let Some(er) = else_result {
+                collect_scope_expr(er, factors, prefixes);
+            }
+        }
+        Expr::Function(f) => {
+            for a in crate::sql::scan::fn_args(f) {
+                if let sqlparser::ast::FunctionArg::Unnamed(
+                    sqlparser::ast::FunctionArgExpr::Expr(inner),
+                ) = a
+                {
+                    collect_scope_expr(inner, factors, prefixes);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// SqlValue → 常量 Expr（L2 外层列代入共用）
+pub(crate) fn sql_value_to_expr(v: &crate::types::SqlValue) -> Expr {
     use crate::types::SqlValue;
     let vws = |val: sqlparser::ast::Value| {
         Expr::Value(sqlparser::ast::ValueWithSpan {
@@ -1757,11 +1981,8 @@ fn sql_value_to_expr(v: &crate::types::SqlValue) -> Expr {
         SqlValue::Utf8(s) => vws(sqlparser::ast::Value::SingleQuotedString(s.clone())),
         SqlValue::Date32(d) => vws(sqlparser::ast::Value::Number(d.to_string(), false)),
         SqlValue::TimestampMs(t) => vws(sqlparser::ast::Value::Number(t.to_string(), false)),
-        SqlValue::Bytes(b) => {
-            vws(sqlparser::ast::Value::SingleQuotedString(
-                String::from_utf8_lossy(b).to_string(),
-            ))
-        }
+        SqlValue::Bytes(b) => vws(sqlparser::ast::Value::SingleQuotedString(
+            String::from_utf8_lossy(b).to_string(),
+        )),
     }
 }
-

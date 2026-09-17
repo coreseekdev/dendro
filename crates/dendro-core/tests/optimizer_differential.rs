@@ -10,30 +10,25 @@ use dendro_core::types::SqlValue;
 
 fn setup() -> Connection {
     let mut c = Connection::memory().unwrap();
-    c.execute(
-        "CREATE TABLE orders (id BIGINT PRIMARY KEY, cid BIGINT, total BIGINT, note TEXT)",
-    )
-    .unwrap();
-    c.execute(
-        "CREATE TABLE customers (id BIGINT PRIMARY KEY, region TEXT, tier INT)",
-    )
-    .unwrap();
+    c.execute("CREATE TABLE orders (id BIGINT PRIMARY KEY, cid BIGINT, total BIGINT, note TEXT)")
+        .unwrap();
+    c.execute("CREATE TABLE customers (id BIGINT PRIMARY KEY, region TEXT, tier INT)")
+        .unwrap();
     c.execute(
         "INSERT INTO orders VALUES \
          (1, 1, 100, 'a'),(2, 1, 250, 'b'),(3, 2, 50, 'c'),(4, 2, 500, 'd'),\
          (5, 3, 75, 'e'),(6, NULL, 10, 'f')",
     )
     .unwrap();
-    c.execute(
-        "INSERT INTO customers VALUES (1, 'EU', 3),(2, 'US', 1),(3, 'APAC', 2)",
-    )
-    .unwrap();
+    c.execute("INSERT INTO customers VALUES (1, 'EU', 3),(2, 'US', 1),(3, 'APAC', 2)")
+        .unwrap();
     c
 }
 
 fn run(c: &mut Connection, opt: &str, sql: &str) -> (Vec<String>, Vec<Vec<SqlValue>>) {
     if opt != "default" {
-        c.execute(&format!("SET dendro.optimize = '{opt}'")).unwrap();
+        c.execute(&format!("SET dendro.optimize = '{opt}'"))
+            .unwrap();
     }
     let r = c.query(sql).unwrap();
     (r.columns.clone(), r.rows.clone())
@@ -70,14 +65,13 @@ fn inner_join_both_sides_pushed() {
         "SELECT o.id FROM orders o JOIN customers c ON o.cid = c.id \
          WHERE o.total > 60 AND c.region = 'EU' ORDER BY o.id",
     );
-    let ids: Vec<i64> = r
-        .1
-        .iter()
-        .map(|row| match &row[0] {
-            SqlValue::Int64(v) => *v,
-            other => panic!("{other:?}"),
-        })
-        .collect();
+    let ids: Vec<i64> =
+        r.1.iter()
+            .map(|row| match &row[0] {
+                SqlValue::Int64(v) => *v,
+                other => panic!("{other:?}"),
+            })
+            .collect();
     assert_eq!(ids, vec![1, 2], "EU 且 total>60 的订单");
 }
 
@@ -98,14 +92,13 @@ fn left_join_right_side_push_is_safe() {
         "SELECT o.id FROM orders o LEFT JOIN customers c ON o.cid = c.id \
          WHERE c.region = 'EU' ORDER BY o.id",
     );
-    let ids: Vec<i64> = r
-        .1
-        .iter()
-        .map(|row| match &row[0] {
-            SqlValue::Int64(v) => *v,
-            other => panic!("{other:?}"),
-        })
-        .collect();
+    let ids: Vec<i64> =
+        r.1.iter()
+            .map(|row| match &row[0] {
+                SqlValue::Int64(v) => *v,
+                other => panic!("{other:?}"),
+            })
+            .collect();
     assert_eq!(ids, vec![1, 2]);
 }
 
@@ -212,8 +205,10 @@ fn ledger28_qualified_name_reads_correct_side() {
     let mut c = setup();
     // orders.id 与 customers.id 同名：o.id 必须读 orders 侧
     let r = c
-        .query("SELECT o.id, c.id FROM orders o JOIN customers c ON o.cid = c.id \
-                WHERE o.total > 60 AND c.region = 'EU' ORDER BY o.id")
+        .query(
+            "SELECT o.id, c.id FROM orders o JOIN customers c ON o.cid = c.id \
+                WHERE o.total > 60 AND c.region = 'EU' ORDER BY o.id",
+        )
         .unwrap();
     let pairs: Vec<(i64, i64)> = r
         .rows
@@ -223,11 +218,17 @@ fn ledger28_qualified_name_reads_correct_side() {
             other => panic!("{other:?}"),
         })
         .collect();
-    assert_eq!(pairs, vec![(1, 1), (2, 1)], "o.id=orders.id / c.id=customers.id");
+    assert_eq!(
+        pairs,
+        vec![(1, 1), (2, 1)],
+        "o.id=orders.id / c.id=customers.id"
+    );
     // LEFT JOIN + NULL 延展行的限定读取
     let r = c
-        .query("SELECT o.id, c.id FROM orders o LEFT JOIN customers c ON o.cid = c.id \
-                WHERE o.id = 6")
+        .query(
+            "SELECT o.id, c.id FROM orders o LEFT JOIN customers c ON o.cid = c.id \
+                WHERE o.id = 6",
+        )
         .unwrap();
     assert!(
         matches!(&r.rows[0][1], SqlValue::Null),
@@ -241,10 +242,16 @@ fn ledger28_where_qualified_reads_correct_side() {
     let mut c = setup();
     // WHERE 里的限定名（经谓词编译器路径）
     let r = c
-        .query("SELECT count(*) FROM orders o JOIN customers c ON o.cid = c.id \
-                WHERE c.id = 1 AND o.total >= 100")
+        .query(
+            "SELECT count(*) FROM orders o JOIN customers c ON o.cid = c.id \
+                WHERE c.id = 1 AND o.total >= 100",
+        )
         .unwrap();
-    assert_eq!(r.rows[0][0], SqlValue::Int64(2), "c.id=1 且 total>=100：订单 1/2");
+    assert_eq!(
+        r.rows[0][0],
+        SqlValue::Int64(2),
+        "c.id=1 且 total>=100：订单 1/2"
+    );
 }
 
 // ---------- O-5 top-N（ORDER BY + LIMIT 有界堆） ----------
@@ -336,8 +343,10 @@ fn o4_build_side_column_order_invariant() {
     let mut c = setup();
     // 输出列序恒 left++right：限定名解析（#28 布局）在 build 选择下不变
     let r = c
-        .query("SELECT o.id, c.id, o.note, c.region FROM orders o JOIN customers c ON o.cid = c.id \
-                WHERE o.id = 1")
+        .query(
+            "SELECT o.id, c.id, o.note, c.region FROM orders o JOIN customers c ON o.cid = c.id \
+                WHERE o.id = 1",
+        )
         .unwrap();
     let row = &r.rows[0];
     assert!(matches!(&row[0], SqlValue::Int64(1)), "o.id：{row:?}");
@@ -353,19 +362,26 @@ fn o2c_plan_exec_covered_shapes() {
     let mut c = setup();
     // 别名投影名经计划路径传递（Plan::Project.names）
     let r = c
-        .query("SELECT o.total AS t, c.region AS r FROM orders o JOIN customers c \
-                ON o.cid = c.id WHERE o.total > 200")
+        .query(
+            "SELECT o.total AS t, c.region AS r FROM orders o JOIN customers c \
+                ON o.cid = c.id WHERE o.total > 200",
+        )
         .unwrap();
     assert_eq!(r.columns, vec!["t", "r"], "输出列名：{:?}", r.columns);
     // 单表 WHERE + 投影（Filter{Scan} 的 selection 提示路径——点查判定恢复）
-    let r = c
-        .query("SELECT note FROM orders WHERE id = 1")
-        .unwrap();
+    let r = c.query("SELECT note FROM orders WHERE id = 1").unwrap();
     assert_eq!(r.rows.len(), 1);
-    assert!(matches!(&r.rows[0][0], SqlValue::Utf8(s) if s == "a"), "{:?}", r.rows);
+    assert!(
+        matches!(&r.rows[0][0], SqlValue::Utf8(s) if s == "a"),
+        "{:?}",
+        r.rows
+    );
     // 聚合/排序/LIMIT 形状回落 AST 路径（结果不变）
     diff(&mut c, "SELECT c.region, count(*) FROM orders o JOIN customers c ON o.cid = c.id GROUP BY c.region");
-    diff(&mut c, "SELECT o.id FROM orders o ORDER BY o.total DESC LIMIT 3");
+    diff(
+        &mut c,
+        "SELECT o.id FROM orders o ORDER BY o.total DESC LIMIT 3",
+    );
 }
 
 // ---------- 计划路径覆盖补全：LIMIT-无-ORDER / OFFSET ----------
@@ -377,8 +393,14 @@ fn limit_and_offset_plan_path() {
     diff(&mut c, "SELECT id FROM orders WHERE total > 55");
     diff(&mut c, "SELECT id FROM orders WHERE total > 55 LIMIT 3");
     // ORDER BY + LIMIT + OFFSET（top-N 界 = limit + offset 经 hint 下传）
-    diff(&mut c, "SELECT o.id FROM orders o ORDER BY o.total DESC LIMIT 3");
-    diff(&mut c, "SELECT o.id FROM orders o ORDER BY o.total DESC LIMIT 2 OFFSET 3");
+    diff(
+        &mut c,
+        "SELECT o.id FROM orders o ORDER BY o.total DESC LIMIT 3",
+    );
+    diff(
+        &mut c,
+        "SELECT o.id FROM orders o ORDER BY o.total DESC LIMIT 2 OFFSET 3",
+    );
     // OFFSET-only
     diff(&mut c, "SELECT id FROM orders OFFSET 4");
     // 特征值
@@ -404,9 +426,18 @@ fn limit_and_offset_plan_path() {
 fn diff_window_shapes() {
     let mut c = setup();
     // 排名（无 partition）+ 帧内聚合（partition + order）
-    diff(&mut c, "SELECT id, row_number() OVER (ORDER BY total DESC) FROM orders");
-    diff(&mut c, "SELECT id, sum(total) OVER (PARTITION BY cid) FROM orders ORDER BY id");
-    diff(&mut c, "SELECT id, rank() OVER (PARTITION BY cid ORDER BY total DESC) FROM orders ORDER BY id");
+    diff(
+        &mut c,
+        "SELECT id, row_number() OVER (ORDER BY total DESC) FROM orders",
+    );
+    diff(
+        &mut c,
+        "SELECT id, sum(total) OVER (PARTITION BY cid) FROM orders ORDER BY id",
+    );
+    diff(
+        &mut c,
+        "SELECT id, rank() OVER (PARTITION BY cid ORDER BY total DESC) FROM orders ORDER BY id",
+    );
     // 窗口 + 外层 WHERE/投影混用
     diff(&mut c, "SELECT id, total + row_number() OVER (ORDER BY id) FROM orders WHERE total > 50 ORDER BY id");
 }
@@ -417,9 +448,15 @@ fn diff_distinct_shapes() {
     diff(&mut c, "SELECT DISTINCT cid FROM orders");
     diff(&mut c, "SELECT DISTINCT cid FROM orders ORDER BY cid");
     diff(&mut c, "SELECT DISTINCT cid FROM orders LIMIT 2");
-    diff(&mut c, "SELECT DISTINCT region FROM customers ORDER BY region");
+    diff(
+        &mut c,
+        "SELECT DISTINCT region FROM customers ORDER BY region",
+    );
     // DISTINCT + 聚合 + 排序组合（carve-out ② 形态）
-    diff(&mut c, "SELECT DISTINCT cid, count(*) FROM orders GROUP BY cid ORDER BY cid");
+    diff(
+        &mut c,
+        "SELECT DISTINCT cid, count(*) FROM orders GROUP BY cid ORDER BY cid",
+    );
 }
 
 #[test]
@@ -441,12 +478,57 @@ fn diff_recursive_cte_shapes() {
 fn diff_subquery_and_cte_shapes() {
     let mut c = setup();
     // WHERE 子查询（内联路径 on/off 等价）
-    diff(&mut c, "SELECT id FROM orders WHERE total > (SELECT avg(total) FROM orders) ORDER BY id");
+    diff(
+        &mut c,
+        "SELECT id FROM orders WHERE total > (SELECT avg(total) FROM orders) ORDER BY id",
+    );
     diff(&mut c, "SELECT id FROM orders WHERE cid IN (SELECT id FROM customers WHERE region = 'EU') ORDER BY id");
     // 相关 EXISTS 属阶段 3（v2）——语料用非相关形态
-    diff(&mut c, "SELECT id FROM orders WHERE EXISTS (SELECT 1 FROM customers WHERE tier > 2) ORDER BY id");
+    diff(
+        &mut c,
+        "SELECT id FROM orders WHERE EXISTS (SELECT 1 FROM customers WHERE tier > 2) ORDER BY id",
+    );
     // 非递归 CTE（多次引用）
     diff(&mut c, "WITH big AS (SELECT * FROM orders WHERE total > 100) SELECT count(*) FROM big a JOIN big b ON a.id = b.id");
+}
+
+// ---------- L1/L2：semi-join 下沉 + 相关子查询迭代求值 ----------
+
+#[test]
+fn diff_semi_join_shapes() {
+    let mut c = setup();
+    // IN 合取项 → SemiJoin（非相关：计划单次求值 + 哈希探测）
+    diff(&mut c, "SELECT id FROM orders WHERE cid IN (SELECT id FROM customers WHERE region = 'EU') ORDER BY id");
+    // 混合合取：SemiJoin + 残余 Filter
+    diff(
+        &mut c,
+        "SELECT id FROM orders WHERE total > 50 AND cid IN (SELECT id FROM customers) ORDER BY id",
+    );
+    // 反半连接（NOT IN）+ NOT(x IN ..) 归一
+    diff(&mut c, "SELECT id FROM orders WHERE cid NOT IN (SELECT id FROM customers WHERE region = 'EU') ORDER BY id");
+    diff(
+        &mut c,
+        "SELECT id FROM orders WHERE NOT (cid IN (SELECT id FROM customers)) ORDER BY id",
+    );
+    // OR 位不落 SemiJoin（保留 InList 内联路径）——两机制共存
+    diff(
+        &mut c,
+        "SELECT id FROM orders WHERE cid IN (SELECT id FROM customers) OR total > 500 ORDER BY id",
+    );
+    // CTE 引用子查询（此前 lowering 期求值 42P01——计划期绑定可达）
+    diff(&mut c, "WITH eu AS (SELECT id FROM customers WHERE region = 'EU') SELECT count(*) FROM orders WHERE cid IN (SELECT id FROM eu)");
+}
+
+#[test]
+fn diff_correlated_subquery_shapes() {
+    let mut c = setup();
+    // L2：相关子查询迭代求值（限定名代入 + memo）
+    diff(&mut c, "SELECT id FROM orders o WHERE EXISTS (SELECT 1 FROM customers c WHERE c.id = o.cid) ORDER BY id");
+    diff(&mut c, "SELECT id FROM orders o WHERE o.total > (SELECT max(c.id) FROM customers c WHERE c.id = o.cid) ORDER BY id");
+    // 双层相关（内层子查询再引用外层）
+    diff(&mut c, "SELECT id FROM orders o WHERE o.cid IN (SELECT c.id FROM customers c WHERE c.region = (SELECT region FROM customers x WHERE x.id = o.cid)) ORDER BY id");
+    // OR 位相关子查询（迭代求值覆盖任意嵌套位）
+    diff(&mut c, "SELECT id FROM orders o WHERE total > 900 OR EXISTS (SELECT 1 FROM customers c WHERE c.id = o.cid AND c.region = 'EU') ORDER BY id");
 }
 
 // ---------- 阶段2：覆盖翻转后的新形态（限定通配/DISTINCT组合/SetOp分支DISTINCT） ----------
@@ -455,27 +537,48 @@ fn diff_subquery_and_cte_shapes() {
 fn diff_qualified_wildcard_shapes() {
     let mut c = setup();
     diff(&mut c, "SELECT o.* FROM orders o WHERE o.total > 100");
-    diff(&mut c, "SELECT c.* FROM orders o JOIN customers c ON o.cid = c.id WHERE o.total > 400");
+    diff(
+        &mut c,
+        "SELECT c.* FROM orders o JOIN customers c ON o.cid = c.id WHERE o.total > 400",
+    );
     // 多前缀限定通配
-    diff(&mut c, "SELECT o.*, c.* FROM orders o JOIN customers c ON o.cid = c.id WHERE o.id = 1");
+    diff(
+        &mut c,
+        "SELECT o.*, c.* FROM orders o JOIN customers c ON o.cid = c.id WHERE o.id = 1",
+    );
 }
 
 #[test]
 fn diff_distinct_sort_limit_shapes() {
     let mut c = setup();
     // 翻转①核心形态：DISTINCT + ORDER BY + LIMIT 共存（曾回落 AST）
-    diff(&mut c, "SELECT DISTINCT cid FROM orders ORDER BY cid LIMIT 2");
+    diff(
+        &mut c,
+        "SELECT DISTINCT cid FROM orders ORDER BY cid LIMIT 2",
+    );
     diff(&mut c, "SELECT DISTINCT cid FROM orders ORDER BY cid DESC");
-    diff(&mut c, "SELECT DISTINCT cid, note FROM orders ORDER BY cid, note LIMIT 3");
+    diff(
+        &mut c,
+        "SELECT DISTINCT cid, note FROM orders ORDER BY cid, note LIMIT 3",
+    );
     // SetOp 分支 DISTINCT（评审 P1-2：计划路径曾丢分支去重）
-    diff(&mut c, "SELECT DISTINCT cid FROM orders UNION SELECT id FROM customers ORDER BY 1");
-    diff(&mut c, "SELECT DISTINCT region FROM customers EXCEPT SELECT note FROM orders");
+    diff(
+        &mut c,
+        "SELECT DISTINCT cid FROM orders UNION SELECT id FROM customers ORDER BY 1",
+    );
+    diff(
+        &mut c,
+        "SELECT DISTINCT region FROM customers EXCEPT SELECT note FROM orders",
+    );
 }
 
 #[test]
 fn diff_window_plan_path_shapes() {
     let mut c = setup();
     // 翻转②：窗口走计划路径（Window 节点 + 构建期投影重写）
-    diff(&mut c, "SELECT id, row_number() OVER (ORDER BY total DESC) FROM orders");
+    diff(
+        &mut c,
+        "SELECT id, row_number() OVER (ORDER BY total DESC) FROM orders",
+    );
     diff(&mut c, "SELECT DISTINCT cid FROM orders ORDER BY cid");
 }
