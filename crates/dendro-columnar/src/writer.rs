@@ -113,6 +113,11 @@ fn encode_block(
 
     let mut data = Vec::new();
     let raw_len = encode_chunk(codec, part, &mut data)?;
+    // 编码时 round-trip 验证（选举纪律第三重；debug/test 构建）：
+    // 当选块解码回读与原值规范相等才可发布——发布前抓编码器/解码器
+    // 不对称，防"写得出读不回"的静默腐块
+    #[cfg(any(test, debug_assertions))]
+    crate::codec::verify_roundtrip(codec, &data, raw_len, part, layout)?;
     let crc = crc32c::crc32c(&data);
     let (min, max, sorted) = order_minmax(part, layout);
     let rows = part.rows() as u32;
@@ -171,6 +176,23 @@ fn encode_block(
     })
 }
 
+/// 每列 codec 选举（SPEC 05 §4）。
+///
+/// **字节确定性法则（内容寻址前提，pgrc2 "input-decidable election"
+/// 同律）**：选举是输入的纯函数——采样窗（首行组前 [`SAMPLE_ROWS`]
+/// 行，批序即输入序）、统计口径（[`ColStats::from_chunk`]）、
+/// [`choose_codec`] 规则序、下述 ≥10% 门槛与 round-trip 验证全部
+/// 钉死。同 (schema, 数据, 本版本决策常量) ⇒ 同选举 ⇒ 同字节 ⇒
+/// 同哈希（分支共享/去重成立）。任何决策常量变更 = 决策版本变更，
+/// 须显式评审（golden 锁定：tests/codec_discipline.rs）。
+///
+/// 纪律四重奏（pgrust 列存调研 P0）：
+/// 1. 输入可判定（上述）；
+/// 2. **≥10% 胜出门槛**——候选试编码赢不过 RAW 九成即 RAW 出货
+///    （不可压缩守卫，防负收益）；
+/// 3. **编码时 round-trip 验证**（debug/test 构建，见 `encode_block`）；
+/// 4. **拒绝降级 RAW，绝不静默换**——`codec_choice` 显式指定视为契约
+///    不参与门槛（冷块重编码等场景语义）。
 fn decide_codecs(
     batches: &[RecordBatch],
     schema: &SchemaRef,
@@ -208,19 +230,19 @@ fn decide_codecs(
                 Some(f) => f(name, ctypes[c], &stats),
                 None => crate::choose_codec(name, ctypes[c], &stats),
             };
-            // FSST 负收益守卫（仅默认策略；显式 codec_choice 强制 FSST 视为契约，
-            // 冷块重编码等场景不静默改写）：决策样本试编码，收益 <10%（≥90% 原始
-            // 大小）→ 降级 RAW。FSST 的 255 个单字节符号可覆盖 <256 值域的任意
-            // 字节字母表 ⇒ 高熵文本最坏也有 ~4-6% 收益（二元符号采集），但相对
-            // RAW 5× 的编码 CPU 不成比例；自然文本 2-4R 远离该边界。决策对全文
-            // 件该列生效。样本 ≥8192 行且均长 ≥6B ⇒ 试编码输入 ≥48KB，必走
-            // switch-on 路径（<32KB 的退化路径不参与判定）。
-            if codec == CodecId::Fsst && codec_choice.is_none() && !sample_cols[c].is_empty() {
+            // ≥10% 胜出门槛（仅默认策略；显式 codec_choice 视为契约，冷块
+            // 重编码等场景不静默改写）：决策样本试编码，赢不过 RAW 九成
+            // （≥90% 原始大小）→ 降级 RAW。原为 FSST 专用守卫，泛化到全部
+            // 非默认 codec——高熵文本对 FSST 最坏也有 ~4-6% 收益但相对 RAW
+            // 5× 编码 CPU 不成比例；ZSTD/DELTA 对不可压缩数据同理负收益。
+            // 决策对全文件该列生效。样本 ≥8192 行且均长 ≥6B ⇒ 试编码输入
+            // ≥48KB，必走 switch-on 路径（<32KB 的退化路径不参与判定）。
+            if codec != CodecId::Raw && codec_choice.is_none() && !sample_cols[c].is_empty() {
                 let first = &sample_cols[c][0];
                 let trial = first.slice(0, first.len().min(FSST_TRIAL_ROWS));
                 if let Ok(tp) = chunk_of(&trial) {
                     let mut out = Vec::new();
-                    if encode_chunk(CodecId::Fsst, &tp, &mut out).is_ok()
+                    if encode_chunk(codec, &tp, &mut out).is_ok()
                         && out.len() as u64 >= tp.vals.raw_len() * 90 / 100
                     {
                         codec = CodecId::Raw;

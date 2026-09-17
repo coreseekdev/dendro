@@ -4,6 +4,21 @@
 //! 读最新版本：**LIST 为权威路径**（GC 删除使版本号空间存在任意空洞，
 //! 探测无法区分"已是最新"与"撞洞"——第四轮评审 P1-F 探针实证探测
 //! 循环是纯死重，已删除）。
+//!
+//! ## 提交契约位（Lance CommitHandler 两问的 dendro 答案——显式成文
+//! 防回归；对照 docs/research/Lance实现调研.md §1）
+//!
+//! 1. **NotFound 何时终局**：`load_latest` 走 LIST——S3 LIST 强一致，
+//!    版本不在 LIST 中即不存在，**终局**。因此 tombstone 之外的删除
+//!    决策以 LIST 结果为准；不依赖"探测不到 = 不存在"（探测有洞歧义，
+//!    P1-F）。GC 回收 manifest 旧版本只删 `latest-16` 以下的版本对象，
+//!    任何 LIST 所见版本的对象不删（保守面与 WAL retention 同律）。
+//! 2. **错误后读回成功是否仍报错**：**不报**。`commit` 对
+//!    `ObjError::Uncertain`（超时/中断）以 payload 内嵌 putid 反查消解
+//!    ——读回证明本代已落地即按成功处理（调用方拿到的版本号真实有效）；
+//!    仅反查仍不可见时按失败上抛。这与"结果未知后不得叠加写"的 WAL
+//!    毒化纪律（wal.rs P0-D）互补：manifest 是幂等位点（版本号即身份），
+//!    WAL 段是追加流（叠加写会撕裂），故两侧错误面合同不同。
 
 use super::{ObjError, ObjResult, ObjStore};
 use serde::{Deserialize, Serialize};

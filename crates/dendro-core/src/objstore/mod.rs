@@ -125,3 +125,90 @@ pub fn validate_path(p: &str) -> ObjResult<()> {
     }
     Ok(())
 }
+
+/// 条件写能力自检（Lance 调研 P0-2 落地 / UnsafeCommitHandler 教训）：
+/// 目标存储若**静默忽略** If-None-Match（重复 create 返回无条件成功），
+/// put_if_absent 将无声覆盖——fence 租约唯一性与 manifest CAS 的安全
+/// 模型整体失效。开工即探测：二次 create 必须被拒（Exists）。
+/// Uncertain 放行（与现有消解语义一致——报不确定错误的存储不是
+/// "忽略条件写"的证据；真忽略者返回 Ok）。探测对象即测即删。
+pub fn verify_conditional_put(obj: &dyn ObjStore) -> ObjResult<()> {
+    let path = format!(".dendro-selftest/condput-{}", rand_path());
+    let r = (|| -> ObjResult<()> {
+        obj.put_if_absent(&path, Bytes::from_static(b"probe"))?;
+        match obj.put_if_absent(&path, Bytes::from_static(b"probe2")) {
+            Err(ObjError::Exists(_)) => Ok(()),
+            Ok(()) => Err(ObjError::Io(
+                "conditional-put self-test failed: store accepted a duplicate create \
+                 (If-None-Match ignored) — this store cannot safely back dendro: \
+                 fence lease uniqueness and manifest CAS would be silently unsafe"
+                    .into(),
+            )),
+            Err(ObjError::Uncertain(_)) => Ok(()),
+            Err(e) => Err(e),
+        }
+    })();
+    let _ = obj.delete(&path);
+    r
+}
+
+fn rand_path() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    nanos ^ (std::process::id() as u64).rotate_left(32)
+}
+
+#[cfg(test)]
+mod condput_tests {
+    use super::*;
+    use crate::objstore::memory::MemoryObjStore;
+    use std::sync::Arc;
+
+    /// 正确实现条件写的存储：自检通过
+    #[test]
+    fn condput_ok_on_conforming_store() {
+        let obj: Arc<dyn ObjStore> = Arc::new(MemoryObjStore::new());
+        assert!(verify_conditional_put(obj.as_ref()).is_ok());
+    }
+
+    /// 静默忽略条件写的存储（重复 create 返回 Ok）：必须被响亮拒绝
+    /// ——UnsafeCommitHandler 教训的开工面防线
+    #[test]
+    fn condput_rejects_ignoring_store() {
+        struct IgnoringStore;
+        impl ObjStore for IgnoringStore {
+            fn get(&self, _p: &str) -> ObjResult<Bytes> {
+                Err(ObjError::NotFound(_p.into()))
+            }
+            fn put(&self, _p: &str, _d: Bytes) -> ObjResult<()> {
+                Ok(())
+            }
+            fn put_if_absent(&self, _p: &str, _d: Bytes) -> ObjResult<()> {
+                Ok(()) // 无条件成功——模拟忽略 If-None-Match 的存储
+            }
+            fn delete(&self, _p: &str) -> ObjResult<()> {
+                Ok(())
+            }
+            fn head(&self, _p: &str) -> ObjResult<Option<HeadInfo>> {
+                Ok(None)
+            }
+            fn list_prefix(&self, _p: &str) -> ObjResult<Vec<String>> {
+                Ok(vec![])
+            }
+            fn get_range(&self, _p: &str, _o: u64, _l: usize) -> ObjResult<Bytes> {
+                Err(ObjError::NotFound(_p.into()))
+            }
+            fn copy(&self, _a: &str, _b: &str) -> ObjResult<()> {
+                Ok(())
+            }
+        }
+        let e = verify_conditional_put(&IgnoringStore).unwrap_err();
+        assert!(
+            e.to_string().contains("self-test failed"),
+            "坏存储必须被拒：{e}"
+        );
+    }
+}

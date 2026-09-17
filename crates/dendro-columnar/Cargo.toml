@@ -14,5 +14,8 @@ fsst.workspace = true
 arrow.workspace = true
 tracing.workspace = true
 
+[dev-dependencies]
+arrow.workspace = true
+
 [features]
 parquet_export = []

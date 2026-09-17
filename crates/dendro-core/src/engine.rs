@@ -1792,6 +1792,18 @@ impl Session {
 ///
 /// 裁决有效性：validate 与 install 之间插入的并发提交都在 in-flight 注册表
 /// 里（Pass1 求交），裁决结果不会被并发提交作废。
+///
+/// **隔离合同（Lance 调研 P0-1 审计成文，2026-09-18）**：显式事务 =
+/// 快照读 + 写集 first-committer-wins（SI 型）。诚实边界两条：
+/// 1. 无读集验证——读后他者改、我方盲写不冲突（经典 SI 无 write-skew
+///    防护）；
+/// 2. 无谓词冲突位——`DELETE/UPDATE ... WHERE p` 与并发 INSERT 命中
+///    p 的新行互不冲突（幻行可在快照外存活；谓词不入事务元数据，
+///    对照 Lance Operation::Delete 携带 predicate 的形态）。
+///
+/// Q-9 守卫把两条边界限制在单 checkpoint 窗口内。若未来引入谓词
+/// 冲突位：谓词规范化文本入 Txn 元数据，Pass1 对 in-flight 的
+/// INSERT 键做谓词相交试探（Lance conflict_resolver 同构）。
 /// 失败语义：等待失败（毒化 40003/停止）→ in-flight 摘除 + 错误上抛——
 /// 帧可能已落盘（同组他者成功）= 既有 Uncertain 对账口径（SPEC 02 §3.5）。
 pub(crate) fn commit_tx(db: &Database, sess_branch: &str, txn: &Txn) -> Result<u64> {
@@ -2019,5 +2031,55 @@ mod fence_validate_tests {
         assert!(b.lease.check().is_ok(), "健康分支续期后照常可写");
         let objs = db.obj.list_prefix("fence/b2/").unwrap();
         assert_eq!(objs.len(), 1, "恰一个租约对象：{objs:?}");
+    }
+}
+
+#[cfg(test)]
+mod isolation_contract_tests {
+    use super::*;
+
+    /// 隔离合同锁定（Lance P0-1 审计）：谓词删除 vs 并发插入——
+    /// SI 型语义下幻行在快照外存活（无谓词冲突位）。本测试固化
+    /// **现状合同**；若引入谓词冲突位，本测试翻转为 40001。
+    #[test]
+    fn predicate_delete_vs_concurrent_insert_phantom() {
+        let db = Database::open(DbOptions {
+            store: StoreConfig::Memory,
+            ..Default::default()
+        })
+        .unwrap();
+        let mut s1 = db.new_session();
+        s1.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v BIGINT)")
+            .unwrap();
+        s1.exec("INSERT INTO t VALUES (1, 10), (2, 20)").unwrap();
+        // 事务 A：删除 v > 5（快照见 1、2 两行）
+        s1.exec("BEGIN").unwrap();
+        s1.exec("DELETE FROM t WHERE v > 5").unwrap();
+        // 事务 B（另一会话）：插入命中同一谓词的新行并提交
+        let mut s2 = db.new_session();
+        s2.exec("BEGIN").unwrap();
+        s2.exec("INSERT INTO t VALUES (3, 30)").unwrap();
+        s2.exec("COMMIT").unwrap();
+        // A 提交：写集（1、2 的墓碑）与 B 的写集（键 3）不相交 → 无冲突
+        s1.exec("COMMIT").unwrap();
+        // 现状合同：B 的行存活（幻行）——谓词外快照写入不回卷
+        let n: String = {
+            let out = s1.exec("SELECT count(*) FROM t").unwrap();
+            match &out[0] {
+                crate::types::Output::Rows(rs) => rs.text_rows()[0][0].clone().unwrap(),
+                _ => panic!(),
+            }
+        };
+        assert_eq!(n, "1", "SI 型：并发插入命中已删谓词仍存活（幻行合同）");
+        // 写-写 first-committer-wins 仍成立（对照轴）：同键并发改，后提交者 40001
+        let mut s3 = db.new_session();
+        let mut s4 = db.new_session();
+        s3.exec("BEGIN").unwrap();
+        s4.exec("BEGIN").unwrap();
+        s3.exec("UPDATE t SET v = 100 WHERE id = 3").unwrap();
+        s4.exec("UPDATE t SET v = 200 WHERE id = 3").unwrap();
+        s4.exec("COMMIT").unwrap();
+        let e = s3.exec("COMMIT").unwrap_err();
+        assert_eq!(e.state, "40001", "同键写冲突必须 first-committer-wins：{e}");
     }
 }

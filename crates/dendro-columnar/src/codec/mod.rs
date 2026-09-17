@@ -502,6 +502,42 @@ pub(crate) fn encode_chunk(codec: CodecId, part: &ChunkPart, out: &mut Vec<u8>) 
 }
 
 /// 解码一个块的数据区 → 中间表示。`raw_len` 来自块头，用于 zstd 容量与一致性校验。
+/// 编码时 round-trip 验证（debug/test 构建）：解码回读与原值规范
+/// 相等（值域逐元素 + 变长偏移/字节域）；不等 = 编码器/解码器
+/// 不对称，响亮报错而非发布静默腐块
+#[cfg(any(test, debug_assertions))]
+pub(crate) fn verify_roundtrip(
+    codec: CodecId,
+    data: &[u8],
+    raw_len: u64,
+    part: &ChunkPart,
+    layout: &Layout,
+) -> Result<()> {
+    let decoded = decode_chunk(codec, data, raw_len as usize, part.rows(), layout)?;
+    let ok = match (&part.vals, &decoded) {
+        (ColumnValues::Fixed { values: a, .. }, ColumnValues::Fixed { values: b, .. }) => {
+            a.iter().eq(b.iter())
+        }
+        (
+            ColumnValues::Var {
+                offsets: oa,
+                bytes: ba,
+            },
+            ColumnValues::Var {
+                offsets: ob,
+                bytes: bb,
+            },
+        ) => oa.iter().eq(ob.iter()) && ba == bb,
+        _ => false,
+    };
+    if !ok {
+        return Err(Error::Corrupt(format!(
+            "codec roundtrip mismatch: {codec:?} decodes to different values than encoded"
+        )));
+    }
+    Ok(())
+}
+
 pub(crate) fn decode_chunk(
     codec: CodecId,
     data: &[u8],

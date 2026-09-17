@@ -63,11 +63,15 @@ impl S3ObjStore {
             .enable_all()
             .build()
             .map_err(|e| ObjError::Io(format!("s3 runtime: {e}")))?;
-        Ok(Self {
+        let me = Self {
             inner,
             rt,
             stats: S3Stats::default(),
-        })
+        };
+        // 条件写能力自检（评审 P0-2）：静默忽略 If-None-Match 的存储
+        // 会让 fence/manifest CAS 无声失效——开工即拒，不做 Unsafe 默认
+        super::verify_conditional_put(&me)?;
+        Ok(me)
     }
 
     pub fn stats(&self) -> &S3Stats {
