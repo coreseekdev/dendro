@@ -46,17 +46,32 @@ fn print_step(s: &ScalarStep, p: &ScalarProgram) -> Result<String> {
     use ScalarStep::*;
     Ok(match s {
         Const { dst, c } => {
-            let v = p.consts.get(*c as usize).ok_or_else(|| bad("const 池索引越界"))?;
+            let v = p
+                .consts
+                .get(*c as usize)
+                .ok_or_else(|| bad("const 池索引越界"))?;
             format!("{} = const {}", reg(*dst), print_const(v)?)
         }
         Col { dst, idx } => format!("{} = col {idx}", reg(*dst)),
         Param { dst, idx } => format!("{} = param ${}", reg(*dst), idx + 1),
         Cmp { dst, op, a, b } => {
-            let o = p.binops.get(*op as usize).ok_or_else(|| bad("binop 池索引越界"))?;
-            format!("{} = cmp.{} {}, {}", reg(*dst), cmp_name(o)?, reg(*a), reg(*b))
+            let o = p
+                .binops
+                .get(*op as usize)
+                .ok_or_else(|| bad("binop 池索引越界"))?;
+            format!(
+                "{} = cmp.{} {}, {}",
+                reg(*dst),
+                cmp_name(o)?,
+                reg(*a),
+                reg(*b)
+            )
         }
         Arith { dst, op, a, b } => {
-            let o = p.binops.get(*op as usize).ok_or_else(|| bad("binop 池索引越界"))?;
+            let o = p
+                .binops
+                .get(*op as usize)
+                .ok_or_else(|| bad("binop 池索引越界"))?;
             format!(
                 "{} = arith.{} {}, {}",
                 reg(*dst),
@@ -75,7 +90,10 @@ fn print_step(s: &ScalarStep, p: &ScalarProgram) -> Result<String> {
         IsTrue { dst, src } => format!("{} = is_true {}", reg(*dst), reg(*src)),
         IsFalse { dst, src } => format!("{} = is_false {}", reg(*dst), reg(*src)),
         Cast { dst, src, ty } => {
-            let t = p.casts.get(*ty as usize).ok_or_else(|| bad("cast 池索引越界"))?;
+            let t = p
+                .casts
+                .get(*ty as usize)
+                .ok_or_else(|| bad("cast 池索引越界"))?;
             format!("{} = cast.{} {}", reg(*dst), cast_name(t)?, reg(*src))
         }
         Between {
@@ -105,12 +123,9 @@ fn print_step(s: &ScalarStep, p: &ScalarProgram) -> Result<String> {
             reg(*state),
             if *negated { " neg" } else { "" }
         ),
-        CaseHit { dst, operand, when } => format!(
-            "{} = case.hit {}, {}",
-            reg(*dst),
-            reg(*operand),
-            reg(*when)
-        ),
+        CaseHit { dst, operand, when } => {
+            format!("{} = case.hit {}, {}", reg(*dst), reg(*operand), reg(*when))
+        }
         Mov { dst, src } => format!("{} = mov {}", reg(*dst), reg(*src)),
         Jump(t) => format!("jump L{t}"),
         JumpIfTrue { reg: r, tgt } => format!("jump_if_true {}, L{tgt}", reg(*r)),
@@ -138,7 +153,10 @@ fn print_const(v: &SqlValue) -> Result<String> {
             if b.is_empty() {
                 "bytes 0x".into()
             } else {
-                format!("bytes 0x{}", b.iter().map(|x| format!("{x:02x}")).collect::<String>())
+                format!(
+                    "bytes 0x{}",
+                    b.iter().map(|x| format!("{x:02x}")).collect::<String>()
+                )
             }
         }
         SqlValue::Date32(d) => format!("date32 {d}"),
@@ -223,7 +241,10 @@ pub(crate) fn json_escape(s: &str) -> String {
 /// 侧表重建语义与编译器一致（consts/casts 追加、binops 首见去重）⇒
 /// P1 全字段结构相等。
 pub fn parse_scalar(text: &str) -> Option<ScalarProgram> {
-    let mut lines = text.lines().map(strip_comment).map(|l| l.trim().to_string());
+    let mut lines = text
+        .lines()
+        .map(strip_comment)
+        .map(|l| l.trim().to_string());
     let header = lines.next()?;
     if header != "dendro.ir v1" {
         return None; // 未知版本 fail-closed（§4）
@@ -615,11 +636,7 @@ fn parse_assign(dst: u16, body: &str, p: &mut ScalarProgram) -> Option<ScalarSte
     }
     if let Some(t) = core.strip_prefix("case.hit ") {
         let (operand, when) = two_reg(t)?;
-        return Some(CaseHit {
-            dst,
-            operand,
-            when,
-        });
+        return Some(CaseHit { dst, operand, when });
     }
     None
 }
@@ -689,9 +706,7 @@ pub fn verify(p: &ScalarProgram) -> Result<()> {
                     return Err(bad("binop 池索引越界"));
                 }
             }
-            Concat { dst, a, b }
-            | And { dst, a, b }
-            | Or { dst, a, b } => {
+            Concat { dst, a, b } | And { dst, a, b } | Or { dst, a, b } => {
                 chk!(dst, "dst 越界");
                 chk!(a, "a 越界");
                 chk!(b, "b 越界");
@@ -751,7 +766,6 @@ pub fn verify(p: &ScalarProgram) -> Result<()> {
     }
     Ok(())
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -919,9 +933,13 @@ mod tests {
     /// fail-closed（§4）：未知版本 / 未知操作 / 坏结构
     #[test]
     fn fail_closed() {
-        let good = "dendro.ir v1\nscalar @p {\n  n_cols = 1\n  n_regs = 1\n  %r0 = col 0\n  qual %r0\n}\n";
+        let good =
+            "dendro.ir v1\nscalar @p {\n  n_cols = 1\n  n_regs = 1\n  %r0 = col 0\n  qual %r0\n}\n";
         assert!(parse_scalar(good).is_some());
-        assert!(parse_scalar(&good.replace("v1", "v2")).is_none(), "未知版本");
+        assert!(
+            parse_scalar(&good.replace("v1", "v2")).is_none(),
+            "未知版本"
+        );
         assert!(
             parse_scalar(&good.replace("%r0 = col 0", "%r0 = frob 0")).is_none(),
             "未知操作"
@@ -983,7 +1001,12 @@ mod tests {
             }),
         };
         let cp = crate::sql::scalar::compile_predicate_named(&e, &cols, 2, &names).unwrap();
-        assert_eq!(cp.prog.consts.len(), 1, "折叠后池不得留孤儿：{:?}", cp.prog.consts);
+        assert_eq!(
+            cp.prog.consts.len(),
+            1,
+            "折叠后池不得留孤儿：{:?}",
+            cp.prog.consts
+        );
         let text = print_scalar("pred", &cp.prog).unwrap();
         let p2 = parse_scalar(&text).unwrap();
         assert_eq!(cp.prog.steps, p2.steps);
@@ -993,7 +1016,8 @@ mod tests {
     /// 评审修复回归：fail-closed 收紧（闭括号后内容/重复属性/属性后置）
     #[test]
     fn fail_closed_structure_tightened() {
-        let good = "dendro.ir v1\nscalar @p {\n  n_cols = 1\n  n_regs = 1\n  %r0 = col 0\n  qual %r0\n}\n";
+        let good =
+            "dendro.ir v1\nscalar @p {\n  n_cols = 1\n  n_regs = 1\n  %r0 = col 0\n  qual %r0\n}\n";
         assert!(parse_scalar(good).is_some());
         // 闭括号后多余内容
         assert!(parse_scalar(&format!("{good}scalar @x {{\n}}\n")).is_none());
@@ -1024,8 +1048,7 @@ mod tests {
                 format: None,
                 array: false,
             };
-            let cp =
-                crate::sql::scalar::compile_predicate_named(&e, &cols, 2, &names).unwrap();
+            let cp = crate::sql::scalar::compile_predicate_named(&e, &cols, 2, &names).unwrap();
             let text = print_scalar("pred", &cp.prog).unwrap();
             let p2 = parse_scalar(&text).unwrap();
             assert_eq!(cp.prog.steps, p2.steps, "{text}");
@@ -1037,7 +1060,10 @@ mod tests {
     #[test]
     fn verify_negatives() {
         let mut p = ScalarProgram {
-            steps: vec![ScalarStep::Col { dst: 0, idx: 0 }, ScalarStep::Qual { src: 0 }],
+            steps: vec![
+                ScalarStep::Col { dst: 0, idx: 0 },
+                ScalarStep::Qual { src: 0 },
+            ],
             consts: vec![],
             binops: vec![],
             casts: vec![],

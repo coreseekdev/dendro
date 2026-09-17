@@ -48,12 +48,15 @@ fn analyze_text(db: &Arc<Database>, sql: &str) -> String {
 fn query_one(db: &Arc<Database>, sql: &str) -> SqlValue {
     let mut s = db.new_session();
     match &s.exec(sql).unwrap()[0] {
-        Output::Rows(rs) => {
-            rs.text_rows().first().unwrap()[0]
-                .clone()
-                .map(|t| t.parse::<i64>().ok().map(SqlValue::Int64).unwrap_or(SqlValue::Utf8(t)))
-                .unwrap()
-        }
+        Output::Rows(rs) => rs.text_rows().first().unwrap()[0]
+            .clone()
+            .map(|t| {
+                t.parse::<i64>()
+                    .ok()
+                    .map(SqlValue::Int64)
+                    .unwrap_or(SqlValue::Utf8(t))
+            })
+            .unwrap(),
         _ => panic!(),
     }
 }
@@ -70,10 +73,7 @@ fn stats_exact_min_max_rows() {
     let text = analyze_text(&c, "EXPLAIN ANALYZE SELECT id FROM w WHERE a > 48");
     // 下推到 scan 的过滤（单表无 join——Filter{Scan} 捷径）
     assert!(text.contains("scan w rows=12000"), "{text}");
-    assert!(
-        text.contains("est="),
-        "下推扫描应带估算：{text}"
-    );
+    assert!(text.contains("est="), "下推扫描应带估算：{text}");
     // est 值：12000 × (1 - (48-0)/(96-0)) = 6000（uniform 假设精确命中
     // 均匀数据——id%97 在 12000 行上近乎均匀）
     let est: u64 = text
@@ -126,7 +126,8 @@ fn stats_absent_without_segments() {
         row_group_rows: 4096,
     }));
     let mut s = db.new_session();
-    s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v INT)").unwrap();
+    s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v INT)")
+        .unwrap();
     s.exec("INSERT INTO t VALUES (1, 1)").unwrap();
     let text = analyze_text(&db, "EXPLAIN ANALYZE SELECT id FROM t WHERE v > 0");
     assert!(!text.contains("est="), "无段无统计：{text}");

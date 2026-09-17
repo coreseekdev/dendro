@@ -5,9 +5,9 @@ use crate::codec::{build_array, decode_chunk, layout_of, merge_chunks, ChunkPart
 use crate::footer::{parse_block_header, parse_footer, CbfFooter};
 use crate::{Error, Result, BLOCK_HEADER_LEN};
 use arrow::array::{ArrayRef, RecordBatch};
+use arrow::datatypes::SchemaRef;
 use dendro_core::objstore::ObjStore;
 use std::sync::Arc;
-use arrow::datatypes::SchemaRef;
 
 pub(crate) fn read_footer(data: &[u8]) -> Result<CbfFooter> {
     parse_footer(data)
@@ -31,10 +31,7 @@ pub(crate) fn read_cbf(data: &[u8]) -> Result<(SchemaRef, Vec<RecordBatch>)> {
 
 /// 段的稀疏 footer 抓取（head 定长 → 尾 8B → footer 体；列统计/
 /// 掩码剪枝共用——O-3+ 稀疏读路径）
-pub fn footer_sparse(
-    obj: &Arc<dyn ObjStore>,
-    path: &str,
-) -> Result<CbfFooter> {
+pub fn footer_sparse(obj: &Arc<dyn ObjStore>, path: &str) -> Result<CbfFooter> {
     let len = obj
         .head(path)
         .map_err(|e| crate::Error::InvalidInput(format!("head: {e}")))?

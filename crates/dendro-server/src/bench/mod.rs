@@ -488,7 +488,8 @@ pub fn bench_optimizer() -> BenchResult {
     let mut s = db.new_session();
     // 夹具：orders 50k（6 列宽表）× customers 200——不对称 join 的典型形
     s.exec("CREATE TABLE orders (id BIGINT PRIMARY KEY, cid BIGINT, a BIGINT, b BIGINT, c DOUBLE, note TEXT)").unwrap();
-    s.exec("CREATE TABLE customers (id BIGINT PRIMARY KEY, region TEXT, tier INT)").unwrap();
+    s.exec("CREATE TABLE customers (id BIGINT PRIMARY KEY, region TEXT, tier INT)")
+        .unwrap();
     const N: usize = 50_000;
     const CHUNK: usize = 2000;
     let mut done = 0usize;
@@ -496,10 +497,16 @@ pub fn bench_optimizer() -> BenchResult {
         let end = (done + CHUNK).min(N);
         let mut sql = String::from("INSERT INTO orders VALUES ");
         for i in done..end {
-            if i > done { sql.push(','); }
+            if i > done {
+                sql.push(',');
+            }
             sql.push_str(&format!(
                 "({i}, {}, {}, {}, {}, 'note-payload-{}')",
-                i % 200, i % 97, i * 3 % 1009, (i % 881) as f64 * 0.25, i % 1000
+                i % 200,
+                i % 97,
+                i * 3 % 1009,
+                (i % 881) as f64 * 0.25,
+                i % 1000
             ));
         }
         s.exec(&sql).unwrap();
@@ -508,18 +515,16 @@ pub fn bench_optimizer() -> BenchResult {
     {
         let mut sql = String::from("INSERT INTO customers VALUES ");
         for i in 0..200 {
-            if i > 0 { sql.push(','); }
+            if i > 0 {
+                sql.push(',');
+            }
             sql.push_str(&format!("({i}, 'r{}', {})", i % 8, i % 5));
         }
         s.exec(&sql).unwrap();
     }
     s.exec("CHECKPOINT").unwrap(); // orders 物化列存段（AP/裁剪臂）
 
-    fn median_of(
-        s: &mut dendro_core::engine::Session,
-        sql: &str,
-        opt: &str,
-    ) -> f64 {
+    fn median_of(s: &mut dendro_core::engine::Session, sql: &str, opt: &str) -> f64 {
         let mut times = Vec::new();
         for _ in 0..5 {
             s.exec(&format!("SET dendro.optimize = '{opt}'")).unwrap();
@@ -535,34 +540,82 @@ pub fn bench_optimizer() -> BenchResult {
     let q_join = "SELECT count(*) FROM orders o JOIN customers c ON o.cid = c.id                   WHERE o.b < 100 AND c.region = 'r3'";
     let join_on = median_of(&mut s, q_join, "on");
     let join_off = median_of(&mut s, q_join, "off");
-    rows.push(BenchRow { name: "opt_join_pushdown_on_ms".into(), value: join_on, unit: "ms" });
-    rows.push(BenchRow { name: "opt_join_pushdown_off_ms".into(), value: join_off, unit: "ms" });
-    rows.push(BenchRow { name: "opt_join_pushdown_speedup".into(), value: join_off / join_on, unit: "x" });
+    rows.push(BenchRow {
+        name: "opt_join_pushdown_on_ms".into(),
+        value: join_on,
+        unit: "ms",
+    });
+    rows.push(BenchRow {
+        name: "opt_join_pushdown_off_ms".into(),
+        value: join_off,
+        unit: "ms",
+    });
+    rows.push(BenchRow {
+        name: "opt_join_pushdown_speedup".into(),
+        value: join_off / join_on,
+        unit: "x",
+    });
 
     // ② O-5 top-N：ORDER BY 非索引列 + LIMIT 10（off = 全量排序）
     let q_topn = "SELECT id, note FROM orders WHERE a > 10 ORDER BY note DESC LIMIT 10";
     let topn_on = median_of(&mut s, q_topn, "on");
     let topn_off = median_of(&mut s, q_topn, "off");
-    rows.push(BenchRow { name: "opt_topn_on_ms".into(), value: topn_on, unit: "ms" });
-    rows.push(BenchRow { name: "opt_topn_off_ms".into(), value: topn_off, unit: "ms" });
-    rows.push(BenchRow { name: "opt_topn_speedup".into(), value: topn_off / topn_on, unit: "x" });
+    rows.push(BenchRow {
+        name: "opt_topn_on_ms".into(),
+        value: topn_on,
+        unit: "ms",
+    });
+    rows.push(BenchRow {
+        name: "opt_topn_off_ms".into(),
+        value: topn_off,
+        unit: "ms",
+    });
+    rows.push(BenchRow {
+        name: "opt_topn_speedup".into(),
+        value: topn_off / topn_on,
+        unit: "x",
+    });
 
     // ③ O-3 裁剪 + 稀疏读：AP 子集列查询（2/6 列 + WHERE 列）
     let q_prune = "SELECT id, note FROM orders WHERE c > 100.0";
     let prune_on = median_of(&mut s, q_prune, "on");
     let prune_off = median_of(&mut s, q_prune, "off");
-    rows.push(BenchRow { name: "opt_prune_on_ms".into(), value: prune_on, unit: "ms" });
-    rows.push(BenchRow { name: "opt_prune_off_ms".into(), value: prune_off, unit: "ms" });
-    rows.push(BenchRow { name: "opt_prune_speedup".into(), value: prune_off / prune_on, unit: "x" });
+    rows.push(BenchRow {
+        name: "opt_prune_on_ms".into(),
+        value: prune_on,
+        unit: "ms",
+    });
+    rows.push(BenchRow {
+        name: "opt_prune_off_ms".into(),
+        value: prune_off,
+        unit: "ms",
+    });
+    rows.push(BenchRow {
+        name: "opt_prune_speedup".into(),
+        value: prune_off / prune_on,
+        unit: "x",
+    });
 
     // ④ O-4 构建侧：200 小表在左 ⋈ 50k（a<40 过滤后 ~20k）在右——
     // off 固定建右（20k 行哈希表），on 小侧建表（200 行）
     let q_build = "SELECT count(*) FROM customers c JOIN orders o ON c.id = o.cid WHERE o.a < 40";
     let build_on = median_of(&mut s, q_build, "on");
     let build_off = median_of(&mut s, q_build, "off");
-    rows.push(BenchRow { name: "opt_build_side_on_ms".into(), value: build_on, unit: "ms" });
-    rows.push(BenchRow { name: "opt_build_side_off_ms".into(), value: build_off, unit: "ms" });
-    rows.push(BenchRow { name: "opt_build_side_speedup".into(), value: build_off / build_on, unit: "x" });
+    rows.push(BenchRow {
+        name: "opt_build_side_on_ms".into(),
+        value: build_on,
+        unit: "ms",
+    });
+    rows.push(BenchRow {
+        name: "opt_build_side_off_ms".into(),
+        value: build_off,
+        unit: "ms",
+    });
+    rows.push(BenchRow {
+        name: "opt_build_side_speedup".into(),
+        value: build_off / build_on,
+        unit: "x",
+    });
 
     // ⑤ SOTA P2：Join Filter Pushdown（宽 probe 界外行跳过）
     // 50k 宽表（total ∈ [0, 999]）join 200 窄表（id ∈ [500, 549] 子集）
@@ -571,13 +624,28 @@ pub fn bench_optimizer() -> BenchResult {
         let q_jfp = "SELECT count(*) FROM orders o JOIN (SELECT id FROM customers WHERE tier = 4) c ON o.cid = c.id";
         let jfp_on = median_of(&mut s, q_jfp, "on");
         let jfp_off = median_of(&mut s, q_jfp, "off");
-        rows.push(BenchRow { name: "opt_join_filter_pushdown_on_ms".into(), value: jfp_on, unit: "ms" });
-        rows.push(BenchRow { name: "opt_join_filter_pushdown_off_ms".into(), value: jfp_off, unit: "ms" });
-        rows.push(BenchRow { name: "opt_join_filter_pushdown_speedup".into(), value: jfp_off / jfp_on, unit: "x" });
+        rows.push(BenchRow {
+            name: "opt_join_filter_pushdown_on_ms".into(),
+            value: jfp_on,
+            unit: "ms",
+        });
+        rows.push(BenchRow {
+            name: "opt_join_filter_pushdown_off_ms".into(),
+            value: jfp_off,
+            unit: "ms",
+        });
+        rows.push(BenchRow {
+            name: "opt_join_filter_pushdown_speedup".into(),
+            value: jfp_off / jfp_on,
+            unit: "x",
+        });
     }
 
     let _ = std::fs::remove_dir_all(dir);
-    BenchResult { suite: "optimizer".into(), rows }
+    BenchResult {
+        suite: "optimizer".into(),
+        rows,
+    }
 }
 
 pub fn bench_ap(rows_n: usize) -> BenchResult {

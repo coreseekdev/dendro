@@ -10,15 +10,15 @@ fn order_domain_real_impl_involution_and_order() {
     let f = |v: i64| (v ^ i64::MIN) as u64;
     // ① 对合（边界 + 随机采样）
     let mut x = 0x123456789abcdefu64;
-    for v in [
-        i64::MIN, i64::MIN + 1, -1, 0, 1, 42, i64::MAX - 1, i64::MAX,
-    ] {
+    for v in [i64::MIN, i64::MIN + 1, -1, 0, 1, 42, i64::MAX - 1, i64::MAX] {
         let d = f(v);
         assert_eq!((d as i64) ^ i64::MIN, v, "decode(roundtrip) @ {v}");
     }
     for _ in 0..10_000 {
         // xorshift 采样
-        x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
         let v = (x as i64) ^ (x << 1) as i64;
         let d = f(v);
         assert_eq!((d as i64) ^ i64::MIN, v);
@@ -26,7 +26,9 @@ fn order_domain_real_impl_involution_and_order() {
     // ② 保序（随机对）
     let mut a = 0xdeadbeefu64;
     for _ in 0..10_000 {
-        a ^= a << 13; a ^= a >> 7; a ^= a << 17;
+        a ^= a << 13;
+        a ^= a >> 7;
+        a ^= a << 17;
         let b = a.wrapping_mul(0x9E3779B97F4A7C15);
         let (i, j) = ((a as i64), (b as i64));
         if i <= j {
@@ -62,11 +64,19 @@ fn selectivity_clamp_real_impl_bounds() {
     use dendro_core::types::SqlValue;
     let mut x = 0xfeedfaceu64;
     for _ in 0..10_000 {
-        x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
         let min = x >> 8; // 任意 56 位
         let max = min + (x & 0xffff); // span > 0
         let p = (x.wrapping_mul(31)) >> 8;
-        let st = ColStat { rows: 1000, nulls: 0, min, max, has_data: true };
+        let st = ColStat {
+            rows: 1000,
+            nulls: 0,
+            min,
+            max,
+            has_data: true,
+        };
         for op in [">", ">=", "<", "<="] {
             if let Some(sel) = range_selectivity(&st, &SqlValue::Int64(p as i64), op) {
                 assert!(

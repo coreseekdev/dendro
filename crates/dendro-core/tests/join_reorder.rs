@@ -24,7 +24,8 @@ fn fixture() -> Arc<Database> {
         .unwrap();
     s.exec("CREATE TABLE customers (id BIGINT PRIMARY KEY, rid BIGINT, tier INT)")
         .unwrap();
-    s.exec("CREATE TABLE regions (id BIGINT PRIMARY KEY, name TEXT)").unwrap();
+    s.exec("CREATE TABLE regions (id BIGINT PRIMARY KEY, name TEXT)")
+        .unwrap();
     for chunk in 0..12 {
         let vals: Vec<String> = (0..1000)
             .map(|i| {
@@ -43,9 +44,7 @@ fn fixture() -> Arc<Database> {
             .unwrap();
     }
     {
-        let vals: Vec<String> = (0..8)
-            .map(|i| format!("({i}, 'r{i}')"))
-            .collect();
+        let vals: Vec<String> = (0..8).map(|i| format!("({i}, 'r{i}')")).collect();
         s.exec(&format!("INSERT INTO regions VALUES {}", vals.join(",")))
             .unwrap();
     }
@@ -71,7 +70,11 @@ fn diff(db: &Arc<Database>, sql: &str) {
     let off = run(db, "off", sql);
     assert_rows_equiv(
         &format!("`{sql}` reorder on vs off"),
-        &on.0, &on.1, &off.0, &off.1, false,
+        &on.0,
+        &on.1,
+        &off.0,
+        &off.1,
+        false,
     );
 }
 
@@ -79,17 +82,29 @@ fn diff(db: &Arc<Database>, sql: &str) {
 fn star_join_reorder_equivalence() {
     let db = fixture();
     // 全链（大→小书写：orders 首位——reorder 应倒置为小表先行）
-    diff(&db, "SELECT count(*) FROM orders o JOIN customers c ON o.cid = c.id \
-               JOIN regions r ON c.rid = r.id");
+    diff(
+        &db,
+        "SELECT count(*) FROM orders o JOIN customers c ON o.cid = c.id \
+               JOIN regions r ON c.rid = r.id",
+    );
     // 带选择性谓词（orders 侧 1%）
-    diff(&db, "SELECT r.name, count(*) FROM orders o JOIN customers c ON o.cid = c.id \
-               JOIN regions r ON c.rid = r.id WHERE o.total < 20 GROUP BY r.name");
+    diff(
+        &db,
+        "SELECT r.name, count(*) FROM orders o JOIN customers c ON o.cid = c.id \
+               JOIN regions r ON c.rid = r.id WHERE o.total < 20 GROUP BY r.name",
+    );
     // 反向书写（小→大：reorder 可能保持原序或调首——多重集恒等）
-    diff(&db, "SELECT count(*) FROM regions r JOIN customers c ON c.rid = r.id \
-               JOIN orders o ON o.cid = c.id WHERE o.note = 'n1'");
+    diff(
+        &db,
+        "SELECT count(*) FROM regions r JOIN customers c ON c.rid = r.id \
+               JOIN orders o ON o.cid = c.id WHERE o.note = 'n1'",
+    );
     // 中表选择性（customers.tier = 0 → ~40 行）
-    diff(&db, "SELECT count(*) FROM orders o JOIN customers c ON o.cid = c.id \
-               JOIN regions r ON c.rid = r.id WHERE c.tier = 0");
+    diff(
+        &db,
+        "SELECT count(*) FROM orders o JOIN customers c ON o.cid = c.id \
+               JOIN regions r ON c.rid = r.id WHERE c.tier = 0",
+    );
 }
 
 #[test]
@@ -100,8 +115,10 @@ fn reorder_actually_reorders_when_skewed() {
     // 非确定）。直接断言计划文本：scan 顺序（EXPLAIN join 计划块）
     let mut s = db.new_session();
     let out = s
-        .exec("EXPLAIN SELECT count(*) FROM orders o JOIN customers c ON o.cid = c.id \
-               JOIN regions r ON c.rid = r.id")
+        .exec(
+            "EXPLAIN SELECT count(*) FROM orders o JOIN customers c ON o.cid = c.id \
+               JOIN regions r ON c.rid = r.id",
+        )
         .unwrap();
     let text = match &out[0] {
         Output::Rows(rs) => rs
@@ -128,7 +145,10 @@ fn reorder_actually_reorders_when_skewed() {
 fn two_way_not_reordered_and_left_untouched() {
     let db = fixture();
     // 2 因子：不重排（O-4 构建侧已覆盖）——等价恒成立
-    diff(&db, "SELECT count(*) FROM orders o JOIN customers c ON o.cid = c.id");
+    diff(
+        &db,
+        "SELECT count(*) FROM orders o JOIN customers c ON o.cid = c.id",
+    );
     // LEFT：外层不动（子链 3+ 才有内层重排面；此查询 LEFT 主链保持）
     let mut s = db.new_session();
     s.exec("SELECT count(*) FROM regions r LEFT JOIN customers c ON c.rid = r.id")
@@ -207,14 +227,23 @@ fn p1_residual_and_bare_name_gating() {
     let db = fixture();
     // 三因子 ON（residual 消歧）+ 中表谓词（曾裸末段使 a.x=b.y 同名
     // 自比较恒真）+ 裸名引用（歧义门控——放弃重排但结果须正确）
-    diff(&db, "SELECT count(*) FROM orders o JOIN customers c ON o.cid = c.id \
-               JOIN regions r ON c.rid = r.id AND c.tier = 0 WHERE o.total < 5");
+    diff(
+        &db,
+        "SELECT count(*) FROM orders o JOIN customers c ON o.cid = c.id \
+               JOIN regions r ON c.rid = r.id AND c.tier = 0 WHERE o.total < 5",
+    );
     // 裸名引用形态（门控放弃重排——结果仍须等价）
-    diff(&db, "SELECT count(*) FROM orders o JOIN customers c ON o.cid = c.id \
-               JOIN regions r ON c.rid = r.id WHERE total < 3");
+    diff(
+        &db,
+        "SELECT count(*) FROM orders o JOIN customers c ON o.cid = c.id \
+               JOIN regions r ON c.rid = r.id WHERE total < 3",
+    );
     // LEFT 下 INNER 链（左侧重排后 LEFT 键仍须正确——hash_join_left 布局修）
-    diff(&db, "SELECT count(*) FROM regions r LEFT JOIN customers c ON c.rid = r.id \
-               AND c.id < 100 WHERE r.id = 0");
+    diff(
+        &db,
+        "SELECT count(*) FROM regions r LEFT JOIN customers c ON c.rid = r.id \
+               AND c.id < 100 WHERE r.id = 0",
+    );
 }
 
 #[test]
@@ -224,8 +253,10 @@ fn p1_scan_est_with_pushdown_now_effective() {
     let db = fixture();
     let mut s = db.new_session();
     let out = s
-        .exec("EXPLAIN ANALYZE SELECT count(*) FROM orders o JOIN customers c ON o.cid = c.id \
-               JOIN regions r ON c.rid = r.id WHERE o.total < 20")
+        .exec(
+            "EXPLAIN ANALYZE SELECT count(*) FROM orders o JOIN customers c ON o.cid = c.id \
+               JOIN regions r ON c.rid = r.id WHERE o.total < 20",
+        )
         .unwrap();
     let text = match &out[0] {
         Output::Rows(rs) => rs
@@ -266,8 +297,10 @@ fn stat_prop_injects_range_on_wider_side() {
         row_group_rows: 4096,
     }));
     let mut s = db.new_session();
-    s.exec("CREATE TABLE big (id BIGINT PRIMARY KEY, ref_id BIGINT, v BIGINT)").unwrap();
-    s.exec("CREATE TABLE small (id BIGINT PRIMARY KEY, w BIGINT)").unwrap();
+    s.exec("CREATE TABLE big (id BIGINT PRIMARY KEY, ref_id BIGINT, v BIGINT)")
+        .unwrap();
+    s.exec("CREATE TABLE small (id BIGINT PRIMARY KEY, w BIGINT)")
+        .unwrap();
     // big: 12k 行 ref_id ∈ [0, 199]
     for chunk in 0..12 {
         let vals: Vec<String> = (0..1000)
@@ -289,12 +322,27 @@ fn stat_prop_injects_range_on_wider_side() {
     // 差分：等值 join 的结果两路径等价（传播产生的过滤器不改语义）
     let mut s_on = db.new_session();
     s_on.exec("SET dendro.optimize = 'on'").unwrap();
-    let on = rows_of(&s_on.exec("SELECT count(*) FROM big b JOIN small s ON b.ref_id = s.id").unwrap());
+    let on = rows_of(
+        &s_on
+            .exec("SELECT count(*) FROM big b JOIN small s ON b.ref_id = s.id")
+            .unwrap(),
+    );
     let mut s_off = db.new_session();
     s_off.exec("SET dendro.optimize = 'off'").unwrap();
-    let off = rows_of(&s_off.exec("SELECT count(*) FROM big b JOIN small s ON b.ref_id = s.id").unwrap());
+    let off = rows_of(
+        &s_off
+            .exec("SELECT count(*) FROM big b JOIN small s ON b.ref_id = s.id")
+            .unwrap(),
+    );
     // 期望：每 small.id（50 个）× big 中 ref_id=i 的行数（12000/200=60）= 3000
-    assert_rows_equiv("stat_prop join equivalence", &on.0, &on.1, &off.0, &off.1, false);
+    assert_rows_equiv(
+        "stat_prop join equivalence",
+        &on.0,
+        &on.1,
+        &off.0,
+        &off.1,
+        false,
+    );
     // EXPLAIN 验证：big 侧的 scan 应出现传播产生的范围过滤（est 更小）
     let text = {
         let r = s_on
@@ -318,7 +366,10 @@ fn stat_prop_injects_range_on_wider_side() {
         .and_then(|e| e.split(|c: char| !c.is_ascii_digit()).next())
         .and_then(|e| e.parse().ok())
         .unwrap_or(u64::MAX);
-    assert!(est < 12000, "传播后 est 应收紧：est={est} (full=12000)\n{text}");
+    assert!(
+        est < 12000,
+        "传播后 est 应收紧：est={est} (full=12000)\n{text}"
+    );
 }
 
 // ---------- SOTA P3：等值谓词复制下推 ----------
@@ -417,8 +468,10 @@ fn join_filter_pushdown_narrow_build_side() {
     })
     .unwrap();
     let mut s = db.new_session();
-    s.exec("CREATE TABLE orders (id BIGINT PRIMARY KEY, ref_id BIGINT)").unwrap();
-    s.exec("CREATE TABLE small (id BIGINT PRIMARY KEY, w BIGINT)").unwrap();
+    s.exec("CREATE TABLE orders (id BIGINT PRIMARY KEY, ref_id BIGINT)")
+        .unwrap();
+    s.exec("CREATE TABLE small (id BIGINT PRIMARY KEY, w BIGINT)")
+        .unwrap();
     // orders: 10000 行 ref_id ∈ [0, 9999]
     for chunk in 0..10 {
         let vals: Vec<String> = (0..1000)
@@ -453,7 +506,11 @@ fn join_filter_pushdown_narrow_build_side() {
         _ => panic!(),
     };
     assert_eq!(on, off, "Join Filter Pushdown 差分");
-    assert_eq!(on.parse::<i64>().unwrap(), 50, "恰好 50 行匹配（ref_id ∈ [500,549]）");
+    assert_eq!(
+        on.parse::<i64>().unwrap(),
+        50,
+        "恰好 50 行匹配（ref_id ∈ [500,549]）"
+    );
 }
 
 #[test]
@@ -465,10 +522,14 @@ fn join_filter_pushdown_null_keys() {
     })
     .unwrap();
     let mut s = db.new_session();
-    s.exec("CREATE TABLE a (id BIGINT PRIMARY KEY, k BIGINT)").unwrap();
-    s.exec("CREATE TABLE b (id BIGINT PRIMARY KEY, k BIGINT)").unwrap();
-    s.exec("INSERT INTO a VALUES (1, NULL), (2, 5), (3, 10)").unwrap();
-    s.exec("INSERT INTO b VALUES (1, 5), (2, NULL), (3, 100)").unwrap();
+    s.exec("CREATE TABLE a (id BIGINT PRIMARY KEY, k BIGINT)")
+        .unwrap();
+    s.exec("CREATE TABLE b (id BIGINT PRIMARY KEY, k BIGINT)")
+        .unwrap();
+    s.exec("INSERT INTO a VALUES (1, NULL), (2, 5), (3, 10)")
+        .unwrap();
+    s.exec("INSERT INTO b VALUES (1, 5), (2, NULL), (3, 100)")
+        .unwrap();
     let r = s
         .exec("SELECT count(*) FROM a JOIN b ON a.k = b.k")
         .unwrap();
@@ -485,42 +546,78 @@ fn join_filter_pushdown_null_keys() {
 #[test]
 fn in_list_single_value_becomes_equality() {
     // 单值 IN → =（可触发点查下推——EXPLAIN 应显示 CurrentPoint）
-    let db = Database::open(DbOptions { store: StoreConfig::Memory, ..Default::default() }).unwrap();
+    let db = Database::open(DbOptions {
+        store: StoreConfig::Memory,
+        ..Default::default()
+    })
+    .unwrap();
     let mut c = db.new_session();
-    c.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v INT)").unwrap();
-    c.exec("INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)").unwrap();
+    c.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v INT)")
+        .unwrap();
+    c.exec("INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)")
+        .unwrap();
     let out = &c.exec("SELECT count(*) FROM t WHERE id IN (2)").unwrap()[0];
-    match out { Output::Rows(rs) => assert_eq!(rs.text_rows()[0][0].clone().unwrap(), "1"), _ => panic!() }
+    match out {
+        Output::Rows(rs) => assert_eq!(rs.text_rows()[0][0].clone().unwrap(), "1"),
+        _ => panic!(),
+    }
 }
 
 #[test]
 fn in_list_consecutive_becomes_range() {
     // 连续整数 IN (2,3,4) → >= 2 AND <= 4（范围——段级 zone map 剪枝）
-    let db = Database::open(DbOptions { store: StoreConfig::Memory, ..Default::default() }).unwrap();
+    let db = Database::open(DbOptions {
+        store: StoreConfig::Memory,
+        ..Default::default()
+    })
+    .unwrap();
     let mut c = db.new_session();
-    c.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v INT)").unwrap();
-    c.exec("INSERT INTO t VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)").unwrap();
-    let out = &c.exec("SELECT count(*) FROM t WHERE v IN (20, 30, 40)").unwrap()[0];
-    match out { Output::Rows(rs) => assert_eq!(rs.text_rows()[0][0].clone().unwrap(), "3"), _ => panic!() }
+    c.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v INT)")
+        .unwrap();
+    c.exec("INSERT INTO t VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)")
+        .unwrap();
+    let out = &c
+        .exec("SELECT count(*) FROM t WHERE v IN (20, 30, 40)")
+        .unwrap()[0];
+    match out {
+        Output::Rows(rs) => assert_eq!(rs.text_rows()[0][0].clone().unwrap(), "3"),
+        _ => panic!(),
+    }
 }
 
 #[test]
 fn in_list_non_consecutive_stays_list() {
     // 非连续 IN (1, 3, 7) 保持步列表
-    let db = Database::open(DbOptions { store: StoreConfig::Memory, ..Default::default() }).unwrap();
+    let db = Database::open(DbOptions {
+        store: StoreConfig::Memory,
+        ..Default::default()
+    })
+    .unwrap();
     let mut c = db.new_session();
-    c.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v INT)").unwrap();
-    c.exec("INSERT INTO t VALUES (1, 10), (3, 30), (5, 50), (7, 70)").unwrap();
-    let out = &c.exec("SELECT count(*) FROM t WHERE v IN (10, 30, 70)").unwrap()[0];
-    match out { Output::Rows(rs) => assert_eq!(rs.text_rows()[0][0].clone().unwrap(), "3"), _ => panic!() }
+    c.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v INT)")
+        .unwrap();
+    c.exec("INSERT INTO t VALUES (1, 10), (3, 30), (5, 50), (7, 70)")
+        .unwrap();
+    let out = &c
+        .exec("SELECT count(*) FROM t WHERE v IN (10, 30, 70)")
+        .unwrap()[0];
+    match out {
+        Output::Rows(rs) => assert_eq!(rs.text_rows()[0][0].clone().unwrap(), "3"),
+        _ => panic!(),
+    }
 }
 
 #[test]
 fn filter_reorder_equivalence() {
     // 廉价谓词先执行——结果不变（AND 交换律）
-    let db = Database::open(DbOptions { store: StoreConfig::Memory, ..Default::default() }).unwrap();
+    let db = Database::open(DbOptions {
+        store: StoreConfig::Memory,
+        ..Default::default()
+    })
+    .unwrap();
     let mut c = db.new_session();
-    c.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v INT, note TEXT)").unwrap();
+    c.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v INT, note TEXT)")
+        .unwrap();
     for i in 0..100 {
         c.exec(&format!(
             "INSERT INTO t VALUES ({}, {}, 'note{}')",
@@ -533,12 +630,18 @@ fn filter_reorder_equivalence() {
     // 差分：on（filter reorder）vs off
     let mut s_on = db.new_session();
     s_on.exec("SET dendro.optimize = 'on'").unwrap();
-    let on = &s_on.exec("SELECT count(*) FROM t WHERE note = 'note1' AND v = 3 AND id > 10").unwrap()[0];
+    let on = &s_on
+        .exec("SELECT count(*) FROM t WHERE note = 'note1' AND v = 3 AND id > 10")
+        .unwrap()[0];
     let mut s_off = db.new_session();
     s_off.exec("SET dendro.optimize = 'off'").unwrap();
-    let off = &s_off.exec("SELECT count(*) FROM t WHERE note = 'note1' AND v = 3 AND id > 10").unwrap()[0];
+    let off = &s_off
+        .exec("SELECT count(*) FROM t WHERE note = 'note1' AND v = 3 AND id > 10")
+        .unwrap()[0];
     match (on, off) {
-        (Output::Rows(a), Output::Rows(b)) => assert_eq!(a.text_rows(), b.text_rows(), "filter reorder 差分"),
+        (Output::Rows(a), Output::Rows(b)) => {
+            assert_eq!(a.text_rows(), b.text_rows(), "filter reorder 差分")
+        }
         _ => panic!(),
     }
 }

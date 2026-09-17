@@ -48,7 +48,10 @@ fn corpus() -> Vec<(&'static str, Expr)> {
                 bin(idn("v"), BO::Lt, num("9")),
             ),
         ),
-        ("arith_mod", bin(bin(idn("id"), BO::Plus, num("2")), BO::Modulo, num("3"))),
+        (
+            "arith_mod",
+            bin(bin(idn("id"), BO::Plus, num("2")), BO::Modulo, num("3")),
+        ),
         ("concat_str", bin(strv("x"), BO::StringConcat, idn("v"))),
         (
             "not_is_null",

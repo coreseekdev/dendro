@@ -115,5 +115,76 @@ pub(crate) fn replay_branch(
     b.pending_bytes.store(pending_bytes, Ordering::Release);
     b.watermark.store(max_ts, Ordering::Release);
     b.restore_seq(max_ts);
+    // P0-2 恢复不变量断言（debug/test 构建）：已安装集 ⊆ 回放历史
+    // 前缀——全部已安装版本 ts ≤ watermark（watermark = 本进程自 WAL
+    // 探测到的最大 ts）。越界 = 回放遗漏 / 安装路径缺陷 / memtx 损坏，
+    // 响亮失败而非静默错果
+    #[cfg(any(test, debug_assertions))]
+    {
+        let wm = b.watermark.load(Ordering::Acquire);
+        b.mem.debug_check_ts_bound(wm).map_err(SqlError::internal)?;
+    }
     Ok(())
+}
+
+#[cfg(test)]
+mod invariant_tests {
+    use super::*;
+    use crate::engine::{Database, DbOptions, StoreConfig};
+    use crate::objstore::memory::MemoryObjStore;
+
+    /// P0-2 可重建性：同一对象存储上重开新 Database——
+    /// manifest + 存活 WAL 段 + prolly 提交 重建 memtx，
+    /// 可见行集逐行等价（含 UPDATE 覆盖与 DELETE 墓碑）。
+    /// 重开路径内联触发 P0-2 前缀性断言（debug_check_ts_bound）
+    #[test]
+    fn reopen_rebuilds_identical_state() {
+        let obj: Arc<dyn ObjStore> = Arc::new(MemoryObjStore::new());
+        {
+            let db = Database::open(DbOptions {
+                store: StoreConfig::Obj(obj.clone()),
+                ..Default::default()
+            })
+            .unwrap();
+            let mut s = db.new_session();
+            s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v BIGINT)")
+                .unwrap();
+            s.exec("INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)")
+                .unwrap();
+            s.exec("UPDATE t SET v = 25 WHERE id = 2").unwrap();
+            s.exec("DELETE FROM t WHERE id = 3").unwrap();
+        } // Database drop → WAL 优雅关闭 → 全帧持久
+        let db2 = Database::open(DbOptions {
+            store: StoreConfig::Obj(obj),
+            ..Default::default()
+        })
+        .unwrap();
+        let mut s2 = db2.new_session();
+        let out = s2.exec("SELECT id, v FROM t ORDER BY id").unwrap();
+        let rows = match &out[0] {
+            crate::types::Output::Rows(rs) => rs
+                .text_rows()
+                .iter()
+                .map(|r| (r[0].clone().unwrap(), r[1].clone().unwrap()))
+                .collect::<Vec<_>>(),
+            _ => panic!(),
+        };
+        assert_eq!(
+            rows,
+            vec![("1".into(), "10".into()), ("2".into(), "25".into())],
+            "重开必须逐行重建可见集（含 UPDATE 覆盖与 DELETE 墓碑）"
+        );
+    }
+
+    /// P0-2 前缀性（负例构造面）：断言器本身——越界安装必须被抓到。
+    /// 直接对 BranchMem 做越界 install 验证 debug_check_ts_bound 的
+    /// 检出能力（防"断言器恒真"的假护栏）
+    #[test]
+    fn ts_bound_checker_catches_violation() {
+        let mem = crate::memtx::BranchMem::default();
+        let t = mem.table(7);
+        t.install(b"k1".to_vec(), 100, Some(Arc::new(vec![1u8])));
+        assert!(mem.debug_check_ts_bound(100).is_ok());
+        assert!(mem.debug_check_ts_bound(99).is_err(), "越界安装必须被检出");
+    }
 }

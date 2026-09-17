@@ -407,14 +407,12 @@ impl Ctx {
                 // Concat 不入池（原无条件调用污染池：文本 IR 侧表重建
                 // 与编译器不一致，R4 round-trip 暴露）
                 let s = match op {
-                    BO::Eq | BO::NotEq | BO::Lt | BO::LtEq | BO::Gt | BO::GtEq => {
-                        ScalarStep::Cmp {
-                            dst,
-                            op: self.opidx(op),
-                            a,
-                            b,
-                        }
-                    }
+                    BO::Eq | BO::NotEq | BO::Lt | BO::LtEq | BO::Gt | BO::GtEq => ScalarStep::Cmp {
+                        dst,
+                        op: self.opidx(op),
+                        a,
+                        b,
+                    },
                     BO::And => ScalarStep::And { dst, a, b },
                     BO::Or => ScalarStep::Or { dst, a, b },
                     BO::Plus | BO::Minus | BO::Multiply | BO::Divide | BO::Modulo => {
@@ -1135,11 +1133,9 @@ mod tests {
             assert_eq!(p.steps, p2.steps, "steps 结构不等价：{text}");
             assert_eq!(p.consts, p2.consts, "consts 池不等价：{text}");
             assert_eq!(
-                p.binops,
-                p2.binops,
+                p.binops, p2.binops,
                 "binops 池不等价：{text} 原={:?} 复={:?}",
-                p.binops,
-                p2.binops
+                p.binops, p2.binops
             );
             assert_eq!(p.casts, p2.casts, "casts 池不等价：{text}");
             assert_eq!(p.n_regs, p2.n_regs);

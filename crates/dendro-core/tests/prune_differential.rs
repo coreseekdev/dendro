@@ -35,7 +35,8 @@ fn fixture() -> Arc<Database> {
             .unwrap();
     }
     db.checkpoint_branch("main").unwrap(); // 物化列存段（12k 行 ≥ 阈值）
-    s.exec("INSERT INTO w VALUES (999999, 1, 2, 3.5, 'tail')").unwrap(); // overlay 尾巴
+    s.exec("INSERT INTO w VALUES (999999, 1, 2, 3.5, 'tail')")
+        .unwrap(); // overlay 尾巴
     db
 }
 
@@ -72,14 +73,20 @@ fn prune_projection_subset() {
     // 纯子集投影（2/5 列 + pk）
     diff(&db, "SELECT id, a FROM w WHERE id <= 100");
     diff(&db, "SELECT note FROM w WHERE a = 3 AND id < 500");
-    diff(&db, "SELECT b, c FROM w WHERE b > 100 ORDER BY c DESC LIMIT 20");
+    diff(
+        &db,
+        "SELECT b, c FROM w WHERE b > 100 ORDER BY c DESC LIMIT 20",
+    );
 }
 
 #[test]
 fn prune_where_references_unprojected_column() {
     let db = fixture();
     // 陷阱：WHERE 引用 b/c 但投影只有 a——b/c 必须进位图（漏裁 NULL 判假）
-    diff(&db, "SELECT a FROM w WHERE b = 4 AND c < 100.0 AND id <= 2000");
+    diff(
+        &db,
+        "SELECT a FROM w WHERE b = 4 AND c < 100.0 AND id <= 2000",
+    );
 }
 
 #[test]
@@ -138,8 +145,10 @@ fn row_path_unaffected() {
     })
     .unwrap();
     let mut s = db.new_session();
-    s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, a INT, b INT)").unwrap();
-    s.exec("INSERT INTO t VALUES (1, 10, 20), (2, 30, 40)").unwrap();
+    s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, a INT, b INT)")
+        .unwrap();
+    s.exec("INSERT INTO t VALUES (1, 10, 20), (2, 30, 40)")
+        .unwrap();
     diff(&db, "SELECT a FROM t WHERE b > 25");
     diff(&db, "SELECT * FROM t");
 }

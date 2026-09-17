@@ -279,4 +279,3 @@ impl ColumnarStore for CbfColumnar {
         Ok(out)
     }
 }
-

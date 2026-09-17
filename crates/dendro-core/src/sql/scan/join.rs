@@ -3,7 +3,6 @@
 
 use super::*;
 
-
 use super::agg::{self, AggCall};
 use super::expr;
 use crate::engine::{Database, Session};
@@ -112,7 +111,10 @@ pub(crate) fn hash_join(
     }
     // 范围有效判定：全部键列都有 min/max（空 build 侧或全 NULL → 全
     // None → 跳过过滤——直接进哈希查找得到正确空结果）
-    let has_range = key_min.iter().zip(&key_max).all(|(mn, mx)| mn.is_some() && mx.is_some());
+    let has_range = key_min
+        .iter()
+        .zip(&key_max)
+        .all(|(mn, mx)| mn.is_some() && mx.is_some());
     let mut rows = Vec::new();
     for pr in probe_rows {
         // Join Filter Pushdown：O(1) 范围检查先于 O(k) 键构造 + O(1)
@@ -287,9 +289,7 @@ pub(crate) fn col_pos_lay(
                 }
                 if let Some(rk) = rkey {
                     if prefix == rk {
-                        return names
-                            .iter()
-                            .position(|n| n.to_ascii_lowercase() == col);
+                        return names.iter().position(|n| n.to_ascii_lowercase() == col);
                     }
                     return None; // 前缀不属右侧因子
                 }
@@ -321,7 +321,7 @@ pub(crate) fn extract_equi(
     // 账本 #22：AND 链中非等值合取曾**静默丢弃**（子节点返回值被无视）。
     // 改为收集残留、逐候选对求值（LEFT：残留不成立=该对不匹配→NULL 延展）
     #[allow(clippy::too_many_arguments)] // 消歧上下文五元组——内聚于
-    // 递归闭包不可拆（拆参结构反而增加跨闭包状态）
+                                         // 递归闭包不可拆（拆参结构反而增加跨闭包状态）
     fn walk(
         e: &Expr,
         ln: &[String],
@@ -443,14 +443,17 @@ mod join_key_tests {
         let on = expr_of("SELECT 1 WHERE o.id = r.n");
         let ln = vec!["n".to_string()];
         let rn = vec!["id".to_string()];
-        let lay: FactorLayout = vec![(
-            "r".to_string(),
-            0,
-            1,
-            vec!["n".to_string()],
-        )];
+        let lay: FactorLayout = vec![("r".to_string(), 0, 1, vec!["n".to_string()])];
         let (eqs, residual) = extract_equi(&on, &ln, &rn, Some(&lay), Some("o")).unwrap();
-        eprintln!("DBG lidx={:?} ridx={:?} residual={:?}", eqs.lidx, eqs.ridx, residual.len());
-        assert!(!eqs.lidx.is_empty(), "equi not extracted: residual={residual:?}");
+        eprintln!(
+            "DBG lidx={:?} ridx={:?} residual={:?}",
+            eqs.lidx,
+            eqs.ridx,
+            residual.len()
+        );
+        assert!(
+            !eqs.lidx.is_empty(),
+            "equi not extracted: residual={residual:?}"
+        );
     }
 }

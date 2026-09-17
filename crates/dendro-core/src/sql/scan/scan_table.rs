@@ -3,7 +3,6 @@
 
 use super::*;
 
-
 use super::agg::{self, AggCall};
 use super::expr;
 use crate::engine::{Database, Session};
@@ -564,18 +563,16 @@ pub(crate) fn table_scan(
             let names = schema.columns.iter().map(|c| c.name.clone()).collect();
             Ok(TableView { names, rows })
         }
-        TableFactor::Derived { subquery, alias, .. } => {
+        TableFactor::Derived {
+            subquery, alias, ..
+        } => {
             let mut view = eval_query(db, sess, subquery.as_ref(), snapshot)?;
             // `(VALUES ...) AS r(n, ...)`：alias 列名覆盖子查询输出名
             // （VALUES 求值产出 column1/column2——不覆盖则外层 WHERE/投影
             // 按真实列名解析失败；递归 CTE 注入依赖此路径）
             if let Some(a) = alias {
                 if !a.columns.is_empty() && a.columns.len() == view.names.len() {
-                    view.names = a
-                        .columns
-                        .iter()
-                        .map(|c| c.name.value.clone())
-                        .collect();
+                    view.names = a.columns.iter().map(|c| c.name.value.clone()).collect();
                 }
             }
             Ok(view)
@@ -625,7 +622,10 @@ pub(crate) fn resolve_table_at(
     })
 }
 
-pub(crate) fn row_from_bytes(schema: &crate::versioned::TableSchema, bytes: &[u8]) -> Result<Vec<SqlValue>> {
+pub(crate) fn row_from_bytes(
+    schema: &crate::versioned::TableSchema,
+    bytes: &[u8],
+) -> Result<Vec<SqlValue>> {
     let mut vals = decode_row(bytes)?;
     // schema 演化：补 NULL / 截断
     vals.resize(schema.columns.len(), SqlValue::Null);
@@ -820,7 +820,6 @@ pub fn rows_to_batches_typed(
     batches
 }
 
-
 // ---------- 视图体解析缓存（阶段4） ----------
 
 type ViewCache = std::sync::Mutex<HashMap<String, std::sync::Arc<Query>>>;
@@ -831,10 +830,7 @@ fn view_cache() -> &'static ViewCache {
 }
 
 /// 视图文本 → 解析结果（进程级缓存；视图文本不可变 → 键即身份）
-fn view_query_cached(
-    text: &str,
-    dialect: crate::sql::SqlDialect,
-) -> Result<std::sync::Arc<Query>> {
+fn view_query_cached(text: &str, dialect: crate::sql::SqlDialect) -> Result<std::sync::Arc<Query>> {
     if let Some(q) = view_cache().lock().unwrap().get(text) {
         return Ok(q.clone());
     }

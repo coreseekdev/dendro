@@ -15,11 +15,11 @@ pub mod wal;
 
 pub mod consensus;
 pub mod exec;
+pub mod ir;
 pub mod journal;
 pub mod kv;
 pub mod memtx;
 pub mod recovery;
-pub mod ir;
 pub mod sql;
 
 pub mod embed;

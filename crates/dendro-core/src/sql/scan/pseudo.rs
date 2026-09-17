@@ -3,7 +3,6 @@
 
 use super::*;
 
-
 use super::agg::{self, AggCall};
 use super::expr;
 use crate::engine::{Database, Session};

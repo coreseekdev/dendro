@@ -3,7 +3,6 @@
 
 use super::*;
 
-
 use super::agg::{self, AggCall};
 use super::expr;
 use crate::engine::{Database, Session};
@@ -22,12 +21,14 @@ use std::sync::Arc;
 pub(crate) fn dedup_rows(rows: &mut Vec<Vec<SqlValue>>) {
     let mut seen = std::collections::HashSet::new();
     rows.retain(|r| {
-        let key: String = r.iter().map(|v| format!("{v:?}")).collect::<Vec<_>>().join("\u{1}");
+        let key: String = r
+            .iter()
+            .map(|v| format!("{v:?}"))
+            .collect::<Vec<_>>()
+            .join("\u{1}");
         seen.insert(key)
     });
 }
-
-
 
 pub(crate) fn projection_aggregates(p: &[SelectItem]) -> Option<()> {
     for item in p {
@@ -124,7 +125,6 @@ pub(crate) fn has_agg_expr(e: &Expr) -> bool {
     }
 }
 
-
 // ---------- ORDER ----------
 
 /// v2c-3：AggOp 管线资格（05 §4 同源的装配层判定）：组键与聚合参数均为
@@ -134,14 +134,8 @@ pub(crate) fn agg_pipeline_plan(
     group_exprs: &[Expr],
     calls: &[AggCall],
     cols: &std::collections::HashMap<String, usize>,
-) -> Option<(
-    Vec<usize>,
-    Vec<crate::exec::pipeline::AggSpec>,
-)> {
-    fn col_idx(
-        e: &Expr,
-        cols: &std::collections::HashMap<String, usize>,
-    ) -> Option<usize> {
+) -> Option<(Vec<usize>, Vec<crate::exec::pipeline::AggSpec>)> {
+    fn col_idx(e: &Expr, cols: &std::collections::HashMap<String, usize>) -> Option<usize> {
         match e {
             Expr::Identifier(id) => cols.get(&id.value.to_ascii_lowercase()).copied(),
             Expr::Nested(i) => col_idx(i, cols),
@@ -176,7 +170,6 @@ pub(crate) fn agg_pipeline_plan(
     }
     Some((gidx, specs))
 }
-
 
 /// RecordSet 便捷构造
 pub fn rows_to_record_set(columns: &[ColumnMeta], rows: Vec<Vec<SqlValue>>) -> RecordSet {

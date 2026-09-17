@@ -113,12 +113,24 @@ impl FenceStore {
     /// 续期（覆盖写同路径，幂等）。**调用者必须已验证自己持有该 epoch**
     /// （LeaseKeeper::renew_if_due 在 check 通过后调用）——盲目续期他人的
     /// 租约等于替别人保活。
+    /// 注意：覆盖写**无条件**——分支已被 DROP/GC 时本写会复活刚删除的
+    /// fence 对象（"复活已删分支"竞态面）；防护在调用端（LeaseKeeper 的
+    /// 写后校验：PUT 成功 → 校验 refs → 死分支撤销本写并自毒化）。
     pub fn renew(&self, branch: &str, lease: &Lease) -> Result<()> {
         self.obj
             .put(
                 &Self::lease_path(branch, lease.epoch),
                 serde_json::to_vec(lease).unwrap().into(),
             )
+            .map_err(crate::error::SqlError::from)
+    }
+
+    /// 撤销本 epoch 的租约对象（写后校验发现分支已死时回滚刚写的
+    /// 复活对象）。epoch 语义保证只可能命中自己的对象：新世代领取
+    /// max+1 > 本 epoch，路径不相交
+    pub fn delete_lease(&self, branch: &str, epoch: u64) -> Result<()> {
+        self.obj
+            .delete(&Self::lease_path(branch, epoch))
             .map_err(crate::error::SqlError::from)
     }
 

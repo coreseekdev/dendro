@@ -32,6 +32,8 @@ Dendro 是 append-only 存储：列存段、WAL 段、manifest 版本只增不�
 | WAL 旧 epoch 目录（epoch < 当前）| 接管者首次 checkpoint：covered_seq ≥ 旧 epoch 全部 ts | 同上（首次 checkpoint 时逐段 LIST 枚举登记） | 同上 | 墓碑 |
 | WAL 当前 epoch 前缀段（seg < ckpt 帧所在段）| 每次 checkpoint：checkpoint 帧之前的段全部 covered | 同上（批量为 [first, seg_now)） | 同上 | 墓碑 + `BranchHead.wal_first_seg` 推进 |
 | manifest 旧版本 | 版本 ≤ latest − 16 | 不需要（非引用语义，见 §4.3） | 每次 gc_sweep 直接删 | `retained(latest, 16)` 接入 |
+| 围栏租约 `fence/{branch}/{epoch}.json`（**分支存活期**）| **永不**（存活分支的旧 epoch 租约编码 epoch 高水位——`acquire` 以目录内 max+1 领新世代，删旧会让 epoch 回退、两写者同代）| 不登记 | 不删除 | 存活期保留（SlateDB "FENCE 对象永不删" 同构）|
+| 围栏租约（DROP 分支）| DROP BRANCH 移除 ref | 与 ref 移除同一 manifest 版本（`fence/{name}/` 前缀全量枚举）| `at_ms + retention` 后的 gc_sweep | 墓碑 |
 | CAS chunk（prolly 节点 / commit 对象）| — | — | **v2**（诚实声明见 §5） | — |
 
 ## 3. 核心不变式
@@ -50,6 +52,17 @@ Dendro 是 append-only 存储：列存段、WAL 段、manifest 版本只增不�
    - 旧 epoch 目录整体消失：replay 对不存在目录回放 0 帧（探测返回 0）。
 4. **GC 有界**：单次 sweep 至多物理删除 256 个墓碑对象（大批量分多轮），
    不阻塞提交路径；checkpoint 尾部与打库时各跑一次。
+5. **围栏对象不复活**（S3 WAL 调研 P1-3 收口）：
+   - 分支存活期，全部世代租约对象保留（epoch 高水位语义，见总表）；
+   - DROP 后滞留写者的续期是**覆盖写**——会复活刚墓碑/删除的对象。
+     防护 = 写后校验（`LeaseKeeper::renew_if_due`）：PUT 成功后以
+     manifest 权威读回校验 refs，死分支立即 `delete_lease` 撤销本写
+     （epoch 单调保证只可能命中自己世代的对象）并自毒化本地租约
+     （`check` 40001，FENCED 终态）；
+   - `branch_locked` 领权位同校验：refs 读取与 `put_if_absent` 之间的
+     并发 DROP 窗口，领到的租约撤销并按分支不存在报错；
+   - WAL 保活线程持 `Weak`（进程内遗弃分支线程退出即停租——第六轮
+     "复活已删分支 fence 对象"事故的机制面修复）。
 
 ## 4. 机制细节
 
@@ -104,3 +117,5 @@ prolly 树节点与 commit 对象是内容寻址、跨分支共享的：
 | `gc_columnar_segments_after_retention_window` | 9 次 checkpoint 触发全量重建；**窗口内旧段原样存在**（P0-3 崩溃窗口保证）；窗口后仅剩 1 段；数据完整 |
 | `gc_wal_epochs_prefix_and_recovery` | 旧 epoch 目录：窗口内不删、窗口后删除、**删除后重开恢复完整**；当前 epoch 前缀段（含 ckpt 帧的段之前的段）：登记 → 删除 → 从 `wal_first_seg` 恢复完整 |
 | `gc_manifest_versions_keep_recent` | 25 次 checkpoint 后版本数 ≤17、最老版本已删、最新数据完整 |
+| `engine::fence_validate_tests::renew_on_dropped_branch_undone_and_fenced` | DROP 后滞留写者续期：复活租约**被撤销**（前缀空）+ 写者自毒化（check 40001）+ 幂等（再续期早退）|
+| `engine::fence_validate_tests::renew_on_live_branch_proceeds` | 健康分支续期放行（回归护栏——校验不误杀）|

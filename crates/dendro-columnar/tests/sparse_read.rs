@@ -58,11 +58,31 @@ fn schema5() -> TableSchema {
     TableSchema {
         name: "w".into(),
         columns: vec![
-            ColumnDef { name: "id".into(), ty: ColType::Int64, nullable: true },
-            ColumnDef { name: "a".into(), ty: ColType::Int64, nullable: true },
-            ColumnDef { name: "b".into(), ty: ColType::Int64, nullable: true },
-            ColumnDef { name: "c".into(), ty: ColType::Int64, nullable: true },
-            ColumnDef { name: "note".into(), ty: ColType::Utf8, nullable: true },
+            ColumnDef {
+                name: "id".into(),
+                ty: ColType::Int64,
+                nullable: true,
+            },
+            ColumnDef {
+                name: "a".into(),
+                ty: ColType::Int64,
+                nullable: true,
+            },
+            ColumnDef {
+                name: "b".into(),
+                ty: ColType::Int64,
+                nullable: true,
+            },
+            ColumnDef {
+                name: "c".into(),
+                ty: ColType::Int64,
+                nullable: true,
+            },
+            ColumnDef {
+                name: "note".into(),
+                ty: ColType::Utf8,
+                nullable: true,
+            },
         ],
         pk: vec![0],
     }
@@ -91,27 +111,51 @@ fn write_segment(
 #[test]
 fn sparse_masked_scan_reads_fewer_bytes_and_decodes_correctly() {
     let mem: Arc<dyn ObjStore> = Arc::new(dendro_core::objstore::memory::MemoryObjStore::new());
-    let cbf = CbfColumnar { row_group_rows: 256 };
+    let cbf = CbfColumnar {
+        row_group_rows: 256,
+    };
     let schema = schema5();
     let seg = write_segment(&cbf, &mem, &schema, 2048); // 8 个 RG
 
     // 全列读
-    let full_store = Arc::new(Counting { inner: mem.clone(), bytes: AtomicU64::new(0), calls: AtomicU64::new(0), seen: Default::default() });
+    let full_store = Arc::new(Counting {
+        inner: mem.clone(),
+        bytes: AtomicU64::new(0),
+        calls: AtomicU64::new(0),
+        seen: Default::default(),
+    });
     let full_probe = full_store.clone() as Arc<Counting>;
     let full_store: Arc<dyn ObjStore> = full_store;
     let batches_full = cbf
-        .scan(&full_store, &schema, std::slice::from_ref(&seg), &None, None)
+        .scan(
+            &full_store,
+            &schema,
+            std::slice::from_ref(&seg),
+            &None,
+            None,
+        )
         .unwrap();
     let full_bytes = full_probe.bytes.load(Ordering::Relaxed);
     let full_calls = full_probe.calls.load(Ordering::Relaxed);
 
     // 掩码读：id + a（b/c/note 裁剪）
     let mask = [true, true, false, false, false];
-    let sparse_store = Arc::new(Counting { inner: mem.clone(), bytes: AtomicU64::new(0), calls: AtomicU64::new(0), seen: Default::default() });
+    let sparse_store = Arc::new(Counting {
+        inner: mem.clone(),
+        bytes: AtomicU64::new(0),
+        calls: AtomicU64::new(0),
+        seen: Default::default(),
+    });
     let sparse_probe = sparse_store.clone() as Arc<Counting>;
     let sparse_store: Arc<dyn ObjStore> = sparse_store;
     let batches_masked = cbf
-        .scan(&sparse_store, &schema, std::slice::from_ref(&seg), &None, Some(&mask))
+        .scan(
+            &sparse_store,
+            &schema,
+            std::slice::from_ref(&seg),
+            &None,
+            Some(&mask),
+        )
         .unwrap();
     let sparse_bytes = sparse_probe.bytes.load(Ordering::Relaxed);
     let sparse_calls = sparse_probe.calls.load(Ordering::Relaxed);
@@ -132,13 +176,29 @@ fn sparse_masked_scan_reads_fewer_bytes_and_decodes_correctly() {
         assert_eq!(bf.num_rows(), bm.num_rows());
         for r in 0..bf.num_rows() {
             assert_eq!(
-                bf.column(0).as_any().downcast_ref::<arrow::array::Int64Array>().unwrap().value(r),
-                bm.column(0).as_any().downcast_ref::<arrow::array::Int64Array>().unwrap().value(r),
+                bf.column(0)
+                    .as_any()
+                    .downcast_ref::<arrow::array::Int64Array>()
+                    .unwrap()
+                    .value(r),
+                bm.column(0)
+                    .as_any()
+                    .downcast_ref::<arrow::array::Int64Array>()
+                    .unwrap()
+                    .value(r),
                 "id 列（需求）值一致 @ {idx}"
             );
             assert_eq!(
-                bf.column(1).as_any().downcast_ref::<arrow::array::Int64Array>().unwrap().value(r),
-                bm.column(1).as_any().downcast_ref::<arrow::array::Int64Array>().unwrap().value(r),
+                bf.column(1)
+                    .as_any()
+                    .downcast_ref::<arrow::array::Int64Array>()
+                    .unwrap()
+                    .value(r),
+                bm.column(1)
+                    .as_any()
+                    .downcast_ref::<arrow::array::Int64Array>()
+                    .unwrap()
+                    .value(r),
                 "a 列（需求）值一致 @ {idx}"
             );
             assert!(bm.column(4).is_null(r), "note 列（裁剪）应 null @ {idx}");

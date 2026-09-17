@@ -61,35 +61,52 @@ fn diff_group_by_text_key_all_aggs() {
 #[test]
 fn diff_global_aggregate() {
     let mut c = setup();
-    diff(&mut c, "SELECT count(*), count(v), sum(v), avg(v), min(v), max(v) FROM g");
+    diff(
+        &mut c,
+        "SELECT count(*), count(v), sum(v), avg(v), min(v), max(v) FROM g",
+    );
 }
 
 #[test]
 fn diff_distinct_variants() {
     let mut c = setup();
-    diff(&mut c, "SELECT count(DISTINCT v), sum(DISTINCT v), avg(DISTINCT v) FROM g");
-    diff(&mut c, "SELECT grp, count(DISTINCT name) FROM g GROUP BY grp");
+    diff(
+        &mut c,
+        "SELECT count(DISTINCT v), sum(DISTINCT v), avg(DISTINCT v) FROM g",
+    );
+    diff(
+        &mut c,
+        "SELECT grp, count(DISTINCT name) FROM g GROUP BY grp",
+    );
 }
 
 #[test]
 fn diff_having_and_empty_groups() {
     let mut c = setup();
-    diff(&mut c, "SELECT grp, sum(v) FROM g GROUP BY grp HAVING sum(v) > 15");
+    diff(
+        &mut c,
+        "SELECT grp, sum(v) FROM g GROUP BY grp HAVING sum(v) > 15",
+    );
     diff(&mut c, "SELECT grp FROM g GROUP BY grp"); // 纯分组无聚合
 }
 
 #[test]
 fn diff_empty_input_global_agg_one_row() {
     let mut c = setup();
-    c.execute("CREATE TABLE e (id BIGINT PRIMARY KEY, v BIGINT)").unwrap();
+    c.execute("CREATE TABLE e (id BIGINT PRIMARY KEY, v BIGINT)")
+        .unwrap();
     // 空输入全局聚合：两路径都出一行（count=0, sum=NULL）
-    diff(&mut c, "SELECT count(*), count(v), sum(v), avg(v), min(v) FROM e");
+    diff(
+        &mut c,
+        "SELECT count(*), count(v), sum(v), avg(v), min(v) FROM e",
+    );
 }
 
 #[test]
 fn diff_group_by_empty_input_no_rows() {
     let mut c = setup();
-    c.execute("CREATE TABLE e (id BIGINT PRIMARY KEY, v BIGINT)").unwrap();
+    c.execute("CREATE TABLE e (id BIGINT PRIMARY KEY, v BIGINT)")
+        .unwrap();
     diff(&mut c, "SELECT v, count(*) FROM e GROUP BY v"); // 分组 + 空输入 → 0 行
 }
 
@@ -120,11 +137,7 @@ fn sum_distinct_dedups_in_both_paths() {
     // v 列非空值 [10,20,10,100,7]：DISTINCT 后 {10,20,100,7} sum=137
     for force in ["row", "pipeline"] {
         let r = run(&mut c, force, "SELECT sum(DISTINCT v) FROM g");
-        assert_eq!(
-            r.1,
-            vec![vec![SqlValue::Int64(137)]],
-            "force={force}"
-        );
+        assert_eq!(r.1, vec![vec![SqlValue::Int64(137)]], "force={force}");
     }
 }
 
@@ -132,7 +145,8 @@ fn sum_distinct_dedups_in_both_paths() {
 fn sum_over_text_errors_in_both_paths() {
     let mut c = setup();
     for force in ["row", "pipeline"] {
-        c.execute(&format!("SET dendro.force_agg = '{force}'")).unwrap();
+        c.execute(&format!("SET dendro.force_agg = '{force}'"))
+            .unwrap();
         let e = c.query("SELECT sum(name) FROM g").err().unwrap();
         assert!(
             e.to_string().contains("expected number"),
@@ -152,8 +166,8 @@ fn expression_group_key_falls_back_and_forces_error() {
         .query("SELECT upper(grp), count(*) FROM g GROUP BY upper(grp) ORDER BY 1 NULLS LAST")
         .unwrap();
     assert_eq!(r.row_count(), 3); // A / B / NULL（upper(NULL)=NULL 一组）
-    // 阶段5：force_agg 收编进计划路径 composite——强制不可行按 dispatch
-    // 合同报错（原 composite 静默行式回落使 force 轴失真）
+                                  // 阶段5：force_agg 收编进计划路径 composite——强制不可行按 dispatch
+                                  // 合同报错（原 composite 静默行式回落使 force 轴失真）
     c.execute("SET dendro.force_agg = 'pipeline'").unwrap();
     let e = c
         .query("SELECT upper(grp), count(*) FROM g GROUP BY upper(grp) ORDER BY 1 NULLS LAST")
@@ -167,7 +181,9 @@ fn expression_agg_arg_falls_back() {
     let mut c = setup();
     // A3 起：聚合参数是表达式（v+1）在计划路径原生支持（原为资格外
     // 回落行式——强制 pipeline 曾报错，能力过时断言更新为正确性验证）
-    let r = c.query("SELECT grp, sum(v + 1) FROM g GROUP BY grp ORDER BY 1 NULLS LAST").unwrap();
+    let r = c
+        .query("SELECT grp, sum(v + 1) FROM g GROUP BY grp ORDER BY 1 NULLS LAST")
+        .unwrap();
     let sums: Vec<i64> = r
         .rows
         .iter()
@@ -192,7 +208,9 @@ fn nested_paren_column_group_is_eligible() {
     let mut c = setup();
     // Nested(Identifier) 仍是纯列引用 → 管线可走（不报错即过）
     c.execute("SET dendro.force_agg = 'pipeline'").unwrap();
-    let r = c.query("SELECT (grp), count(*) FROM g GROUP BY (grp)").unwrap();
+    let r = c
+        .query("SELECT (grp), count(*) FROM g GROUP BY (grp)")
+        .unwrap();
     assert_eq!(r.row_count(), 3);
 }
 
@@ -201,10 +219,8 @@ fn nested_paren_column_group_is_eligible() {
 #[test]
 fn p1_group_key_null_vs_empty_string_distinct() {
     let mut c = setup();
-    c.execute(
-        "INSERT INTO g VALUES (7,'',NULL,NULL,NULL),(8,NULL,NULL,NULL,NULL)",
-    )
-    .unwrap();
+    c.execute("INSERT INTO g VALUES (7,'',NULL,NULL,NULL),(8,NULL,NULL,NULL,NULL)")
+        .unwrap();
     // NULL 与 '' 是两个组（原 to_text 同键合并——评审 P1）
     for force in ["row", "pipeline"] {
         let r = run(
@@ -212,15 +228,14 @@ fn p1_group_key_null_vs_empty_string_distinct() {
             force,
             "SELECT grp, count(*) FROM g GROUP BY grp ORDER BY 1 NULLS LAST",
         );
-        let groups: Vec<String> = r
-            .1
-            .iter()
-            .map(|row| match &row[0] {
-                SqlValue::Utf8(s) => format!("'{s}'"),
-                SqlValue::Null => "NULL".into(),
-                other => format!("{other:?}"),
-            })
-            .collect();
+        let groups: Vec<String> =
+            r.1.iter()
+                .map(|row| match &row[0] {
+                    SqlValue::Utf8(s) => format!("'{s}'"),
+                    SqlValue::Null => "NULL".into(),
+                    other => format!("{other:?}"),
+                })
+                .collect();
         assert!(groups.contains(&"''".to_string()), "空串组：{groups:?}");
         assert!(groups.contains(&"NULL".to_string()), "NULL 组：{groups:?}");
     }

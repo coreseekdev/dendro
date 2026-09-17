@@ -4,7 +4,6 @@
 use super::*;
 use crate::ir::plan::WindowCall;
 
-
 use super::agg::{self, AggCall};
 use super::expr;
 use crate::engine::{Database, Session};
@@ -67,11 +66,7 @@ fn collect_in_expr(e: &Expr, out: &mut Vec<WindowCall>) -> Result<()> {
         Expr::Function(f) => {
             if f.over.is_some() {
                 let display = f.to_string();
-                let call = window_call_from_fn(
-                    &display,
-                    f,
-                    format!("__w{}", out.len()),
-                )?;
+                let call = window_call_from_fn(&display, f, format!("__w{}", out.len()))?;
                 out.push(call);
                 // SQL 标准禁止窗口调用嵌套窗口调用——不再下钻参数
             } else {
@@ -143,7 +138,9 @@ pub(crate) fn window_call_from_fn(
         return Err(SqlError::syntax("ranking function takes no argument"));
     }
     if matches!(name.as_str(), "sum" | "min" | "max" | "avg") && arg.is_none() {
-        return Err(SqlError::syntax("aggregate window function requires argument"));
+        return Err(SqlError::syntax(
+            "aggregate window function requires argument",
+        ));
     }
     let order_by: Vec<(Expr, bool)> = spec
         .order_by
@@ -258,10 +255,7 @@ pub(crate) fn eval_windows(
         // 3. 窗口值计算（v1：分区聚合——无 frame 时整分区同值）
         // 排名函数（row_number/rank/dense_rank）需要行序 → 逐行
         // 聚合函数（sum/count/min/max/avg）→ 分区总计（同一分区每行同值）
-        let is_ranking = matches!(
-            wc.func.as_str(),
-            "row_number" | "rank" | "dense_rank"
-        );
+        let is_ranking = matches!(wc.func.as_str(), "row_number" | "rank" | "dense_rank");
         if is_ranking {
             // 排名：逐行（按排序后序遍历——依赖行序）
             let mut values: Vec<SqlValue> = vec![SqlValue::Null; n];
@@ -280,8 +274,7 @@ pub(crate) fn eval_windows(
                 row_num += 1;
                 let same_order = row_num > 1 && {
                     let prev_ri = idx[row_num as usize - 2];
-                    part_keys[prev_ri] == part_keys[ri]
-                        && order_keys[prev_ri] == order_keys[ri]
+                    part_keys[prev_ri] == part_keys[ri] && order_keys[prev_ri] == order_keys[ri]
                 };
                 if !same_order {
                     rank = row_num;
@@ -391,7 +384,6 @@ pub(crate) fn eval_windows(
     }
     Ok(())
 }
-
 
 // ---------------------------------------------------------------------------
 // P0：递归 CTE（WITH RECURSIVE 迭代不动点）

@@ -72,10 +72,13 @@ fn s6_with_cte_now_expands() {
     // P0：CTE 非递归内联展开（expand_ctes）——原 0A000 拒绝功成身退
     let db = open_mem();
     let mut s = db.new_session();
-    s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v INT)").unwrap();
+    s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v INT)")
+        .unwrap();
     s.exec("INSERT INTO t VALUES (1, 10), (2, 20)").unwrap();
     // 基础：单 CTE → Derived 展开
-    let out = s.exec("WITH c AS (SELECT id FROM t) SELECT count(*) FROM c").unwrap();
+    let out = s
+        .exec("WITH c AS (SELECT id FROM t) SELECT count(*) FROM c")
+        .unwrap();
     match &out[0] {
         dendro_core::types::Output::Rows(rs) => {
             assert_eq!(rs.text_rows()[0][0].clone().unwrap(), "2");
@@ -848,7 +851,6 @@ fn seed_range_table(db: &std::sync::Arc<Database>, overlay_rows: usize) {
     ))
     .unwrap();
 }
-
 
 #[test]
 fn pk_range_pushdown_semantics() {

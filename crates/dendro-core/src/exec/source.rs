@@ -78,8 +78,7 @@ impl SegCursor {
             if self.batch_i >= self.batches.len() {
                 return Ok(false);
             }
-            self.rows =
-                crate::sql::scan::rows_from_batches(&self.batches[self.batch_i], schema)?;
+            self.rows = crate::sql::scan::rows_from_batches(&self.batches[self.batch_i], schema)?;
             self.batch_i += 1;
             self.row_i = 0;
         }

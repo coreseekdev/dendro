@@ -26,14 +26,17 @@ fn err(d: &Arc<Database>, sql: &str) -> dendro_core::SqlError {
 
 fn setup(d: &Arc<Database>) {
     let mut s = d.new_session();
-    s.exec("CREATE TABLE customers (id BIGINT PRIMARY KEY, name TEXT NOT NULL)").unwrap();
+    s.exec("CREATE TABLE customers (id BIGINT PRIMARY KEY, name TEXT NOT NULL)")
+        .unwrap();
     s.exec("CREATE TABLE orders (id BIGINT PRIMARY KEY, cid BIGINT REFERENCES customers(id), note TEXT)").unwrap();
-    s.exec("INSERT INTO customers VALUES (1, 'alice'), (2, 'bob')").unwrap();
+    s.exec("INSERT INTO customers VALUES (1, 'alice'), (2, 'bob')")
+        .unwrap();
 }
 
 #[test]
 fn fk_insert_valid() {
-    let d = db(); setup(&d);
+    let d = db();
+    setup(&d);
     // FK 指向存在的父行 → 成功
     let mut s = d.new_session();
     s.exec("INSERT INTO orders VALUES (1, 1, 'o1')").unwrap();
@@ -42,7 +45,8 @@ fn fk_insert_valid() {
 
 #[test]
 fn fk_insert_violation_rejected() {
-    let d = db(); setup(&d);
+    let d = db();
+    setup(&d);
     // FK 指向不存在的父行 → 23503
     let e = err(&d, "INSERT INTO orders VALUES (1, 99, 'o1')");
     assert_eq!(e.state, "23503", "{e}");
@@ -53,7 +57,8 @@ fn fk_insert_violation_rejected() {
 
 #[test]
 fn fk_null_allowed() {
-    let d = db(); setup(&d);
+    let d = db();
+    setup(&d);
     // FK 列 NULL → 跳过检查（SQL 外键语义）
     let mut s = d.new_session();
     s.exec("INSERT INTO orders VALUES (1, NULL, 'o1')").unwrap();
@@ -62,7 +67,8 @@ fn fk_null_allowed() {
 
 #[test]
 fn not_null_rejected() {
-    let d = db(); setup(&d);
+    let d = db();
+    setup(&d);
     // name NOT NULL → INSERT NULL 报 23502
     let e = err(&d, "INSERT INTO customers VALUES (3, NULL)");
     assert_eq!(e.state, "23502", "{e}");
@@ -71,7 +77,8 @@ fn not_null_rejected() {
 
 #[test]
 fn fk_table_level_syntax() {
-    let d = db(); setup(&d);
+    let d = db();
+    setup(&d);
     // 表级 FOREIGN KEY 语法
     let mut s = d.new_session();
     s.exec("CREATE TABLE items (id BIGINT PRIMARY KEY, oid BIGINT, FOREIGN KEY (oid) REFERENCES orders(id))").unwrap();
@@ -84,9 +91,13 @@ fn fk_table_level_syntax() {
 
 #[test]
 fn fk_nonexistent_parent_table() {
-    let d = db(); setup(&d);
+    let d = db();
+    setup(&d);
     // REFERENCES 不存在的表 → 建表时报错
-    let e = err(&d, "CREATE TABLE bad (id BIGINT PRIMARY KEY, x BIGINT REFERENCES nonexistent(id))");
+    let e = err(
+        &d,
+        "CREATE TABLE bad (id BIGINT PRIMARY KEY, x BIGINT REFERENCES nonexistent(id))",
+    );
     assert!(
         e.message.contains("non-existent") || e.message.contains("not exist"),
         "{e}"
@@ -95,7 +106,8 @@ fn fk_nonexistent_parent_table() {
 
 #[test]
 fn fk_multiple_violations_batch() {
-    let d = db(); setup(&d);
+    let d = db();
+    setup(&d);
     // 批量 INSERT 混合合法/非法 → 整条失败
     let e = err(&d, "INSERT INTO orders VALUES (1, 1, 'ok'), (2, 99, 'bad')");
     assert_eq!(e.state, "23503", "{e}");
@@ -108,7 +120,8 @@ fn fk_multiple_violations_batch() {
 fn unique_insert_violation() {
     let d = db();
     let mut s = d.new_session();
-    s.exec("CREATE TABLE u (id BIGINT PRIMARY KEY, email TEXT UNIQUE)").unwrap();
+    s.exec("CREATE TABLE u (id BIGINT PRIMARY KEY, email TEXT UNIQUE)")
+        .unwrap();
     s.exec("INSERT INTO u VALUES (1, 'a@x.com')").unwrap();
     let e = err(&d, "INSERT INTO u VALUES (2, 'a@x.com')");
     assert_eq!(e.state, "23505", "{e}");
@@ -119,7 +132,8 @@ fn unique_insert_violation() {
 fn unique_null_allowed_multiple() {
     let d = db();
     let mut s = d.new_session();
-    s.exec("CREATE TABLE u (id BIGINT PRIMARY KEY, email TEXT UNIQUE)").unwrap();
+    s.exec("CREATE TABLE u (id BIGINT PRIMARY KEY, email TEXT UNIQUE)")
+        .unwrap();
     s.exec("INSERT INTO u VALUES (1, NULL), (2, NULL)").unwrap();
     assert_eq!(count(&d, "SELECT count(*) FROM u"), "2");
 }
@@ -128,7 +142,8 @@ fn unique_null_allowed_multiple() {
 fn unique_table_level() {
     let d = db();
     let mut s = d.new_session();
-    s.exec("CREATE TABLE u (id BIGINT PRIMARY KEY, a INT, b INT, UNIQUE(a, b))").unwrap();
+    s.exec("CREATE TABLE u (id BIGINT PRIMARY KEY, a INT, b INT, UNIQUE(a, b))")
+        .unwrap();
     s.exec("INSERT INTO u VALUES (1, 10, 20)").unwrap();
     let e = err(&d, "INSERT INTO u VALUES (2, 10, 20)");
     assert_eq!(e.state, "23505", "{e}");
@@ -142,10 +157,12 @@ fn unique_table_level() {
 fn upsert_do_nothing() {
     let d = db();
     let mut s = d.new_session();
-    s.exec("CREATE TABLE up (id BIGINT PRIMARY KEY, v INT)").unwrap();
+    s.exec("CREATE TABLE up (id BIGINT PRIMARY KEY, v INT)")
+        .unwrap();
     s.exec("INSERT INTO up VALUES (1, 10)").unwrap();
     // ON CONFLICT DO NOTHING——冲突时跳过（不报错）
-    s.exec("INSERT INTO up VALUES (1, 99) ON CONFLICT DO NOTHING").unwrap();
+    s.exec("INSERT INTO up VALUES (1, 99) ON CONFLICT DO NOTHING")
+        .unwrap();
     assert_eq!(count(&d, "SELECT count(*) FROM up"), "1");
     assert_eq!(count(&d, "SELECT v FROM up WHERE id = 1"), "10"); // 原值保留
 }
@@ -154,10 +171,12 @@ fn upsert_do_nothing() {
 fn upsert_do_update() {
     let d = db();
     let mut s = d.new_session();
-    s.exec("CREATE TABLE up (id BIGINT PRIMARY KEY, v INT, w INT)").unwrap();
+    s.exec("CREATE TABLE up (id BIGINT PRIMARY KEY, v INT, w INT)")
+        .unwrap();
     s.exec("INSERT INTO up VALUES (1, 10, 100)").unwrap();
     // ON CONFLICT DO UPDATE SET v = excluded(v)——用新值更新
-    s.exec("INSERT INTO up VALUES (1, 99, 999) ON CONFLICT DO UPDATE SET v = excluded(v)").unwrap();
+    s.exec("INSERT INTO up VALUES (1, 99, 999) ON CONFLICT DO UPDATE SET v = excluded(v)")
+        .unwrap();
     assert_eq!(count(&d, "SELECT count(*) FROM up"), "1"); // 仍是 1 行
     assert_eq!(count(&d, "SELECT v FROM up WHERE id = 1"), "99"); // 更新
     assert_eq!(count(&d, "SELECT w FROM up WHERE id = 1"), "100"); // 未 SET 保留原值
@@ -167,10 +186,13 @@ fn upsert_do_update() {
 fn upsert_no_conflict_normal_insert() {
     let d = db();
     let mut s = d.new_session();
-    s.exec("CREATE TABLE up (id BIGINT PRIMARY KEY, v INT)").unwrap();
+    s.exec("CREATE TABLE up (id BIGINT PRIMARY KEY, v INT)")
+        .unwrap();
     // 无冲突时正常 INSERT
-    s.exec("INSERT INTO up VALUES (1, 10) ON CONFLICT DO NOTHING").unwrap();
-    s.exec("INSERT INTO up VALUES (2, 20) ON CONFLICT DO NOTHING").unwrap();
+    s.exec("INSERT INTO up VALUES (1, 10) ON CONFLICT DO NOTHING")
+        .unwrap();
+    s.exec("INSERT INTO up VALUES (2, 20) ON CONFLICT DO NOTHING")
+        .unwrap();
     assert_eq!(count(&d, "SELECT count(*) FROM up"), "2");
 }
 
@@ -178,10 +200,12 @@ fn upsert_no_conflict_normal_insert() {
 fn upsert_do_update_with_expression() {
     let d = db();
     let mut s = d.new_session();
-    s.exec("CREATE TABLE up (id BIGINT PRIMARY KEY, v INT)").unwrap();
+    s.exec("CREATE TABLE up (id BIGINT PRIMARY KEY, v INT)")
+        .unwrap();
     s.exec("INSERT INTO up VALUES (1, 10)").unwrap();
     // SET v = v + 1（对 existing 行求值）
-    s.exec("INSERT INTO up VALUES (1, 99) ON CONFLICT DO UPDATE SET v = v + 1").unwrap();
+    s.exec("INSERT INTO up VALUES (1, 99) ON CONFLICT DO UPDATE SET v = v + 1")
+        .unwrap();
     assert_eq!(count(&d, "SELECT v FROM up WHERE id = 1"), "11"); // 10+1
 }
 
@@ -189,9 +213,11 @@ fn upsert_do_update_with_expression() {
 fn upsert_do_update_set_literal() {
     let d = db();
     let mut s = d.new_session();
-    s.exec("CREATE TABLE up (id BIGINT PRIMARY KEY, v INT)").unwrap();
+    s.exec("CREATE TABLE up (id BIGINT PRIMARY KEY, v INT)")
+        .unwrap();
     s.exec("INSERT INTO up VALUES (1, 10)").unwrap();
-    s.exec("INSERT INTO up VALUES (1, 99) ON CONFLICT DO UPDATE SET v = 42").unwrap();
+    s.exec("INSERT INTO up VALUES (1, 99) ON CONFLICT DO UPDATE SET v = 42")
+        .unwrap();
     assert_eq!(count(&d, "SELECT v FROM up WHERE id = 1"), "42");
 }
 
@@ -201,7 +227,8 @@ fn upsert_do_update_set_literal() {
 fn check_constraint_violation() {
     let d = db();
     let mut s = d.new_session();
-    s.exec("CREATE TABLE ck (id BIGINT PRIMARY KEY, v INT CHECK (v > 0))").unwrap();
+    s.exec("CREATE TABLE ck (id BIGINT PRIMARY KEY, v INT CHECK (v > 0))")
+        .unwrap();
     s.exec("INSERT INTO ck VALUES (1, 10)").unwrap(); // 合法
     let e = err(&d, "INSERT INTO ck VALUES (2, -5)");
     assert_eq!(e.state, "23514", "{e}");
@@ -215,7 +242,8 @@ fn check_constraint_violation() {
 fn check_constraint_table_level() {
     let d = db();
     let mut s = d.new_session();
-    s.exec("CREATE TABLE ck (id BIGINT PRIMARY KEY, a INT, b INT, CHECK (a < b))").unwrap();
+    s.exec("CREATE TABLE ck (id BIGINT PRIMARY KEY, a INT, b INT, CHECK (a < b))")
+        .unwrap();
     s.exec("INSERT INTO ck VALUES (1, 10, 20)").unwrap();
     let e = err(&d, "INSERT INTO ck VALUES (2, 30, 20)");
     assert_eq!(e.state, "23514", "{e}");
@@ -225,7 +253,8 @@ fn check_constraint_table_level() {
 fn check_constraint_expression() {
     let d = db();
     let mut s = d.new_session();
-    s.exec("CREATE TABLE ck (id BIGINT PRIMARY KEY, v INT CHECK (v BETWEEN 1 AND 100))").unwrap();
+    s.exec("CREATE TABLE ck (id BIGINT PRIMARY KEY, v INT CHECK (v BETWEEN 1 AND 100))")
+        .unwrap();
     s.exec("INSERT INTO ck VALUES (1, 50)").unwrap();
     let e = err(&d, "INSERT INTO ck VALUES (2, 200)");
     assert_eq!(e.state, "23514", "{e}");

@@ -159,37 +159,39 @@ dendro 现状依据：`crates/dendro-core/src/wal.rs`、
 
 ## 5. 对 dendro 的可借鉴点清单
 
-### P0（方法论，直接落地）
+### P0（方法论，直接落地）✅ 2026-09-17 收口
 
-1. **为 dendro WAL 写一份 TLA+ 规格**（建议名 `dendro/DendroWAL.tla`
-   投稿或自存）。参与方正好四类：fence 租约写者、WAL 刷盘、checkpoint
-   发布、GC/墓碑——全部落在该合集的建模框架内。两条核心不变量可直接
-   借用：
-   - 前缀性：任意写者已安装的事务集 ⊆ 全局成功历史的前缀；
-   - 可重建性：`分支头 + 存活 WAL 段 + 最新 prolly 提交` 可重建 memtx。
-   模型检查能系统化复现 R3-P0（在途帧 vs 段退休）、R4-F1（毒化热旋）类
-   竞态，并覆盖**没测过的组合**（GC 与 catchup 并发、旧写者 renew 到已
-   删除的租约路径、boundary 与 fence 写交错）。
-2. **把不变量写成回归断言**：即便暂不建 TLA+，"前缀性 + 可重建性"两句
-   应作为恢复路径的验收断言进 debug 模式回归（重启后校验已安装集是历史
-   前缀），成本低于完整规格、收益立得。
+1. ✅ **DendroWAL.tla 已建并经 TLC 模型检查**（见同目录
+   `DendroWAL.tla` / `DendroWAL.cfg`；TLC 1.8.0，136 万状态 /
+   17 万 distinct 全过）。建模面：多 epoch 写者（领权即围栏旧世代、
+   fenced 写者仍可完成在途 PUT）+ 异步刷盘 + checkpoint 水位
+   （RecoverableUpTo 前置 = 两段式提交前沿）+ 帧级退休界 + 恢复
+   （epoch 升序 + ts 抑制回放）。三条不变量：
+   - InvCoveredGrounded（covered 推进有据）、
+   - InvAcked（前缀性：ack ⊆ covered ∨ 存活 WAL）、
+   - InvRecovered（可重建性：步进回放 ≡ 快照内 max-ts）。
+   **否定性验证**证明两守卫必要：削弱退休界 → InvAcked 违例
+   （R3-P0 丢提交类反例）；削弱 checkpoint 前置 → InvCoveredGrounded
+   违例（covered 越过未 ack 帧推进）。
+2. ✅ **不变量落为回归断言**：前缀性 = `replay_branch` 末端
+   debug/test 断言（`BranchMem::debug_check_ts_bound`，含断言器
+   负例测试）；可重建性 = `reopen_rebuilds_identical_state`
+   （同存储重开逐行等价，含 UPDATE/DELETE 语义）。
 
-### P1（机制，小改动）
+### P1（机制，小改动）✅ 2026-09-17 收口
 
-3. **写后校验（validate-after-write）**：SlateDB/OSWALD 在 fence 写、
-   chunk 写成功后都要回读权威元数据再校验一次，因为"条件写成功"可能落在
-   已被 GC 的地址。dendro 对应面：`fence.rs::renew` 覆盖写同路径——若
-   租约对象已被分支 GC 删除，renew 会**静默重造**它（正是"复活已删分支
-   fence 对象"的根因面）。建议：renew/acquire 成功后校验"分支仍存活
-   （分支头存在）"，把现在靠 Weak 线程退出兜底的时序漏洞补成显式协议。
-4. **围栏痕迹保留策略成文**：SlateDB "FENCE 对象永不删、最后一个对象
-   永不删"是协议级规则；dendro 的对应规则（first_seg 前段墓碑、租约对象
-   生命周期）散在 wal.rs/fence.rs 注释里。建议在 GC 定案中补一节"围栏
-   对象回收规则"，并明确"任何时刻分支目录下至少保留最高 epoch 租约"。
-5. **Buffer 教训入典**："按时间戳定 GC 下界 + 入清单滞后于对象写入"的
-   竞态（EnableGC 反例）对 dendro 一切未来按 `expires_at_ms` 清理的设计
-   （租约清理、临时对象清理）都是现成反题：要么 grace period（补丁），
-   要么单调确认点（机制）。写进设计评审 checklist。
+3. ✅ **写后校验已落地**：`LeaseKeeper::renew_if_due` 在续期 PUT 成功
+   后以 manifest 权威读回校验 refs——死分支立即 `delete_lease` 撤销
+   复活对象（epoch 单调保证只命中自己世代）并自毒化本地租约（check
+   40001，FENCED 终态）；`branch_locked` 领权位同校验（refs 读取与
+   put_if_absent 之间的并发 DROP 窗口）。回归：
+   `engine::fence_validate_tests`（死分支撤销+围栏 / 健康分支放行）。
+4. ✅ **围栏对象回收规则成文**：GC 定案补总表两行（存活期永不回收
+   ——epoch 高水位语义；DROP 分支墓碑化）+ 不变式 5（不复活：写后
+   校验 / Weak 线程），回归对照行同步。
+5. ✅ **Buffer 教训入典**：`docs/design/设计评审checklist.md` 第 1 条
+   （时间戳不得做回收下界——EnableGC 反例 trace 摘要），另沉淀
+   单一语义面/递归有界/写后校验/失败终态等 10 条。
 
 ### P2（远期，跟踪）
 
@@ -213,7 +215,18 @@ dendro 现状依据：`crates/dendro-core/src/wal.rs`、
   "prolly 提交为恢复锚、WAL 只回放增量"的取舍一致，佐证该取舍在
   S3-first 系统中是主流。
 
-## 7. 信源
+## 7. 落地记录（2026-09-17）
+
+| 建议项 | 产出 |
+|--------|------|
+| P0-1 TLA+ 规格 | `docs/research/DendroWAL.tla`（+cfg）：TLC 全过 + 双守卫否定性验证 |
+| P0-2 不变量断言 | `recovery.rs` 回放末端 debug 断言 + `reopen_rebuilds_identical_state` 重开等价回归 |
+| P1-3 写后校验 | `engine.rs` LeaseKeeper.alive 探针 + renew 撤销/自毒化 + acquire 窗口守卫；2 测试 |
+| P1-4 回收规则成文 | `docs/design/GC定案.md` 总表 + 不变式 5 + 回归对照 |
+| P1-5 评审 checklist | `docs/design/设计评审checklist.md`（10 条） |
+| P2 多写者/LogDrive | 跟踪不引入（对应提交管线重构 P2'/P3 时再取） |
+
+## 8. 信源
 
 - 仓库：<https://github.com/Vanlightly/s3-wal-collection>（clone 实读，
   2026-09-16，main 分支）

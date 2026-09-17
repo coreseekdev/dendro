@@ -23,7 +23,7 @@ use crate::engine::{Database, Session};
 use crate::error::{Result, SqlError};
 use crate::sql::scan;
 use crate::types::Output;
-use sqlparser::ast::{Grantee, GrantObjects, Query, SetExpr, Statement, TableFactor};
+use sqlparser::ast::{GrantObjects, Grantee, Query, SetExpr, Statement, TableFactor};
 
 pub const PRIV_SELECT: u8 = 1;
 pub const PRIV_INSERT: u8 = 2;
@@ -164,9 +164,7 @@ pub(crate) fn enforce(db: &Database, sess: &Session, stmt: &Statement) -> Result
     // 无 owner 追踪 → 非超户拒绝（诚实限制，v2 补属主后放开）
     match stmt {
         Statement::Drop {
-            object_type,
-            names,
-            ..
+            object_type, names, ..
         } => {
             use sqlparser::ast::ObjectType;
             for n in names {
@@ -211,7 +209,9 @@ fn check_table_ref(
     depth: usize,
 ) -> Result<()> {
     if depth > VIEW_WALK_CAP {
-        return Err(SqlError::internal("view nesting too deep in privilege walk"));
+        return Err(SqlError::internal(
+            "view nesting too deep in privilege walk",
+        ));
     }
     match scan::resolve_table(db, &sess.branch, table) {
         Ok((_, entry)) => {
@@ -263,11 +263,7 @@ fn privileges_bits(p: &sqlparser::ast::Privileges) -> Result<u8> {
                     Action::Insert { columns } => col_guard(columns, PRIV_INSERT, "INSERT")?,
                     Action::Update { columns } => col_guard(columns, PRIV_UPDATE, "UPDATE")?,
                     Action::Delete => PRIV_DELETE,
-                    other => {
-                        return Err(SqlError::not_supported(format!(
-                            "privilege {other:?}"
-                        )))
-                    }
+                    other => return Err(SqlError::not_supported(format!("privilege {other:?}"))),
                 };
             }
             Ok(bits)

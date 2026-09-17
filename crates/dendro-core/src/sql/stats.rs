@@ -27,11 +27,7 @@ pub struct TableStats {
 }
 
 /// 稀疏读表统计（无段/解析失败 → None——统计面永不阻塞查询）
-pub fn table_stats(
-    db: &Database,
-    sess: &Session,
-    table: &str,
-) -> Option<TableStats> {
+pub fn table_stats(db: &Database, sess: &Session, table: &str) -> Option<TableStats> {
     let (schema, entry) = crate::sql::scan::resolve_table(db, &sess.branch, table).ok()?;
     if entry.col_segments.is_empty() {
         return None;
@@ -112,12 +108,7 @@ pub fn estimate_filter_rows(
 ) -> u64 {
     // 收集 `col op 数值常量` 合取项
     let mut sels: Vec<f64> = Vec::new();
-    fn walk(
-        e: &sqlparser::ast::Expr,
-        stats: &TableStats,
-        names: &[String],
-        sels: &mut Vec<f64>,
-    ) {
+    fn walk(e: &sqlparser::ast::Expr, stats: &TableStats, names: &[String], sels: &mut Vec<f64>) {
         use sqlparser::ast::Expr;
         match e {
             Expr::BinaryOp { left, op, right } => {
@@ -148,14 +139,12 @@ pub fn estimate_filter_rows(
                                 _ => None,
                             };
                             if let (Some(id), Some(_)) = (col_name, val) {
-                                if let Some(ci) = names
-                                    .iter()
-                                    .position(|n| n.eq_ignore_ascii_case(id))
+                                if let Some(ci) =
+                                    names.iter().position(|n| n.eq_ignore_ascii_case(id))
                                 {
                                     let cs = &stats.cols[ci];
                                     if cs.has_data {
-                                        let span =
-                                            cs.max.saturating_sub(cs.min) + 1;
+                                        let span = cs.max.saturating_sub(cs.min) + 1;
                                         sels.push(1.0 / (span as f64));
                                     }
                                 }
@@ -200,13 +189,10 @@ pub fn estimate_filter_rows(
                             };
                             if let (Some(id), Some(v)) = (col_name, val) {
                                 let _ = o;
-                                if let Some(ci) = names
-                                    .iter()
-                                    .position(|n| n.eq_ignore_ascii_case(id))
+                                if let Some(ci) =
+                                    names.iter().position(|n| n.eq_ignore_ascii_case(id))
                                 {
-                                    if let Some(f) =
-                                        range_selectivity(&stats.cols[ci], &v, o)
-                                    {
+                                    if let Some(f) = range_selectivity(&stats.cols[ci], &v, o) {
                                         sels.push(f);
                                     }
                                 }
@@ -250,12 +236,7 @@ pub fn ndv_range(stat: &ColStat) -> Option<u64> {
 
 /// 等值 join 基数估计：|A ⋈ B| ≈ |A|·|B| / max(ndv_l, ndv_r)
 ///（均匀假设；双侧缺 ndv 回退 sqrt(小侧)——弱区分度经验值）
-pub fn join_est_rows(
-    rows_l: u64,
-    rows_r: u64,
-    ndv_l: Option<u64>,
-    ndv_r: Option<u64>,
-) -> u64 {
+pub fn join_est_rows(rows_l: u64, rows_r: u64, ndv_l: Option<u64>, ndv_r: Option<u64>) -> u64 {
     let denom = match (ndv_l, ndv_r) {
         (Some(a), Some(b)) => a.max(b),
         (Some(a), None) => a,
@@ -269,10 +250,7 @@ pub fn join_est_rows(
 }
 
 /// 表扫描估算（reorder 用）：段总行数 × 下推谓词选择率
-pub fn scan_est(
-    st: &TableStats,
-    pred: Option<&sqlparser::ast::Expr>,
-) -> u64 {
+pub fn scan_est(st: &TableStats, pred: Option<&sqlparser::ast::Expr>) -> u64 {
     let Some(total) = st.cols.first().map(|c| c.rows) else {
         return 0;
     };
@@ -284,10 +262,7 @@ pub fn scan_est(
 
 /// 列 NDV 查询口（join 键两侧）：pk 精确 = 行数 / 整数区间界 / None
 pub fn col_ndv(st: &TableStats, col: &str, is_pk: bool) -> Option<u64> {
-    let idx = st
-        .names
-        .iter()
-        .position(|n| n.eq_ignore_ascii_case(col))?;
+    let idx = st.names.iter().position(|n| n.eq_ignore_ascii_case(col))?;
     let cs = &st.cols.get(idx)?;
     if is_pk {
         Some(cs.rows) // 唯一键精确

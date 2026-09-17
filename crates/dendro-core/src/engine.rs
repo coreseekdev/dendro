@@ -279,6 +279,12 @@ pub struct LeaseKeeper {
     pub ttl_ms: i64,
     pub fence: crate::objstore::fence::FenceStore,
     pub state: Mutex<LeaseState>,
+    /// 分支存活探针（P1-3 写后校验）：manifest refs 含名 = 存活。
+    /// 权威 manifest 读回（manifest_store，非进程内缓存——跨进程 DROP
+    /// 亦可见；读失败 fail-open）；DROP 分支后滞留写者的续期会复活已
+    /// GC 的 fence 对象，PUT 成功后校验、死分支撤销本写并自毒化
+    ///（SlateDB "validate-after-write" 同构）
+    pub alive: Box<dyn Fn(&str) -> bool + Send + Sync>,
 }
 
 impl LeaseKeeper {
@@ -313,6 +319,23 @@ impl LeaseKeeper {
         }; // 锁已释放
         match self.fence.renew(&self.branch, &fresh) {
             Ok(()) => {
+                // P1-3 写后校验：分支已被 DROP/GC → 本次 PUT 复活了刚删
+                // 的 fence 对象。撤销（delete 只可能命中自己 epoch 的对象
+                // ——新世代 max+1 不相交）+ 自毒化本地租约（expires=0 →
+                // check 40001 / 后续续期早退，FENCED 终态——写者必须重开）
+                if !(self.alive)(&self.branch) {
+                    let _ = self.fence.delete_lease(&self.branch, fresh.epoch);
+                    let mut st = self.state.lock();
+                    if st.lease.epoch == fresh.epoch {
+                        st.lease.expires_at_ms = 0;
+                    }
+                    tracing::warn!(
+                        branch = %self.branch,
+                        epoch = fresh.epoch,
+                        "fence renew on dropped branch: lease undone, writer fenced"
+                    );
+                    return;
+                }
                 let mut st = self.state.lock();
                 if st.lease.epoch == fresh.epoch {
                     st.lease = fresh;
@@ -814,9 +837,23 @@ impl Database {
                 self.session_seq.load(Ordering::Relaxed)
             );
             let lease = fence.acquire(name, &holder, self.opts.lease_ttl_ms, head_info.epoch)?;
+            // P1-3 写后校验（领权位）：refs 读取与条件写之间分支可能已被
+            // 并发 DROP——领到的租约对象是复活物，撤销并按分支不存在报错
+            if !self
+                .manifest_store
+                .load_latest()
+                .map(|(_, m)| m.refs.contains_key(name))
+                .unwrap_or(true)
+            {
+                let _ = fence.delete_lease(name, lease.epoch);
+                return Err(SqlError::undefined_branch(format!(
+                    "branch \"{name}\" does not exist"
+                )));
+            }
             let e = lease.epoch;
             // 租约 keep 与 WAL flush 线程共享：flush_loop 每次醒来调用保活回调
             // （自限频），空闲分支不再因 TTL 过期而永久 40001（评审 §3.1）
+            let mstore = self.manifest_store.clone();
             let keeper = Arc::new(LeaseKeeper {
                 branch: name.to_string(),
                 ttl_ms: self.opts.lease_ttl_ms,
@@ -824,6 +861,15 @@ impl Database {
                 state: Mutex::new(LeaseState {
                     lease,
                     next_renew_ms: 0,
+                }),
+                alive: Box::new(move |br: &str| {
+                    // 权威 manifest 读回（LIST 最新版 + GET）：同/跨进程 DROP
+                    // 均可见；节流 = ttl/3 一次（与续期 PUT 同频）。读失败
+                    // fail-open（存储故障下续期本身也难成功）
+                    mstore
+                        .load_latest()
+                        .map(|(_, m)| m.refs.contains_key(br))
+                        .unwrap_or(true)
                 }),
             });
             let mut cfg = crate::wal::WalConfig::from(&self.opts);
@@ -846,6 +892,8 @@ impl Database {
                     },
                     next_renew_ms: 0,
                 }),
+                // 只读占位：expires=0 使续期早退，探针恒真即可（不触发）
+                alive: Box::new(|_| true),
             })
         });
         // 回放所有旧 epoch（1..=lease_epoch-1）；新 epoch 目录为空，随后写入
@@ -1255,8 +1303,7 @@ impl Database {
         // 判重走 HashSet（评审 P2：Vec contains 在 #27 扩到混合分支后
         // 是 O(|col_deletes|×|delta|)，稳态最坏 1e8 次比较/checkpoint）
         if !delta_deletes.is_empty() {
-            let seen: std::collections::HashSet<String> =
-                ne.col_deletes.iter().cloned().collect();
+            let seen: std::collections::HashSet<String> = ne.col_deletes.iter().cloned().collect();
             for d in delta_deletes {
                 if !seen.contains(&d) {
                     ne.col_deletes.push(d);
@@ -1921,3 +1968,56 @@ fn iter_writes(txn: &Txn) -> impl Iterator<Item = (u32, &Vec<u8>, &Mutation)> {
 }
 
 // —— wire 层 API（真身）——
+
+#[cfg(test)]
+mod fence_validate_tests {
+    use super::*;
+
+    /// P1-3 写后校验（S3 WAL 调研 P1 落地）：DROP 分支后滞留写者的
+    /// 续期 PUT 会复活刚删除的 fence 对象——校验须撤销复活物并自毒化
+    /// 本地租约（check 40001 / 后续续期早退，FENCED 终态）
+    #[test]
+    fn renew_on_dropped_branch_undone_and_fenced() {
+        let db = Database::open(DbOptions {
+            store: StoreConfig::Memory,
+            ..Default::default()
+        })
+        .unwrap();
+        let mut s = db.new_session();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY)").unwrap();
+        s.exec("CREATE BRANCH b1 FROM main").unwrap();
+        let b = db.branch("b1").unwrap();
+        s.exec("DROP BRANCH b1").unwrap();
+        // 模拟"DROP 后的下一个续期节拍"：keepalive 在 DROP 前已续期并
+        // 推后了 next_renew（ttl/3）——强置到期，触发滞留写者的复活窗口
+        b.lease.state.lock().next_renew_ms = 0;
+        b.lease.renew_if_due();
+        // 自毒化：本地租约已失约 → check 40001（写者必须重开）
+        assert!(b.lease.check().is_err(), "死分支写者必须被围栏");
+        // 复活物已撤销：fence/b1/ 前缀下无对象
+        let objs = db.obj.list_prefix("fence/b1/").unwrap();
+        assert!(objs.is_empty(), "复活租约必须被撤销：{objs:?}");
+        // 幂等：再次续期早退（已失约——保活无权救活失约者）
+        b.lease.renew_if_due();
+        let objs2 = db.obj.list_prefix("fence/b1/").unwrap();
+        assert!(objs2.is_empty(), "{objs2:?}");
+    }
+
+    /// 健康分支：写后校验放行，续期照常推进（回归护栏）
+    #[test]
+    fn renew_on_live_branch_proceeds() {
+        let db = Database::open(DbOptions {
+            store: StoreConfig::Memory,
+            ..Default::default()
+        })
+        .unwrap();
+        let mut s = db.new_session();
+        s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY)").unwrap();
+        s.exec("CREATE BRANCH b2 FROM main").unwrap();
+        let b = db.branch("b2").unwrap();
+        b.lease.renew_if_due();
+        assert!(b.lease.check().is_ok(), "健康分支续期后照常可写");
+        let objs = db.obj.list_prefix("fence/b2/").unwrap();
+        assert_eq!(objs.len(), 1, "恰一个租约对象：{objs:?}");
+    }
+}

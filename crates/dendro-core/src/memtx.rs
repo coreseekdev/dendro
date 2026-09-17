@@ -226,6 +226,32 @@ impl BranchMem {
             .clone()
     }
 
+    /// 恢复不变量校验（debug/test 构建；S3 WAL 调研 P0-2）：
+    /// 全部表全部键的已安装版本 ts ≤ bound——"已安装集 ⊆ 写历史前缀"
+    /// 的本地可判形式（bound = 回放前沿 watermark）。流式扫描
+    /// （O(n) 时间 / O(1) 额外内存）；违例返回首条证据
+    pub fn debug_check_ts_bound(&self, bound: u64) -> std::result::Result<(), String> {
+        let tables = self.tables.read();
+        for (tid, t) in tables.iter() {
+            for sh in t.shards.iter() {
+                let g = sh.map.read();
+                for (k, vv) in g.iter() {
+                    if let Some(c) = vv.last() {
+                        if c.ts > bound {
+                            return Err(format!(
+                                "table {tid} key {:02x?}..: installed ts {} > bound {}",
+                                &k[..k.len().min(8)],
+                                c.ts,
+                                bound
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn remove_table(&self, table_id: u32) {
         self.tables.write().remove(&table_id);
     }

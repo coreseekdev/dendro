@@ -3,7 +3,6 @@
 
 use super::*;
 
-
 use super::agg::{self, AggCall};
 use super::expr;
 use crate::engine::{Database, Session};
@@ -127,7 +126,10 @@ pub(crate) fn extract_pk_range(sel: &Expr, pk: &str) -> Option<(Option<u64>, Opt
 /// 识别 AND 树中的 `pk >/>=/</<= 字面量`（字面量在另一侧亦可，方向自动翻转）；
 /// 非 PK/非数字字面量的合取返回 None——由下游常规过滤承担，不影响正确性。
 /// 返回 None = 无任何范围界（不做下推）。
-pub(crate) fn extract_pk_int_range(e: &Expr, pk: &str) -> Option<(Option<(i64, bool)>, Option<(i64, bool)>)> {
+pub(crate) fn extract_pk_int_range(
+    e: &Expr,
+    pk: &str,
+) -> Option<(Option<(i64, bool)>, Option<(i64, bool)>)> {
     use sqlparser::ast::BinaryOperator as Op;
     match e {
         Expr::Nested(inner) => extract_pk_int_range(inner, pk),

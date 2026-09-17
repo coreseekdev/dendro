@@ -5,7 +5,8 @@ use dendro_core::embed::Connection;
 
 fn setup() -> Connection {
     let mut c = Connection::memory().unwrap();
-    c.execute("CREATE TABLE t (id BIGINT PRIMARY KEY, v INT)").unwrap();
+    c.execute("CREATE TABLE t (id BIGINT PRIMARY KEY, v INT)")
+        .unwrap();
     c.execute("INSERT INTO t VALUES (1, 10), (2, 20)").unwrap();
     c
 }
@@ -37,7 +38,10 @@ fn non_superuser_denied_without_grant() {
         ("DELETE FROM t WHERE id = 1", "t"),
         ("TRUNCATE t", "t"),
     ] {
-        let e = c.execute(sql).err().unwrap_or_else(|| panic!("应拒绝：{sql}"));
+        let e = c
+            .execute(sql)
+            .err()
+            .unwrap_or_else(|| panic!("应拒绝：{sql}"));
         assert!(denied(&e, table), "{sql} → {e:?}");
     }
     // 表不存在 → 执行路径原生报错（42P01 口径），非权限门
@@ -60,7 +64,9 @@ fn grant_select_only() {
     c.set_user("dendro");
     c.execute("CREATE TABLE u (id BIGINT PRIMARY KEY)").unwrap();
     c.set_user("bob");
-    let e = c.execute("SELECT * FROM t, u WHERE t.id = u.id").unwrap_err();
+    let e = c
+        .execute("SELECT * FROM t, u WHERE t.id = u.id")
+        .unwrap_err();
     assert!(denied(&e, "u"), "{e:?}");
 }
 
@@ -108,7 +114,8 @@ fn grant_requires_owner() {
 fn creator_owns_new_table() {
     let mut c = setup();
     c.set_user("bob");
-    c.execute("CREATE TABLE mine (id BIGINT PRIMARY KEY)").unwrap();
+    c.execute("CREATE TABLE mine (id BIGINT PRIMARY KEY)")
+        .unwrap();
     c.execute("INSERT INTO mine VALUES (1)").unwrap();
     c.execute("GRANT SELECT ON mine TO carol").unwrap(); // owner 可授
     c.set_user("carol");
@@ -163,7 +170,9 @@ fn prepared_statement_gated() {
     su.exec("GRANT SELECT ON t TO bob").unwrap();
     bob.prepare("p1", "SELECT * FROM t", &[]).unwrap();
     // 但未授权写语句 prepare 仍拒
-    let e = bob.prepare("p2", "INSERT INTO t VALUES (1)", &[]).unwrap_err();
+    let e = bob
+        .prepare("p2", "INSERT INTO t VALUES (1)", &[])
+        .unwrap_err();
     assert_eq!(e.state, "42501", "{e:?}");
 }
 
@@ -222,7 +231,8 @@ fn p0_drop_alter_owner_gate() {
     let e = c.execute("ALTER TABLE t ADD COLUMN x INT").unwrap_err();
     assert!(denied(&e, "t"), "{e:?}");
     // 属主可操作自己的表
-    c.execute("CREATE TABLE mine (id BIGINT PRIMARY KEY)").unwrap();
+    c.execute("CREATE TABLE mine (id BIGINT PRIMARY KEY)")
+        .unwrap();
     c.execute("ALTER TABLE mine ADD COLUMN x INT").unwrap();
     c.execute("DROP TABLE mine").unwrap();
     // 非表对象 DROP（视图）非超户拒（v1 无视图属主追踪）
@@ -235,10 +245,7 @@ fn p1_column_level_grant_rejected_not_flattened() {
     let mut c = setup();
     // 列级清单 → 诚实拒绝（原静默展平为全表权限）
     let e = c.execute("GRANT SELECT (v) ON t TO bob").unwrap_err();
-    assert!(
-        e.message.contains("column-level"),
-        "必须显式拒绝：{e:?}"
-    );
+    assert!(e.message.contains("column-level"), "必须显式拒绝：{e:?}");
     let e = c.execute("GRANT UPDATE (v) ON t TO bob").unwrap_err();
     assert!(e.message.contains("column-level"), "{e:?}");
 }

@@ -446,8 +446,7 @@ impl PipeOp<Vec<Vec<SqlValue>>> for SortOp {
                         } else if y.is_null() {
                             std::cmp::Ordering::Less
                         } else {
-                            crate::sql::expr::cmp_values(x, y)
-                                .unwrap_or(std::cmp::Ordering::Equal)
+                            crate::sql::expr::cmp_values(x, y).unwrap_or(std::cmp::Ordering::Equal)
                         };
                         let ord = if asc { ord } else { ord.reverse() };
                         if ord != std::cmp::Ordering::Equal {
@@ -664,8 +663,8 @@ mod operator_tests {
                 )),
             };
             let cols = |n: &str| (n == "k").then_some(2usize); // 键前置后 k 在索引 2
-            // n_cols 必须覆盖键列（verify 拒绝 Col idx ≥ n_cols 的装配——
-            // 原测试声明 2 与 cols 解析 2 矛盾，构造期校验接线后暴露）
+                                                               // n_cols 必须覆盖键列（verify 拒绝 Col idx ≥ n_cols 的装配——
+                                                               // 原测试声明 2 与 cols 解析 2 矛盾，构造期校验接线后暴露）
             crate::sql::scalar::compile_predicate(&e, &cols, 3)
                 .unwrap()
                 .prog
@@ -805,7 +804,10 @@ impl AggAccum {
                     let less = match self.min.as_ref() {
                         None => true,
                         Some(m) => {
-                            matches!(crate::sql::expr::cmp_values(&val, m)?, std::cmp::Ordering::Less)
+                            matches!(
+                                crate::sql::expr::cmp_values(&val, m)?,
+                                std::cmp::Ordering::Less
+                            )
                         }
                     };
                     if less {
@@ -892,7 +894,10 @@ impl PipeOp<Vec<Vec<SqlValue>>> for AggOp {
             let specs = self.calls.clone();
             let accums = self.groups.entry(hashkey.clone()).or_insert_with(|| {
                 self.order.push((hashkey.clone(), keyvals.clone()));
-                specs.iter().map(|s| AggAccum::new(s.func, s.distinct)).collect()
+                specs
+                    .iter()
+                    .map(|s| AggAccum::new(s.func, s.distinct))
+                    .collect()
             });
             for (ai, spec) in self.calls.iter().enumerate() {
                 let v = if let Some(col) = spec.arg_col {
@@ -1128,11 +1133,18 @@ mod topn_tests {
             .collect()
     }
 
-    fn drive_sorted(op: &mut dyn PipeOp<Vec<Vec<SqlValue>>>, data: Vec<Vec<SqlValue>>) -> Vec<Vec<SqlValue>> {
+    fn drive_sorted(
+        op: &mut dyn PipeOp<Vec<Vec<SqlValue>>>,
+        data: Vec<Vec<SqlValue>>,
+    ) -> Vec<Vec<SqlValue>> {
         let mut sink = CollectSink::new(None);
         let src: Vec<Result<Vec<Vec<SqlValue>>>> = vec![Ok(data)];
         let mut it = src.into_iter();
-        let mut cx = PipeCtx::new(vec![], None, Arc::new(std::sync::atomic::AtomicBool::new(false)));
+        let mut cx = PipeCtx::new(
+            vec![],
+            None,
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
         drive(&mut cx, &mut it, op, &mut sink).unwrap();
         sink.rows
     }
@@ -1141,9 +1153,15 @@ mod topn_tests {
     fn topn_equals_full_sort_prefix_with_ties() {
         // 并列键大量出现（v=5 八行）——稳定序 = 压入序（a..h）
         let mut pairs: Vec<(i64, Option<i64>, &str)> = vec![
-            (5, Some(1), "a"), (9, None, "b"), (5, Some(2), "c"),
-            (1, Some(3), "d"), (5, None, "e"), (7, Some(4), "f"),
-            (5, Some(5), "g"), (3, None, "h"), (5, Some(6), "i"),
+            (5, Some(1), "a"),
+            (9, None, "b"),
+            (5, Some(2), "c"),
+            (1, Some(3), "d"),
+            (5, None, "e"),
+            (7, Some(4), "f"),
+            (5, Some(5), "g"),
+            (3, None, "h"),
+            (5, Some(6), "i"),
             (2, Some(7), "j"),
         ];
         pairs.sort_by_key(|(k, _, _)| *k); // 与压入无关——压入序即上表序
@@ -1155,7 +1173,10 @@ mod topn_tests {
                 let mut full = SortOp::new(vec![true, asc2]);
                 let mut out_full = drive_sorted(&mut full, data.clone());
                 out_full.truncate(n);
-                assert_eq!(out_top, out_full, "asc2={asc2} n={n}：top-N 必须与全量前缀逐字节一致");
+                assert_eq!(
+                    out_top, out_full,
+                    "asc2={asc2} n={n}：top-N 必须与全量前缀逐字节一致"
+                );
             }
         }
     }

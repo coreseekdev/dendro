@@ -68,7 +68,13 @@ pub fn segment_col_stats(
             .map_err(|e| crate::Error::InvalidInput(format!("stats: {e}")))?;
         if acc.is_empty() {
             acc = vec![
-                ColStatAgg { rows: 0, nulls: 0, min: u64::MAX, max: 0, has_data: false };
+                ColStatAgg {
+                    rows: 0,
+                    nulls: 0,
+                    min: u64::MAX,
+                    max: 0,
+                    has_data: false
+                };
                 footer.schema.fields().len()
             ];
         }
