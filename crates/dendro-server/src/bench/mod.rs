@@ -8,6 +8,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+pub mod pair;
+
 pub struct BenchResult {
     #[allow(dead_code)]
     pub suite: String,

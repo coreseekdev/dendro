@@ -93,6 +93,15 @@ enum Cmd {
         #[arg(long, default_value = "benches/results")]
         out: PathBuf,
     },
+    /// A/B 配对评测（qorl 纪律：预热/交替配对/中位数/±5% 平局区/愚弄率）
+    BenchPair {
+        /// 事实表行数
+        #[arg(long, default_value_t = 200_000)]
+        rows: usize,
+        /// 结果输出文件
+        #[arg(long, default_value = "benches/results/pair.json")]
+        out: PathBuf,
+    },
     /// M-3：压缩量化曲线（每 codec 的大小比 + 编/解码吞吐，JSON 落盘）
     BenchCompress {
         /// 行数（默认 5 万）
@@ -379,6 +388,13 @@ fn main() {
         }
         Cmd::Bench { out } => {
             dendro_server::bench::run_all(&out);
+        }
+        Cmd::BenchPair { rows, out } => {
+            let s = dendro_server::bench::pair::bench_pair(rows, &out);
+            println!("wrote {}", out.display());
+            for r in &s.rows {
+                println!("  {:<48} {:>12.3} {}", r.name, r.value, r.unit);
+            }
         }
         Cmd::Smoke { sql } => {
             let db = Database::open(DbOptions::memory()).unwrap();

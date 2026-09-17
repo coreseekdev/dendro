@@ -140,7 +140,16 @@ Parallel 提示属于"把已知好东西打开"而非优化智慧。
    查询跑 best-of-N hint 搜索，产出回归修正）比在线优化现实——
    dendro 的 SLT + 差分轴 + EXPLAIN 面就是现成的智能体环境。
 
-## 5. 信源
+## 5. 落地记录（2026-09-18）
+
+| 建议项 | 状态 |
+|--------|------|
+| P0-1 评测协议 | ✅ `dendro-server bench-pair`（预热 W3 / 交替配对 R7 先手翻转 / 每侧中位数 / ±5% 平局区 / 愚弄率；`pair_stats` 纯函数 3 单测锁定口径）。**首跑即验证方法 论价值**：join_pushdown 判 WIN 0.800× 且愚弄率 0（规则 20% 加速的干净信号）；range_sort_limit 判 TIE 但愚弄率 0.429（测量不可信的典型形态——方差指标看不见、愚弄率直接点名）；global fooled rate 0.171 为基线。规则效果主张自此附本工具数字 |
+| P0-2 物理默认值审计 | ✅ optimize 默认 on；server 主路径默认接 CbfColumnar（AP 激活）；Durability 默认 Group。**无已知好物默认关着**；未启用的（并行扫描/S3 range 预取/SIMD）属未建非关闭——qorl 的 Parallel 型免费赢面在 dendro 对应"先建后默认开" |
+| P1-3 hint-set 泛化 | 未做（force 轴仍 debug-only 双轴） |
+| P1-4 est/actual 产品化 | 未做 |
+
+## 6. 信源
 
 - 入口：Rohan Bansal, *Training a 4B model to produce 81% faster
   query plans than Postgres*.
