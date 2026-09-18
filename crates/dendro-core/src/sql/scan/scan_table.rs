@@ -214,16 +214,54 @@ pub(crate) fn try_ap_scan(
                 .ok()
         })
         .collect();
-    // 段批（ap.scan 内含段级 pk 剪枝——账本 #24 的 None=无界语义）
-    let mut segment_batches = Vec::with_capacity(entry.col_segments.len());
-    for seg in entry.col_segments.iter() {
-        segment_batches.push(ap.scan(
-            db.obj_store(),
-            &schema,
-            std::slice::from_ref(seg),
-            &pk_range,
-            col_mask,
-        )?);
+    // 段批（ap.scan 内含段级 pk 剪枝——账本 #24 的 None=无界语义）。
+    // T3（HTAP 差异批 / DuckDB morsel 精神）：段级并行扫描——
+    // 段 = morsel：连续段切 n_workers 块、scoped 线程各扫各块、
+    // 块序拼接 ⇒ 输出与顺序版逐字节同序（确定性 by construction）；
+    // S3 场景重叠 range GET 往返，Memory 场景重叠解码。段内 pk 剪枝
+    // 与掩码语义不变（每段独立调用 ap.scan）。≤1 段零开销直扫。
+    let segs = &entry.col_segments;
+    let mut segment_batches = Vec::with_capacity(segs.len());
+    if segs.len() <= 1 {
+        for seg in segs.iter() {
+            segment_batches.push(ap.scan(
+                db.obj_store(),
+                &schema,
+                std::slice::from_ref(seg),
+                &pk_range,
+                col_mask,
+            )?);
+        }
+    } else {
+        const SEG_WORKERS: usize = 4;
+        let nw = SEG_WORKERS.min(segs.len());
+        let chunk = segs.len().div_ceil(nw);
+        let store = db.obj_store();
+        let schema_ref = &schema;
+        let pk = &pk_range;
+        let mask = col_mask;
+        std::thread::scope(|scope| -> crate::error::Result<()> {
+            let handles: Vec<_> = segs
+                .chunks(chunk)
+                .map(|chunk_segs| {
+                    let ap = ap.clone();
+                    scope.spawn(move || {
+                        chunk_segs
+                            .iter()
+                            .map(|seg| {
+                                ap.scan(store, schema_ref, std::slice::from_ref(seg), pk, mask)
+                            })
+                            .collect::<crate::error::Result<Vec<_>>>()
+                    })
+                })
+                .collect();
+            for h in handles {
+                segment_batches.extend(h.join().map_err(|_| {
+                    crate::error::SqlError::internal("parallel segment scan panicked")
+                })??);
+            }
+            Ok(())
+        })?;
     }
     // memtx overlay（覆盖段源；None=墓碑删除）
     let b = db.branch(&sess.branch)?;

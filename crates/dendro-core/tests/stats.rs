@@ -264,3 +264,41 @@ fn analyze_txn_guard() {
     s.exec("ROLLBACK").unwrap();
     s.exec("ANALYZE g").unwrap(); // 回滚后可用
 }
+
+/// T1/T2：ANALYZE 精确 NDV 与未列值启发（HTAP 差异批）
+#[test]
+fn analyze_exact_ndv_and_unlisted_heuristic() {
+    let d = fixture_db_with_table("nd", 20_000, |i| if i < 19_000 { 5 } else { i as i64 });
+    let mut s = d.new_session();
+    s.exec("ANALYZE nd").unwrap();
+    // 精确 NDV：1001（5 + 19000..19999 各一）
+    let an = dendro_core::sql::stats::load_analyze(&d, &s, "nd").unwrap();
+    let c_ndv = an.cols[1].ndv;
+    assert_eq!(c_ndv, 1001, "精确 NDV（got {c_ndv}）");
+    // 未列值启发：c = 5 命中 MCV（19000/20000 = 0.95）；
+    // c = 7（未列）≈ (1-0.95)/(1001-32) ≈ 5.1e-5（远低于 1/1001）
+    let mut est = |sql: &str| -> f64 {
+        let out = s.exec(sql).unwrap();
+        let t = match &out[0] {
+            dendro_core::types::Output::Rows(rs) => rs
+                .text_rows()
+                .iter()
+                .map(|r| r[0].clone().unwrap())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            _ => panic!(),
+        };
+        t.lines()
+            .find(|l| l.contains("scan nd"))
+            .and_then(|l| l.split("est=").nth(1))
+            .and_then(|x| x.trim().parse().ok())
+            .unwrap_or(0.0)
+    };
+    let e_main = est("EXPLAIN ANALYZE SELECT count(*) FROM nd WHERE c = 5");
+    let e_unlisted = est("EXPLAIN ANALYZE SELECT count(*) FROM nd WHERE c = 7");
+    assert!(e_main > 18000.0, "MCV 主值 est ≈19000（got {e_main}）");
+    assert!(
+        (0.0..=2.0).contains(&e_unlisted),
+        "未列值 est 应 ≈1（启发 (1-Σf)/(ndv-|mcv|)；got {e_unlisted}）"
+    );
+}

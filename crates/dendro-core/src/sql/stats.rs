@@ -112,6 +112,15 @@ pub fn eq_selectivity(
                     return Some(*c as f64 / an_rows.max(1) as f64);
                 }
             }
+            // 未列值启发（T2，PG 口径）：MCV 之外的值均摊剩余概率——
+            // 偏斜列上未列值显著低于 1/ndv 均值（防"未列值被高估"）
+            let mcv_n = an.mcv.len() as u64;
+            if an.ndv > mcv_n && an_rows > 0 {
+                let mcv_freq: f64 =
+                    an.mcv.iter().map(|(_, c)| *c as f64).sum::<f64>() / an_rows as f64;
+                let left = (1.0 - mcv_freq).max(0.0);
+                return Some(left / (an.ndv - mcv_n) as f64);
+            }
             return Some(1.0 / an.ndv as f64);
         }
         return None;
@@ -364,15 +373,33 @@ pub fn scan_est(st: &TableStats, pred: Option<&sqlparser::ast::Expr>) -> u64 {
     }
 }
 
-/// 列 NDV 查询口（join 键两侧）：pk 精确 = 行数 / 整数区间界 / None
+/// 列 NDV 查询口（join 键两侧）：pk 精确 = 行数 / **analyze 精确 NDV**
+///（T1：ANALYZE 后替代整数区间宽上界）/ 整数区间界 / None
 pub fn col_ndv(st: &TableStats, col: &str, is_pk: bool) -> Option<u64> {
+    col_ndv_ex(st, None, col, is_pk)
+}
+
+/// 带 analyze 产物的 NDV 口（join reorder 调用侧已加载时直传）
+pub fn col_ndv_ex(
+    st: &TableStats,
+    an: Option<&TableAnalyze>,
+    col: &str,
+    is_pk: bool,
+) -> Option<u64> {
     let idx = st.names.iter().position(|n| n.eq_ignore_ascii_case(col))?;
-    let cs = &st.cols.get(idx)?;
+    let cs = st.cols.get(idx)?;
     if is_pk {
-        Some(cs.rows) // 唯一键精确
-    } else {
-        ndv_range(cs)
+        return Some(cs.rows); // 唯一键精确
     }
+    if let Some(an) = an {
+        if let Some(a) = an.cols.get(idx) {
+            if a.ndv > 0 {
+                return Some(a.ndv); // ANALYZE 精确值
+            }
+            return None;
+        }
+    }
+    ndv_range(cs)
 }
 
 // ---------------------------------------------------------------------------

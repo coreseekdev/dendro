@@ -1058,7 +1058,8 @@ fn join_estimate(
     let n_st = crate::sql::stats::table_stats(db, sess, &n_table)?;
     let n_est = crate::sql::stats::scan_est(&n_st, n_pred.as_ref());
     let n_is_pk = is_pk_col(&n_table, &new_col, db, sess);
-    let n_ndv = crate::sql::stats::col_ndv(&n_st, &new_col, n_is_pk);
+    let n_an = crate::sql::stats::load_analyze(db, sess, &n_table);
+    let n_ndv = crate::sql::stats::col_ndv_ex(&n_st, n_an.as_deref(), &new_col, n_is_pk);
     // acc 侧：因子表定位（列名→表——acc 内哪张表含该键；v1 遍历 acc 因子
     // 的表名，col_ndv 命中者）——保守：任一 acc 表含列即可
     // acc 侧定位（P1 修）：**已放置集**按因子键精确匹配——原在
@@ -1072,7 +1073,8 @@ fn join_estimate(
         return None;
     }
     let a_is_pk = is_pk_col(&a_table, &acc_col, db, sess);
-    let a_ndv = crate::sql::stats::col_ndv(&a_st, &acc_col, a_is_pk);
+    let a_an = crate::sql::stats::load_analyze(db, sess, &a_table);
+    let a_ndv = crate::sql::stats::col_ndv_ex(&a_st, a_an.as_deref(), &acc_col, a_is_pk);
     Some(crate::sql::stats::join_est_rows(
         acc_est, n_est, a_ndv, n_ndv,
     ))

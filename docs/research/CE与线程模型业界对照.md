@@ -61,6 +61,44 @@
 （中大但价值最高）；线程侧按 A → B → C 三档走，A 与 S3 场景收益直接
 挂钩且零架构风险，C 在有真实负载数据前不立项。
 
+## 3.5 HTAP 定位下的差异修正与任务列表（2026-09-18，用户定调）
+
+dendro 定位 = **单引擎 HTAP**（memtx OCC + WAL 直写 = TP；CBF 列存
+向量化 = AP）。据此参照权重修正：**DuckDB 路线上调为主参照**（嵌入式/
+向量化的 AP 面同构），PG 的采样/autoanalyze 体系降为 CE 维护面的
+参考，MySQL/SQLite 仅作下界对照。
+
+**诚实差异结论（重要——影响任务取舍）**：
+
+1. **动态 join filter 在 dendro 已基本实现**：hash_join 已有 build 侧
+   键 [min,max] 的 probe 行 O(1) 预检（DuckDB 2024-11 blog 同构，
+   SOTA P2 早已落地）；且物化同步模型下 dendro 的 **build 侧按实际
+   基数选择**（O-4）——DuckDB 需要靠动态过滤补偿的 CE 误差，dendro
+   在 join 入口用"已物化的精确行数"天然规避。这是同步物化模型对
+   流式模型的真实优势。
+2. **scan 级动态过滤（DuckDB 完全体）需要流式执行**——probe 行在
+   扫描时即被 build 键集过滤，物化模型做不到（行已物化）。该收益
+   归入线程 C 档（全 morsel 化），非独立任务。
+3. 由此 CE 侧剩余价值集中在两个小项（NDV 接线/未列值启发），大项
+   转向 **AP 列存段级并行扫描**（A 档 I/O/解码并行的最小爆炸半径
+   形态——段循环本就独立、结果按序收集天然确定）。
+
+**任务列表**：
+
+| # | 任务 | 参照 | 范围 |
+|---|------|------|------|
+| T1 | 精确 NDV 接线 join reorder（col_ndv 优先 analyze 产物） | PG | stats.rs + optimize.rs 调用点，小 |
+| T2 | MCV 未列值启发（(1−Σfreq)/(ndv−\|mcv\|)） | PG | eq_selectivity 未命中分支，小 |
+| T3 | AP 列存段级并行扫描（scoped 线程、按序收集、段独立剪枝不变） | DuckDB morsel 精神（段=morsel） | scan_table.rs 段循环，小中 |
+| T4 | （结论性）scan 级动态过滤并入线程 C 档，不独立立项 | DuckDB | — |
+
+**执行记录（同日）**：T1 ✅ `col_ndv_ex`（analyze 精确 NDV 优先，回退
+区间宽）；T2 ✅ 未列值启发 `(1−Σfreq)/(ndv−|mcv|)`；T3 ✅ 段级并行
+扫描（连续段切 4 块 scoped 线程、块序拼接 = 输出与顺序版同序 by
+construction、段内 pk 剪枝/掩码语义不变、≤1 段零开销直扫）。测试
++1（精确 NDV=1001 / MCV 主值 est≈19000 / 未列值 est≈1）；AP 面
+（sparse_read/ap_txn/SLT 34）全绿。
+
 ## 4. 信源
 
 - DuckDB：[Join Order Optimization with (Almost) No Statistics
