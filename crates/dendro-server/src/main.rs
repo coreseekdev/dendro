@@ -110,6 +110,10 @@ enum Cmd {
         /// 每 N 行 CHECKPOINT（0 = 仅末尾）
         #[arg(long, default_value_t = 5_000_000)]
         ckpt_every: usize,
+        /// 进程 RSS 上限 MB（0 = 不设限；超限把剩余步骤标 skip 并
+        /// 写出已完成部分的结果后退出——防大表物化压垮整机）
+        #[arg(long, default_value_t = 0)]
+        max_rss_mb: u64,
         /// 结果 JSON 输出
         #[arg(long, default_value = "benches/results/clickbench.json")]
         out: PathBuf,
@@ -416,10 +420,11 @@ fn main() {
             rows,
             chunk,
             ckpt_every,
+            max_rss_mb,
             out,
         } => {
             let s = dendro_server::bench::clickbench::bench_clickbench(
-                &csv, &data, rows, chunk, ckpt_every, &out,
+                &csv, &data, rows, chunk, ckpt_every, max_rss_mb, &out,
             );
             println!("wrote {}", out.display());
             for r in &s.rows {

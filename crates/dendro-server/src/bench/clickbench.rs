@@ -240,14 +240,40 @@ fn sql_lit(s: &str) -> String {
 /// 跑 ClickBench：装载（COPY FROM，.gz 自动解压；rows_limit>0 先截样）
 /// → 检查点/ANALYZE → 查询计时。ckpt_every 在 COPY 路径下不生效
 ///（单语句装载；保留参数兼容旧签名）
+///
+/// max_rss_mb > 0 时启用内存上限（装载逐段/查询逐条间检查）：超限把
+/// 剩余步骤标记 skipped 写出**已完成部分**的 JSON 后优雅退出——宁可
+/// 部分结果也不让 TableView 物化把整机压垮（swap 打满殃及他进程）。
+/// 注意它是"步间"防线：单条查询内部的失控仍需外层 memguard 硬杀。
 pub fn bench_clickbench(
     csv: &Path,
     data_dir: &Path,
     rows_limit: usize, // 0 = 全量
     chunk_rows: usize,
     ckpt_every: usize, // 每 N 行 CHECKPOINT（界内存tx/WAL）；0 = 不做
+    max_rss_mb: u64,   // 0 = 不设限；>0 = 超限优雅截断（mb）
     out: &PathBuf,
 ) -> BenchResult {
+    let rss_over_cap = |gb_cap: f64| -> Option<f64> {
+        if gb_cap <= 0.0 {
+            return None;
+        }
+        dendro_core::engine::proc_rss_bytes()
+            .map(|b| b as f64 / 1_048_576.0)
+            .filter(|gb| *gb > gb_cap)
+    };
+    let write_out = |rows: Vec<BenchRow>| -> BenchResult {
+        let r = BenchResult {
+            suite: "clickbench".into(),
+            rows,
+        };
+        if let Some(dir) = out.parent() {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(out, r.to_json()).unwrap();
+        r
+    };
+    let gb_cap = max_rss_mb as f64 / 1024.0;
     let db = Database::open(DbOptions {
         store: StoreConfig::LocalDir(data_dir.to_path_buf()),
         durability: Durability::Group,
@@ -354,6 +380,15 @@ pub fn bench_clickbench(
             s.exec("CHECKPOINT").unwrap();
         }
         let _ = std::fs::remove_file(seg);
+        if let Some(gb) = rss_over_cap(gb_cap) {
+            rows_out.push(BenchRow {
+                name: format!("memcap[load rss {gb:.1}gb > {gb_cap:.0}gb]"),
+                value: 0.0,
+                unit: "memcap",
+            });
+            eprintln!("[clickbench] MEMCAP load: {gb:.1}gb > {gb_cap:.0}gb @ seg {i}");
+            return write_out(std::mem::take(&mut rows_out));
+        }
     }
     let load_s = t0.elapsed().as_secs_f64();
     let total_rows = loaded;
@@ -391,6 +426,27 @@ pub fn bench_clickbench(
 
     // ---- 查询：warmup 1 + 中位数 of 3 ----
     for (qi, sql, skip) in queries() {
+        // 内存上限（步间防线）：上一条查询（或 warmup 后）RSS 仍超
+        // → 本条及剩余全部标记 memcap skip，写出部分结果优雅退出
+        if let Some(gb) = rss_over_cap(gb_cap) {
+            rows_out.push(BenchRow {
+                name: format!("q{qi:02}.skipped[memcap rss {gb:.1}gb > {gb_cap:.0}gb]"),
+                value: 0.0,
+                unit: "skip",
+            });
+            eprintln!("[clickbench] MEMCAP queries: {gb:.1}gb > {gb_cap:.0}gb @ q{qi:02}");
+            // 剩余查询统一标注（含天然 skip 的原样保留语义）
+            let all = queries();
+            for (rqi, _, rskip) in all.iter().skip_while(|(x, _, _)| *x != qi).skip(1) {
+                let reason = rskip.map(|r| r.to_string()).unwrap_or_else(|| "memcap".into());
+                rows_out.push(BenchRow {
+                    name: format!("q{rqi:02}.skipped[{reason}]"),
+                    value: 0.0,
+                    unit: "skip",
+                });
+            }
+            return write_out(std::mem::take(&mut rows_out));
+        }
         if let Some(reason) = skip {
             rows_out.push(BenchRow {
                 name: format!("q{qi:02}.skipped[{reason}]"),
@@ -431,16 +487,12 @@ pub fn bench_clickbench(
             value: times[1],
             unit: "ms",
         });
+        // 逐查询打点：即使外层 memguard 硬杀，tee 日志也留有已完成
+        // 查询的耗时痕迹（部分基线可从日志恢复）
+        let rss_now = dendro_core::engine::proc_rss_bytes().unwrap_or(0) as f64 / 1_048_576.0;
+        eprintln!("[clickbench] q{qi:02} done {} ms (rss {rss_now:.1}gb)", times[1]);
     }
-    let r = BenchResult {
-        suite: "clickbench".into(),
-        rows: rows_out,
-    };
-    if let Some(dir) = out.parent() {
-        std::fs::create_dir_all(dir).unwrap();
-    }
-    std::fs::write(out, r.to_json()).unwrap();
-    r
+    write_out(rows_out)
 }
 
 fn panic_harness(msg: &str) -> BenchResult {

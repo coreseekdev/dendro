@@ -118,3 +118,18 @@ rows_from_batches 行式转换（1M×106 列 ≈ 1.06 亿 SqlValue 中间对象�
 - 1M 样本 = gz 流前缀（引号感知逻辑记录提取）
 - dendro 修复链：6ebb06b（dry-run 三修）→ 02e2542（内存治理）→
   b8dc722（58030 根因）→ 本提交（COMPACT 512）
+
+### 内存防护（2026-09-19 追加：10M 运行 OOM 事故后）
+
+10M 查询阶段 TableView 物化（1M 已 7.7GB → 10M 线性外推 ~77GB）曾把
+swap 打满殃及整机。此后跑批双层防护：
+
+1. **进程内软上限** `--max-rss-mb N`（click-bench 参数）：装载逐段/
+   查询逐条**之间**检查 RSS，超限把剩余步骤标 `skipped[memcap]` 写出
+   **已完成部分**的 JSON 后优雅退出；每查询完成打点耗时+RSS 到日志
+   （即使被硬杀也可从 tee 日志恢复部分基线）
+2. **外层硬看门狗** `memguard.sh <pid> <maxGB>`：5s 轮询，超限
+   SIGKILL 进程组——兜住单条查询**内部**的失控（软上限步间才检查）
+
+现行口径：10M 跑批 = `--max-rss-mb 16384` + memguard 24GB。
+查询侧根治（10M+ 不全物化 TableView）仍需 C 档流式执行。
