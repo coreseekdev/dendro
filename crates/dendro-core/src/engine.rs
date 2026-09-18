@@ -1274,10 +1274,12 @@ impl Database {
         new_root: &Option<Hash>,
         schema: &TableSchema,
     ) -> Result<Vec<String>> {
-        // 全量重建段数阈值：8 → 16（ClickBench 实证：bulk 分段装载
-        // 下每 8 段一次 write_full 物化全表 Arrow——重建频率翻倍即
-        // 峰值源；16 折中读放大与重建成本。后续可按字节细化）
-        const COMPACT_SEGMENTS: usize = 16;
+        // 全量重建段数阈值：16 → 512（10M 实证：50 段装载中 16 段
+        // 触发 3 次全量重建——write_full 物化全树 SqlValue 行 =
+        // O(全表×行宽)，RSS 18.8GB 的根因。512 = bulk 基准装载
+        // 期间零重建（读放大代价留给查询层——列存段级并行已就位）；
+        // 真正的修法是 write_full 流式化（C 档相关）
+        const COMPACT_SEGMENTS: usize = 512;
         const DELETE_CAP: usize = 10_000;
         let mut retired: Vec<String> = Vec::new();
         let snapshot = b.watermark.load(Ordering::Acquire);

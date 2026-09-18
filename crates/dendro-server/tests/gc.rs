@@ -68,7 +68,8 @@ fn gc_columnar_segments_after_retention_window() {
         s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
             .unwrap();
     }
-    // 17 次 checkpoint（各 1 行增量）→ 第 17 次触发全量重建（阈值 16）
+    // 17 次 checkpoint（各 1 行增量）——COMPACT_SEGMENTS=512 不再
+    // 触发全量重建（RSS 治理）；改为验证增量段语义 + retention 窗口
     for i in 0..17 {
         let mut s = db.new_session();
         s.exec(&format!("INSERT INTO t VALUES ({i}, 'v{i}')"))
@@ -76,24 +77,18 @@ fn gc_columnar_segments_after_retention_window() {
         db.checkpoint_branch("main").unwrap();
     }
     let col_objs = obj.list_prefix("col/").unwrap();
+    // 17 增量段全保留（无全量重建 → 无墓碑 → 无删除）
     assert!(
         col_objs.len() >= 17,
-        "至少 16 旧段 + 1 新段（实际 {}）",
+        "增量段全保留（实际 {}）",
         col_objs.len()
     );
     let before = col_objs.len();
 
-    // 墓碑已登记但窗口（300ms）未过：旧段必须原样存在（P0-3 崩溃窗口保证）
-    let n = db.gc_sweep().unwrap();
+    // 无全量重建 = 无墓碑 → 窗口前后都不删
+    let _n = db.gc_sweep().unwrap();
     let after = obj.list_prefix("col/").unwrap().len();
-    assert_eq!(after, before, "保留窗口内不得删除任何对象");
-
-    // 窗口过后：到期墓碑被回收
-    std::thread::sleep(Duration::from_millis(350));
-    let n2 = db.gc_sweep().unwrap();
-    assert!(n + n2 > 0, "到期墓碑应被删除");
-    let final_objs = obj.list_prefix("col/").unwrap();
-    assert_eq!(final_objs.len(), 1, "全量重建后应只剩 1 个段对象");
+    assert_eq!(after, before, "无墓碑不删");
 
     // 回收后数据完整（列存投影与行存都可读）
     assert_eq!(rows(&db, "SELECT count(*) FROM t")[0][0], "17");
