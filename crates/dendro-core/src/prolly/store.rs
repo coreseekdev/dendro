@@ -54,6 +54,19 @@ impl NodeStore {
         Ok(h)
     }
 
+    /// 批量写节点 chunk（Chunker 攒批收尾用——万级节点一次
+    /// put_batch：批内去重 + 并行写 + 批末单次 syncfs）
+    pub(crate) fn put_nodes_batch(
+        &self,
+        chunks: Vec<Chunk>,
+        session_cache: &mut std::collections::HashSet<Hash>,
+    ) -> Result<usize> {
+        if chunks.is_empty() {
+            return Ok(0);
+        }
+        Ok(self.cas.put_batch(&chunks, session_cache)?)
+    }
+
     /// 读取节点（分片 LRU 缓存；命中晋升，未命中回填并淘汰最久未用）。
     /// 未命中路径不再重算节点地址（SHA-512）：地址即查询键，内容寻址的
     /// 完整性由 crc32c（validate）+ 写入端哈希保证——每次 miss 省一次
@@ -75,6 +88,10 @@ impl NodeStore {
 
     fn shard(&self, h: &Hash) -> &Mutex<lru::LruCache<Hash, Node>> {
         &self.shards[h.as_u64() as usize % SHARDS]
+    }
+
+    pub(crate) fn cache_insert_pub(&self, h: Hash, n: Node) {
+        self.cache_insert(h, n)
     }
 
     fn cache_insert(&self, h: Hash, n: Node) {

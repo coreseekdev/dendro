@@ -1444,8 +1444,14 @@ fn csv_value(s: &str, ty: &crate::types::ColType) -> SqlValue {
         return SqlValue::Null;
     }
     match ty {
-        crate::types::ColType::Int32 => s.parse::<i32>().map(SqlValue::Int32).unwrap_or(SqlValue::Null),
-        crate::types::ColType::Int64 => s.parse::<i64>().map(SqlValue::Int64).unwrap_or(SqlValue::Null),
+        crate::types::ColType::Int32 => s
+            .parse::<i32>()
+            .map(SqlValue::Int32)
+            .unwrap_or(SqlValue::Null),
+        crate::types::ColType::Int64 => s
+            .parse::<i64>()
+            .map(SqlValue::Int64)
+            .unwrap_or(SqlValue::Null),
         crate::types::ColType::Float64 => s
             .parse::<f64>()
             .map(SqlValue::Float64)
@@ -1479,8 +1485,7 @@ pub(crate) fn exec_copy_from(
             "table \"{short}\" has no primary key"
         )));
     }
-    let f = std::fs::File::open(&path)
-        .map_err(|e| SqlError::io(format!("COPY {path}: {e}")))?;
+    let f = std::fs::File::open(&path).map_err(|e| SqlError::io(format!("COPY {path}: {e}")))?;
     let reader: Box<dyn std::io::BufRead> = if path.ends_with(".gz") {
         Box::new(std::io::BufReader::with_capacity(
             4 << 20,

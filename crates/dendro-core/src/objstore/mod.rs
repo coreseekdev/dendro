@@ -55,6 +55,16 @@ pub trait ObjStore: Send + Sync + 'static {
     fn get(&self, path: &str) -> ObjResult<Bytes>;
     fn get_range(&self, path: &str, off: u64, len: usize) -> ObjResult<Bytes>;
     fn put(&self, path: &str, data: Bytes) -> ObjResult<()>;
+    /// 批量写路径的单对象写入（跳过逐文件 fsync——批末由
+    /// [`Self::sync_batch`] 一次性同步；默认退化为 put 保持语义）
+    fn put_no_sync(&self, path: &str, data: Bytes) -> ObjResult<()> {
+        self.put(path, data)
+    }
+    /// 批量写收尾：一次文件系统级同步（覆盖本批全部写入 + 目录项）。
+    /// 默认 no-op（S3/Memory：写 ACK 即持久）
+    fn sync_batch(&self) -> ObjResult<()> {
+        Ok(())
+    }
     /// 不存在才成功；已存在 → Err(Exists)
     fn put_if_absent(&self, path: &str, data: Bytes) -> ObjResult<()>;
     fn delete(&self, path: &str) -> ObjResult<()>;

@@ -1374,14 +1374,32 @@ impl Database {
                 .and_then(|s| Hash::from_base32(s))
                 .or(None);
             let root_ref = old_root.as_ref();
+            let prof = std::env::var("DENDRO_CKPT_PROF").is_ok();
+            let t_p0 = std::time::Instant::now();
             let (new_root, _dirty) = catalog.apply_table_mutations(
                 root_ref,
                 muts.iter().map(|(k, m)| (k.clone(), m.clone())).collect(),
                 &mut session,
             )?;
+            if prof {
+                eprintln!(
+                    "[ckpt-prof] table {tname}: prolly apply {} muts: {:?}",
+                    muts.len(),
+                    t_p0.elapsed()
+                );
+                crate::prolly::chunker::prof_dump(&tname);
+            }
+            let t_r0 = std::time::Instant::now();
             let mut ne = entry.clone();
             ne.table_root = new_root.map(|h| h.to_base32());
             ne.row_count = count_rows(self.store.as_ref(), new_root.as_ref());
+            if prof {
+                eprintln!(
+                    "[ckpt-prof] table {tname}: count_rows: {:?}",
+                    t_r0.elapsed()
+                );
+            }
+            let t_m0 = std::time::Instant::now();
             // 列存增量物化（OSS 友好：纯内存输入，零树扫描、零远端读）
             // delta = 本 checkpoint 的 memtx overlay（上次 covered_seq 之后的全部可见行）
             ne.col_rows = ne.col_segments.iter().map(|s| s.rows).sum();
@@ -1393,9 +1411,22 @@ impl Database {
                     }
                 }
             }
+            if prof {
+                eprintln!(
+                    "[ckpt-prof] table {tname}: materialize: {:?}",
+                    t_m0.elapsed()
+                );
+            }
             changes.push((tname, Some(ne)));
         }
+        let t_c0 = std::time::Instant::now();
         let new_catalog = catalog.apply_catalog(old_catalog.as_ref(), changes, &mut session)?;
+        if std::env::var("DENDRO_CKPT_PROF").is_ok() {
+            eprintln!(
+                "[ckpt-prof] catalog apply + commit + wal: start {:?}",
+                t_c0.elapsed()
+            );
+        }
         // commit 对象
         let height = old_head.as_ref().as_ref().map(|c| c.height).unwrap_or(0) + 1;
         let commit = Commit {

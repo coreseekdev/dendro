@@ -21,38 +21,112 @@ use std::time::Instant;
 /// 检查点/列存物化；hits 官方 schema 无 PK 且 WatchID 不唯一——
 /// ClickBench 各引擎移植的常见适配位）。其余 105 列序 = 官方口径
 const COLS: &[(&str, bool)] = &[
-    ("rid", true), ("WatchID", true), ("JavaEnable", true), ("Title", false), ("GoodEvent", true),
-    ("EventTime", false), ("EventDate", false), ("CounterID", true), ("ClientIP", true),
-    ("RegionID", true), ("UserID", true), ("CounterClass", true), ("OS", true),
-    ("UserAgent", true), ("URL", false), ("Referer", false), ("IsRefresh", true),
-    ("RefererCategoryID", true), ("RefererRegionID", true), ("URLCategoryID", true),
-    ("URLRegionID", true), ("ResolutionWidth", true), ("ResolutionHeight", true),
-    ("ResolutionDepth", true), ("FlashMajor", true), ("FlashMinor", true),
-    ("FlashMinor2", false), ("NetMajor", true), ("NetMinor", true),
-    ("UserAgentMajor", true), ("UserAgentMinor", false), ("CookieEnable", true),
-    ("JavascriptEnable", true), ("IsMobile", true), ("MobilePhone", true),
-    ("MobilePhoneModel", false), ("Params", false), ("IPNetworkID", true),
-    ("TraficSourceID", true), ("SearchEngineID", true), ("SearchPhrase", false),
-    ("AdvEngineID", true), ("IsArtifical", true), ("WindowClientWidth", true),
-    ("WindowClientHeight", true), ("ClientTimeZone", true), ("ClientEventTime", false),
-    ("SilverlightVersion1", true), ("SilverlightVersion2", true),
-    ("SilverlightVersion3", true), ("SilverlightVersion4", true), ("PageCharset", false),
-    ("CodeVersion", true), ("IsLink", true), ("IsDownload", true), ("IsNotBounce", true),
-    ("FUniqID", true), ("OriginalURL", false), ("HID", true), ("IsOldCounter", true),
-    ("IsEvent", true), ("IsParameter", true), ("DontCountHits", true), ("WithHash", true),
-    ("HitColor", false), ("LocalEventTime", false), ("Age", true), ("Sex", true),
-    ("Income", true), ("Interests", true), ("Robotness", true), ("RemoteIP", true),
-    ("WindowName", true), ("OpenerName", true), ("HistoryLength", true),
-    ("BrowserLanguage", false), ("BrowserCountry", false), ("SocialNetwork", false),
-    ("SocialAction", false), ("HTTPError", true), ("SendTiming", true),
-    ("DNSTiming", true), ("ConnectTiming", true), ("ResponseStartTiming", true),
-    ("ResponseEndTiming", true), ("FetchTiming", true), ("SocialSourceNetworkID", true),
-    ("SocialSourcePage", false), ("ParamPrice", true), ("ParamOrderID", false),
-    ("ParamCurrency", false), ("ParamCurrencyID", true), ("OpenstatServiceName", false),
-    ("OpenstatCampaignID", false), ("OpenstatAdID", false), ("OpenstatSourceID", false),
-    ("UTMSource", false), ("UTMMedium", false), ("UTMCampaign", false),
-    ("UTMContent", false), ("UTMTerm", false), ("FromTag", false), ("HasGCLID", true),
-    ("RefererHash", true), ("URLHash", true), ("CLID", true),
+    ("rid", true),
+    ("WatchID", true),
+    ("JavaEnable", true),
+    ("Title", false),
+    ("GoodEvent", true),
+    ("EventTime", false),
+    ("EventDate", false),
+    ("CounterID", true),
+    ("ClientIP", true),
+    ("RegionID", true),
+    ("UserID", true),
+    ("CounterClass", true),
+    ("OS", true),
+    ("UserAgent", true),
+    ("URL", false),
+    ("Referer", false),
+    ("IsRefresh", true),
+    ("RefererCategoryID", true),
+    ("RefererRegionID", true),
+    ("URLCategoryID", true),
+    ("URLRegionID", true),
+    ("ResolutionWidth", true),
+    ("ResolutionHeight", true),
+    ("ResolutionDepth", true),
+    ("FlashMajor", true),
+    ("FlashMinor", true),
+    ("FlashMinor2", false),
+    ("NetMajor", true),
+    ("NetMinor", true),
+    ("UserAgentMajor", true),
+    ("UserAgentMinor", false),
+    ("CookieEnable", true),
+    ("JavascriptEnable", true),
+    ("IsMobile", true),
+    ("MobilePhone", true),
+    ("MobilePhoneModel", false),
+    ("Params", false),
+    ("IPNetworkID", true),
+    ("TraficSourceID", true),
+    ("SearchEngineID", true),
+    ("SearchPhrase", false),
+    ("AdvEngineID", true),
+    ("IsArtifical", true),
+    ("WindowClientWidth", true),
+    ("WindowClientHeight", true),
+    ("ClientTimeZone", true),
+    ("ClientEventTime", false),
+    ("SilverlightVersion1", true),
+    ("SilverlightVersion2", true),
+    ("SilverlightVersion3", true),
+    ("SilverlightVersion4", true),
+    ("PageCharset", false),
+    ("CodeVersion", true),
+    ("IsLink", true),
+    ("IsDownload", true),
+    ("IsNotBounce", true),
+    ("FUniqID", true),
+    ("OriginalURL", false),
+    ("HID", true),
+    ("IsOldCounter", true),
+    ("IsEvent", true),
+    ("IsParameter", true),
+    ("DontCountHits", true),
+    ("WithHash", true),
+    ("HitColor", false),
+    ("LocalEventTime", false),
+    ("Age", true),
+    ("Sex", true),
+    ("Income", true),
+    ("Interests", true),
+    ("Robotness", true),
+    ("RemoteIP", true),
+    ("WindowName", true),
+    ("OpenerName", true),
+    ("HistoryLength", true),
+    ("BrowserLanguage", false),
+    ("BrowserCountry", false),
+    ("SocialNetwork", false),
+    ("SocialAction", false),
+    ("HTTPError", true),
+    ("SendTiming", true),
+    ("DNSTiming", true),
+    ("ConnectTiming", true),
+    ("ResponseStartTiming", true),
+    ("ResponseEndTiming", true),
+    ("FetchTiming", true),
+    ("SocialSourceNetworkID", true),
+    ("SocialSourcePage", false),
+    ("ParamPrice", true),
+    ("ParamOrderID", false),
+    ("ParamCurrency", false),
+    ("ParamCurrencyID", true),
+    ("OpenstatServiceName", false),
+    ("OpenstatCampaignID", false),
+    ("OpenstatAdID", false),
+    ("OpenstatSourceID", false),
+    ("UTMSource", false),
+    ("UTMMedium", false),
+    ("UTMCampaign", false),
+    ("UTMContent", false),
+    ("UTMTerm", false),
+    ("FromTag", false),
+    ("HasGCLID", true),
+    ("RefererHash", true),
+    ("URLHash", true),
+    ("CLID", true),
 ];
 
 /// 官方 43 条（PG 口径）的适配子集。(idx, sql, skip_reason)
@@ -208,16 +282,17 @@ pub fn bench_clickbench(
     // 由单条 COPY 无法中途插入 → 装载后一次性检查点。行数上限由
     // 预截断 CSV 侧控制（rows_limit>0 时先截样本文件） ----
     let t0 = Instant::now();
-    
+
     let use_path = if rows_limit > 0 {
         // 截样（原样复制前 N 行——gz 直接读流截断到临时 csv）
         let sample = data_dir.with_extension("sample.csv");
         let f = std::fs::File::open(csv).unwrap();
-        let mut r: Box<dyn std::io::BufRead> = if csv.extension().and_then(|e| e.to_str()) == Some("gz") {
-            Box::new(std::io::BufReader::new(flate2::read::GzDecoder::new(f)))
-        } else {
-            Box::new(std::io::BufReader::new(f))
-        };
+        let mut r: Box<dyn std::io::BufRead> =
+            if csv.extension().and_then(|e| e.to_str()) == Some("gz") {
+                Box::new(std::io::BufReader::new(flate2::read::GzDecoder::new(f)))
+            } else {
+                Box::new(std::io::BufReader::new(f))
+            };
         let mut w = std::io::BufWriter::new(std::fs::File::create(&sample).unwrap());
         let mut line = String::new();
         let mut n: u64 = 0;
@@ -239,7 +314,8 @@ pub fn bench_clickbench(
         eprintln!("[clickbench] numbering full csv → {}", plain.display());
         let f = std::fs::File::open(csv).unwrap();
         let mut r = std::io::BufReader::new(flate2::read::GzDecoder::new(f));
-        let mut w = std::io::BufWriter::with_capacity(4 << 20, std::fs::File::create(&plain).unwrap());
+        let mut w =
+            std::io::BufWriter::with_capacity(4 << 20, std::fs::File::create(&plain).unwrap());
         let mut line = String::new();
         let mut n: u64 = 0;
         loop {
@@ -368,10 +444,7 @@ mod tests {
     fn csv_quoted_parse() {
         let mut out = Vec::new();
         parse_csv_line(r#"a,"b,c","say ""hi""",,123"#, &mut out);
-        assert_eq!(
-            out,
-            vec!["a", "b,c", "say \"hi\"", "", "123"]
-        );
+        assert_eq!(out, vec!["a", "b,c", "say \"hi\"", "", "123"]);
     }
 
     #[test]

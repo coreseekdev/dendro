@@ -94,7 +94,7 @@ impl CasStore {
                     let err = &err;
                     handles.push(s.spawn(move || {
                         let data = c.encode();
-                        if let Err(e) = obj.put(&Self::chunk_path(h), Bytes::from(data)) {
+                        if let Err(e) = obj.put_no_sync(&Self::chunk_path(h), Bytes::from(data)) {
                             let mut g = err.lock().unwrap();
                             if g.is_none() {
                                 *g = Some(e);
@@ -118,6 +118,11 @@ impl CasStore {
         // 逐组 join 后此处必为最终状态。
         if let Some(e) = err.lock().unwrap().take() {
             return Err(e);
+        }
+        // 批末一次文件系统同步：本批 put_no_sync 的全部写入 + 目录项
+        // 在此落盘（返回即批整体持久——与逐文件 fsync 崩溃面等价）
+        if !jobs.is_empty() {
+            self.obj.sync_batch()?;
         }
         for (_, h) in &jobs {
             session_cache.insert(*h);

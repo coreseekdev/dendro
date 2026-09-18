@@ -40,6 +40,10 @@ pub struct Chunker<'a> {
     pub store: &'a NodeStore,
     pub session: &'a mut HashSet<Hash>,
     pub dirty: usize,
+    /// 节点 chunk 攒批（性能批：万级节点逐 put_batch=逐次线程池+
+    /// syncfs——40K 行 checkpoint 实测 20s/12K 节点；攒到 apply/build
+    /// 出口一次 put_batch）。批内按 addr 去重；session 命中跳过
+    buffered: Vec<crate::objstore::cas::Chunk>,
 }
 
 impl<'a> Chunker<'a> {
@@ -48,14 +52,41 @@ impl<'a> Chunker<'a> {
             store,
             session,
             dirty: 0,
+            buffered: Vec::new(),
         }
     }
 
     fn put(&mut self, level: u8, entries: Vec<(Vec<u8>, EntryVal)>) -> Result<Node> {
+        let t = std::time::Instant::now();
         let node = Node::build(level, &entries);
-        self.store.put_node(node.clone(), self.session)?;
+        let t_build = t.elapsed();
+        // 攒批：缓存节点 + 缓冲 chunk（出口一次 put_batch——批内
+        // 去重/并行/单次 syncfs 都在 put_batch 侧）
+        let t2 = std::time::Instant::now();
+        let h = node.addr();
+        if !self.session.contains(&h) {
+            self.buffered.push(crate::objstore::cas::Chunk {
+                ty: crate::objstore::cas::ChunkType::Node,
+                data: node.data().to_vec(),
+            });
+        }
+        self.store.cache_insert_pub(h, node.clone());
+        let t_store = t2.elapsed();
+        PROF.with(|p| {
+            let mut p = p.borrow_mut();
+            p.n += 1;
+            p.build += t_build;
+            p.store += t_store;
+        });
         self.dirty += 1;
         Ok(node)
+    }
+
+    /// 攒批收尾：一次 put_batch（apply/build 出口调用）
+    fn flush(&mut self) -> Result<()> {
+        let chunks = std::mem::take(&mut self.buffered);
+        self.store.put_nodes_batch(chunks, self.session)?;
+        Ok(())
     }
 
     /// 把有序 entries 按 splitter 切成节点，返回父层条目
@@ -91,6 +122,12 @@ impl<'a> Chunker<'a> {
 
     /// 全量构建（items 必须按 key 有序、无重复）
     pub fn build(&mut self, items: &[(Vec<u8>, Vec<u8>)]) -> Result<Option<Hash>> {
+        let r = self.build_inner(items);
+        self.flush()?;
+        r
+    }
+
+    fn build_inner(&mut self, items: &[(Vec<u8>, Vec<u8>)]) -> Result<Option<Hash>> {
         if items.is_empty() {
             return Ok(None);
         }
@@ -118,6 +155,17 @@ impl<'a> Chunker<'a> {
     /// 增量应用变更（muts 任意顺序；同 key 取最后一条）。
     /// 返回新根；空树返回 None。
     pub fn apply(
+        &mut self,
+        root: Option<&Hash>,
+        muts: &[(Vec<u8>, Mutation)],
+    ) -> Result<Option<Hash>> {
+        PROF.with(|p| p.borrow_mut().reset());
+        let r = self.apply_inner(root, muts);
+        self.flush()?;
+        r
+    }
+
+    fn apply_inner(
         &mut self,
         root: Option<&Hash>,
         muts: &[(Vec<u8>, Mutation)],
@@ -440,4 +488,42 @@ mod tests {
             b"v99"
         );
     }
+}
+
+// checkpoint 物化分段计时（env DENDRO_CKPT_PROF；节点数/Node::build
+// 累计/store 写累计——定位批量建树的热点层）
+thread_local! {
+    static PROF: std::cell::RefCell<ChunkProf> = const { std::cell::RefCell::new(ChunkProf {
+        n: 0,
+        build: Duration::ZERO,
+        store: Duration::ZERO,
+    }) };
+}
+
+use std::time::Duration;
+
+pub(crate) struct ChunkProf {
+    pub n: u64,
+    pub build: std::time::Duration,
+    pub store: std::time::Duration,
+}
+
+impl ChunkProf {
+    fn reset(&mut self) {
+        self.n = 0;
+        self.build = Duration::ZERO;
+        self.store = Duration::ZERO;
+    }
+}
+
+pub(crate) fn prof_dump(label: &str) {
+    PROF.with(|p| {
+        let p = p.borrow();
+        if std::env::var("DENDRO_CKPT_PROF").is_ok() && p.n > 0 {
+            eprintln!(
+                "[chunk-prof] {label}: nodes={} build={:?} store={:?}",
+                p.n, p.build, p.store
+            );
+        }
+    });
 }

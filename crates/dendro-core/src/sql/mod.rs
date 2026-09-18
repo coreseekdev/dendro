@@ -799,9 +799,7 @@ pub(crate) fn exec_statement(
             target,
             ..
         } => ddl::exec_copy_from(db, sess, &source, &target),
-        Statement::Copy { to: true, .. } => {
-            Err(SqlError::not_supported("COPY TO"))
-        }
+        Statement::Copy { to: true, .. } => Err(SqlError::not_supported("COPY TO")),
         Statement::Analyze(a) => {
             let Some(tn) = &a.table_name else {
                 return Err(SqlError::not_supported(

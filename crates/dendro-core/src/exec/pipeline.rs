@@ -847,7 +847,9 @@ impl AggAccum {
                 } else if self.is_float {
                     SqlValue::Float64(self.sum_f + self.sum_i as f64)
                 } else {
-                    SqlValue::Int64(i64::try_from(self.sum_i).map_err(|_| crate::error::SqlError::new("22003", "bigint sum out of range"))?)
+                    SqlValue::Int64(i64::try_from(self.sum_i).map_err(|_| {
+                        crate::error::SqlError::new("22003", "bigint sum out of range")
+                    })?)
                 }
             }
             AggFunc::Avg => {

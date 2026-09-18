@@ -150,11 +150,7 @@ pub fn eval(e: &Expr, row: &[SqlValue], cols: &dyn Fn(&str) -> Option<usize>) ->
             }
             let (t, pat) = match (&v, &p) {
                 (SqlValue::Utf8(a), SqlValue::Utf8(b)) => (a.as_str(), b.as_str()),
-                _ => {
-                    return Err(SqlError::syntax(
-                        "LIKE requires text operands",
-                    ))
-                }
+                _ => return Err(SqlError::syntax("LIKE requires text operands")),
             };
             let esc = escape_char
                 .as_ref()
@@ -727,7 +723,6 @@ pub fn value_to_value_expr(v: &SqlValue) -> PV {
         SqlValue::TimestampMs(t) => PV::SingleQuotedString(crate::types::format_ts_ms(*t)),
     }
 }
-
 
 /// SQL LIKE 匹配：% 任意序列、_ 单字符、escape 转义下一个字符。
 /// 双指针 + % 回溯（经典算法：记最后 % 位与文本回退位）

@@ -29,6 +29,20 @@ impl LocalObjStore {
     }
 
     fn write_file(&self, path: &Path, data: &[u8], exclusive: bool) -> ObjResult<()> {
+        self.write_file_impl(path, data, exclusive, true)
+    }
+
+    fn write_file_no_sync(&self, path: &Path, data: &[u8], exclusive: bool) -> ObjResult<()> {
+        self.write_file_impl(path, data, exclusive, false)
+    }
+
+    fn write_file_impl(
+        &self,
+        path: &Path,
+        data: &[u8],
+        exclusive: bool,
+        sync: bool,
+    ) -> ObjResult<()> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -39,7 +53,7 @@ impl LocalObjStore {
         }
         let mut f = opts.open(path).map_err(|e| map_io(e, path))?;
         f.write_all(data).map_err(|e| map_io(e, path))?;
-        if self.sync_writes.load(std::sync::atomic::Ordering::Relaxed) {
+        if sync && self.sync_writes.load(std::sync::atomic::Ordering::Relaxed) {
             f.sync_all().map_err(|e| map_io(e, path))?;
         }
         Ok(())
@@ -84,6 +98,27 @@ impl ObjStore for LocalObjStore {
         let tmp = p.with_extension(format!("tmp{}", std::process::id()));
         self.write_file(&tmp, &data, false)?;
         fs::rename(&tmp, &p).map_err(|e| map_io(e, &p))?;
+        Ok(())
+    }
+
+    fn put_no_sync(&self, path: &str, data: Bytes) -> ObjResult<()> {
+        let p = self.full(path)?;
+        let tmp = p.with_extension(format!("tmp{}", std::process::id()));
+        self.write_file_no_sync(&tmp, &data, false)?;
+        fs::rename(&tmp, &p).map_err(|e| map_io(e, &p))?;
+        Ok(())
+    }
+
+    /// 批末一次 syncfs：覆盖本文件系统全部脏页/元数据（含本批数据文件
+    /// 与 rename 目录项）。一个 syscall 替代批内逐文件 fsync——大
+    /// checkpoint（万级 chunk）的吞吐关键；崩溃面与逐文件等价
+    ///（syncfs 返回 = 全部落盘）
+    fn sync_batch(&self) -> ObjResult<()> {
+        let f = fs::File::open(&self.root).map_err(|e| map_io(e, &self.root))?;
+        let r = unsafe { libc::syncfs(std::os::fd::AsRawFd::as_raw_fd(&f)) };
+        if r != 0 {
+            return Err(map_io(std::io::Error::last_os_error(), &self.root));
+        }
         Ok(())
     }
 
