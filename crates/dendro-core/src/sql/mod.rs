@@ -4,6 +4,7 @@
 
 pub mod agg;
 pub mod ddl;
+pub use ddl::in_open_quote;
 pub mod expr;
 pub mod optimize;
 pub mod scan;

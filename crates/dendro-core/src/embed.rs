@@ -113,6 +113,26 @@ pub struct Connection {
 }
 
 impl Connection {
+    /// 带完整选项打开（内存预算/持久性/阈值等全部旋钮——嵌入调用方
+    /// 的资源治理口；Examples: bulk 装载调大 checkpoint_threshold_bytes
+    /// 降低 checkpoint 频率，或调小以压 memtx 高水位）
+    pub fn open_with(path: impl AsRef<std::path::Path>, opts: crate::DbOptions) -> Result<Self> {
+        let db = Database::open(crate::DbOptions {
+            store: crate::StoreConfig::LocalDir(path.as_ref().to_path_buf()),
+            ..opts
+        })?;
+        let mut sess = db.new_session();
+        sess.dialect = crate::sql::SqlDialect::Sqlite;
+        Ok(Self { db, sess })
+    }
+
+    /// 内存占用观测（RSS 近似——memtx/节点缓存/段解码活动集；供
+    /// 预算控制回路与诊断）
+    pub fn memory_usage_bytes(&self) -> u64 {
+        let _ = &self.sess;
+        crate::engine::proc_rss_bytes().unwrap_or(0)
+    }
+
     pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self> {
         let db = Database::open(crate::DbOptions {
             store: crate::StoreConfig::LocalDir(path.as_ref().to_path_buf()),
@@ -317,7 +337,7 @@ impl Transaction<'_> {
         let outputs = self.sess.exec(sql)?;
         Ok(count_affected(&outputs))
     }
-    /// 切换会话用户（S-4 测试面/嵌入式多用户；权限门主体；小写折叠）
+    // 切换会话用户（S-4 测试面/嵌入式多用户；权限门主体；小写折叠）
     pub fn set_user(&mut self, user: &str) {
         self.sess.user = crate::sql::privs::norm_user(user);
     }
@@ -531,7 +551,7 @@ pub struct LazyScan {
 }
 
 impl LazyScan {
-    /// 从形态 + 已代入参数的 AST 构造（失败返回 None 回落）
+    // 从形态 + 已代入参数的 AST 构造（失败返回 None 回落）
     pub(crate) fn build(
         db: &crate::engine::Database,
         sess: &mut crate::engine::Session,

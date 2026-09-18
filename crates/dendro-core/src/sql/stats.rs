@@ -475,22 +475,31 @@ pub fn analyze_impl(
         ));
     }
     let snapshot = sess.implicit_snapshot(db)?;
-    let q = format!("SELECT * FROM {table}");
-    let stmts = crate::sql::parse_batch(&q, crate::sql::SqlDialect::Pg)?;
-    let Some(sqlparser::ast::Statement::Query(q)) = stmts.into_iter().next() else {
-        return Err(crate::error::SqlError::internal("analyze parse"));
-    };
-    let tv = crate::sql::scan::eval_query(db, sess, &q, snapshot)?;
+    // 逐列查询（内存治理：SELECT * 的全表 TableView 物化 =
+    // O(行×全列宽)——1M 行 × 106 列实测 12GB 峰值；逐列后每次
+    // 物化单列 = O(行×单列)，峰值 ~40MB/列）
     let ncols = schema.columns.len();
-    let rows = tv.rows.len() as u64;
+    let mut rows = 0u64;
     // 逐列收集：键 → 频次（MCV/NDV）+ order 域样本（直方图）
     let mut cols_out = Vec::with_capacity(ncols);
     for c in 0..ncols {
+        let cname = schema
+            .columns
+            .get(c)
+            .map(|cd| cd.name.clone())
+            .unwrap_or_else(|| format!("column{c}"));
+        let q = format!("SELECT {cname} FROM {table}");
+        let stmts = crate::sql::parse_batch(&q, crate::sql::SqlDialect::Pg)?;
+        let Some(sqlparser::ast::Statement::Query(q)) = stmts.into_iter().next() else {
+            return Err(crate::error::SqlError::internal("analyze parse"));
+        };
+        let tv = crate::sql::scan::eval_query(db, sess, &q, snapshot)?;
+        rows = tv.rows.len() as u64;
         let mut freq: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
         let mut nulls = 0u64;
         let mut orders: Vec<u64> = Vec::new();
         for row in &tv.rows {
-            let v = row.get(c).cloned().unwrap_or(crate::types::SqlValue::Null);
+            let v = row.first().cloned().unwrap_or(crate::types::SqlValue::Null);
             if v.is_null() {
                 nulls += 1;
                 continue;

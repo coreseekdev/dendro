@@ -21,7 +21,7 @@ use sqlparser::ast::{Expr, Query, SetExpr, TableFactor};
 /// 路径共用同一结构；display 保留原文供打印/匹配）
 #[derive(Debug, Clone)]
 pub struct WindowCall {
-    /// 函数名（row_number / rank / dense_rank / sum / count / min / max / avg）
+    // 函数名（row_number / rank / dense_rank / sum / count / min / max / avg）
     pub func: String,
     /// 参数（None = 无参如 row_number()；Some = sum(v) 的 v）
     pub arg: Option<Expr>,
@@ -38,21 +38,21 @@ pub struct WindowCall {
 /// 扫描版本子句（阶段1：Option<String> display 文本 → 结构化）
 #[derive(Debug, Clone, PartialEq)]
 pub enum ScanVersion {
-    /// FOR SYSTEM_TIME AS OF <毫秒时间戳>
+    // FOR SYSTEM_TIME AS OF <毫秒时间戳>
     AsOfTime(i64),
     /// AS OF <hash 文本>（内容寻址快照）
     AsOfHash(String),
 }
 
 impl ScanVersion {
-    /// 打印/重建 synthetic_tf 用的 display 文本（往返稳定）
+    // 打印/重建 synthetic_tf 用的 display 文本（往返稳定）
     pub fn display(&self) -> String {
         match self {
             ScanVersion::AsOfTime(ms) => ms.to_string(),
             ScanVersion::AsOfHash(h) => h.clone(),
         }
     }
-    /// display 文本 → 结构化（纯数字 = 时间戳；其余 = hash）
+    // display 文本 → 结构化（纯数字 = 时间戳；其余 = hash）
     pub fn parse_display(t: &str) -> ScanVersion {
         match t.trim().parse::<i64>() {
             Ok(ms) => ScanVersion::AsOfTime(ms),
@@ -65,7 +65,7 @@ impl ScanVersion {
 /// 与其 join 链——与 eval_from 现状一致，逗号多因子 not_supported）
 #[derive(Debug, Clone)]
 pub enum Plan {
-    /// 无 FROM 常量输入（单行零列）
+    // 无 FROM 常量输入（单行零列）
     Values,
     Scan {
         table: String,
@@ -114,7 +114,7 @@ pub enum Plan {
         input: Box<Plan>,
     },
     /// CTE 绑定（阶段3：CTE 进计划——体求值一次，body 中 Scan{name}
-    /// 引用绑定结果；多次引用共享同一求值，克隆展开消失）
+    // 引用绑定结果；多次引用共享同一求值，克隆展开消失）
     Cte {
         name: String,
         /// CTE 列别名（WITH x(a, b) AS ...）；None = 用体输出名
@@ -173,7 +173,7 @@ pub enum Plan {
 }
 
 impl Plan {
-    /// 收集计划内全部扫描因子键（下推分类的目标集合）
+    // 收集计划内全部扫描因子键（下推分类的目标集合）
     pub fn scan_keys(&self) -> Vec<String> {
         let mut out = Vec::new();
         self.collect_keys(&mut out);
@@ -511,8 +511,8 @@ fn build_select(sel: &sqlparser::ast::Select) -> Result<Plan> {
         };
     }
     // GROUP BY 别名解析（PG 语义：GROUP BY 可引用 SELECT 别名——
-    /// GROUP BY k 等价 GROUP BY <k 的表达式>；ClickBench q41 CASE AS Src
-    /// 实证）。仅裸标识符精确匹配投影别名时替换；真列名优先（PG 同序）
+    // GROUP BY k 等价 GROUP BY <k 的表达式>；ClickBench q41 CASE AS Src
+    // 实证）。仅裸标识符精确匹配投影别名时替换；真列名优先（PG 同序）
     let mut group_alias_map: Vec<(String, Expr)> = Vec::new();
     for item in &sel.projection {
         if let sqlparser::ast::SelectItem::ExprWithAlias { expr, alias } = item {
@@ -538,7 +538,9 @@ fn build_select(sel: &sqlparser::ast::Select) -> Result<Plan> {
             .map(crate::sql::scan::has_agg_expr)
             .unwrap_or(false);
     let keys: Vec<Expr> = match &sel.group_by {
-        sqlparser::ast::GroupByExpr::Expressions(es, _) => es.iter().map(&resolve_group_alias).collect(),
+        sqlparser::ast::GroupByExpr::Expressions(es, _) => {
+            es.iter().map(&resolve_group_alias).collect()
+        }
         sqlparser::ast::GroupByExpr::All(_) => {
             return Err(crate::error::SqlError::not_supported("GROUP BY ALL"))
         }

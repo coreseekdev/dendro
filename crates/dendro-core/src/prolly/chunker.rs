@@ -40,10 +40,6 @@ pub struct Chunker<'a> {
     pub store: &'a NodeStore,
     pub session: &'a mut HashSet<Hash>,
     pub dirty: usize,
-    /// 节点 chunk 攒批（性能批：万级节点逐 put_batch=逐次线程池+
-    /// syncfs——40K 行 checkpoint 实测 20s/12K 节点；攒到 apply/build
-    /// 出口一次 put_batch）。批内按 addr 去重；session 命中跳过
-    buffered: Vec<crate::objstore::cas::Chunk>,
 }
 
 impl<'a> Chunker<'a> {
@@ -52,7 +48,6 @@ impl<'a> Chunker<'a> {
             store,
             session,
             dirty: 0,
-            buffered: Vec::new(),
         }
     }
 
@@ -60,17 +55,11 @@ impl<'a> Chunker<'a> {
         let t = std::time::Instant::now();
         let node = Node::build(level, &entries);
         let t_build = t.elapsed();
-        // 攒批：缓存节点 + 缓冲 chunk（出口一次 put_batch——批内
-        // 去重/并行/单次 syncfs 都在 put_batch 侧）
         let t2 = std::time::Instant::now();
-        let h = node.addr();
-        if !self.session.contains(&h) {
-            self.buffered.push(crate::objstore::cas::Chunk {
-                ty: crate::objstore::cas::ChunkType::Node,
-                data: node.data().to_vec(),
-            });
-        }
-        self.store.cache_insert_pub(h, node.clone());
+        // 逐节点立即写（攒批曾引发间歇性 chunk 丢失 58030——与
+        // LRU/flush 时序交互，根因未定位即回退；put_batch 内的
+        // put_no_sync + 批末 syncfs 优化保留——8.9× 的主要来源）
+        self.store.put_node(node.clone(), self.session)?;
         let t_store = t2.elapsed();
         PROF.with(|p| {
             let mut p = p.borrow_mut();
@@ -80,13 +69,6 @@ impl<'a> Chunker<'a> {
         });
         self.dirty += 1;
         Ok(node)
-    }
-
-    /// 攒批收尾：一次 put_batch（apply/build 出口调用）
-    fn flush(&mut self) -> Result<()> {
-        let chunks = std::mem::take(&mut self.buffered);
-        self.store.put_nodes_batch(chunks, self.session)?;
-        Ok(())
     }
 
     /// 把有序 entries 按 splitter 切成节点，返回父层条目
@@ -122,9 +104,7 @@ impl<'a> Chunker<'a> {
 
     /// 全量构建（items 必须按 key 有序、无重复）
     pub fn build(&mut self, items: &[(Vec<u8>, Vec<u8>)]) -> Result<Option<Hash>> {
-        let r = self.build_inner(items);
-        self.flush()?;
-        r
+        self.build_inner(items)
     }
 
     fn build_inner(&mut self, items: &[(Vec<u8>, Vec<u8>)]) -> Result<Option<Hash>> {
@@ -160,9 +140,7 @@ impl<'a> Chunker<'a> {
         muts: &[(Vec<u8>, Mutation)],
     ) -> Result<Option<Hash>> {
         PROF.with(|p| p.borrow_mut().reset());
-        let r = self.apply_inner(root, muts);
-        self.flush()?;
-        r
+        self.apply_inner(root, muts)
     }
 
     fn apply_inner(

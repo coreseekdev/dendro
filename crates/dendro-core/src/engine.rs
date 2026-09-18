@@ -1242,6 +1242,15 @@ impl Database {
     /// checkpoint 一个分支：pending 变更物化为树 + commit 对象 + manifest 推进。
     /// GC sweep 在 commit_mu **释放后**执行（含最多 256 次远端 DELETE，
     /// 锁内执行会阻塞该分支全部提交，评审 §3.2）
+    /// 全分支 pending 总字节（装载内存治理回路——COPY 分批提交后
+    /// 检查，超 checkpoint_threshold_bytes 即同步物化）
+    pub fn pending_bytes(&self) -> u64 {
+        let g = self.branches.read();
+        g.values()
+            .map(|b| b.pending_bytes.load(Ordering::Relaxed))
+            .sum()
+    }
+
     pub fn checkpoint_branch(&self, branch_name: &str) -> Result<Option<Hash>> {
         let b = self.branch(branch_name)?;
         let out = {
@@ -1265,7 +1274,10 @@ impl Database {
         new_root: &Option<Hash>,
         schema: &TableSchema,
     ) -> Result<Vec<String>> {
-        const COMPACT_SEGMENTS: usize = 8;
+        // 全量重建段数阈值：8 → 16（ClickBench 实证：bulk 分段装载
+        // 下每 8 段一次 write_full 物化全表 Arrow——重建频率翻倍即
+        // 峰值源；16 折中读放大与重建成本。后续可按字节细化）
+        const COMPACT_SEGMENTS: usize = 16;
         const DELETE_CAP: usize = 10_000;
         let mut retired: Vec<String> = Vec::new();
         let snapshot = b.watermark.load(Ordering::Acquire);
@@ -2074,6 +2086,14 @@ mod fence_validate_tests {
         let objs = db.obj.list_prefix("fence/b2/").unwrap();
         assert_eq!(objs.len(), 1, "恰一个租约对象：{objs:?}");
     }
+}
+
+/// 进程 RSS（内存治理观测面——embed::memory_usage 与预算回路用；
+/// 读 /proc/self/statm 第 2 列 × 页大小）
+pub fn proc_rss_bytes() -> Option<u64> {
+    let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
+    let rss_pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
+    Some(rss_pages * 4096)
 }
 
 #[cfg(test)]

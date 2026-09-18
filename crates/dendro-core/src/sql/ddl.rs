@@ -545,7 +545,7 @@ pub(crate) struct InsertGuard {
 }
 
 impl InsertGuard {
-    /// 空守卫（无 CHECK/UNIQUE 的表零开销）
+    // 空守卫（无 CHECK/UNIQUE 的表零开销）
     fn empty() -> Self {
         Self {
             checks: Vec::new(),
@@ -1480,19 +1480,20 @@ pub(crate) fn parse_csv_line(line: &str, out: &mut Vec<String>) {
 
 /// 缓冲是否处于开放引号态（记录未闭合——含内嵌换行的多行字段）。
 /// 全缓冲扫描：跟踪引号开闭与 "" 转义；引号外的引号即开启
-fn in_open_quote(buf: &[u8]) -> bool {
+pub fn in_open_quote(buf: &[u8]) -> bool {
+    in_open_quote_impl(buf)
+}
+
+fn in_open_quote_impl(buf: &[u8]) -> bool {
     let mut in_q = false;
     let mut i = 0usize;
     while i < buf.len() {
-        match buf[i] {
-            b'"' => {
-                if in_q && i + 1 < buf.len() && buf[i + 1] == b'"' {
-                    i += 2; // 转义双写
-                    continue;
-                }
-                in_q = !in_q;
+        if buf[i] == b'"' {
+            if in_q && i + 1 < buf.len() && buf[i + 1] == b'"' {
+                i += 2; // 转义双写
+                continue;
             }
-            _ => {}
+            in_q = !in_q;
         }
         i += 1;
     }
@@ -1629,7 +1630,7 @@ pub(crate) fn exec_copy_from(
         // 分批提交（Bulk 通道合同）：COPY 自动事务内写集超
         // max_txn_bytes/2 先提交再续——1 亿行 × ~1.2KB ≈ 120GB 远超
         // 256MB 单事务上限（54000 曾杀死全量装载）；显式事务内 COPY
-        /// 仍受整体上限（PG 同语义）
+        // 仍受整体上限（PG 同语义）
         let row_bytes: u64 = row
             .iter()
             .map(|v| match v {
@@ -1653,6 +1654,11 @@ pub(crate) fn exec_copy_from(
             commit_tx(db, &sess.branch, &txn)?;
             txn = Txn::new(snapshot);
             txn_bytes = 0;
+            // 注：曾在此挂同步增量 checkpoint（pending 超阈值即物化），
+            // 实测引发 catalog 树 chunk 丢失（58030——根因未明，疑似
+            // 与 COPY 循环的 txn/snapshot 生命周期交互）。回退；bulk
+            // 装载的 O(批) 内存峰值由调用方分段 COPY + 中间 CHECKPOINT
+            // 达成（harness 层已接）
         }
         let rec = guard.keys_of(&row);
         insert_row(db, sess, &schema, entry.id, &mut txn, row, &fks, &guard)?;

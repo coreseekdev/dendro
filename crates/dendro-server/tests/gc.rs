@@ -68,8 +68,8 @@ fn gc_columnar_segments_after_retention_window() {
         s.exec("CREATE TABLE t (id BIGINT PRIMARY KEY, v TEXT)")
             .unwrap();
     }
-    // 9 次 checkpoint（各 1 行增量）→ 第 9 次触发全量重建，替换前 8 个段
-    for i in 0..9 {
+    // 17 次 checkpoint（各 1 行增量）→ 第 17 次触发全量重建（阈值 16）
+    for i in 0..17 {
         let mut s = db.new_session();
         s.exec(&format!("INSERT INTO t VALUES ({i}, 'v{i}')"))
             .unwrap();
@@ -77,8 +77,8 @@ fn gc_columnar_segments_after_retention_window() {
     }
     let col_objs = obj.list_prefix("col/").unwrap();
     assert!(
-        col_objs.len() >= 9,
-        "至少 8 旧段 + 1 新段（实际 {}）",
+        col_objs.len() >= 17,
+        "至少 16 旧段 + 1 新段（实际 {}）",
         col_objs.len()
     );
     let before = col_objs.len();
@@ -96,7 +96,7 @@ fn gc_columnar_segments_after_retention_window() {
     assert_eq!(final_objs.len(), 1, "全量重建后应只剩 1 个段对象");
 
     // 回收后数据完整（列存投影与行存都可读）
-    assert_eq!(rows(&db, "SELECT count(*) FROM t")[0][0], "9");
+    assert_eq!(rows(&db, "SELECT count(*) FROM t")[0][0], "17");
 }
 
 #[test]

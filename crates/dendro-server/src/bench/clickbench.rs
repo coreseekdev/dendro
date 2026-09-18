@@ -251,6 +251,10 @@ pub fn bench_clickbench(
     let db = Database::open(DbOptions {
         store: StoreConfig::LocalDir(data_dir.to_path_buf()),
         durability: Durability::Group,
+        // 装载基准：关后台自动 checkpoint（30s/16MB 轮询与 bulk COPY
+        // 并发曾引发 CAS chunk 丢失 58030——并发缺陷另行立项；此处
+        // 物化点由段间 CHECKPOINT 显式控制，单线程无竞态）
+        checkpoint_interval_s: 0,
         ..Default::default()
     })
     .unwrap();
@@ -278,71 +282,79 @@ pub fn bench_clickbench(
     let _ = s.exec("DROP TABLE hits");
     s.exec(&format!("CREATE TABLE hits ({ddl})")).unwrap();
 
-    // ---- 装载（COPY FROM：绕行值 parse 的官方路径；周期 CHECKPOINT
-    // 由单条 COPY 无法中途插入 → 装载后一次性检查点。行数上限由
-    // 预截断 CSV 侧控制（rows_limit>0 时先截样本文件） ----
+    // ---- 装载（分段 COPY + 中间 CHECKPOINT——内存治理）：
+    // 单条 COPY 的 pending 全量积压到装载末 checkpoint，
+    // materialize_delta 全量 decode_row = O(全表×行宽) 峰值
+    //（1M 行实测 RSS 12G）。分段后每次 delta=段，memtx 截断回
+    // O(段)，峰值 ≈ 段 + 编号缓冲。样本与全量统一路径 ----
     let t0 = Instant::now();
-
-    let use_path = if rows_limit > 0 {
-        // 截样（原样复制前 N 行——gz 直接读流截断到临时 csv）
-        let sample = data_dir.with_extension("sample.csv");
+    const SEG_ROWS: u64 = 200_000; // ≈240MB/段
+    let mut seg_paths: Vec<PathBuf> = Vec::new();
+    {
         let f = std::fs::File::open(csv).unwrap();
-        let mut r: Box<dyn std::io::BufRead> =
+        let mut raw: Box<dyn std::io::BufRead> =
             if csv.extension().and_then(|e| e.to_str()) == Some("gz") {
                 Box::new(std::io::BufReader::new(flate2::read::GzDecoder::new(f)))
             } else {
                 Box::new(std::io::BufReader::new(f))
             };
-        let mut w = std::io::BufWriter::new(std::fs::File::create(&sample).unwrap());
-        let mut line = String::new();
+        let mut buf: Vec<u8> = Vec::with_capacity(4096);
         let mut n: u64 = 0;
-        while (n as usize) < rows_limit {
-            line.clear();
-            if r.read_line(&mut line).unwrap() == 0 {
-                break;
-            }
-            // 前置行号（合成主键 rid 的值；前缀拼接不涉 CSV 解析——
-            // 引号字段安全）
-            write!(w, "{n},{line}").unwrap();
-            n += 1;
-        }
-        w.flush().unwrap();
-        sample
-    } else if csv.extension().and_then(|e| e.to_str()) == Some("gz") {
-        // 全量 gz：流式前缀行号到平 csv（临时文件 ~36GB，COPY 后删除）
-        let plain = data_dir.with_extension("numbered.csv");
-        eprintln!("[clickbench] numbering full csv → {}", plain.display());
-        let f = std::fs::File::open(csv).unwrap();
-        let mut r = std::io::BufReader::new(flate2::read::GzDecoder::new(f));
+        let limit = if rows_limit > 0 {
+            rows_limit as u64
+        } else {
+            u64::MAX
+        };
+        let seg_path =
+            |idx: u64| -> PathBuf { data_dir.with_extension(format!("cbseg{idx:05}.csv")) };
         let mut w =
-            std::io::BufWriter::with_capacity(4 << 20, std::fs::File::create(&plain).unwrap());
-        let mut line = String::new();
-        let mut n: u64 = 0;
-        loop {
-            line.clear();
-            if r.read_line(&mut line).unwrap() == 0 {
+            std::io::BufWriter::with_capacity(4 << 20, std::fs::File::create(seg_path(0)).unwrap());
+        seg_paths.push(seg_path(0));
+        while n < limit {
+            buf.clear();
+            if raw.read_until(b'\n', &mut buf).unwrap() == 0 {
                 break;
             }
-            write!(w, "{n},{line}").unwrap();
+            while dendro_core::sql::in_open_quote(&buf) {
+                let mut cont = Vec::new();
+                if raw.read_until(b'\n', &mut cont).unwrap() == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&cont);
+            }
+            write!(w, "{n},").unwrap();
+            w.write_all(&buf).unwrap();
             n += 1;
             if n.is_multiple_of(5_000_000) {
                 eprintln!("[clickbench] numbered {n} rows");
             }
+            if n.is_multiple_of(SEG_ROWS) {
+                w.flush().unwrap();
+                let next = seg_path(n / SEG_ROWS);
+                w = std::io::BufWriter::with_capacity(
+                    4 << 20,
+                    std::fs::File::create(&next).unwrap(),
+                );
+                seg_paths.push(next);
+            }
         }
         w.flush().unwrap();
-        plain
-    } else {
-        // 平 csv 全量：直接 COPY（无合成主键路径——要求 csv 已含首列 rid；
-        // 官方 105 列 csv 必须走上面的 gz 编号分支）
-        csv.to_path_buf()
-    };
-    let out_copy = s
-        .exec(&format!("COPY hits FROM '{}'", use_path.display()))
-        .unwrap();
-    let loaded = match &out_copy[0] {
-        dendro_core::types::Output::Command { affected, .. } => *affected,
-        _ => 0,
-    };
+    }
+    // 逐段 COPY + 中间 CHECKPOINT（末段后的 checkpoint 由下方
+    // 物化段统一执行）；段文件即用即删
+    let mut loaded = 0u64;
+    for (i, seg) in seg_paths.iter().enumerate() {
+        let out_copy = s
+            .exec(&format!("COPY hits FROM '{}'", seg.display()))
+            .unwrap();
+        if let dendro_core::types::Output::Command { affected, .. } = &out_copy[0] {
+            loaded += *affected;
+        }
+        if i + 1 < seg_paths.len() {
+            s.exec("CHECKPOINT").unwrap();
+        }
+        let _ = std::fs::remove_file(seg);
+    }
     let load_s = t0.elapsed().as_secs_f64();
     let total_rows = loaded;
     rows_out.push(BenchRow {
