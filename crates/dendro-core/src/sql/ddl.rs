@@ -1478,6 +1478,27 @@ pub(crate) fn parse_csv_line(line: &str, out: &mut Vec<String>) {
     out.push(field);
 }
 
+/// 缓冲是否处于开放引号态（记录未闭合——含内嵌换行的多行字段）。
+/// 全缓冲扫描：跟踪引号开闭与 "" 转义；引号外的引号即开启
+fn in_open_quote(buf: &[u8]) -> bool {
+    let mut in_q = false;
+    let mut i = 0usize;
+    while i < buf.len() {
+        match buf[i] {
+            b'"' => {
+                if in_q && i + 1 < buf.len() && buf[i + 1] == b'"' {
+                    i += 2; // 转义双写
+                    continue;
+                }
+                in_q = !in_q;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    in_q
+}
+
 /// 文本 → 列类型（装载口径：数值 parse、TEXT 原文、空数值 → NULL/0 由
 /// 列 nullable 决定——空串数值列按 NULL，非空约束下报 23502）
 fn csv_value(s: &str, ty: &crate::types::ColType) -> SqlValue {
@@ -1557,13 +1578,28 @@ pub(crate) fn exec_copy_from(
     let mut reader = reader;
     let mut count = 0u64;
     let mut line_no = 0u64;
+    let mut txn_bytes = 0u64;
     loop {
         raw.clear();
+        // 引号感知记录拼接：带引号字段可含内嵌换行（合法 CSV——
+        // ClickBench hits 的 Title 实证）。物理行读入后若处于开放
+        // 引号态则继续拼接，直至引号闭合或 EOF
         let n = reader
             .read_until(b'\n', &mut raw)
             .map_err(|e| SqlError::io(format!("COPY read: {e}")))?;
         if n == 0 {
             break;
+        }
+        while in_open_quote(&raw) {
+            let mut cont = Vec::new();
+            if reader
+                .read_until(b'\n', &mut cont)
+                .map_err(|e| SqlError::io(format!("COPY read: {e}")))?
+                == 0
+            {
+                break; // EOF：容忍未闭合（parse 层报错或按 lossy 收尾）
+            }
+            raw.extend_from_slice(&cont);
         }
         line_no += 1;
         if raw.last() == Some(&b'\n') {
@@ -1590,6 +1626,34 @@ pub(crate) fn exec_copy_from(
             .zip(&schema.columns)
             .map(|(v, cd)| csv_value(v, &cd.ty))
             .collect();
+        // 分批提交（Bulk 通道合同）：COPY 自动事务内写集超
+        // max_txn_bytes/2 先提交再续——1 亿行 × ~1.2KB ≈ 120GB 远超
+        // 256MB 单事务上限（54000 曾杀死全量装载）；显式事务内 COPY
+        /// 仍受整体上限（PG 同语义）
+        let row_bytes: u64 = row
+            .iter()
+            .map(|v| match v {
+                SqlValue::Utf8(t) => t.len() as u64 + 8,
+                SqlValue::Bytes(b) => b.len() as u64 + 8,
+                _ => 16,
+            })
+            .sum();
+        txn_bytes += row_bytes;
+        if txn.explicit {
+            if db.opts.max_txn_bytes > 0 && txn_bytes > db.opts.max_txn_bytes {
+                return Err(SqlError::new(
+                    "54000",
+                    format!(
+                        "COPY in explicit transaction exceeds max_txn_bytes ({txn_bytes} bytes); \
+                         run COPY outside a transaction (auto-batched) or raise the limit"
+                    ),
+                ));
+            }
+        } else if db.opts.max_txn_bytes > 0 && txn_bytes > db.opts.max_txn_bytes / 2 {
+            commit_tx(db, &sess.branch, &txn)?;
+            txn = Txn::new(snapshot);
+            txn_bytes = 0;
+        }
         let rec = guard.keys_of(&row);
         insert_row(db, sess, &schema, entry.id, &mut txn, row, &fks, &guard)?;
         guard.record_keys(rec);

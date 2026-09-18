@@ -403,6 +403,7 @@ pub fn bench_clickbench(
                     value: 0.0,
                     unit: "err",
                 });
+                eprintln!("[clickbench] q{qi:02} ERROR: {e}");
                 continue;
             }
         };

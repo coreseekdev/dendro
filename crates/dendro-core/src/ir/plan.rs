@@ -510,6 +510,26 @@ fn build_select(sel: &sqlparser::ast::Select) -> Result<Plan> {
             input: Box::new(plan),
         };
     }
+    // GROUP BY 别名解析（PG 语义：GROUP BY 可引用 SELECT 别名——
+    /// GROUP BY k 等价 GROUP BY <k 的表达式>；ClickBench q41 CASE AS Src
+    /// 实证）。仅裸标识符精确匹配投影别名时替换；真列名优先（PG 同序）
+    let mut group_alias_map: Vec<(String, Expr)> = Vec::new();
+    for item in &sel.projection {
+        if let sqlparser::ast::SelectItem::ExprWithAlias { expr, alias } = item {
+            group_alias_map.push((alias.value.to_ascii_lowercase(), expr.clone()));
+        }
+    }
+    let resolve_group_alias = |e: &Expr| -> Expr {
+        if let Expr::Identifier(id) = e {
+            if let Some((_, proj)) = group_alias_map
+                .iter()
+                .find(|(a, _)| *a == id.value.to_ascii_lowercase())
+            {
+                return proj.clone();
+            }
+        }
+        e.clone()
+    };
     // GROUP BY / 聚合
     let has_agg = crate::sql::scan::projection_aggregates(&sel.projection).is_some()
         || sel
@@ -518,7 +538,7 @@ fn build_select(sel: &sqlparser::ast::Select) -> Result<Plan> {
             .map(crate::sql::scan::has_agg_expr)
             .unwrap_or(false);
     let keys: Vec<Expr> = match &sel.group_by {
-        sqlparser::ast::GroupByExpr::Expressions(es, _) => es.clone(),
+        sqlparser::ast::GroupByExpr::Expressions(es, _) => es.iter().map(&resolve_group_alias).collect(),
         sqlparser::ast::GroupByExpr::All(_) => {
             return Err(crate::error::SqlError::not_supported("GROUP BY ALL"))
         }
