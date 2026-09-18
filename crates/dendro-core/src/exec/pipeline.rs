@@ -744,7 +744,7 @@ pub struct AggAccum {
     distinct: bool,
     pub count: u64,
     pub sum_f: f64,
-    pub sum_i: i64,
+    pub sum_i: i128,
     pub is_float: bool,
     pub min: Option<SqlValue>,
     pub max: Option<SqlValue>,
@@ -795,7 +795,7 @@ impl AggAccum {
                             self.is_float = true;
                             self.sum_f += *f;
                         }
-                        other => self.sum_i += crate::sql::expr::as_i64(other)?,
+                        other => self.sum_i += crate::sql::expr::as_i64(other)? as i128,
                     }
                 }
                 // 评审 P2：比较错误传播（原 unwrap_or(false) 吞 42804——
@@ -831,8 +831,8 @@ impl AggAccum {
         }
     }
 
-    fn finish(&self) -> SqlValue {
-        match self.func {
+    fn finish(&self) -> crate::error::Result<SqlValue> {
+        Ok(match self.func {
             AggFunc::Count => {
                 let n = if self.distinct {
                     self.seen.as_ref().map(|s| s.len() as u64).unwrap_or(0)
@@ -847,7 +847,7 @@ impl AggAccum {
                 } else if self.is_float {
                     SqlValue::Float64(self.sum_f + self.sum_i as f64)
                 } else {
-                    SqlValue::Int64(self.sum_i)
+                    SqlValue::Int64(i64::try_from(self.sum_i).map_err(|_| crate::error::SqlError::new("22003", "bigint sum out of range"))?)
                 }
             }
             AggFunc::Avg => {
@@ -859,7 +859,7 @@ impl AggAccum {
             }
             AggFunc::Min => self.min.clone().unwrap_or(SqlValue::Null),
             AggFunc::Max => self.max.clone().unwrap_or(SqlValue::Null),
-        }
+        })
     }
 }
 
@@ -924,7 +924,10 @@ impl PipeOp<Vec<Vec<SqlValue>>> for AggOp {
             if let Some(accums) = self.groups.get(hk) {
                 let mut row = kv.clone(); // 组键值
                 for a in accums {
-                    row.push(a.finish());
+                    match a.finish() {
+                        Ok(v) => row.push(v),
+                        Err(e) => return FlowControl::Err(e),
+                    }
                 }
                 result_rows.push(row);
             }
@@ -933,12 +936,15 @@ impl PipeOp<Vec<Vec<SqlValue>>> for AggOp {
         // **无分组 + 空输入 → 全局聚合仍出一行**（零值聚合——ir-spec 02
         // §1 算子合同，#23 修复后的唯一语义）
         if self.group_col_indices.is_empty() && result_rows.is_empty() {
-            let row: Vec<SqlValue> = self
+            let row: crate::error::Result<Vec<SqlValue>> = self
                 .calls
                 .iter()
                 .map(|spec| AggAccum::new(spec.func, spec.distinct).finish())
                 .collect();
-            result_rows.push(row);
+            match row {
+                Ok(row) => result_rows.push(row),
+                Err(e) => return FlowControl::Err(e),
+            }
         }
 
         if result_rows.is_empty() {

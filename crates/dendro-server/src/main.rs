@@ -93,6 +93,27 @@ enum Cmd {
         #[arg(long, default_value = "benches/results")]
         out: PathBuf,
     },
+    /// ClickBench 基线（装载 gz/csv → 检查点/ANALYZE → 43 查询计时）
+    ClickBench {
+        /// hits.csv(.gz) 路径
+        #[arg(long)]
+        csv: PathBuf,
+        /// 数据库目录（LocalDir 存储）
+        #[arg(long, default_value = "/home/nzinfo/cb/db")]
+        data: PathBuf,
+        /// 行数上限（0 = 全量）
+        #[arg(long, default_value_t = 0)]
+        rows: usize,
+        /// 每条 INSERT 行数
+        #[arg(long, default_value_t = 5000)]
+        chunk: usize,
+        /// 每 N 行 CHECKPOINT（0 = 仅末尾）
+        #[arg(long, default_value_t = 5_000_000)]
+        ckpt_every: usize,
+        /// 结果 JSON 输出
+        #[arg(long, default_value = "benches/results/clickbench.json")]
+        out: PathBuf,
+    },
     /// A/B 配对评测（qorl 纪律：预热/交替配对/中位数/±5% 平局区/愚弄率）
     BenchPair {
         /// 事实表行数
@@ -388,6 +409,22 @@ fn main() {
         }
         Cmd::Bench { out } => {
             dendro_server::bench::run_all(&out);
+        }
+        Cmd::ClickBench {
+            csv,
+            data,
+            rows,
+            chunk,
+            ckpt_every,
+            out,
+        } => {
+            let s = dendro_server::bench::clickbench::bench_clickbench(
+                &csv, &data, rows, chunk, ckpt_every, &out,
+            );
+            println!("wrote {}", out.display());
+            for r in &s.rows {
+                println!("  {:<64} {:>12.3} {}", r.name, r.value, r.unit);
+            }
         }
         Cmd::BenchPair { rows, out } => {
             let s = dendro_server::bench::pair::bench_pair(rows, &out);

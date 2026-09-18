@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+flate2 = "1"
 libc.workspace = true
 lru.workspace = true
 thiserror.workspace = true

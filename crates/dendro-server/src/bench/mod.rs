@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+pub mod clickbench;
 pub mod pair;
 
 pub struct BenchResult {

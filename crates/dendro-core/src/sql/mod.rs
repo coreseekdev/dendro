@@ -793,6 +793,15 @@ pub(crate) fn exec_statement(
             }
         }
         Statement::Truncate(tr) => ddl::truncate_impl(db, sess, tr.table_names),
+        Statement::Copy {
+            source,
+            to: false,
+            target,
+            ..
+        } => ddl::exec_copy_from(db, sess, &source, &target),
+        Statement::Copy { to: true, .. } => {
+            Err(SqlError::not_supported("COPY TO"))
+        }
         Statement::Analyze(a) => {
             let Some(tn) = &a.table_name else {
                 return Err(SqlError::not_supported(

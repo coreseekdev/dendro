@@ -1396,3 +1396,163 @@ fn read_existing_row(
     }
     Ok(None)
 }
+
+// ---------------------------------------------------------------------------
+// COPY FROM CSV（ClickBench 基线装载路径 + 产品功能）：绕过行值 SQL
+// parse（装载提速主径），逐行复用 insert_row 保持全部约束语义
+//（PK/NOT NULL/CHECK/FK/UNIQUE 与 INSERT 一致）。.gz 后缀自动流式
+// 解压（基准便利扩展，PG 无此语义——文档化差异）。
+// ---------------------------------------------------------------------------
+
+/// CSV 行解析（引号感知："…" 与 "" 转义；单行字段——无跨行引用）
+pub(crate) fn parse_csv_line(line: &str, out: &mut Vec<String>) {
+    out.clear();
+    let b: Vec<char> = line.chars().collect();
+    let (mut i, mut field) = (0usize, String::new());
+    while i < b.len() {
+        if b[i] == '"' {
+            i += 1;
+            while i < b.len() {
+                if b[i] == '"' {
+                    if b[i + 1..].first() == Some(&'"') {
+                        field.push('"');
+                        i += 2;
+                    } else {
+                        i += 1;
+                        break;
+                    }
+                } else {
+                    field.push(b[i]);
+                    i += 1;
+                }
+            }
+        } else if b[i] == ',' {
+            out.push(std::mem::take(&mut field));
+            i += 1;
+        } else {
+            field.push(b[i]);
+            i += 1;
+        }
+    }
+    out.push(field);
+}
+
+/// 文本 → 列类型（装载口径：数值 parse、TEXT 原文、空数值 → NULL/0 由
+/// 列 nullable 决定——空串数值列按 NULL，非空约束下报 23502）
+fn csv_value(s: &str, ty: &crate::types::ColType) -> SqlValue {
+    if s.is_empty() {
+        return SqlValue::Null;
+    }
+    match ty {
+        crate::types::ColType::Int32 => s.parse::<i32>().map(SqlValue::Int32).unwrap_or(SqlValue::Null),
+        crate::types::ColType::Int64 => s.parse::<i64>().map(SqlValue::Int64).unwrap_or(SqlValue::Null),
+        crate::types::ColType::Float64 => s
+            .parse::<f64>()
+            .map(SqlValue::Float64)
+            .unwrap_or(SqlValue::Null),
+        crate::types::ColType::Bool => SqlValue::Bool(matches!(s, "t" | "true" | "1")),
+        _ => SqlValue::Utf8(s.to_string()),
+    }
+}
+
+/// COPY tbl FROM 'file.csv'（.gz 自动解压）。行数计入 Command tag
+pub(crate) fn exec_copy_from(
+    db: &Database,
+    sess: &mut Session,
+    source: &sqlparser::ast::CopySource,
+    target: &sqlparser::ast::CopyTarget,
+) -> Result<Option<Output>> {
+    use sqlparser::ast::{CopySource, CopyTarget};
+    let table = match source {
+        CopySource::Table { table_name, .. } => object_name(table_name),
+        other => return Err(SqlError::not_supported(format!("COPY source: {other:?}"))),
+    };
+    let path = match target {
+        CopyTarget::File { filename } => filename.clone(),
+        CopyTarget::Stdin => return Err(SqlError::not_supported("COPY FROM STDIN")),
+        other => return Err(SqlError::not_supported(format!("COPY target: {other:?}"))),
+    };
+    let short = table.rsplit('.').next().unwrap_or(&table).to_string();
+    let (schema, entry) = scan::resolve_table(db, &sess.branch, &short)?;
+    if schema.pk.is_empty() {
+        return Err(SqlError::not_supported(format!(
+            "table \"{short}\" has no primary key"
+        )));
+    }
+    let f = std::fs::File::open(&path)
+        .map_err(|e| SqlError::io(format!("COPY {path}: {e}")))?;
+    let reader: Box<dyn std::io::BufRead> = if path.ends_with(".gz") {
+        Box::new(std::io::BufReader::with_capacity(
+            4 << 20,
+            flate2::read::GzDecoder::new(std::io::BufReader::with_capacity(1 << 20, f)),
+        ))
+    } else {
+        Box::new(std::io::BufReader::with_capacity(4 << 20, f))
+    };
+    let snapshot = sess.implicit_snapshot(db)?;
+    let mut txn = sess.txn.take().unwrap_or_else(|| Txn::new(snapshot));
+    let mut guard = if entry.check_exprs.is_empty() && entry.unique_sets.is_empty() {
+        InsertGuard::empty()
+    } else {
+        build_insert_guard(
+            db,
+            sess,
+            &schema,
+            entry.id,
+            &entry.unique_sets,
+            &entry.check_exprs,
+            &txn,
+        )?
+    };
+    let fks = resolve_fk_refs(db, sess, entry.foreign_keys.clone())?;
+    let ncols = schema.columns.len();
+    let mut field_buf: Vec<String> = Vec::with_capacity(ncols);
+    let mut raw: Vec<u8> = Vec::with_capacity(2048);
+    let mut reader = reader;
+    let mut count = 0u64;
+    let mut line_no = 0u64;
+    loop {
+        raw.clear();
+        let n = reader
+            .read_until(b'\n', &mut raw)
+            .map_err(|e| SqlError::io(format!("COPY read: {e}")))?;
+        if n == 0 {
+            break;
+        }
+        line_no += 1;
+        if raw.last() == Some(&b'\n') {
+            raw.pop();
+            if raw.last() == Some(&b'\r') {
+                raw.pop();
+            }
+        }
+        let line = String::from_utf8_lossy(&raw);
+        let line = line.trim_end();
+        if line.is_empty() {
+            continue;
+        }
+        parse_csv_line(line, &mut field_buf);
+        if field_buf.len() != ncols {
+            return Err(SqlError::syntax(format!(
+                "COPY {short}: column count {}/{} at line {line_no}",
+                field_buf.len(),
+                ncols
+            )));
+        }
+        let row: Vec<SqlValue> = field_buf
+            .iter()
+            .zip(&schema.columns)
+            .map(|(v, cd)| csv_value(v, &cd.ty))
+            .collect();
+        let rec = guard.keys_of(&row);
+        insert_row(db, sess, &schema, entry.id, &mut txn, row, &fks, &guard)?;
+        guard.record_keys(rec);
+        count += 1;
+    }
+    commit_tx(db, &sess.branch, &txn)?;
+    sess.txn = None;
+    Ok(Some(Output::Command {
+        tag: "COPY".into(),
+        affected: count,
+    }))
+}

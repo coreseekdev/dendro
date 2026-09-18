@@ -133,6 +133,36 @@ pub fn eval(e: &Expr, row: &[SqlValue], cols: &dyn Fn(&str) -> Option<usize>) ->
                 && cmp_values(&v, &hi)? != std::cmp::Ordering::Greater;
             Ok(SqlValue::Bool(inside != *negated))
         }
+        // LIKE（SQL 标准 %/_ 通配；escape 可选）。ClickBench q20-23 依赖——
+        // 经典双指针 % 回溯匹配器（无正则依赖；贪心回溯 O(n·m) 最坏，
+        // 实文本远低）。NULL 语义同比较：任一侧 NULL → NULL
+        Expr::Like {
+            expr,
+            pattern,
+            negated,
+            escape_char,
+            ..
+        } => {
+            let v = eval(expr, row, cols)?;
+            let p = eval(pattern, row, cols)?;
+            if v.is_null() || p.is_null() {
+                return Ok(SqlValue::Null);
+            }
+            let (t, pat) = match (&v, &p) {
+                (SqlValue::Utf8(a), SqlValue::Utf8(b)) => (a.as_str(), b.as_str()),
+                _ => {
+                    return Err(SqlError::syntax(
+                        "LIKE requires text operands",
+                    ))
+                }
+            };
+            let esc = escape_char
+                .as_ref()
+                .map(|e| e.value.to_string())
+                .and_then(|s| s.chars().next());
+            let m = like_match(t, pat, esc);
+            Ok(SqlValue::Bool(m != *negated))
+        }
         Expr::Case {
             operand,
             conditions,
@@ -695,5 +725,84 @@ pub fn value_to_value_expr(v: &SqlValue) -> PV {
         SqlValue::Bytes(b) => PV::HexStringLiteral(b.iter().map(|x| format!("{x:02X}")).collect()),
         SqlValue::Date32(d) => PV::SingleQuotedString(crate::types::format_date(*d)),
         SqlValue::TimestampMs(t) => PV::SingleQuotedString(crate::types::format_ts_ms(*t)),
+    }
+}
+
+
+/// SQL LIKE 匹配：% 任意序列、_ 单字符、escape 转义下一个字符。
+/// 双指针 + % 回溯（经典算法：记最后 % 位与文本回退位）
+pub(crate) fn like_match(text: &str, pattern: &str, escape: Option<char>) -> bool {
+    let t: Vec<char> = text.chars().collect();
+    let p: Vec<char> = pattern.chars().collect();
+    let (mut ti, mut pi) = (0usize, 0usize);
+    let (mut star, mut mark) = (usize::MAX, 0usize);
+    let mut esc_next = false;
+    while ti < t.len() {
+        if pi < p.len() {
+            let pc = p[pi];
+            if esc_next {
+                if t[ti] == pc {
+                    ti += 1;
+                    pi += 1;
+                    esc_next = false;
+                    continue;
+                }
+            } else if Some(pc) == escape {
+                esc_next = true;
+                pi += 1;
+                continue;
+            } else if pc == '%' {
+                star = pi;
+                mark = ti;
+                pi += 1;
+                continue;
+            } else if pc == '_' || pc == t[ti] {
+                ti += 1;
+                pi += 1;
+                continue;
+            }
+        }
+        // 失配：回退到最近 % 之后
+        if star != usize::MAX {
+            mark += 1;
+            ti = mark;
+            pi = star + 1;
+            esc_next = false;
+        } else {
+            return false;
+        }
+    }
+    // 文本耗尽：模式余部须全为 %（或待转义字符——即模式残缺，判不匹配）
+    while pi < p.len() {
+        if Some(p[pi]) == escape && pi + 1 < p.len() {
+            return false;
+        }
+        if p[pi] != '%' {
+            return false;
+        }
+        pi += 1;
+    }
+    true
+}
+
+#[cfg(test)]
+mod like_tests {
+    use super::like_match;
+
+    #[test]
+    fn like_basics() {
+        assert!(like_match("hello", "hello", None));
+        assert!(like_match("hello", "h%o", None));
+        assert!(like_match("hello", "%ell%", None));
+        assert!(like_match("hello", "h_llo", None));
+        assert!(!like_match("hello", "h_l", None));
+        assert!(like_match("", "%", None));
+        assert!(!like_match("", "_", None));
+        assert!(like_match("a%b", "a!%b", Some('!')));
+        assert!(!like_match("aab", "a!%b", Some('!')));
+        assert!(like_match("x_y", "x!_y", Some('!')));
+        // 回溯：%o 在 "fooooo" 尾部命中
+        assert!(like_match("fooooo", "%oo", None));
+        assert!(like_match("http://www.google.com/x", "%google%", None));
     }
 }

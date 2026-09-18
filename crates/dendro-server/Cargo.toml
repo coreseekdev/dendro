@@ -13,6 +13,7 @@ name = "dendro"
 path = "src/main.rs"
 
 [dependencies]
+flate2 = "1"
 dendro-core.workspace = true
 dendro-pgwire.workspace = true
 dendro-mywire.workspace = true

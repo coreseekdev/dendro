@@ -22,7 +22,7 @@ pub struct AggCall {
 struct Accum {
     count: u64,
     sum_f: f64,
-    sum_i: i64,
+    sum_i: i128,
     is_float: bool,
     min: Option<SqlValue>,
     max: Option<SqlValue>,
@@ -73,7 +73,7 @@ impl Accum {
                         }
                         other => {
                             let i = expr::as_i64(other)?;
-                            self.sum_i += i;
+                            self.sum_i += i as i128;
                         }
                     }
                 }
@@ -102,8 +102,8 @@ impl Accum {
             }
         }
     }
-    fn finish(&self, func: &str, distinct: bool) -> SqlValue {
-        match func {
+    fn finish(&self, func: &str, distinct: bool) -> crate::error::Result<SqlValue> {
+        Ok(match func {
             "count" => {
                 let n = if distinct {
                     self.distinct.as_ref().map(|s| s.len() as u64).unwrap_or(0)
@@ -116,17 +116,17 @@ impl Accum {
             // [1, 2.5] → 2.5；v2c-3 与管线侧对齐修正）
             "sum" => {
                 if self.count == 0 {
-                    return SqlValue::Null;
+                    return Ok(SqlValue::Null);
                 }
                 if self.is_float {
                     SqlValue::Float64(self.sum_f + self.sum_i as f64)
                 } else {
-                    SqlValue::Int64(self.sum_i)
+                    SqlValue::Int64(i64::try_from(self.sum_i).map_err(|_| crate::error::SqlError::new("22003", "bigint sum out of range"))?)
                 }
             }
             "avg" => {
                 if self.count == 0 {
-                    return SqlValue::Null;
+                    return Ok(SqlValue::Null);
                 }
                 let total = self.sum_f + self.sum_i as f64;
                 SqlValue::Float64(total / self.count as f64)
@@ -134,7 +134,7 @@ impl Accum {
             "min" => self.min.clone().unwrap_or(SqlValue::Null),
             "max" => self.max.clone().unwrap_or(SqlValue::Null),
             _ => SqlValue::Null,
-        }
+        })
     }
 }
 
@@ -189,7 +189,7 @@ pub fn group_aggregate(
                 .iter()
                 .zip(calls)
                 .map(|(a, c)| a.finish(&c.func, c.distinct))
-                .collect(),
+                .collect::<crate::error::Result<Vec<_>>>()?,
         );
     }
     // 无 GROUP BY 的全局聚合对空输入仍产出**一行**（count(*)=0，PG 语义；
@@ -200,7 +200,7 @@ pub fn group_aggregate(
             .iter()
             .zip(calls)
             .map(|(a, c)| a.finish(&c.func, c.distinct))
-            .collect();
+            .collect::<crate::error::Result<Vec<_>>>()?;
         keys.push(Vec::new());
         vals.push(row);
     }
