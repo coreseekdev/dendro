@@ -245,6 +245,7 @@ pub(crate) fn lazy_scan_source(
         txn_writes,
         deletes,
         schema,
+        None, // 惰性游标消费端（SQLite step）按全宽取列——不投影
         None,
     )?;
     Ok(Some((names, src)))
@@ -362,12 +363,23 @@ pub(crate) fn try_ap_scan(
             }
         }
     }
+    // 活跃列集（P0 窄行）：掩码列 → 产出行只含活跃列（升序）。
+    // 被裁列不再占 SqlValue::Null 槽（1M×104 裁列 ≈ 2.5GB 纯 Null 槽）；
+    // 下游按 tv.names 名字解析，索引自适应
+    let active: Option<Vec<usize>> = col_mask.map(|m| {
+        m.iter()
+            .enumerate()
+            .filter(|(_, &b)| b)
+            .map(|(i, _)| i)
+            .collect()
+    });
     let src = crate::exec::source::MainPlusDeltaSource::new(
         segment_batches,
         overlay,
         txn_writes,
         deletes,
         schema.clone(),
+        active.clone(),
         pushdown_limit,
     )?;
     // v1 消费形态：整流收集进 TableView（后续 Source 直推管线——方向 B）；
@@ -376,7 +388,11 @@ pub(crate) fn try_ap_scan(
     for item in src {
         rows.extend(item?);
     }
-    let names = schema.columns.iter().map(|c| c.name.clone()).collect();
+    // names 与产出行同宽：投影时只含活跃列名（消费端名字解析自适应）
+    let names = match &active {
+        Some(a) => a.iter().map(|&i| schema.columns[i].name.clone()).collect(),
+        None => schema.columns.iter().map(|c| c.name.clone()).collect(),
+    };
     Ok(Some(TableView { names, rows }))
 }
 

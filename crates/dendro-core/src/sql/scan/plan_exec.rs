@@ -810,15 +810,18 @@ pub(crate) fn exec_plan_inner(
                     mask.map(|v| v.as_slice()),
                 )?;
                 // 捷径绕过 exec_plan(Scan) 包装——手动记 scan 指标
-                //（行数 = 过滤前扫描输出；est = 列统计 × 范围选择率）
+                //（行数 = 过滤前扫描输出；est = 列统计 × 范围选择率）。
+                // names 必须用 st.names（与 stats.cols 全宽对齐）——
+                // tv.names 是 P0 窄行后的活跃列名，索引会错位读列
                 let est = cx.metrics.as_ref().and_then(|_| {
                     let st = crate::sql::stats::table_stats(db, sess, table)?;
                     let total = st.cols.first()?.rows;
                     let an = crate::sql::stats::load_analyze(db, sess, table);
+                    let names = st.names.clone();
                     Some(crate::sql::stats::estimate_filter_rows_ex(
                         &st,
                         an.as_deref(),
-                        &tv.names,
+                        &names,
                         pred,
                         total,
                     ))

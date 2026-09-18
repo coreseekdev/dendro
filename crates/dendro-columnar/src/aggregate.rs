@@ -272,7 +272,15 @@ impl ArrowAggregate for crate::integrate::CbfColumnar {
         let batches =
             crate::integrate::CbfColumnar::scan(self, obj, schema, segments, &None, Some(&mask))
                 .map_err(|e| crate::Error::InvalidInput(format!("cbf scan: {e}")))?;
-        global_aggregate(&batches, &names, reqs)
+        // P0-2 后掩码扫描产窄批（只含活跃列）——名字表同步收窄，
+        // col_index 按窄名定位
+        let active_names: Vec<String> = names
+            .iter()
+            .zip(mask.iter())
+            .filter(|(_, &b)| b)
+            .map(|(n, _)| n.clone())
+            .collect();
+        global_aggregate(&batches, &active_names, reqs)
     }
 }
 

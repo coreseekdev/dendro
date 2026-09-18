@@ -284,16 +284,25 @@ impl ColumnarStore for CbfColumnar {
                 }
                 let mut cols: Vec<ArrayRef> = Vec::with_capacity(schema.columns.len());
                 for ci in 0..schema.columns.len() {
-                    // 缺列/裁剪列的 null 占位类型取 footer 字段类型
+                    // 缺列/活跃列缺块的 null 占位类型取 footer 字段类型
                     //（物化时真实类型——与批 schema 一致；当前 schema
                     // 可能已分叉，streaming_source 差分实证）
-                    let null_ty = || footer.schema.field(ci).data_type().clone();
+                    let null_ty = || {
+                        footer
+                            .schema
+                            .fields()
+                            .get(ci)
+                            .map(|f| f.data_type().clone())
+                            .unwrap_or(arrow::datatypes::DataType::Null)
+                    };
+                    if col_mask.is_some_and(|m| !m[ci]) {
+                        // P0-2 投影裁剪：非需求列**不占位**（原 null 占位
+                        // 保持批宽=schema 宽——空 Utf8 数组的 offsets 缓冲
+                        // 在 1M×70 文本列 ≈ 0.68GB；窄批与源侧活跃投影
+                        // 对齐，消费端按 names 解析）
+                        continue;
+                    }
                     if ci >= rgm.cols.len() {
-                        use arrow::array::new_null_array;
-                        cols.push(new_null_array(&null_ty(), rgm.rows as usize));
-                    } else if col_mask.is_some_and(|m| !m[ci]) {
-                        // O-3 投影裁剪：非需求列零成本 null 占位（不解码
-                        // 列 chunk；批宽恒 = schema 宽——消费端零映射）
                         use arrow::array::new_null_array;
                         cols.push(new_null_array(&null_ty(), rgm.rows as usize));
                     } else if let Some(f) = &sparse_fetch {
@@ -306,8 +315,27 @@ impl ColumnarStore for CbfColumnar {
                         cols.push(arr);
                     }
                 }
-                // footer 内嵌 schema（列型=物化时的真实类型）
-                let batch = RecordBatch::try_new(footer.schema.clone(), cols)
+                // 批 schema：裁剪时 = 活跃字段的窄变体（与 cols 顺序一致：
+                // ci 升序含活跃列）；footer 内嵌 schema（列型=物化时真实
+                // 类型）为全宽形态。活跃列缺 footer 字段（schema 演化：
+                // footer 侧无此列块）时补 Null 型字段与 null 数组对齐
+                let batch_schema = if col_mask.is_some_and(|m| m.iter().any(|&b| !b)) {
+                    let fields: Vec<_> = (0..schema.columns.len())
+                        .filter(|&ci| col_mask.is_some_and(|m| m[ci]))
+                        .map(|ci| match footer.schema.fields().get(ci) {
+                            Some(f) => (**f).clone(),
+                            None => arrow::datatypes::Field::new(
+                                schema.columns[ci].name.clone(),
+                                arrow::datatypes::DataType::Null,
+                                true,
+                            ),
+                        })
+                        .collect();
+                    std::sync::Arc::new(arrow::datatypes::Schema::new(fields))
+                } else {
+                    footer.schema.clone()
+                };
+                let batch = RecordBatch::try_new(batch_schema, cols)
                     .map_err(|e| SqlError::internal(format!("cbf batch: {e}")))?;
                 out.push(batch);
             }

@@ -96,8 +96,15 @@ pub struct MainPlusDeltaSource {
     tail_pos: usize,
     /// col_deletes（行键 hex 解码）——只抑制段源
     deletes: HashSet<Vec<u8>>,
+    /// 完整 schema（尾巴行字节解码用——overlay 编码是全宽行）
     schema: TableSchema,
-    pkc: usize,
+    /// 转换 schema：活跃列投影后的窄 schema（批→行转换宽度）；
+    /// 无投影时与 schema 同宽
+    conv: TableSchema,
+    /// 活跃列（原 schema 索引升序）；None = 全宽
+    active: Option<Vec<usize>>,
+    /// 归并键槽位：pk 在**产出行**里的位置（投影后重映射）
+    key_slot: usize,
     ncols: usize,
     /// 产出行数（pushdown_limit 早停）
     emitted: usize,
@@ -110,6 +117,8 @@ pub struct MainPlusDeltaSource {
 impl MainPlusDeltaSource {
     /// 段批（segment_batches 与 segments 按索引对齐）、overlay（memtx
     /// snapshot_rows）、txn_writes（显式事务写，键序无关——预并时覆盖）
+    /// deletes、schema、active（活跃列投影——产出行只含活跃列，被裁
+    /// 列不再占 SqlValue::Null 槽；活跃集须含 pk，否则退全宽）、limit
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         segment_batches: Vec<Vec<arrow::record_batch::RecordBatch>>,
@@ -117,10 +126,27 @@ impl MainPlusDeltaSource {
         txn_writes: Vec<TailEntry>,
         deletes: HashSet<Vec<u8>>,
         schema: TableSchema,
+        active: Option<Vec<usize>>,
         limit: Option<usize>,
     ) -> Result<Self> {
         let pkc = schema.pk.first().map(|i| *i as usize).unwrap_or(0);
-        let ncols = schema.columns.len();
+        let active = active.filter(|a| !a.is_empty() && a.contains(&pkc));
+        let (conv, key_slot) = match &active {
+            Some(a) => (
+                TableSchema {
+                    name: schema.name.clone(),
+                    columns: a.iter().map(|&i| schema.columns[i].clone()).collect(),
+                    pk: vec![a
+                        .iter()
+                        .position(|&x| x == pkc)
+                        .map(|p| p as u16)
+                        .unwrap_or(0)],
+                },
+                a.iter().position(|&x| x == pkc).unwrap_or(pkc),
+            ),
+            None => (schema.clone(), pkc),
+        };
+        let ncols = conv.columns.len();
         // 尾巴预并：overlay 先入，txn 后入（写覆盖优先级最高）
         let mut tail_map = overlay;
         for (k, v) in txn_writes {
@@ -130,7 +156,7 @@ impl MainPlusDeltaSource {
         let mut cursors = Vec::with_capacity(segment_batches.len());
         let mut heap = BinaryHeap::new();
         for (idx, batches) in segment_batches.into_iter().enumerate() {
-            if let Some(c) = SegCursor::new(idx, batches, &schema, pkc)? {
+            if let Some(c) = SegCursor::new(idx, batches, &conv, key_slot)? {
                 heap.push(Reverse((c.key.clone(), Reverse(c.idx))));
                 cursors.push(Some(c));
             } else {
@@ -144,7 +170,9 @@ impl MainPlusDeltaSource {
             tail_pos: 0,
             deletes,
             schema,
-            pkc,
+            conv,
+            active,
+            key_slot,
             ncols,
             emitted: 0,
             limit,
@@ -164,7 +192,7 @@ impl MainPlusDeltaSource {
             let mut r = std::mem::take(&mut cur.rows[cur.row_i]);
             r.resize(self.ncols, SqlValue::Null);
             row = r;
-            match cur.step(&self.schema, self.pkc) {
+            match cur.step(&self.conv, self.key_slot) {
                 Ok(true) => {
                     let nk = cur.key.clone();
                     self.heap.push(Reverse((nk, Reverse(ci))));
@@ -197,11 +225,20 @@ impl MainPlusDeltaSource {
         Ok(())
     }
 
-    /// 尾巴行解码（字节 → 行；补列宽）
+    /// 尾巴行解码（字节 → 全宽行 → 投影活跃列）
     fn decode_tail(&self, bytes: &[u8]) -> Result<Vec<SqlValue>> {
-        let mut r = crate::sql::scan::row_from_bytes(&self.schema, bytes)?;
-        r.resize(self.ncols, SqlValue::Null);
-        Ok(r)
+        let r = crate::sql::scan::row_from_bytes(&self.schema, bytes)?;
+        match &self.active {
+            Some(a) => Ok(a
+                .iter()
+                .map(|&i| r.get(i).cloned().unwrap_or(SqlValue::Null))
+                .collect()),
+            None => {
+                let mut r = r;
+                r.resize(self.ncols, SqlValue::Null);
+                Ok(r)
+            }
+        }
     }
 }
 
@@ -356,6 +393,7 @@ mod source_tests {
             deletes,
             schema_1pk(),
             None,
+            None,
         )
         .unwrap();
         let rows: Result<Vec<Vec<Vec<SqlValue>>>> = src.collect();
@@ -376,6 +414,7 @@ mod source_tests {
             vec![],
             deletes,
             schema_1pk(),
+            None,
             None,
         )
         .unwrap();
@@ -398,6 +437,7 @@ mod source_tests {
             vec![],
             HashSet::new(),
             schema_1pk(),
+            None,
             Some(2),
         )
         .unwrap();

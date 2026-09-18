@@ -169,11 +169,19 @@ fn sparse_masked_scan_reads_fewer_bytes_and_decodes_correctly() {
         full_bytes
     );
 
-    // 值等价：需求列逐行一致；裁剪列全 null
+    // 值等价：需求列逐行一致；裁剪列**缺席**（P0-2 窄批合同：
+    // 掩码列不造 null 占位——批只含活跃列，顺序 = 原列序）
     assert_eq!(batches_full.len(), batches_masked.len());
     let mut idx = 0i64;
     for (bf, bm) in batches_full.iter().zip(&batches_masked) {
         assert_eq!(bf.num_rows(), bm.num_rows());
+        assert_eq!(bm.num_columns(), 2, "窄批 = 活跃列数（id, a）");
+        assert_eq!(
+            bm.schema().field(0).name(),
+            &schema.columns[0].name,
+            "窄批列名对齐（原列序）"
+        );
+        assert_eq!(bm.schema().field(1).name(), &schema.columns[1].name);
         for r in 0..bf.num_rows() {
             assert_eq!(
                 bf.column(0)
@@ -201,7 +209,6 @@ fn sparse_masked_scan_reads_fewer_bytes_and_decodes_correctly() {
                     .value(r),
                 "a 列（需求）值一致 @ {idx}"
             );
-            assert!(bm.column(4).is_null(r), "note 列（裁剪）应 null @ {idx}");
             idx += 1;
         }
     }
