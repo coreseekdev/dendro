@@ -159,6 +159,20 @@ impl Connection {
         Ok(self.query(sql)?.get_i64(0, 0))
     }
 
+    /// C ABI（dendro-sqlite）支持面：按名登记/执行/关闭预编译语句——
+    /// 跨 FFI 的所有权形态（Rust 借用版 [`Statement`] 无法过边界）
+    pub fn sess_prepare(&mut self, name: &str, sql: &str) -> Result<crate::engine::PrepareMeta> {
+        self.sess.prepare(name, sql, &[])
+    }
+    pub fn sess_exec_prepared(&mut self, name: &str, params: &[Value]) -> Result<QueryResult> {
+        let sql_params = to_sql_values(params);
+        let outputs = self.sess.exec_prepared(name, &sql_params)?;
+        Ok(to_result(vec![outputs]))
+    }
+    pub fn sess_close_prepared(&mut self, name: &str) {
+        self.sess.close_prepared(name)
+    }
+
     /// 预编译语句
     pub fn prepare(&mut self, sql: &str) -> Result<Statement<'_>> {
         let name = format!(

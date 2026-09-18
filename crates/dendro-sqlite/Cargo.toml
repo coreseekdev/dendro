@@ -1,0 +1,12 @@
+[package]
+name = "dendro-sqlite"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+dendro-core = { workspace = true }
+libc.workspace = true
