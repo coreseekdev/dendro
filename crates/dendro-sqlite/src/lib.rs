@@ -28,11 +28,11 @@
 //! **stmt 生命周期**：`sqlite3_close_v2` 自动失效未 finalize 的语句
 //! （后续 step/finalize 返回 SQLITE_MISUSE 而非 UB）。
 //!
-//! **v1 剩余未实现**：`last_insert_rowid`（返回 0——dendro 无行 id
-//! 概念）；结果集为语句物化（`step` 首次执行全量求值）——惰性游标
-//! 留给 v2。已实现：blob 绑定、`pzTail` 多语句切分（词法边界扫描）、
+//! **v1 剩余未实现**：结果集为语句物化（`step` 首次执行全量求值）
+//! ——惰性游标留给 v2。已实现：blob 绑定、`pzTail` 多语句切分、
 //! `sqlite3_sql`、`column_decltype`、`sqlite3_changes`（exec/step
-//! 双路径跟踪）。
+//! 双路径）、**`last_insert_rowid`**（SQLite 语义：INTEGER PRIMARY
+//! KEY 列即 rowid 别名——记末行 PK）。
 //! # 快速验证
 //!
 //! ```c
@@ -811,10 +811,15 @@ pub unsafe extern "C" fn sqlite3_busy_timeout(_db: *mut sqlite3, _ms: c_int) -> 
     SQLITE_OK
 }
 
-/// last_insert_rowid：v1 占位（无行 id 概念——文档化）
+/// 最近 INSERT 的 rowid（= 单列整数 PK 末行值——SQLite INTEGER
+/// PRIMARY KEY 即 rowid 别名语义；非整数 PK 表插入后保持上次值）
 #[no_mangle]
-pub unsafe extern "C" fn sqlite3_last_insert_rowid(_db: *mut sqlite3) -> i64 {
-    0
+pub unsafe extern "C" fn sqlite3_last_insert_rowid(db: *mut sqlite3) -> i64 {
+    if db.is_null() {
+        return 0;
+    }
+    let conn: &Conn = unsafe { &*db.cast() };
+    conn.conn.as_ref().map_or(0, |c| c.last_insert_rowid())
 }
 
 // ---- Opaque 句柄别名（头文件同构） ----

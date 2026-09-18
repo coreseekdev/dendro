@@ -723,6 +723,7 @@ impl Database {
             prepared: HashMap::new(),
             failed_txn: false,
             dialect: crate::sql::SqlDialect::Pg,
+            last_rowid: 0,
             cursors: HashMap::new(),
             statement_timeout_ms: self.opts.default_statement_timeout_ms,
             stmt_deadline: None,
@@ -1672,6 +1673,9 @@ pub struct Session {
     pub(crate) prepared: HashMap<String, Prepared>,
     pub(crate) failed_txn: bool,
     pub(crate) dialect: crate::sql::SqlDialect,
+    /// 最近一次成功 INSERT 的 rowid 值（= 单列整数 PK 表的末行 PK；
+    /// SQLite last_insert_rowid 语义——非整数 PK / 无行时 0）
+    pub(crate) last_rowid: i64,
     /// 已声明游标（Q-1b v1：INSENSITIVE/READ ONLY——DECLARE 时物化结果集）
     pub(crate) cursors: HashMap<String, (crate::types::RecordSet, usize)>,
     /// 语句超时毫秒（S-3 生产化：0 = 不限；`SET statement_timeout = N` 可调）

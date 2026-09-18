@@ -732,6 +732,8 @@ pub(crate) fn exec_insert(
         )?
     };
     let mut count = 0u64;
+    // 末行原始值（rowid 记账——insert_row 拿走所有权前留存副本）
+    let mut last_pk_vals: Option<Vec<SqlValue>> = None;
     let mut seen_keys: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
 
     /// 冲突时行为：None=报错；DO NOTHING=跳过；DO UPDATE=按 SET 更新
@@ -898,6 +900,7 @@ pub(crate) fn exec_insert(
                     count += delta;
                     continue;
                 }
+                let row_raw = row.clone();
                 let rec = guard.keys_of(&row);
                 insert_row(
                     db,
@@ -910,6 +913,7 @@ pub(crate) fn exec_insert(
                     &guard,
                 )?;
                 guard.record_keys(rec);
+                last_pk_vals = Some(row_raw);
                 count += 1;
             }
         }
@@ -939,6 +943,7 @@ pub(crate) fn exec_insert(
                 for (si, &ci) in col_idx.iter().enumerate() {
                     row[ci] = src_row.get(si).cloned().unwrap_or(SqlValue::Null);
                 }
+                let row_raw = row.clone();
                 let rec = guard.keys_of(&row);
                 insert_row(
                     db,
@@ -951,11 +956,14 @@ pub(crate) fn exec_insert(
                     &guard,
                 )?;
                 guard.record_keys(rec);
+                last_pk_vals = Some(row_raw);
                 count += 1;
             }
         }
         other => return Err(SqlError::not_supported(format!("INSERT source: {}", other))),
     }
+    // rowid 记账（SQLite 语义：单列整数 PK 列即 rowid 别名——记末行）
+    record_last_rowid(sess, &schema, last_pk_vals.as_deref());
     if !txn.explicit {
         commit_tx(db, &sess.branch, &txn)?;
     } else {
@@ -965,6 +973,30 @@ pub(crate) fn exec_insert(
         tag: format!("INSERT 0 {count}"),
         affected: count,
     }))
+}
+
+/// last_insert_rowid 记账：单列整数 PK 表取末行 PK 值；其余（复合/
+/// 非整数 PK、空插入）不动（保留上次值——SQLite 同义：失败/无关
+/// 插入不清零）
+fn record_last_rowid(sess: &mut Session, schema: &TableSchema, last: Option<&[SqlValue]>) {
+    if schema.pk.len() != 1 {
+        return;
+    }
+    let pk_idx = schema.pk[0] as usize;
+    let int_pk = matches!(
+        schema.columns.get(pk_idx).map(|c| c.ty),
+        Some(crate::types::ColType::Int32 | crate::types::ColType::Int64)
+    );
+    if !int_pk {
+        return;
+    }
+    if let Some(row) = last {
+        match row.get(pk_idx) {
+            Some(SqlValue::Int32(v)) => sess.last_rowid = *v as i64,
+            Some(SqlValue::Int64(v)) => sess.last_rowid = *v,
+            _ => {}
+        }
+    }
 }
 
 /// 账本 #26（b）：INSERT 字面量按**目标列型**采纳（PG unknown-literal

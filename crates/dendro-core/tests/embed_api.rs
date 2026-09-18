@@ -123,3 +123,40 @@ fn embed_sqlite_dialect_default_positional() {
     let r2 = sel2.query(&[Value::Integer(1)]).unwrap();
     assert_eq!(r2.get_string(0, 0).as_deref(), Some("a"));
 }
+
+/// SQLite rowid 语义：INTEGER PRIMARY KEY 列即 rowid 别名——
+/// last_insert_rowid 真值 + 查询引用（裸/限定/谓词）
+#[test]
+fn embed_rowid_semantics() {
+    let mut c = Connection::memory().unwrap();
+    c.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)")
+        .unwrap();
+    c.execute("INSERT INTO t VALUES (10, 'a')").unwrap();
+    assert_eq!(c.last_insert_rowid(), 10);
+    c.execute("INSERT INTO t VALUES (25, 'b')").unwrap();
+    assert_eq!(c.last_insert_rowid(), 25);
+    // 查询引用：SELECT rowid / WHERE rowid = N / 限定 r.rowid
+    let r = c.query("SELECT rowid, v FROM t WHERE rowid = 25").unwrap();
+    assert_eq!(r.get_i64(0, 0), Some(25));
+    assert_eq!(r.get_string(0, 1).as_deref(), Some("b"));
+    let r2 = c
+        .query("SELECT r._rowid_ FROM t r WHERE r.oid = 10")
+        .unwrap();
+    assert_eq!(r2.get_i64(0, 0), Some(10));
+    // 多行插入记末行
+    c.execute("INSERT INTO t VALUES (31, 'c'), (32, 'd')")
+        .unwrap();
+    assert_eq!(c.last_insert_rowid(), 32);
+    // 非整数 PK 表：rowid 引用响亮报错、记账不动
+    c.execute("CREATE TABLE s (k TEXT PRIMARY KEY)").unwrap();
+    c.execute("INSERT INTO s VALUES ('x')").unwrap();
+    assert_eq!(c.last_insert_rowid(), 32, "非整数 PK 不改写 last_rowid");
+    let e = c
+        .query("SELECT rowid FROM s")
+        .err()
+        .expect("非整数 PK 表 rowid 必须响亮报错");
+    assert!(
+        e.message.contains("rowid") || e.message.contains("does not exist"),
+        "{e}"
+    );
+}

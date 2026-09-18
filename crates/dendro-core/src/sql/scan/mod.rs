@@ -187,6 +187,11 @@ fn lower_subqueries(
     match se {
         SetExpr::Select(sel) => {
             reject_multi_from(sel)?;
+            // SQLite 方言：rowid/_rowid_/oid → 单列整数 PK 列的别名
+            //（SQLite 同义；真列名优先，多因子歧义不动留给响亮报错）
+            if sess.dialect == crate::sql::SqlDialect::Sqlite {
+                rewrite_rowid_refs(db, sess, sel);
+            }
             if let Some(w) = sel.selection.as_mut() {
                 // L1/L2：WHERE 合取位的 InSubquery 保留在谓词——
                 // 非相关由 build_select 落 SemiJoin（单次求值 + 哈希
@@ -562,3 +567,106 @@ pub(crate) fn reject_offset_comma(q: &Query) -> Result<()> {
 // v1 支持：row_number/rank/dense_rank + sum/count/min/max/avg OVER
 // v1 拒绝：named window / window frame / LAG/LEAD（OFFSET 表达式）
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// SQLite rowid 别名（INTEGER PRIMARY KEY 即 rowid——SQLite 语义）。
+// 查询期 AST 改写：rowid/_rowid_/oid（裸名或限定名）→ PK 列引用。
+// 真列名优先（表已声明同名列则不动）；多因子下裸名歧义不动（执行期
+// undefined column 响亮）；非整数 PK 表不动（同左）
+// ---------------------------------------------------------------------------
+
+fn rewrite_rowid_refs(db: &Database, sess: &Session, sel: &mut Select) {
+    use sqlparser::ast::{Expr, VisitMut};
+
+    fn is_rowid_name(n: &str) -> bool {
+        matches!(n.to_ascii_lowercase().as_str(), "rowid" | "_rowid_" | "oid")
+    }
+
+    // 因子收集：(因子键, 表名)——from 首因子 + join 链（仅物理表；
+    // 派生表/CTE 无 rowid 概念）
+    let mut factors: Vec<(String, String)> = Vec::new();
+    fn table_of(tf: &sqlparser::ast::TableFactor) -> Option<(String, String)> {
+        if let sqlparser::ast::TableFactor::Table { name, alias, .. } = tf {
+            let base = name
+                .0
+                .last()
+                .and_then(|p| p.as_ident())
+                .map(|i| i.value.clone())?;
+            let key = alias
+                .as_ref()
+                .map(|a| a.name.value.to_ascii_lowercase())
+                .unwrap_or_else(|| base.to_ascii_lowercase());
+            return Some((key, base));
+        }
+        None
+    }
+    for twj in sel.from.iter() {
+        if let Some(f) = table_of(&twj.relation) {
+            factors.push(f);
+        }
+    }
+    for j in sel.from.iter().flat_map(|f| f.joins.iter()) {
+        if let Some(f) = table_of(&j.relation) {
+            factors.push(f);
+        }
+    }
+    if factors.is_empty() {
+        return;
+    }
+    // 因子键 → PK 列名（可别名解析的才登记）
+    let mut pk_of: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for (k, t) in &factors {
+        if let Ok((schema, _)) = crate::sql::scan::resolve_table(db, &sess.branch, t) {
+            if schema.pk.len() == 1 {
+                let pi = schema.pk[0] as usize;
+                let int_pk = matches!(
+                    schema.columns.get(pi).map(|c| c.ty),
+                    Some(crate::types::ColType::Int32 | crate::types::ColType::Int64)
+                );
+                if int_pk {
+                    // 真列名优先：表已声明 rowid/_rowid_/oid 列则不可别名
+                    let shadowed = schema.columns.iter().any(|c| is_rowid_name(&c.name));
+                    if !shadowed {
+                        if let Some(pc) = schema.columns.get(pi) {
+                            pk_of.insert(k.clone(), pc.name.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if pk_of.is_empty() {
+        return;
+    }
+    let single = factors.len() == 1;
+    let _ = sel.visit(&mut RowidRewriter { pk_of, single });
+
+    struct RowidRewriter {
+        pk_of: std::collections::HashMap<String, String>,
+        single: bool,
+    }
+    impl sqlparser::ast::VisitorMut for RowidRewriter {
+        type Break = ();
+        fn pre_visit_expr(&mut self, e: &mut Expr) -> std::ops::ControlFlow<Self::Break> {
+            match e {
+                // 裸 rowid：仅单因子无歧义
+                Expr::Identifier(id) if self.single && is_rowid_name(&id.value) => {
+                    let pk = self.pk_of.values().next().unwrap().clone();
+                    *e = Expr::Identifier(sqlparser::ast::Ident::new(pk));
+                }
+                // 限定 t.rowid：按因子键解析
+                Expr::CompoundIdentifier(parts) if parts.len() == 2 => {
+                    let p = parts[0].value.clone();
+                    let c = parts[1].value.clone();
+                    if is_rowid_name(&c) {
+                        if let Some(pk) = self.pk_of.get(&p.to_ascii_lowercase()) {
+                            parts[1].value = pk.clone();
+                        }
+                    }
+                }
+                _ => {}
+            }
+            std::ops::ControlFlow::Continue(())
+        }
+    }
+}

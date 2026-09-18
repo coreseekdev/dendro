@@ -198,6 +198,12 @@ impl Connection {
         self.sess.close_prepared(name)
     }
 
+    /// 最近一次成功 INSERT 的 rowid（单列整数 PK 表的末行 PK；
+    /// SQLite last_insert_rowid 语义）
+    pub fn last_insert_rowid(&self) -> i64 {
+        self.sess.last_rowid
+    }
+
     /// 混合执行（查询结果 + 受影响行数一并返回——C ABI 的
     /// sqlite3_changes 跟踪口；Rust 侧 execute/query 各取一半的合并源）
     pub fn exec_mixed(&mut self, sql: &str) -> Result<(QueryResult, i64)> {
