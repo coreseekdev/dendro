@@ -7,13 +7,14 @@
 //! 可以**进程内**使用 dendro——替换 SQLite，但获得 HTAP（列存物化 +
 //! 分支 + 对象存储原生）。
 //!
-//! # 与 pgwire/mywire 的分工
+//! # 两轴定位（方言 × 传输）
 //!
-//! | 面 | 用途 |
-//! |----|------|
-//! | pgwire / mywire | 网络 client/server（psql、JDBC、驱动生态） |
-//! | `dendro_core::embed` | Rust 嵌入（进程内，安全 API） |
-//! | **dendro-sqlite（本 crate）** | **C ABI 嵌入——SQLite 生态替换面** |
+//! | 传输 | 方言 | 用途 |
+//! |------|------|------|
+//! | pgwire（TCP 二进制 v3） | PG | psql、JDBC、驱动生态 |
+//! | mywire（TCP 二进制） | MySQL | MySQL 客户端生态 |
+//! | embed（Rust 进程内） | Pg 默认（可换） | Rust 嵌入安全 API |
+//! | **dendro-sqlite（C ABI 进程内）** | **SQLite** | **SQLite 生态替换面——与 embed 同一进程内语义 + C 调用约定 + SQLite 方言** |
 //!
 //! # 合同与边界（诚实清单）
 //!
@@ -135,6 +136,10 @@ pub unsafe extern "C" fn sqlite3_open_v2(
             .to_string();
         Connection::open(&path)
     };
+    let mut conn = conn;
+    if let Ok(c) = conn.as_mut() {
+        c.set_dialect(dendro_core::sql::SqlDialect::Sqlite);
+    }
     match conn {
         Ok(c) => {
             let conn = Box::new(Conn {
@@ -273,46 +278,6 @@ pub unsafe extern "C" fn sqlite3_exec(
     SQLITE_OK
 }
 
-/// `?` → `$N`（跳过 '..' / ".." / `..` 引号内与注释——SQLite 参数
-/// 语法到 dendro PG 方言的兼容翻译；出现序即绑定序）
-fn translate_placeholders(sql: &str) -> String {
-    let b: Vec<char> = sql.chars().collect();
-    let mut out = String::with_capacity(sql.len() + 8);
-    let mut n = 0usize;
-    let mut i = 0usize;
-    while i < b.len() {
-        let c = b[i];
-        if c == '\'' || c == '"' || c == '`' {
-            let quote = c;
-            out.push(c);
-            i += 1;
-            while i < b.len() {
-                out.push(b[i]);
-                if b[i] == quote {
-                    if i + 1 < b.len() && b[i + 1] == quote {
-                        out.push(b[i + 1]);
-                        i += 2;
-                        continue;
-                    }
-                    i += 1;
-                    break;
-                }
-                i += 1;
-            }
-            continue;
-        }
-        if c == '?' {
-            n += 1;
-            out.push_str(&format!("${n}"));
-            i += 1;
-            continue;
-        }
-        out.push(c);
-        i += 1;
-    }
-    out
-}
-
 /// SqlValue → 文本（column_text/exec 回调共用口径）
 fn value_text(v: &SqlValue) -> String {
     match v {
@@ -363,9 +328,9 @@ pub unsafe extern "C" fn sqlite3_prepare_v2(
         Some(c) => c,
         None => return SQLITE_MISUSE,
     };
-    // SQLite `?` → PG `$N` 参数语法翻译（跳过字符串/标识符引号内；
-    // 编号按出现序 = SQLite 绑定序）
-    let stmt_sql = translate_placeholders(&sql_str);
+    // 原文直入（方言归一在 core parse_batch：Sqlite 方言的 `?` 由
+    // AST 级 VisitorMut 归一为 `$N`——wire 层不再做字符串改写）
+    let stmt_sql = sql_str.clone();
     let name = format!(
         "__ffi_{}",
         std::time::SystemTime::now()

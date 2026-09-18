@@ -180,6 +180,9 @@ pub fn handle_connection<T: Read + Write>(
 ) -> io::Result<()> {
     let mut pg = PgStream::new(stream);
 
+    // 传输声明方言（唯一赋值点）：PG 二进制协议线 = Pg 档案
+    sess.set_dialect(dendro_core::sql::SqlDialect::Pg);
+
     // startup + 认证（SPEC 06 §2.1）；None = 连接应关闭（已发错误或对端断开）
     let Some((params, backend_pid)) = startup::handshake(&mut pg, &cfg)? else {
         return Ok(());

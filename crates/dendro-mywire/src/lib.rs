@@ -57,6 +57,10 @@ pub fn handle_connection<T: Read + Write>(
     mut sess: Box<dyn WireSession>,
     cfg: MyConfig,
 ) -> io::Result<()> {
+    // 访问路径方言声明（唯一赋值点）：MySQL 线 = MySql 档案
+    //（此前缺失——默认 Pg 档案解析 MySQL 文本协议语句，反引号
+    // 标识符等形态会解析失败）
+    sess.set_dialect(dendro_core::sql::SqlDialect::MySql);
     let mut io = codec::WireIo::new(stream);
     // SPEC 06 §3：greeting(seq 0) → HandshakeResponse41 → 校验 → OK / ERR(断开)
     if !handshake::handshake(&mut io, &cfg)? {

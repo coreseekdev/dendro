@@ -13,17 +13,10 @@ use crate::error::{Result, SqlError};
 use crate::types::{ColType, ColumnMeta, Output, RecordSet, SqlValue};
 use sqlparser::ast::Statement;
 use sqlparser::ast::Value as PV;
-use sqlparser::dialect::{MySqlDialect, PostgreSqlDialect};
 use sqlparser::parser::Parser;
 use std::sync::Arc;
 
-/// 方言（由 wire 层设置；默认 PG）
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SqlDialect {
-    Pg,
-    MySql,
-}
-
+/// 方言访问口（档案分派见 [`dialect::SqlDialect::profile`]）
 impl Session {
     pub fn dialect(&self) -> SqlDialect {
         self.dialect
@@ -51,18 +44,21 @@ pub fn parse_only(sql: &str, d: SqlDialect) -> std::result::Result<String, Strin
         .map_err(|e| e.message)
 }
 
+/// v2b B1：标量层步列表（编译 + eval_row）。compile-or-fallback 合同。
+pub mod dialect;
 /// v2c-1：coverage 派发器（扫描路径选择的纯函数化 + force_source）。
 pub mod dispatch;
-/// v2b B1：标量层步列表（编译 + eval_row）。compile-or-fallback 合同。
 pub mod privs;
 pub mod scalar;
 pub mod stats;
 
+pub use dialect::{DialectProfile, SqlDialect};
+
 pub(crate) fn parse_batch(sql: &str, d: SqlDialect) -> Result<Vec<Statement>> {
-    let dialect: &dyn sqlparser::dialect::Dialect = match d {
-        SqlDialect::Pg => &PostgreSqlDialect {},
-        SqlDialect::MySql => &MySqlDialect {},
-    };
+    // 方言行为面经档案接口动态分派（parse 方言 / 占位符归一）——
+    // wire 层各自声明，此处零 match
+    let profile = d.profile();
+    let dialect: &dyn sqlparser::dialect::Dialect = profile.parser();
     // 分支族语句先于 sqlparser（其语法非标准）
     if let Some(st) = branch_statement(sql) {
         return Ok(vec![st]);
@@ -75,7 +71,12 @@ pub(crate) fn parse_batch(sql: &str, d: SqlDialect) -> Result<Vec<Statement>> {
             .map_err(|e| SqlError::syntax(short_err(&e)))
     };
     match parse(dialect) {
-        Ok(stmts) => Ok(stmts),
+        Ok(mut stmts) => {
+            if profile.positional_placeholders() {
+                crate::sql::dialect::normalize_positional(&mut stmts);
+            }
+            Ok(stmts)
+        }
         Err(e) => {
             // P1-10 time travel：PG/MySQL 方言 supports_table_versioning=false。
             // 触发条件 = SQL 含版本子句——按错误签名收窄是不可靠的：派生表内

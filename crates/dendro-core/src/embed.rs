@@ -144,6 +144,12 @@ impl Connection {
     }
 
     /// 查询 SQL（SELECT；返回完整结果集）
+    /// 切换方言（wire 独立方言架构：dendro-sqlite 线设 Sqlite；
+    /// 默认 Pg——pgwire/pg 生态语义）
+    pub fn set_dialect(&mut self, d: crate::sql::SqlDialect) {
+        self.sess.dialect = d;
+    }
+
     /// 切换会话用户（S-4 测试面/嵌入式多用户；权限门主体；小写折叠）
     pub fn set_user(&mut self, user: &str) {
         self.sess.user = crate::sql::privs::norm_user(user);

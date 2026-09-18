@@ -412,6 +412,10 @@ pub struct Prepared {
 /// PreparedMeta/Output 语义见 spec/10。
 pub trait WireSession: Send {
     fn exec(&mut self, sql: &str) -> Result<Vec<Output>>;
+    /// 方言声明（**传输适配器唯一赋值点**，连接建立时一次：
+    /// pgwire=Pg / mywire=MySql / dendro-sqlite=Sqlite（C ABI
+    /// 传输，与 embed 同一进程内语义）；缺省 no-op 供 mock）
+    fn set_dialect(&mut self, _d: crate::sql::SqlDialect) {}
     /// 会话用户（S-4：pgwire startup 后注入；缺省实现 no-op 供 mock）
     fn set_user(&mut self, _user: &str) {}
     /// 取消令牌引用（S-3 语句取消；默认返回 dummy 供 mock 使用）
@@ -433,6 +437,9 @@ pub trait WireSession: Send {
 }
 
 impl WireSession for Session {
+    fn set_dialect(&mut self, d: crate::sql::SqlDialect) {
+        self.dialect = d;
+    }
     fn set_user(&mut self, user: &str) {
         // 标识符折叠小写（PG；与 ACL 键/grantee 同口径——评审 P2 大小写
         // 不匹配致授权静默失效）
