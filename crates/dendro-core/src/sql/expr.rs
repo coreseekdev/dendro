@@ -156,7 +156,15 @@ pub fn eval(e: &Expr, row: &[SqlValue], cols: &dyn Fn(&str) -> Option<usize>) ->
                 .as_ref()
                 .map(|e| e.value.to_string())
                 .and_then(|s| s.chars().next());
-            let m = like_match(t, pat, esc);
+            // 快路径（ClickBench q20-23 的主流形态）：无 escape 时，
+            // `%literal%` → contains（std 优化的 two-way/SIMD 子串搜索）、
+            // `literal%` → ends_with、`%literal` → starts_with——
+            // 免逐字符回溯。含 _ 或多 % 的形态走通用匹配器
+            let m = if esc.is_none() {
+                fast_like(t, pat).unwrap_or_else(|| like_match(t, pat, esc))
+            } else {
+                like_match(t, pat, esc)
+            };
             Ok(SqlValue::Bool(m != *negated))
         }
         Expr::Case {
@@ -724,6 +732,30 @@ pub fn value_to_value_expr(v: &SqlValue) -> PV {
     }
 }
 
+/// LIKE 快路径判定：仅当模式是单一 % 前缀/后缀/包裹且无 _/escape
+/// 时返回 Some(bool)，否则 None（走通用匹配器）
+fn fast_like(text: &str, pattern: &str) -> Option<bool> {
+    if pattern.contains('_') || pattern.matches('%').count() > 2 {
+        return None;
+    }
+    if let Some(mid) = pattern.strip_prefix('%').and_then(|s| s.strip_suffix('%')) {
+        if !mid.contains('%') {
+            return Some(text.contains(mid));
+        }
+    }
+    if let Some(pre) = pattern.strip_suffix('%') {
+        if !pre.contains('%') {
+            return Some(text.starts_with(pre));
+        }
+    }
+    if let Some(suf) = pattern.strip_prefix('%') {
+        if !suf.contains('%') {
+            return Some(text.ends_with(suf));
+        }
+    }
+    None
+}
+
 /// SQL LIKE 匹配：% 任意序列、_ 单字符、escape 转义下一个字符。
 /// 双指针 + % 回溯（经典算法：记最后 % 位与文本回退位）
 pub(crate) fn like_match(text: &str, pattern: &str, escape: Option<char>) -> bool {
@@ -799,5 +831,20 @@ mod like_tests {
         // 回溯：%o 在 "fooooo" 尾部命中
         assert!(like_match("fooooo", "%oo", None));
         assert!(like_match("http://www.google.com/x", "%google%", None));
+    }
+
+    #[test]
+    fn fast_like_paths() {
+        use super::fast_like;
+        assert_eq!(fast_like("www.google.com", "%google%"), Some(true));
+        assert_eq!(fast_like("www.bing.com", "%google%"), Some(false));
+        assert_eq!(fast_like("abc.log", ".log%"), Some(false));
+        assert_eq!(fast_like("abc.log", "abc%"), Some(true));
+        assert_eq!(fast_like("abc.log", "%abc"), Some(false));
+        assert_eq!(fast_like("abc.log", "%log"), Some(true));
+        // 复杂形态让路通用匹配器
+        assert_eq!(fast_like("x", "%a_b%"), None);
+        assert_eq!(fast_like("x", "%a%b%"), None);
+        // 与通用匹配器结果一致性由 like_basics 同语料交叉覆盖
     }
 }

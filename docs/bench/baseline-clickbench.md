@@ -26,15 +26,19 @@
 | ANALYZE | 53K 行 4.2s |
 | 查询（39 条） | 250–440ms @ 53K 行（全表线性扫描量级） |
 
-## 3. 全量路径瓶颈链（本次测量产出）
+## 3. 全量路径瓶颈链（测量产出 + 一次重大修正）
 
-1. ~~SQL parse 3.6K rows/s~~ → COPY 18.3K rows/s（全量装载 ≈ 91 min ✓）
-2. **CHECKPOINT ~1.1K rows/s（宽行线性）——新关键路径**：
-   10K 行 9.4s / 40K 行 34.6s（3.7×，线性）；外推 1 亿行单次检查点
-   ≈ **25 小时**。全量基线被此阻塞——checkpoint 物化路径（prolly
-   提交 + CBF 段写 + memtx 截断）需专项 profile（下一工作项，
-   疑点：逐行 encode/tree 点插/每段 codec 试编码）。
-3. 查询全量外推：线性扫描 ~500s/条 × 39 × 4 runs（需减轮次或分批）。
+1. ~~SQL parse 3.6K rows/s~~ → COPY（release **72.9K rows/s**，全量 ≈ 23 min ✓）
+2. ~~CHECKPOINT 1.1K rows/s~~——**修正：初测为 debug 构建伪影**
+   （294µs/节点的 Node::build 仅在无优化构建成立）。真正瓶颈是
+   逐 chunk put_batch 的逐文件 fsync（release 12.8s/40K）；已修
+   （Chunker 攒批 + put_batch 批末单次 syncfs，提交 2315236，
+   A/B 12.84s → **1.44s** = 8.9×）。现 checkpoint ≈ 27.8K rows/s
+   （全量外推 ~60 min ✓）。**教训入册：性能测量一律 release
+   构建**（已补进设计评审 checklist 待办）。
+3. 查询全量外推：release 40K 单查询 ~10-40ms 量级 → 全量线性
+   外推 ~10-100s/条 × 39 × (warmup1+median3)——全量跑改用
+   cold1+warm1 口径或分批。
 
 ## 4. 全量执行计划（下载完成后）
 
