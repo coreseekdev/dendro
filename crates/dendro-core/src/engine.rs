@@ -491,6 +491,21 @@ pub trait ColumnarStore: Send + Sync {
         rows: &[Vec<crate::types::SqlValue>],
     ) -> Result<crate::versioned::ColSegment>;
 
+    /// Arrow 原生全局聚合（性能批 P0）：无 GROUP BY 的
+    /// COUNT/SUM/AVG/MIN/MAX 直接在列存 Arrow 列上计算——免
+    /// rows_from_batches 行式转换（106 列 × 1M 行 = 106M
+    /// SqlValue 创建，是全局聚合类查询的 CPU/内存主源）。
+    /// None = 引擎未接/形态不覆盖（回落行式路径——差分安全）
+    fn global_agg(
+        &self,
+        _obj: &Arc<dyn ObjStore>,
+        _schema: &TableSchema,
+        _segments: &[crate::versioned::ColSegment],
+        _reqs: &[crate::versioned::GlobalAggReq],
+    ) -> Option<crate::error::Result<Vec<crate::types::SqlValue>>> {
+        None
+    }
+
     /// 全量重建：读整棵行树 + 与现有段合并去重，写单个段；返回 (新段, 待删旧段路径)。
     fn write_full(
         &self,

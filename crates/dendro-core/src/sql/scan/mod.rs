@@ -149,6 +149,13 @@ pub(crate) fn eval_query(
     let mut q_owned = q.clone();
     lower_subqueries(db, sess, &mut q_owned.body, snapshot)?;
 
+    // P0 性能批：Arrow 原生全局聚合捷径——SELECT agg(...) FROM table
+    // （无 WHERE/GROUP BY/JOIN/ORDER BY/LIMIT/SetOp/CTE）直接在列存
+    // Arrow 列上计算，免 rows_from_batches 106M SqlValue 行式转换。
+    // 形态不覆盖/引擎未接 → 透传行式路径（差分安全）
+    if let Some(tv) = try_arrow_global_agg(db, sess, &q_owned, snapshot)? {
+        return Ok(tv);
+    }
     let mut plan = crate::ir::plan::build_plan(&q_owned)?;
     if sess.optimize_enabled {
         crate::sql::optimize::rewrite_in_list(&mut plan);
@@ -686,5 +693,170 @@ impl sqlparser::ast::VisitorMut for RowidRewriter {
             _ => {}
         }
         std::ops::ControlFlow::Continue(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// P0 性能批：Arrow 原生全局聚合捷径。形态判定：单表 + 仅全局聚合 +
+// 无 WHERE/HAVING/GROUP BY/ORDER BY/LIMIT/DISTINCT/SetOp/CTE/窗口。
+// 覆盖 ClickBench q01-q07 类查询（COUNT(*)/SUM/AVG/MIN/MAX）。
+// 返回 Some(tv) = 捷径产出；None = 回落行式（差分安全）
+// ---------------------------------------------------------------------------
+fn try_arrow_global_agg(
+    db: &Database,
+    sess: &mut Session,
+    q: &Query,
+    snapshot: u64,
+) -> Result<Option<TableView>> {
+    let sel = match &*q.body {
+        SetExpr::Select(sel) => sel,
+        _ => return Ok(None),
+    };
+    // SET dendro.optimize=off 时关闭（差分测试的行式对照入口）
+    if !sess.optimize_enabled {
+        return Ok(None);
+    }
+    if q.with.is_some() || q.order_by.is_some() || q.limit_clause.is_some() || q.fetch.is_some() {
+        return Ok(None);
+    }
+    if sel.from.len() != 1
+        || !sel.from[0].joins.is_empty()
+        || sel.selection.is_some()
+        || sel.having.is_some()
+        || sel.distinct.is_some()
+    {
+        return Ok(None);
+    }
+    if !matches!(&sel.group_by, sqlparser::ast::GroupByExpr::Expressions(es, _) if es.is_empty()) {
+        return Ok(None);
+    }
+    // 单表
+    let sqlparser::ast::TableFactor::Table { name, .. } = &sel.from[0].relation else {
+        return Ok(None);
+    };
+    let Some(table) = name
+        .0
+        .last()
+        .and_then(|p| p.as_ident())
+        .map(|i| i.value.clone())
+    else {
+        return Ok(None);
+    };
+    // 投影全部是聚合函数（无裸列引用）
+    let mut reqs = Vec::new();
+    for item in &sel.projection {
+        let e = match item {
+            SelectItem::UnnamedExpr(e) => e,
+            SelectItem::ExprWithAlias { expr: e, .. } => e,
+            _ => return Ok(None), // 通配不支持
+        };
+        let Expr::Function(f) = e else {
+            return Ok(None);
+        };
+        if f.over.is_some() {
+            return Ok(None);
+        }
+        let fname = f.name.to_string().to_ascii_lowercase();
+        // DISTINCT 形态（count/sum 去重）捷径不覆盖——回落行式
+        if crate::sql::scan::fn_distinct(f) {
+            return Ok(None);
+        }
+        let (kind, col) = match fname.as_str() {
+            "count" | "count_star" => {
+                // count(*)：无参或通配符；count(col)：单裸列
+                let args = crate::sql::scan::fn_args(f);
+                let is_star = args.is_empty()
+                    || matches!(
+                        &args[0],
+                        sqlparser::ast::FunctionArg::Unnamed(
+                            sqlparser::ast::FunctionArgExpr::Wildcard
+                        )
+                    );
+                if is_star {
+                    ("count_star".to_string(), None)
+                } else if args.len() == 1 {
+                    let Some(col) = ident_of(&args[0]) else {
+                        return Ok(None);
+                    };
+                    ("count".to_string(), Some(col))
+                } else {
+                    return Ok(None);
+                }
+            }
+            "sum" | "avg" | "min" | "max" => {
+                let args = crate::sql::scan::fn_args(f);
+                if args.len() != 1 {
+                    return Ok(None);
+                }
+                let Some(col) = ident_of(&args[0]) else {
+                    return Ok(None);
+                };
+                (fname.clone(), Some(col))
+            }
+            _ => return Ok(None), // 非全局聚合函数——回落
+        };
+        reqs.push(crate::versioned::GlobalAggReq { kind, col });
+    }
+    if reqs.is_empty() {
+        return Ok(None);
+    }
+    // 引擎层执行
+    let Some(ap) = db.columnar() else {
+        return Ok(None);
+    };
+    let Ok((schema, entry)) = resolve_table(db, &sess.branch, &table) else {
+        return Ok(None);
+    };
+    if entry.col_segments.is_empty() {
+        return Ok(None);
+    }
+    // 未物化增量门（差分安全的硬前提）：捷径只读不可变段，
+    // memtable overlay / 显式事务写 / col_deletes 任一非空都会让
+    // 段单独求值丢行或多数——必须回落三路归并的行式路径
+    if !entry.col_deletes.is_empty() {
+        return Ok(None);
+    }
+    if db
+        .branch(&sess.branch)?
+        .mem
+        .table(entry.id)
+        .has_visible_rows(snapshot)
+    {
+        return Ok(None);
+    }
+    if let Some(t) = &sess.txn {
+        if t.explicit && t.writes.keys().any(|(tid, _)| *tid == entry.id) {
+            return Ok(None);
+        }
+    }
+    match ap.global_agg(db.obj_store(), &schema, &entry.col_segments, &reqs) {
+        Some(Ok(vals)) => {
+            let names: Vec<String> = sel
+                .projection
+                .iter()
+                .map(|i| match i {
+                    SelectItem::UnnamedExpr(e) => short_str_pub(e),
+                    SelectItem::ExprWithAlias { alias, .. } => alias.value.clone(),
+                    _ => String::new(),
+                })
+                .collect();
+            Ok(Some(TableView {
+                names,
+                rows: vec![vals],
+            }))
+        }
+        Some(Err(_)) => Ok(None), // 执行错误——回落行式（行式会给出具体报错）
+        None => Ok(None),         // 引擎不覆盖——回落
+    }
+}
+
+/// 裸列引用 → 列名（聚合参数形态）
+fn ident_of(a: &sqlparser::ast::FunctionArg) -> Option<String> {
+    use sqlparser::ast::FunctionArgExpr;
+    match a {
+        sqlparser::ast::FunctionArg::Unnamed(FunctionArgExpr::Expr(
+            sqlparser::ast::Expr::Identifier(id),
+        )) => Some(id.value.clone()),
+        _ => None,
     }
 }

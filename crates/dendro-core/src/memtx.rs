@@ -143,6 +143,21 @@ impl TableMem {
         out
     }
 
+    /// 快照时点是否存在任何可见条目（Put 或墓碑均算——两者都会改变
+    /// 全表聚合结果）。全局聚合的列存捷径用它做安全性门：非空即说明
+    /// 有未物化增量，必须回落行式路径。首键命中即返，不克隆值。
+    pub fn has_visible_rows(&self, snapshot: u64) -> bool {
+        for sh in &self.shards {
+            let g = sh.map.read();
+            for vv in g.values() {
+                if vv.partition_point(|c| c.ts <= snapshot) > 0 {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// 范围可见性快照（P2-6g）：只物化 `[start, end)` 键区间的 overlay——
     /// 此前 `snapshot_rows` 每查询全量物化（10 万 overlay 行的选择性范围
     /// 查询与全表扫描同价）。可见性判定与 [`Self::snapshot_rows`] 完全一致。

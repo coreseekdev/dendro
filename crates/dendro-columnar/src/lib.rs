@@ -45,6 +45,7 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::type_complexity)]
 
+pub mod aggregate;
 pub mod codec;
 pub mod footer;
 pub mod integrate;

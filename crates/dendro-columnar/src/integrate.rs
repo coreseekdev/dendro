@@ -121,6 +121,8 @@ impl CbfColumnar {
     }
 }
 
+type AggResult = dendro_core::error::Result<Vec<dendro_core::types::SqlValue>>;
+
 impl ColumnarStore for CbfColumnar {
     fn write_segment(
         &self,
@@ -152,6 +154,40 @@ impl ColumnarStore for CbfColumnar {
         let seg = self.build_segment(obj, &schema.name, schema, &mut keyed)?;
         let old_paths: Vec<String> = existing.iter().map(|s| s.path.clone()).collect();
         Ok((seg, old_paths))
+    }
+
+    fn global_agg(
+        &self,
+        obj: &Arc<dyn dendro_core::objstore::ObjStore>,
+        schema: &dendro_core::versioned::TableSchema,
+        segments: &[dendro_core::versioned::ColSegment],
+        reqs: &[dendro_core::versioned::GlobalAggReq],
+    ) -> Option<AggResult> {
+        let agg_reqs: Vec<crate::aggregate::GlobalAgg> = reqs
+            .iter()
+            .filter_map(|r| {
+                let kind = match r.kind.as_str() {
+                    "count" => crate::aggregate::AggKind::Count,
+                    "count_star" => crate::aggregate::AggKind::CountStar,
+                    "sum" => crate::aggregate::AggKind::Sum,
+                    "avg" => crate::aggregate::AggKind::Avg,
+                    "min" => crate::aggregate::AggKind::Min,
+                    "max" => crate::aggregate::AggKind::Max,
+                    _ => return None, // 未知聚合——回落行式
+                };
+                Some(crate::aggregate::GlobalAgg {
+                    kind,
+                    col: r.col.clone(),
+                })
+            })
+            .collect();
+        if agg_reqs.len() != reqs.len() {
+            return None; // 部分不支持——全回落
+        }
+        match crate::aggregate::ArrowAggregate::global_agg(self, obj, schema, segments, &agg_reqs) {
+            Ok(vals) => Some(Ok(vals)),
+            Err(e) => Some(Err(dendro_core::error::SqlError::io(format!("{e}")))),
+        }
     }
 
     fn col_stats(

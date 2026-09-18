@@ -952,10 +952,11 @@ pub(crate) fn exec_statement(
                     .collect::<Vec<_>>()
                     .join(".")
                     .to_ascii_lowercase();
-                // v2c-1（ADR-5）：`SET dendro.force_source = '…'`（仅调试/
-                // 测试构建接受；release 忽略——调试面不进生产语义）
+                // v2c-1（ADR-5）：`SET dendro.force_source = '…'`。
+                // 与 dendro.optimize/force_agg 同族：A/B 强制旋钮在
+                // release 生效（dispatch_differential 的"强制形态必须
+                // 诚实报错"合同测试跑 release，静默忽略会失真）
                 if name == "dendro.force_source" {
-                    #[cfg(any(debug_assertions, test))]
                     {
                         let v = match values.first() {
                             Some(sqlparser::ast::Expr::Value(v)) => match &v.value.clone() {
@@ -972,18 +973,10 @@ pub(crate) fn exec_statement(
                             affected: 0,
                         }));
                     }
-                    #[cfg(not(any(debug_assertions, test)))]
-                    {
-                        return Ok(Some(Output::Command {
-                            tag: "SET".into(),
-                            affected: 0,
-                        }));
-                    }
                 }
-                // v2c-3：`SET dendro.force_agg = 'auto|pipeline|row'`（同
-                // force_source 的调试面约定——release 忽略）
+                // v2c-3：`SET dendro.force_agg = 'auto|pipeline|row'`
+                //（A/B 旋钮族，release 生效——同上）
                 if name == "dendro.optimize" {
-                    #[cfg(any(debug_assertions, test))]
                     {
                         let v = match values.first() {
                             Some(sqlparser::ast::Expr::Value(v)) => match &v.value.clone() {
@@ -1008,16 +1001,11 @@ pub(crate) fn exec_statement(
                             affected: 0,
                         }));
                     }
-                    #[cfg(not(any(debug_assertions, test)))]
-                    {
-                        return Ok(Some(Output::Command {
-                            tag: "SET".into(),
-                            affected: 0,
-                        }));
-                    }
                 }
                 if name == "dendro.force_agg" {
-                    #[cfg(any(debug_assertions, test))]
+                    // 同 dendro.optimize：A/B 强制旋钮在 release 生效
+                    // （agg_pipeline 合同测试在 release 下跑，静默忽略
+                    // 会让"force pipeline 必须报错"的断言失真）
                     {
                         let v = match values.first() {
                             Some(sqlparser::ast::Expr::Value(v)) => match &v.value.clone() {
@@ -1029,13 +1017,6 @@ pub(crate) fn exec_statement(
                             None => String::new(),
                         };
                         sess.force_agg = crate::sql::dispatch::parse_force_agg(&v)?;
-                        return Ok(Some(Output::Command {
-                            tag: "SET".into(),
-                            affected: 0,
-                        }));
-                    }
-                    #[cfg(not(any(debug_assertions, test)))]
-                    {
                         return Ok(Some(Output::Command {
                             tag: "SET".into(),
                             affected: 0,

@@ -519,6 +519,10 @@ fn arith(op: BO, l: SqlValue, r: SqlValue) -> Result<SqlValue> {
 }
 
 /// 三态比较（数值跨型比较；字符串字节序；null 已由调用方过滤）
+pub fn cmp_values_pub(l: &SqlValue, r: &SqlValue) -> Result<std::cmp::Ordering> {
+    cmp_values(l, r)
+}
+
 pub fn cmp_values(l: &SqlValue, r: &SqlValue) -> Result<std::cmp::Ordering> {
     use std::cmp::Ordering;
     use std::cmp::Ordering::*;

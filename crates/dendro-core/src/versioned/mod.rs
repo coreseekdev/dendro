@@ -243,3 +243,11 @@ impl Versioned {
 }
 
 pub use commit::Commit;
+
+
+/// Arrow 原生全局聚合请求（engine::ColumnarStore::global_agg 参数面）
+#[derive(Debug, Clone)]
+pub struct GlobalAggReq {
+    pub kind: String, // "count"/"count_star"/"sum"/"avg"/"min"/"max"
+    pub col: Option<String>,
+}

@@ -52,6 +52,35 @@
 | q37-39 CounterID=62 日期范围 | 1437-2709 | 10 | |
 | q41-42 窄范围 | 1351-1428 | 0-10 | |
 
+### Arrow 原生全局聚合（P0，2026-09-18 追加）
+
+`SELECT agg(...) FROM t`（无 WHERE/GROUP BY/JOIN/ORDER BY/LIMIT）直接在
+列存 Arrow 列上计算（i128 累加 SUM/AVG、类型化 downcast MIN/MAX），免
+rows_from_batches 行式转换（1M×106 列 ≈ 1.06 亿 SqlValue 中间对象）。
+列掩码只读引用列（sparse get_range），COUNT(*) 只读 pk 列。
+
+| 查询 | 行式 median_ms | Arrow median_ms | 加速 |
+|------|---------------|-----------------|------|
+| q01 COUNT(*) | 1132 | 53 | **21.4×** |
+| q03 SUM+COUNT+AVG | 1332 | 83 | **16.0×** |
+| q04 AVG(UserID) | 1176 | 62 | **19.0×** |
+| q07 MIN/MAX(EventTime) | 1480 | 91 | **16.3×** |
+
+非覆盖形态（COUNT(DISTINCT)、SUM(col+expr)、带 WHERE）差分安全回落
+行式。对照注意：本对照跑整机慢 ~15%（load 314→396s 可证非代码回归），
+上表加速比在两个运行内各自成立。
+
+差分安全门（`try_arrow_global_agg`，7 项集成测试锁定）：
+
+- DISTINCT 修饰 → 回落（**缺陷修复**：捷径曾忽略 DISTINCT 语义算成
+  plain count——1M 样本上 UserID 全唯一、SearchPhrase 非空值恰全唯一，
+  数值巧合掩盖；有重复值的判别用例已入 `arrow_agg_differential.rs`）
+- COUNT(*) 通配符 → count_star（曾因 Wildcard 参数形态误判回落）
+- memtable overlay / 显式事务写 / col_deletes 非空 → 回落三路归并
+  （未物化增量丢行/多数防线，`has_visible_rows` O(1) 首键早退探测）
+- `SET dendro.optimize = off` 在 release 也生效（原 debug-only cfg 使
+  release 下差分对照失效——A/B 旋钮必须在产物二进制可复现）
+
 ## 3. 内存治理效果（核心成果）
 
 | 阶段 | 原（单 COPY+单 CHECKPOINT+SELECT * ANALYZE） | 现（分段+逐列） |
