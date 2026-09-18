@@ -28,9 +28,11 @@
 //! **stmt 生命周期**：`sqlite3_close_v2` 自动失效未 finalize 的语句
 //! （后续 step/finalize 返回 SQLITE_MISUSE 而非 UB）。
 //!
-//! **v1 未实现**：`last_insert_rowid`（返回 0）、blob 绑定、`pzTail`
-//! 多语句切分（指向串尾）、decltype；结果集为语句物化（`step` 首次
-//! 执行全量求值）——惰性游标留给 v2。
+//! **v1 剩余未实现**：`last_insert_rowid`（返回 0——dendro 无行 id
+//! 概念）；结果集为语句物化（`step` 首次执行全量求值）——惰性游标
+//! 留给 v2。已实现：blob 绑定、`pzTail` 多语句切分（词法边界扫描）、
+//! `sqlite3_sql`、`column_decltype`、`sqlite3_changes`（exec/step
+//! 双路径跟踪）。
 //! # 快速验证
 //!
 //! ```c
@@ -90,6 +92,9 @@ struct Stmt {
     /// prepare 期列元数据（column_count/name 在首次 step 前可用——
     /// SQLite 语义）
     col_names: Vec<String>,
+    /// 列声明类型（column_decltype 用；表达式列为空——SQLite 对
+    /// 表达式返回 NULL 同义）
+    col_decls: Vec<Option<&'static std::ffi::CStr>>,
     /// column_text/bytes 的临时格式化缓冲
     scratch: Vec<u8>,
 }
@@ -237,12 +242,11 @@ pub unsafe extern "C" fn sqlite3_exec(
         Err(_) => return SQLITE_MISUSE,
     };
     let c = conn.conn.as_mut().unwrap();
-    // 注意：affected 不经本口跟踪（sqlite3_changes 返回 0——需要
-    // 计数的调用方用 prepare/step 或 embed::execute；文档化差异）
-    let outputs = match c.query(&sql_str) {
+    let (outputs, affected) = match c.exec_mixed(&sql_str) {
         Ok(r) => r,
         Err(e) => return conn.set_err(e),
     };
+    conn.changes = affected;
     let rows = outputs.rows().to_vec();
     let names: Vec<CString> = (0..outputs.column_count())
         .map(|i| CString::new(outputs.column_name(i)).unwrap_or_default())
@@ -274,6 +278,78 @@ pub unsafe extern "C" fn sqlite3_exec(
     }
     conn.last_err.clear();
     SQLITE_OK
+}
+
+/// 顶层语句边界：首个**引号/注释外**的 `;` 后一字节位置（无则全串）。
+/// 词法状态机覆盖 '…'/"…"/`…`/[…] 字面量与标识符、`--` 行注释、
+/// `/* */` 块注释——与 SQLite 的 prepare 边界语义同构
+fn stmt_boundary(bytes: &[u8]) -> Option<usize> {
+    let b = bytes;
+    let mut i = 0usize;
+    let mut saw_token = false;
+    while i < b.len() {
+        match b[i] {
+            b'\'' | b'"' | b'`' => {
+                saw_token = true;
+                let q = b[i];
+                i += 1;
+                while i < b.len() {
+                    if b[i] == q {
+                        if i + 1 < b.len() && b[i + 1] == q {
+                            i += 2; // 转义双写
+                            continue;
+                        }
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            b'[' => {
+                saw_token = true; // SQLite 方括号标识符
+                i += 1;
+                while i < b.len() && b[i] != b']' {
+                    i += 1;
+                }
+                i += 1;
+            }
+            b'-' if i + 1 < b.len() && b[i + 1] == b'-' => {
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if i + 1 < b.len() && b[i + 1] == b'*' => {
+                i += 2;
+                while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
+                    i += 1;
+                }
+                i += 2;
+            }
+            b';' if saw_token => return Some(i + 1),
+            c => {
+                if !c.is_ascii_whitespace() {
+                    saw_token = true;
+                }
+                i += 1;
+            }
+        }
+    }
+    None
+}
+
+/// ColType → SQLite 声明名（column_decltype）。**必须 NUL 终止**
+///（c"…" 字面量——&str 裸 as_ptr 当 CStr 读会越界进相邻静态区）
+fn decl_name(t: dendro_core::types::ColType) -> Option<&'static std::ffi::CStr> {
+    use dendro_core::types::ColType::*;
+    Some(match t {
+        Int32 | Int64 => c"INTEGER",
+        Float64 => c"REAL",
+        Utf8 => c"TEXT",
+        Bytes => c"BLOB",
+        Bool => c"BOOLEAN",
+        Date32 => c"DATE",
+        TimestampMs => c"TIMESTAMP",
+    })
 }
 
 /// SqlValue → 文本（column_text/exec 回调共用口径）
@@ -322,13 +398,19 @@ pub unsafe extern "C" fn sqlite3_prepare_v2(
     } else {
         String::from_utf8_lossy(bytes).to_string()
     };
+    // pzTail：顶层（引号/注释外）分号边界——多语句串切出首语句
+    // （SQLite prepare_v2 语义）。boundary = 首语句字节长度（含分号）
+    let boundary = stmt_boundary(bytes).unwrap_or(bytes.len());
+    let stmt_sql = sql_str[..boundary].to_string();
+    let tail_off = {
+        // tail 起点越过边界后的空白
+        let t = sql_str[boundary..].trim_start();
+        boundary + (sql_str[boundary..].len() - t.len())
+    };
     let c = match conn.conn.as_mut() {
         Some(c) => c,
         None => return SQLITE_MISUSE,
     };
-    // 原文直入（方言归一在 core parse_batch：Sqlite 方言的 `?` 由
-    // AST 级 VisitorMut 归一为 `$N`——wire 层不再做字符串改写）
-    let stmt_sql = sql_str.clone();
     let name = format!(
         "__ffi_{}",
         std::time::SystemTime::now()
@@ -345,6 +427,11 @@ pub unsafe extern "C" fn sqlite3_prepare_v2(
         .iter()
         .map(|cm| cm.name.clone())
         .collect::<Vec<_>>();
+    let col_decls = meta
+        .result_columns
+        .iter()
+        .map(|cm| decl_name(cm.ty))
+        .collect::<Vec<_>>();
     let stmt = Box::new(Stmt {
         alive: conn.alive.clone(),
         conn: db.cast(),
@@ -354,12 +441,13 @@ pub unsafe extern "C" fn sqlite3_prepare_v2(
         result: None,
         row: 0,
         col_names,
+        col_decls,
         scratch: Vec::new(),
     });
     *pp_stmt = Box::into_raw(stmt).cast();
     if !pz_tail.is_null() {
-        // v1：不切分多语句（文档化）——tail 指向串尾
-        unsafe { *pz_tail = sql.add(bytes.len()) };
+        // 首语句后首个非空白字节（无后续语句 = 串尾 nul）
+        unsafe { *pz_tail = sql.add(tail_off) };
     }
     SQLITE_OK
 }
@@ -396,8 +484,9 @@ pub unsafe extern "C" fn sqlite3_step(stmt: *mut sqlite3_stmt) -> c_int {
             None => return SQLITE_MISUSE,
         };
         let params = st.params.clone();
-        match c.sess_exec_prepared(&st.name, &params) {
-            Ok(res) => {
+        match c.sess_exec_prepared_mixed(&st.name, &params) {
+            Ok((res, affected)) => {
+                conn.changes = affected;
                 st.result = Some(res);
                 st.row = 0;
             }
@@ -478,6 +567,34 @@ macro_rules! bind_fn {
 
 bind_fn!(sqlite3_bind_int64, |v: i64| Value::Integer(v), i64);
 bind_fn!(sqlite3_bind_double, |v: f64| Value::Real(v), f64);
+
+#[no_mangle]
+pub unsafe extern "C" fn sqlite3_bind_blob(
+    stmt: *mut sqlite3_stmt,
+    idx: c_int,
+    v: *const c_void,
+    n: c_int,
+    _destructor: *const c_void,
+) -> c_int {
+    if stmt.is_null() || idx < 1 {
+        return SQLITE_MISUSE;
+    }
+    if v.is_null() && n != 0 {
+        return SQLITE_MISUSE;
+    }
+    let st: &mut Stmt = unsafe { &mut *stmt.cast() };
+    let blob = if v.is_null() {
+        Vec::new()
+    } else {
+        unsafe { std::slice::from_raw_parts(v.cast::<u8>(), n.max(0) as usize) }.to_vec()
+    };
+    let i = idx as usize - 1;
+    while st.params.len() <= i {
+        st.params.push(Value::Null);
+    }
+    st.params[i] = Value::Blob(blob);
+    SQLITE_OK
+}
 
 #[no_mangle]
 pub unsafe extern "C" fn sqlite3_bind_text(
@@ -658,6 +775,32 @@ pub unsafe extern "C" fn sqlite3_column_blob(stmt: *mut sqlite3_stmt, i: c_int) 
     {
         Some(SqlValue::Bytes(b)) => b.as_ptr().cast(),
         Some(SqlValue::Utf8(s)) => s.as_ptr().cast(),
+        _ => std::ptr::null(),
+    }
+}
+
+/// 语句 SQL 文本（prepare 原文；到 finalize 有效）
+#[no_mangle]
+pub unsafe extern "C" fn sqlite3_sql(stmt: *mut sqlite3_stmt) -> *const c_char {
+    if stmt.is_null() {
+        return c"".as_ptr();
+    }
+    let st: &Stmt = unsafe { &*stmt.cast() };
+    st.sql.as_ptr()
+}
+
+/// 列声明类型（表达式/聚合列为 NULL——SQLite 同义）
+#[no_mangle]
+pub unsafe extern "C" fn sqlite3_column_decltype(
+    stmt: *mut sqlite3_stmt,
+    i: c_int,
+) -> *const c_char {
+    if stmt.is_null() {
+        return std::ptr::null();
+    }
+    let st: &Stmt = unsafe { &*stmt.cast() };
+    match st.col_decls.get(i.max(0) as usize) {
+        Some(Some(d)) => d.as_ptr(),
         _ => std::ptr::null(),
     }
 }
@@ -857,5 +1000,136 @@ mod ffi_tests {
             assert_eq!(sqlite3_close_v2(db2.cast()), SQLITE_OK);
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod ffi_v15_tests {
+    use super::*;
+
+    fn cstr(s: &str) -> CString {
+        CString::new(s).unwrap()
+    }
+
+    /// blob 绑定往返 + changes 双路径跟踪 + decltype
+    #[test]
+    fn ffi_blob_changes_decltype() {
+        unsafe {
+            let mut db: *mut sqlite3 = std::ptr::null_mut();
+            let mem = cstr(":memory:");
+            assert_eq!(sqlite3_open(mem.as_ptr(), &mut db), SQLITE_OK);
+            let ddl = cstr("CREATE TABLE b (id BIGINT PRIMARY KEY, data BLOB)");
+            sqlite3_exec(
+                db,
+                ddl.as_ptr(),
+                None,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            );
+            // exec 路径 changes
+            let ins = cstr("INSERT INTO b VALUES (1, x'00ff10'), (2, x'aa')");
+            sqlite3_exec(
+                db,
+                ins.as_ptr(),
+                None,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            );
+            assert_eq!(sqlite3_changes(db), 2);
+
+            // prepare + blob 绑定 + step 路径 changes
+            let sql = cstr("INSERT INTO b VALUES (3, ?)");
+            let mut stmt: *mut sqlite3_stmt = std::ptr::null_mut();
+            let mut tail: *const c_char = std::ptr::null();
+            assert_eq!(
+                sqlite3_prepare_v2(db, sql.as_ptr(), -1, &mut stmt, &mut tail),
+                SQLITE_OK
+            );
+            let blob: [u8; 3] = [1, 2, 3];
+            assert_eq!(
+                sqlite3_bind_blob(stmt, 1, blob.as_ptr().cast(), 3, std::ptr::null()),
+                SQLITE_OK
+            );
+            assert_eq!(sqlite3_step(stmt), SQLITE_DONE);
+            assert_eq!(sqlite3_changes(db), 1);
+            assert_eq!(sqlite3_finalize(stmt), SQLITE_OK);
+
+            // 读回 blob + decltype
+            let q = cstr("SELECT data FROM b WHERE id = 3");
+            let mut st2: *mut sqlite3_stmt = std::ptr::null_mut();
+            let mut t2: *const c_char = std::ptr::null();
+            assert_eq!(
+                sqlite3_prepare_v2(db, q.as_ptr(), -1, &mut st2, &mut t2),
+                SQLITE_OK
+            );
+            let dt = sqlite3_column_decltype(st2, 0);
+            assert_eq!(CStr::from_ptr(dt).to_bytes(), b"BLOB");
+            assert_eq!(sqlite3_step(st2), SQLITE_ROW);
+            assert_eq!(sqlite3_column_type(st2, 0), SQLITE_BLOB);
+            assert_eq!(sqlite3_column_bytes(st2, 0), 3);
+            let ptr = sqlite3_column_blob(st2, 0) as *const u8;
+            assert_eq!(std::slice::from_raw_parts(ptr, 3), &[1, 2, 3]);
+            assert_eq!(sqlite3_finalize(st2), SQLITE_OK);
+            assert_eq!(sqlite3_close_v2(db), SQLITE_OK);
+        }
+    }
+
+    /// pzTail 多语句切分：首语句后 tail 指向第二语句；sqlite3_sql 原文
+    #[test]
+    fn ffi_pztail_multistmt() {
+        unsafe {
+            let mut db: *mut sqlite3 = std::ptr::null_mut();
+            let mem = cstr(":memory:");
+            assert_eq!(sqlite3_open(mem.as_ptr(), &mut db), SQLITE_OK);
+            let ddl = cstr("CREATE TABLE m (a BIGINT PRIMARY KEY)");
+            sqlite3_exec(
+                db,
+                ddl.as_ptr(),
+                None,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            );
+
+            let two = cstr("INSERT INTO m VALUES (1); SELECT a FROM m");
+            let mut stmt: *mut sqlite3_stmt = std::ptr::null_mut();
+            let mut tail: *const c_char = std::ptr::null();
+            assert_eq!(
+                sqlite3_prepare_v2(db, two.as_ptr(), -1, &mut stmt, &mut tail),
+                SQLITE_OK
+            );
+            // tail = 第二语句起点
+            let t = CStr::from_ptr(tail).to_string_lossy();
+            assert!(t.trim_start().starts_with("SELECT"), "tail={t}");
+            // sqlite3_sql = 首语句原文
+            let s = CStr::from_ptr(sqlite3_sql(stmt)).to_string_lossy();
+            assert!(s.contains("INSERT") && !s.contains("SELECT"), "sql={s}");
+            assert_eq!(sqlite3_step(stmt), SQLITE_DONE);
+            assert_eq!(sqlite3_changes(db), 1);
+            assert_eq!(sqlite3_finalize(stmt), SQLITE_OK);
+
+            // 从 tail 继续 prepare 第二语句（SQLite shell 模式）
+            let mut stmt2: *mut sqlite3_stmt = std::ptr::null_mut();
+            let mut tail2: *const c_char = std::ptr::null();
+            assert_eq!(
+                sqlite3_prepare_v2(db, tail, -1, &mut stmt2, &mut tail2),
+                SQLITE_OK
+            );
+            assert_eq!(sqlite3_step(stmt2), SQLITE_ROW);
+            assert_eq!(sqlite3_column_int64(stmt2, 0), 1);
+            assert_eq!(sqlite3_finalize(stmt2), SQLITE_OK);
+            assert_eq!(sqlite3_close_v2(db), SQLITE_OK);
+        }
+    }
+
+    /// 词法边界扫描：字符串内分号/注释内分号不切分
+    #[test]
+    fn stmt_boundary_lexer() {
+        assert_eq!(stmt_boundary(b"SELECT 'a;b' ; SELECT 2"), Some(14));
+        assert_eq!(
+            stmt_boundary(b"SELECT 1 -- c; comment\n; SELECT 2"),
+            Some(24)
+        );
+        assert_eq!(stmt_boundary(b"/* ; */ SELECT 1"), None);
+        assert_eq!(stmt_boundary(b"SELECT [c;ol] FROM t; SELECT 2"), Some(21));
     }
 }

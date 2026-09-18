@@ -10,9 +10,10 @@
  * - 单线程合同（同一句柄及其语句在单线程使用）；
  * - sqlite3_close_v2 自动失效未 finalize 语句（后续调用返回
  *   SQLITE_MISUSE 而非未定义行为）；
- * - v1 限制：sqlite3_changes/exec 不跟踪受影响行数（用 prepare/step
- *   或 Rust embed API）；last_insert_rowid 返回 0；prepare_v2 的
- *   pzTail 不切分多语句（指向串尾）；无 decltype/blob 绑定。
+ * - v1 已含：sqlite3_changes（exec/step 双路径）、blob 绑定、
+ *   pzTail 多语句切分（词法边界扫描）、sqlite3_sql、decltype。
+ * - v1 剩余限制：last_insert_rowid 返回 0（无行 id 概念）；step
+ *   首次调用物化全量结果（惰性游标 v2）。
  */
 #ifndef DENDRO_SQLITE_H
 #define DENDRO_SQLITE_H
@@ -76,6 +77,10 @@ int sqlite3_bind_int64(sqlite3_stmt *, int idx, sqlite3_int64 value);
 int sqlite3_bind_double(sqlite3_stmt *, int idx, double value);
 int sqlite3_bind_text(sqlite3_stmt *, int idx, const char *value, int nByte,
                       const void *destructor);
+int sqlite3_bind_blob(sqlite3_stmt *, int idx, const void *value, int nBytes,
+                      const void *destructor);
+const char *sqlite3_sql(sqlite3_stmt *);
+const char *sqlite3_column_decltype(sqlite3_stmt *, int iCol);
 
 int sqlite3_column_count(sqlite3_stmt *);
 const char *sqlite3_column_name(sqlite3_stmt *, int iCol);

@@ -304,30 +304,34 @@
 | ~~P3-4~~ | ~~criss-cross merge 修复~~ | ✅ | common_ancestor 改 BFS 完整祖先闭包（多父遍历），multi_parent_lca_merge 回归 |
 | P3-5 | blob 外置（大 value 不进 prolly 叶层） | ⬜ | 参考 lance blob |
 
-## 不可变数据库参考调研登记（2026-09-18）
+## 十七轮：不可变数据库参考调研登记（2026-09-18，例外专项触发）
 
-> 来源：[`docs/research/不可变数据库参考调研-2026.md`](research/不可变数据库参考调研-2026.md)——4 路并行源码调研
-> （dolt/doltgresql、immudb/endb/noblit、immdb 参考集[xtdb 2.x/datahike/nebari/terminusdb/PumpkinDB]、layerfs/slatedb），
-> 已剔除 dendro 已借鉴项（dolt 哈希/splitter/address_map/patch 合并、slatedb WAL 段/HEAD 探测/manifest CAS/put-id）。
-> 优先级按本文件定义重排（正确性/完整性/质量/远期）。完成三要件照旧。
-> 排期依赖：I-5 → I-6（GC 单位=pack 对象）；I-3 → I-9（时间区间下推依赖墓碑时间语义）。
+> **触发**：调研产出 P0/P1 级发现，按评审机制"例外专项"发起（首次非评审来源触发）。
+> **来源**：[`docs/research/不可变数据库参考调研-2026.md`](research/不可变数据库参考调研-2026.md)——4 路并行源码调研
+> （dolt/doltgresql、immudb/endb/noblit、immdb 参考集[xtdb 2.x/datahike/nebari/terminusdb/PumpkinDB]、layerfs/slatedb）。
+> 已剔除 dendro 已借鉴项（dolt 哈希/splitter/address_map/patch 合并、slatedb WAL 段/HEAD 探测/manifest CAS/put-id）；
+> 负面教训清单见报告 §四（不学什么：PumpkinDB 无压实停滞 / immudb 截断弃证明 / layerfs 无崩溃持久性 / 逐 chunk 小对象）。
+> **执行机制不变**：完成三要件（代码 + 回归测试 + 文档同步，同一提交）+ DoD 第 4/5/6 条（grep 命中 / count-tests.sh / 批量编辑带 assert）；
+> 协议级任务（I-1/I-4/I-6/I-10-stage）一律附**变异自检**（禁用守卫/验证 → 回归红；还原 → 绿）。
+> **排期依赖**：I-5 → I-6（GC 单位 = pack 对象）；I-3 → I-9（时间区间下推依赖墓碑时间语义）；I-2 与 I-3/I-4/I-5 相互不阻塞。
+> **里程碑复评预约**：I-2 + I-6 完成后第 18 轮轻量复评（对象：冲突落库语义面 + GC 安全性）。
 
-| # | 任务 | 优先级 | 备注 |
+| # | 任务 | 状态 | 证据 |
 |---|------|:----:|------|
-| I-1 | **Manifest CAS × GC"停顿写者复活"窗口专项审计**：写者停顿间其目标版本号被 GC 删除 → `put_if_absent` 假成功写穿 CAS（slatedb RFC 0026）。现状缓解 = LIST 权威读 + 保留 16 版；写侧窗口需专项确认，若坐实引入持久边界文件 + 写后复查边界。同轮评估用 fizzbee（slatedb `specs/fizzbee/`）形式化验证恢复/fencing 协议 | **P0** | `slatedb-txn-obj/src/lib.rs:664-713`；审计结论无论坐实与否须成文（`docs/design/`）；修复需变异测试兜底（禁用守卫 → 红） |
-| I-2 | **冲突落库**：merge 行冲突/约束违反写入 per-table Artifacts prolly map + MergeState（pre-merge root），支持 `ABORT MERGE` 回滚与程序化 `RESOLVE`；替换"冲突即 abort"。系统视图 `cambium.conflicts`（+ per-table），与 `last_merge_conflicts` 并轨 | P1 | dolt `go/store/prolly/artifact_map.go:30-60` + `doltdb/workingset.go:129-250`；Agent 沙箱核心体验（合并→检视→解决闭环，报告最高价值项）；现有 prolly map 基建直接复用 |
-| I-3 | **删除的时间语义**：墓碑记录删除时刻（endb deletion vector 式 system_time_end），`AS OF` 覆盖删除侧；分层"逻辑删除=墓碑 / 物理抹除 ERASE=独立路径（GDPR）"。决策点：WAL 墓碑格式扩展 vs checkpoint 期推导 | P1 | endb `src/sql/db.lisp:124-129` + xtdb 2.x `indexer.clj:100-232`（墓碑行）；回归覆盖 AS OF 复活/删除可见性矩阵 |
-| I-4 | **链式累积哈希审计链**：每 commit `alh_n = H(n, alh_{n-1}, tx_digest)`，manifest 携带每分支链头——持单个链头即可独立验证历史未被篡改/重排。v1 只做链头（32B/commit）；v2 AHtree Merkle 化（扁平 digest 流算术寻址）+ inclusion proof。截断点记入 manifest（截断=放弃该区间可证明性） | P1 | immudb `docs/security/PROOFS.md` + `embedded/ahtree/ahtree.go:485-523`；与 WAL 段格式天然兼容（digest 流可随段上传） |
-| I-5 | **chunk 打包（pack）+ conjoiner**：多个 CAS chunk 打包为不可变大对象（layerfs：GROUP 64KiB / PACK 256KiB / ≤8191 record），对象身份与物理容器解耦、读时重组+验证；conjoiner 在对象数超阈值时合并防小文件爆炸。直接降低 S3 请求数 / LRU 项数 / 逐 chunk PUT 开销 | P1 | dolt NBS `table_index.go:42-110`（prefix 二分+suffix 索引）+ `conjoiner.go:35-60`；layerfs `objects/pack.rs:6-11`；影响 SPEC 01 路径布局须同步修订；先于 I-6 |
-| I-6 | **CAS chunk GC v2**（升级 `docs/design/GC定案.md` §4.4）：分代（old/new Gen）+ GC 期间新写地址记账 + safepoint（session 内存活跃根枚举 + 在途读排空）+ "引用区间 + min_age"删除谓词；**"history(t)=history(compact(t))"不变式写入 SPEC 作为约束**（历史链与压实解耦） | P1 | dolt `value_store.go:568-710` + `doltdb/gcctx/gc_safepoint_controller.go:22-100` + slatedb 引用区间删除 + immudb `tbtree.go:80`；前置 I-5（GC 单位=pack 对象） |
-| I-7 | CommitClosure（(height,hash) 排序 prolly map，per-ref）：`cambium.commit_log` / AS OF 时间戳解析不再递归 commit 父链 | P2 | dolt `commit_closure.go:29-60` |
-| I-8 | merge 语义补全：`--ff/--no-ff/--ff-only` 三档 + squash（压层链减树深）+ **pack 克隆**（backup 演进为"按引用闭包打包"的 clone 语义）+ reflog（manifest 版本史可直接承载，误删分支出口） | P2 | dolt `dolt_merge.go:200-300`；terminusdb `api_squash.pl` + `store.rs` pack_export |
-| I-9 | temporal 区间下推 + chunk 级剪枝：`AS OF` 编译为整数区间过滤，prolly 节点/chunk 元数据携带 min/max temporal 元数据，历史查询免提交链解析 | P2 | xtdb 2.x `operator/scan.clj:61-113` + `trie.clj:94-131`；依赖 I-3 |
-| I-10 | 对象层工程细节批：哈希域分离（对象/行内容/splitter 各域 + 版本域作废旧身份，即 layerfs"冻结 profile"）+ stage 两阶段发布（数据准入与 head CAS 拆故障域，WAL 已传/manifest 未推窗口可恢复）+ 调用打标（调用来源/对象类型定缓存策略）+ 空闲库成本指标（月账单上限） | P2 | layerfs `digest.rs:5-7`/`staging.rs`/`cdc/gear.rs:24-33` + slatedb RFC 0027/0032（空闲 LIST $24/月案例） |
-| I-11 | 二级索引（v2）= 第二棵 prolly tree：key = (索引列 ‖ PK)，唯一性=键唯一性；事务内双写，merge 时 patch 或 schema 变更全量重建 | P2 | dolt `key_builder.go:31-95`/`prolly_index_writer.go`/`merge_prolly_indexes.go:36-83`；Q-4 的产品决策落地路径 |
-| I-12 | 方言适配层模式固化：cambium.* 系统视图 + 分支 DDL 共享一套，协议层仅改名/类型适配（doltgresql 单仓两方言模式），降低 pgwire/mywire 双套重复维护 | P2 | doltgresql `server/tables/dtables/init.go:26-57` + `server/functions/dolt_procedures.go` |
-| I-13 | manifest diff-as-log：每事务记 JSON merge patch diff（人类可读可审计），恢复=快照+重放 patch；评估替换整份 manifest 快照方案 | P3 | endb `src/storage/wal.lisp:15-58`；元数据开销与数据量解耦 |
-| I-14 | catalog OCC 指针等价：catalog/manifest 持久化结构化或带 generation 计数，提交冲突检测降为一次比较 | P3 | endb `src/http.lisp:152-179`（eq 检查零成本冲突检测）；微优化，先有基准数据 |
+| I-1（P0） | **Manifest CAS × GC"停顿写者复活"窗口专项审计**：写者算好 ver+1 后停顿 → GC（min_age 后）删该版本 → 停顿者 `put_if_absent(ver+1)` 假成功写穿 CAS（slatedb RFC 0026 场景）。现状缓解 = LIST 权威读 + 保留 16 版（R4-P1F）；**写侧窗口需专项确认**。坐实则引入持久边界文件 + 写后复查边界（GC 删旧 manifest 前先推进边界；提交成功后 check(id) 落后于边界按冲突处理）。同轮评估 fizzbee（slatedb `specs/fizzbee/`）形式化验证恢复/fencing 协议 | ⬜ | 登记：`slatedb-txn-obj/src/lib.rs:664-713`（delete 边界拒绝 + check 落后即 Fenced）。产出 = `docs/design/` 审计结论文档（坐实与否均成文）+（若坐实）修复；回归 `multi_node.rs::stalled_writer_cannot_revive_deleted_manifest_version` + 变异自检 |
+| I-2（P1） | **冲突落库**：merge 行冲突/约束违反写入 per-table **Artifacts prolly map**（新 chunk 类型，参与版本化与 GC）+ MergeState（pre-merge root 随分支 head 保存），`ABORT MERGE` 回滚、`RESOLVE CONFLICT` 程序化解决；替换"冲突即 abort"。系统视图 `cambium.conflicts`（+ per-table，`last_merge_conflicts` 并轨）；已有未解决冲突再 merge → 拒绝（dolt ErrCantOverwriteConflicts 语义） | ⬜ | 登记：dolt `go/store/prolly/artifact_map.go:30-60` + `doltdb/workingset.go:129-250`。回归 `merge_conflicts.rs`（落库可查 / abort 回滚到 pre-merge root / resolve 后可再 merge）；SPEC 03 §6 修订 |
+| I-3（P1） | **删除的时间语义**：墓碑携带删除时刻（endb deletion vector 式 system_time_end），`AS OF t < deleted_at` 复活该行；分层"逻辑删除=墓碑 / 物理抹除 ERASE=独立路径（GDPR）"。决策点先行：WAL 帧格式扩展（FRAME_VERSION 升位）vs 仅 checkpoint 期推导 | ⬜ | 登记：endb `src/sql/db.lisp:124-129` + xtdb 2.x `indexer.clj:100-232`（墓碑行）+ erase 分层（`LiveTable.kt:86-128`）。回归 `time_travel.rs` 扩 AS OF 复活/删除可见性矩阵；SPEC 02 §2 + 03 §5.1 同步 |
+| I-4（P1） | **链式累积哈希审计链**：每 commit `alh_n = H(n, alh_{n-1}, tx_digest)`，manifest 每分支携带链头（32B）——持单个链头即可独立验证历史前缀未篡改/未重排。v1 链头 + 校验命令；v2 AHtree Merkle 化（扁平 digest 流算术寻址）+ inclusion proof。**截断点记入 manifest**（截断 = 放弃该区间可证明性——immudb Truncator 教训） | ⬜ | 登记：immudb `docs/security/PROOFS.md` + `embedded/ahtree/ahtree.go:485-523`。回归：链头连续性 + 篡改注入（改写历史段 → 校验命令必红）+ 截断后证明边界；SPEC 02/03 同步；协议改动附变异自检 |
+| I-5（P1） | **chunk 打包（pack）+ conjoiner**：CAS chunk 打包为不可变大对象（GROUP 64KiB / PACK 256KiB / ≤8191 record 上限），对象身份与物理容器解耦（读时重组 + 哈希验证）；conjoiner 对象数超阈值时合并防小文件爆炸。降低 S3 请求数 / LRU 项数 / 逐 chunk PUT 开销 | ⬜ | 登记：dolt NBS `table_index.go:42-110`（prefix 二分+suffix 索引）+ `conjoiner.go:35-60`、layerfs `objects/pack.rs:6-11`。回归：pack roundtrip + 身份/容器解耦（重建 pack 不改地址）+ conjoiner 触发；SPEC 01 §2 路径布局修订 + benches OSS 请求数前后对比 |
+| I-6（P1） | **CAS chunk GC v2**（升级 `docs/design/GC定案.md` §4.4）：分代（old/new Gen）+ GC 期间新写地址记账（防并发写丢）+ safepoint（session 活跃根枚举 + 在途读排空后 swap）+ "引用区间 + min_age"删除谓词；**`history(t)=history(compact(t))` 不变式写入 SPEC** 作为 GC 约束 | ⬜ | 登记：dolt `value_store.go:568-710` + `gcctx/gc_safepoint_controller.go:22-100` + slatedb 引用区间删除 + immudb `tbtree.go:80`。前置 I-5。回归 `gc.rs` 扩：GC 期间并发提交不丢 + 快照持有者不被 GC + 压实后历史仍可查（不变式）；协议级，附变异自检 |
+| I-7（P2） | CommitClosure（(height,hash) 排序 prolly map，per-ref）：`cambium.commit_log` / AS OF 时间戳解析免递归 commit 父链 | ⬜ | 登记：dolt `commit_closure.go:29-60`。回归：与父链回溯对拍等价（含 merge 双父/跨 fork） |
+| I-8（P2） | merge 语义补全：`MERGE ... [FF|NO_FF|FF_ONLY]` 三档 + squash（压层链减树深）+ **pack 克隆**（backup 演进为按引用闭包打包的 clone 语义）+ reflog（manifest 版本史承载，误删分支出口） | ⬜ | 登记：dolt `dolt_merge.go:200-300`（三档+stomped 检查）、terminusdb `api_squash.pl` + `store.rs` pack_export。回归：三档语义矩阵 + clone roundtrip（数据/分支/历史/未解决冲突拒绝） |
+| I-9（P2） | temporal 区间下推 + chunk 级剪枝：`AS OF` 编译为整数区间过滤，prolly 节点/chunk 元数据携带 min/max commit-ts，整块裁剪；历史快照查询免提交链解析 | ⬜ | 登记：xtdb 2.x `operator/scan.clj:61-113` + `trie.clj:94-131`。前置 I-3。回归：下推开/关结果对拍等价 + 剪枝命中计数断言 |
+| I-10（P2） | 对象层工程细节批：哈希域分离（对象/行内容/splitter 各域 + 版本域作废旧身份，即 layerfs"冻结 profile"）+ **stage 两阶段发布**（数据准入与 head CAS 拆故障域——WAL 已传/manifest 未推窗口可恢复）+ 调用打标（调用来源/对象类型定缓存策略）+ 空闲库成本指标（月账单上限） | ⬜ | 登记：layerfs `digest.rs:5-7`/`staging.rs`/`cdc/gear.rs:24-33` + slatedb RFC 0027/0032（空闲 LIST $24/月案例）。回归：域分离向量测试（跨类型哈希必不等）+ stage 恢复路径（含变异自检）+ idle 请求数基线 |
+| I-11（P2） | 二级索引（v2）= 第二棵 prolly tree：key=(索引列 ‖ PK)，唯一性=键唯一性；事务内双写，merge 时 patch / schema 变更全量重建——Q-4 产品决策的落地路径 | ⬜ | 登记：dolt `key_builder.go:31-95`/`prolly_index_writer.go`/`merge_prolly_indexes.go:36-83`。回归：唯一索引冲突 + merge 后索引一致性 + schema 变更重建 |
+| I-12（P2） | 方言适配层固化：cambium.* 系统视图 + 分支 DDL 共享一套，pgwire/mywire 仅改名/类型适配（doltgresql 单仓两方言模式），消除双套重复维护 | ⬜ | 登记：doltgresql `server/tables/dtables/init.go:26-57` + `server/functions/dolt_procedures.go`。回归：双协议系统视图对拍（同名查询结果一致） |
+| I-13（P3） | manifest diff-as-log：每事务记 JSON merge patch diff（人类可读可审计），恢复 = 快照 + 重放 patch；评估替换整份 manifest 快照方案 | ⬜ | 登记：endb `src/storage/wal.lisp:15-58`（tar 容器 + md diff 条目） |
+| I-14（P3） | catalog OCC 指针等价：catalog/manifest 持久化结构化或带 generation 计数，提交冲突检测降为一次比较 | ⬜ | 登记：endb `src/http.lisp:152-179`（eq 检查零成本冲突检测）；微优化，先有基准数据 |
 
 ---
 
@@ -339,7 +343,7 @@
 4. ~~P1-1 只读模式~~ ✅
 5. ~~P1-4 GC 定案（含 P0-3 真删除时序）~~ ✅
 6. ~~下一批：P2-1 slt 语料扩展 / P2-3 基准证据链~~ ✅；P2' Journal+Adjudicator 深化继续（P2'-2）
-7. 不可变数据库调研批次（2026-09-18 登记，I-1~I-14）排期：
+7. 十七轮登记批次（不可变数据库参考调研，I-1~I-14）排期：
    - **先 I-1**（P0 专项审计，独立可并行，产出=审计结论文档 +（若坐实）边界协议修复）；
    - **P1 产品面**：I-2 冲突落库（Agent 沙箱核心体验）→ I-5 chunk 打包（S3 成本，前置于 I-6）→ I-3 删除时间语义 → I-4 审计链，以 **I-6 CAS chunk GC v2** 为阶段收敛点（依赖 I-5）；
    - **P2 组**（I-7~I-12，另 I-9 依赖 I-3）随里程碑复评节奏逐项排入；I-13/I-14 远期池。

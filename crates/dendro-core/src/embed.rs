@@ -176,12 +176,40 @@ impl Connection {
         self.sess.prepare(name, sql, &[])
     }
     pub fn sess_exec_prepared(&mut self, name: &str, params: &[Value]) -> Result<QueryResult> {
+        self.sess_exec_prepared_mixed(name, params).map(|(r, _)| r)
+    }
+
+    /// C ABI 口：预编译执行返回 (结果, 受影响)——step 路径的
+    /// sqlite3_changes 跟踪
+    pub fn sess_exec_prepared_mixed(
+        &mut self,
+        name: &str,
+        params: &[Value],
+    ) -> Result<(QueryResult, i64)> {
         let sql_params = to_sql_values(params);
-        let outputs = self.sess.exec_prepared(name, &sql_params)?;
-        Ok(to_result(vec![outputs]))
+        let output = self.sess.exec_prepared(name, &sql_params)?;
+        let affected = match &output {
+            Output::Command { affected: a, .. } => *a as i64,
+            _ => 0,
+        };
+        Ok((to_result(vec![output]), affected))
     }
     pub fn sess_close_prepared(&mut self, name: &str) {
         self.sess.close_prepared(name)
+    }
+
+    /// 混合执行（查询结果 + 受影响行数一并返回——C ABI 的
+    /// sqlite3_changes 跟踪口；Rust 侧 execute/query 各取一半的合并源）
+    pub fn exec_mixed(&mut self, sql: &str) -> Result<(QueryResult, i64)> {
+        let outputs = self.sess.exec(sql)?;
+        let mut affected = 0i64;
+        for o in &outputs {
+            if let Output::Command { affected: a, .. } = o {
+                affected += *a as i64;
+            }
+        }
+        let r = to_result(outputs);
+        Ok((r, affected))
     }
 
     /// 预编译语句
@@ -331,7 +359,22 @@ fn typed_cell(s: &str, ty: Option<crate::types::ColType>) -> SqlValue {
             "false" | "f" => SqlValue::Bool(false),
             _ => SqlValue::Utf8(s.to_string()),
         },
-        // Utf8/Bytes/Date/Timestamp 及未知：保持文本（Date/Ts 的文本形
+        // Bytes：\x 前缀 hex 文本回解（cell_to_text 的镜像——blob
+        // 参数/列经文本往返的还原臂；缺失曾使 BLOB 列在 embed/FFI
+        // 视图里降级 Utf8）
+        Some(ColType::Bytes) => match s.strip_prefix("\\x") {
+            Some(h) => {
+                let bytes = (0..h.len() / 2)
+                    .map(|i| u8::from_str_radix(&h[i * 2..i * 2 + 2], 16))
+                    .collect::<std::result::Result<Vec<u8>, _>>();
+                match bytes {
+                    Ok(b) => SqlValue::Bytes(b),
+                    Err(_) => SqlValue::Utf8(s.to_string()),
+                }
+            }
+            None => SqlValue::Utf8(s.to_string()),
+        },
+        // Utf8/Date/Timestamp 及未知：保持文本（Date/Ts 的文本形
         // 保留原串——embed 消费方按需再转换）
         _ => SqlValue::Utf8(s.to_string()),
     }
