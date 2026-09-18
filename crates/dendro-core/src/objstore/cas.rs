@@ -117,6 +117,9 @@ impl CasStore {
         // wal_corruption::checkpoint_failure_preserves_committed_data）。
         // 逐组 join 后此处必为最终状态。
         if let Some(e) = err.lock().unwrap().take() {
+            // 早退组已 rename 的块仍需落盘（否则仅页缓存——进程死
+            // 后 has() 曾为真的块消失，后续批次 has() 短路信任幻影）
+            let _ = self.obj.sync_batch();
             return Err(e);
         }
         // 批末一次文件系统同步：本批 put_no_sync 的全部写入 + 目录项

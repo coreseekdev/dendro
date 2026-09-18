@@ -60,6 +60,34 @@ impl LocalObjStore {
     }
 }
 
+/// 唯一临时路径（PID + 进程级原子序号——同进程多线程写同内容寻址
+/// 块不再共享 tmp：原 PID-only 名在并发 put_batch 的 PAR=8 线程 ×
+/// 多个 CAS 写者交叉时同名碰撞 → O_TRUNC 互踩 / rename ENOENT
+///（58030 主因——评审实证））
+fn unique_tmp(p: &Path) -> PathBuf {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    p.with_extension(format!("tmp{}.{}", std::process::id(), n))
+}
+
+/// 原子发布 rename + 同内容幂等（并发写同地址：胜者已 rename、
+/// 败者 tmp 仍在 → 正常 rename；败者已被清扫（crash 恢复）→ 目标
+/// 存在即视为成功——内容寻址保证同地址 = 同字节）
+fn rename_published(tmp: &Path, p: &Path) -> ObjResult<()> {
+    match fs::rename(tmp, p) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // tmp 不在（被并发胜者消费或清扫）——目标存在即幂等成功
+            if p.exists() {
+                Ok(())
+            } else {
+                Err(map_io(e, p))
+            }
+        }
+        Err(e) => Err(map_io(e, p)),
+    }
+}
+
 fn map_io(e: std::io::Error, p: &Path) -> ObjError {
     match e.kind() {
         std::io::ErrorKind::AlreadyExists => ObjError::Exists(p.display().to_string()),
@@ -95,17 +123,17 @@ impl ObjStore for LocalObjStore {
 
     fn put(&self, path: &str, data: Bytes) -> ObjResult<()> {
         let p = self.full(path)?;
-        let tmp = p.with_extension(format!("tmp{}", std::process::id()));
+        let tmp = unique_tmp(&p);
         self.write_file(&tmp, &data, false)?;
-        fs::rename(&tmp, &p).map_err(|e| map_io(e, &p))?;
+        rename_published(&tmp, &p)?;
         Ok(())
     }
 
     fn put_no_sync(&self, path: &str, data: Bytes) -> ObjResult<()> {
         let p = self.full(path)?;
-        let tmp = p.with_extension(format!("tmp{}", std::process::id()));
+        let tmp = unique_tmp(&p);
         self.write_file_no_sync(&tmp, &data, false)?;
-        fs::rename(&tmp, &p).map_err(|e| map_io(e, &p))?;
+        rename_published(&tmp, &p)?;
         Ok(())
     }
 
@@ -305,5 +333,76 @@ mod tests {
         assert!(s.put("../escape", Bytes::new()).is_err());
         assert!(s.put("/abs", Bytes::new()).is_err());
         let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod tmp_collision_tests {
+    use super::*;
+    use crate::objstore::memory::MemoryObjStore;
+    use crate::objstore::ObjStore;
+
+    /// 回归：并发写同内容寻址地址——唯一 tmp + 幂等 rename 后
+    /// 全部成功（原 PID-only tmp 下部分线程 rename ENOENT → 58030）
+    #[test]
+    fn concurrent_same_address_writes_all_succeed() {
+        let dir = std::env::temp_dir().join(format!("dendro_tmp_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = super::LocalObjStore::open(&dir).unwrap();
+        let data = b"same content-addressed chunk".to_vec();
+        let results: Vec<_> = std::thread::scope(|s| {
+            (0..16)
+                .map(|_| {
+                    let st = &store;
+                    let d = data.clone();
+                    s.spawn(move || st.put("objects/a/test.chunk", d.into()))
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|h| h.join().unwrap().is_ok())
+                .collect()
+        });
+        assert!(
+            results.iter().all(|&ok| ok),
+            "全部并发写同地址必须成功（58030 回归）：{results:?}"
+        );
+        // 内容正确（唯一字节）
+        let got = store.get("objects/a/test.chunk").unwrap();
+        assert_eq!(&got[..], &data[..]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 幂等 rename：tmp 不在但目标存在 → Ok（并发胜者已发布同内容）
+    #[test]
+    fn rename_published_idempotent() {
+        let dir = std::env::temp_dir().join(format!("dendro_tmp_idem_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("target.chunk");
+        std::fs::write(&target, b"content").unwrap();
+        let ghost = dir.join("ghost.tmp"); // 不存在
+        assert!(rename_published(&ghost, &target).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 确保没有残留 tmp 文件（唯一名写入者清理自身 tmp）
+    #[test]
+    fn no_stale_tmp_files() {
+        let _ = MemoryObjStore::new(); // 抑制 unused 警告
+        let dir = std::env::temp_dir().join(format!("dendro_tmp_stale_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = super::LocalObjStore::open(&dir).unwrap();
+        for i in 0..10 {
+            store
+                .put(&format!("obj/{i}"), format!("data-{i}").into_bytes().into())
+                .unwrap();
+        }
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains("tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "无残留 tmp：{leftovers:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
