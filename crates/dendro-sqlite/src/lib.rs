@@ -13,7 +13,7 @@
 //! |------|------|------|
 //! | pgwire（TCP 二进制 v3） | PG | psql、JDBC、驱动生态 |
 //! | mywire（TCP 二进制） | MySQL | MySQL 客户端生态 |
-//! | embed（Rust 进程内） | Pg 默认（可换） | Rust 嵌入安全 API |
+//! | embed（Rust 进程内） | **Sqlite 默认**（可换） | Rust 嵌入安全 API——本 crate 的底层 |
 //! | **dendro-sqlite（C ABI 进程内）** | **SQLite** | **SQLite 生态替换面——与 embed 同一进程内语义 + C 调用约定 + SQLite 方言** |
 //!
 //! # 合同与边界（诚实清单）
@@ -136,10 +136,8 @@ pub unsafe extern "C" fn sqlite3_open_v2(
             .to_string();
         Connection::open(&path)
     };
-    let mut conn = conn;
-    if let Ok(c) = conn.as_mut() {
-        c.set_dialect(dendro_core::sql::SqlDialect::Sqlite);
-    }
+    // 方言经 embed 构造默认即 Sqlite（同一进程内语义——本 crate
+    // 是 embed 的 C ABI 暴露 + SQLite 方言，无需重复声明）
     match conn {
         Ok(c) => {
             let conn = Box::new(Conn {

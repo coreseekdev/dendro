@@ -11,10 +11,12 @@
 //! | pgwire | Pg | TCP 二进制协议 |
 //! | mywire | MySql | TCP 二进制协议 |
 //! | dendro-sqlite | Sqlite | **C ABI 进程内**——与 embed 同一含义
-//! | embed | Pg（默认，可 set_dialect） | Rust 进程内 |
+//! | embed | **Sqlite（默认，可 set_dialect）** | Rust 进程内——进程内语义以 SQLite 方言为默认 |
 //!
 //! **dendro-sqlite 与 embed 共享同一个进程内语义**：前者是后者
-//! （[`crate::embed::Connection`]）加 C ABI 暴露加 SQLite 方言。
+//! （[`crate::embed::Connection`]）加 C ABI 暴露，方言同为 SQLite
+//!（embed 默认即 Sqlite）。引擎层 Session 默认 Pg——网络传输由
+//! 各 wire 显式声明，两层默认不同是有意的。
 //!
 //! 架构合同：**传输适配器在连接建立时声明方言一次**
 //! （`Session::dialect`，经 `WireSession::set_dialect` / embed 的

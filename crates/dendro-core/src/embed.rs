@@ -118,7 +118,11 @@ impl Connection {
             store: crate::StoreConfig::LocalDir(path.as_ref().to_path_buf()),
             ..Default::default()
         })?;
-        let sess = db.new_session();
+        let mut sess = db.new_session();
+        // 进程内产品面默认 **SQLite 方言**（与 SQLite 同义的嵌入式
+        // 语义；`?` 位置参数可用，`$1` 亦兼容）。引擎层 Session 默认
+        // Pg（网络传输由各自 wire 显式声明）——两层默认不同是有意
+        sess.dialect = crate::sql::SqlDialect::Sqlite;
         Ok(Self { db, sess })
     }
 
@@ -127,7 +131,8 @@ impl Connection {
             store: crate::StoreConfig::Memory,
             ..Default::default()
         })?;
-        let sess = db.new_session();
+        let mut sess = db.new_session();
+        sess.dialect = crate::sql::SqlDialect::Sqlite;
         Ok(Self { db, sess })
     }
 
@@ -144,8 +149,8 @@ impl Connection {
     }
 
     /// 查询 SQL（SELECT；返回完整结果集）
-    /// 切换方言（wire 独立方言架构：dendro-sqlite 线设 Sqlite；
-    /// 默认 Pg——pgwire/pg 生态语义）
+    /// 切换方言（默认 **Sqlite**——进程内语义；需要 PG 生态语义的
+    /// 嵌入调用方设 Pg，如 `?` 之外的 `$N` 命名形态差异面）
     pub fn set_dialect(&mut self, d: crate::sql::SqlDialect) {
         self.sess.dialect = d;
     }

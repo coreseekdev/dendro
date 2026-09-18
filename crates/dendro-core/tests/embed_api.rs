@@ -100,3 +100,26 @@ fn embed_branch_operations() {
     }
     conn.create_branch("dev", "main").unwrap();
 }
+
+/// embed 默认 SQLite 方言：`?` 位置参数开箱可用（与 dendro-sqlite
+/// C ABI 同一语义面）；`$1` 兼容不变
+#[test]
+fn embed_sqlite_dialect_default_positional() {
+    let mut conn = Connection::memory().unwrap();
+    conn.execute("CREATE TABLE q (id BIGINT PRIMARY KEY, v TEXT)")
+        .unwrap();
+    let mut ins = conn.prepare("INSERT INTO q VALUES (?, ?)").unwrap();
+    ins.execute(&[Value::Integer(1), Value::Text("a".into())])
+        .unwrap();
+    ins.execute(&[Value::Integer(2), Value::Text("b".into())])
+        .unwrap();
+    drop(ins);
+    let mut sel = conn.prepare("SELECT v FROM q WHERE id = ?").unwrap();
+    let r = sel.query(&[Value::Integer(2)]).unwrap();
+    assert_eq!(r.get_string(0, 0).as_deref(), Some("b"));
+    drop(sel);
+    // $1 兼容（SQLiteDialect 亦接受 PG 数字占位符）
+    let mut sel2 = conn.prepare("SELECT v FROM q WHERE id = $1").unwrap();
+    let r2 = sel2.query(&[Value::Integer(1)]).unwrap();
+    assert_eq!(r2.get_string(0, 0).as_deref(), Some("a"));
+}
