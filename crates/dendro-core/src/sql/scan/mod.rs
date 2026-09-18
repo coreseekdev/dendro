@@ -187,11 +187,11 @@ fn lower_subqueries(
     match se {
         SetExpr::Select(sel) => {
             reject_multi_from(sel)?;
-            // SQLite 方言：rowid/_rowid_/oid → 单列整数 PK 列的别名
-            //（SQLite 同义；真列名优先，多因子歧义不动留给响亮报错）
-            if sess.dialect == crate::sql::SqlDialect::Sqlite {
-                rewrite_rowid_refs(db, sess, sel);
-            }
+            // rowid 别名（方言档案行为面）：SQLite {rowid,_rowid_,oid} /
+            // MySQL {_rowid} → 单列整数 PK 列；PG 空（不映射——
+            // 引用未声明列按 undefined column 响亮，PG 忠实）。
+            // 真列名优先，多因子裸名歧义不动留给响亮报错
+            rewrite_rowid_refs(db, sess, sel);
             if let Some(w) = sel.selection.as_mut() {
                 // L1/L2：WHERE 合取位的 InSubquery 保留在谓词——
                 // 非相关由 build_select 落 SemiJoin（单次求值 + 哈希
@@ -576,11 +576,17 @@ pub(crate) fn reject_offset_comma(q: &Query) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn rewrite_rowid_refs(db: &Database, sess: &Session, sel: &mut Select) {
-    use sqlparser::ast::{Expr, VisitMut};
+    use sqlparser::ast::VisitMut;
 
-    fn is_rowid_name(n: &str) -> bool {
-        matches!(n.to_ascii_lowercase().as_str(), "rowid" | "_rowid_" | "oid")
+    // 别名集来自方言档案（PG 空集 = 直接返回，零开销）
+    let aliases = sess.dialect.profile().rowid_aliases();
+    if aliases.is_empty() {
+        return;
     }
+    let is_rowid_name = |n: &str| {
+        let ln = n.to_ascii_lowercase();
+        aliases.iter().any(|a| *a == ln)
+    };
 
     // 因子收集：(因子键, 表名)——from 首因子 + join 链（仅物理表；
     // 派生表/CTE 无 rowid 概念）
@@ -639,34 +645,45 @@ fn rewrite_rowid_refs(db: &Database, sess: &Session, sel: &mut Select) {
         return;
     }
     let single = factors.len() == 1;
-    let _ = sel.visit(&mut RowidRewriter { pk_of, single });
+    let _ = sel.visit(&mut RowidRewriter {
+        pk_of,
+        single,
+        aliases,
+    });
+}
 
-    struct RowidRewriter {
-        pk_of: std::collections::HashMap<String, String>,
-        single: bool,
+struct RowidRewriter {
+    pk_of: std::collections::HashMap<String, String>,
+    single: bool,
+    aliases: &'static [&'static str],
+}
+impl RowidRewriter {
+    fn is_rowid_name(&self, n: &str) -> bool {
+        let ln = n.to_ascii_lowercase();
+        self.aliases.iter().any(|a| *a == ln)
     }
-    impl sqlparser::ast::VisitorMut for RowidRewriter {
-        type Break = ();
-        fn pre_visit_expr(&mut self, e: &mut Expr) -> std::ops::ControlFlow<Self::Break> {
-            match e {
-                // 裸 rowid：仅单因子无歧义
-                Expr::Identifier(id) if self.single && is_rowid_name(&id.value) => {
-                    let pk = self.pk_of.values().next().unwrap().clone();
-                    *e = Expr::Identifier(sqlparser::ast::Ident::new(pk));
-                }
-                // 限定 t.rowid：按因子键解析
-                Expr::CompoundIdentifier(parts) if parts.len() == 2 => {
-                    let p = parts[0].value.clone();
-                    let c = parts[1].value.clone();
-                    if is_rowid_name(&c) {
-                        if let Some(pk) = self.pk_of.get(&p.to_ascii_lowercase()) {
-                            parts[1].value = pk.clone();
-                        }
+}
+impl sqlparser::ast::VisitorMut for RowidRewriter {
+    type Break = ();
+    fn pre_visit_expr(&mut self, e: &mut Expr) -> std::ops::ControlFlow<Self::Break> {
+        match e {
+            // 裸 rowid：仅单因子无歧义
+            Expr::Identifier(id) if self.single && self.is_rowid_name(&id.value) => {
+                let pk = self.pk_of.values().next().unwrap().clone();
+                *e = Expr::Identifier(sqlparser::ast::Ident::new(pk));
+            }
+            // 限定 t.rowid：按因子键解析
+            Expr::CompoundIdentifier(parts) if parts.len() == 2 => {
+                let p = parts[0].value.clone();
+                let c = parts[1].value.clone();
+                if self.is_rowid_name(&c) {
+                    if let Some(pk) = self.pk_of.get(&p.to_ascii_lowercase()) {
+                        parts[1].value = pk.clone();
                     }
                 }
-                _ => {}
             }
-            std::ops::ControlFlow::Continue(())
+            _ => {}
         }
+        std::ops::ControlFlow::Continue(())
     }
 }

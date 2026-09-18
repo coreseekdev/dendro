@@ -947,7 +947,7 @@ mod ffi_tests {
             let mut db: *mut sqlite3 = std::ptr::null_mut();
             let mem = cstr(":memory:");
             assert_eq!(sqlite3_open(mem.as_ptr(), &mut db), SQLITE_OK);
-            let ddl = cstr("CREATE TABLE x (a BIGINT)");
+            let ddl = cstr("CREATE TABLE x (a BIGINT PRIMARY KEY)");
             sqlite3_exec(
                 db,
                 ddl.as_ptr(),

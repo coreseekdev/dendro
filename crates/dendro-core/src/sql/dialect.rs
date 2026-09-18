@@ -46,6 +46,18 @@ pub trait DialectProfile: Send + Sync + 'static {
     fn positional_placeholders(&self) -> bool {
         false
     }
+    /// 行身份别名集（查询期解析为单列整数 PK 列）。**零新列原则**：
+    /// 别名是已有存储身份（PK 编码键——prolly/memtx/WAL 的统一
+    /// 寻址键）的引用层名字，不在存储/表结构加任何合成列：
+    /// - SQLite：`rowid` / `_rowid_` / `oid`（官方语义：INTEGER
+    ///   PRIMARY KEY 即 rowid 别名）
+    /// - MySQL：`_rowid`（官方兼容特性——单列整数 PK 的同义名）
+    /// - PG：`ctid`（Oracle ROWID 迁移指南语义——逻辑行身份 =
+    ///   主键；dendro append-only 下比 PG 原生物理位置 ctid 更
+    ///   稳定，无"UPDATE 后变化"陷阱）
+    fn rowid_aliases(&self) -> &'static [&'static str] {
+        &[]
+    }
 }
 
 /// PG 档案（pgwire / embed 默认）：原生 `$N`、无归一
@@ -56,6 +68,17 @@ impl DialectProfile for PgProfile {
     }
     fn parser(&self) -> &'static dyn sqlparser::dialect::Dialect {
         &sqlparser::dialect::PostgreSqlDialect {}
+    }
+    fn rowid_aliases(&self) -> &'static [&'static str] {
+        // **ctid → 单列整数 PK**（Oracle ROWID 迁移指南语义——AWS
+        // prescriptive guidance：长期行标识应用主键而非物理位置）。
+        // 与 PG 原生 ctid 的差异（诚实记录）：PG ctid 是物理位置
+        // （页+槽，UPDATE/VACUUM FULL 后变化，官方明确不建议当长期
+        // 标识）；dendro 是内容寻址、append-only——映射目标（PK）
+        // 永不变，**比原生 ctid 更符合 ctid 的使用意图**。非整数
+        // PK 表上引用 → undefined column（响亮）。rowid/_rowid 在
+        // PG 非系统列，不映射
+        &["ctid"]
     }
 }
 
@@ -71,6 +94,9 @@ impl DialectProfile for MySqlProfile {
     fn positional_placeholders(&self) -> bool {
         true
     }
+    fn rowid_aliases(&self) -> &'static [&'static str] {
+        &["_rowid"] // MySQL 官方兼容名（单列整数 PK 别名）
+    }
 }
 
 /// SQLite 档案（dendro-sqlite C ABI）：`?` 位置参数归一、双引号
@@ -85,6 +111,9 @@ impl DialectProfile for SqliteProfile {
     }
     fn positional_placeholders(&self) -> bool {
         true
+    }
+    fn rowid_aliases(&self) -> &'static [&'static str] {
+        &["rowid", "_rowid_", "oid"]
     }
 }
 

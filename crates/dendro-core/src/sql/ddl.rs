@@ -25,6 +25,15 @@ pub(crate) fn exec_create_table(
     let short = name.rsplit('.').next().unwrap_or(&name).to_string();
     let (cols, pk, fk_defs, unique_sets, check_exprs) =
         translate_columns(&create.columns, &create.constraints)?;
+    // 行身份统一约束（存储事实前移）：dendro 的行以 PK 编码键寻址
+    // （prolly/memtx/WAL 全链），无 PK = 无行身份——此前延迟到
+    // INSERT/CHECKPOINT 才报"has no primary key"，建表即拒更诚实，
+    // 且使 rowid/ctid 别名语义完备（每表必有行身份）
+    if pk.is_empty() {
+        return Err(SqlError::not_supported(format!(
+            "table {short}: PRIMARY KEY required (row identity is the storage addressing key)"
+        )));
+    }
     let schema = TableSchema {
         name: short.clone(),
         columns: cols,
