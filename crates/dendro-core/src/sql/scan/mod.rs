@@ -18,6 +18,7 @@ mod cte;
 mod history;
 mod join;
 mod plan_exec;
+pub(crate) use plan_exec::expr_has_subquery;
 mod point;
 mod project;
 mod pseudo;

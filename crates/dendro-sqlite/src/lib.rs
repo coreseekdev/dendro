@@ -89,6 +89,12 @@ struct Stmt {
     params: Vec<Value>,
     result: Option<QueryResult>,
     row: usize,
+    /// 惰性游标（v2 step 语义）：单表 SELECT 形态源直驱——
+    /// 馞行 O(首批)/early-term/输出 O(批) 内存；段解码仍整段
+    /// 物化（完整惰性随流式执行器 C 档——诚实边界）
+    lazy: Option<dendro_core::embed::LazyScan>,
+    /// 当前行（惰性/物化双路统一访问位）
+    cur: Option<Vec<dendro_core::types::SqlValue>>,
     /// prepare 期列元数据（column_count/name 在首次 step 前可用——
     /// SQLite 语义）
     col_names: Vec<String>,
@@ -440,6 +446,8 @@ pub unsafe extern "C" fn sqlite3_prepare_v2(
         params: Vec::new(),
         result: None,
         row: 0,
+        lazy: None,
+        cur: None,
         col_names,
         col_decls,
         scratch: Vec::new(),
@@ -476,6 +484,23 @@ pub unsafe extern "C" fn sqlite3_step(stmt: *mut sqlite3_stmt) -> c_int {
     if !st.alive.load(Ordering::Acquire) {
         return SQLITE_MISUSE;
     }
+    // 惰性路径：单表 SELECT 形态——源直驱逐行（首次 step 构造）
+    if let Some(lz) = st.lazy.as_mut() {
+        return match lz.next_row() {
+            Ok(Some(row)) => {
+                st.cur = Some(row);
+                SQLITE_ROW
+            }
+            Ok(None) => {
+                st.cur = None;
+                SQLITE_DONE
+            }
+            Err(e) => {
+                let conn: &mut Conn = unsafe { &mut *st.conn };
+                conn.set_err(e)
+            }
+        };
+    }
     // 首次 step（或 reset 后）：执行并物化
     if st.result.is_none() {
         let conn: &mut Conn = unsafe { &mut *st.conn };
@@ -484,6 +509,31 @@ pub unsafe extern "C" fn sqlite3_step(stmt: *mut sqlite3_stmt) -> c_int {
             None => return SQLITE_MISUSE,
         };
         let params = st.params.clone();
+        // 惰性判定：SELECT 单表形态（已代入参数的原文重建查询——
+        // prepared 语句体不含参数后的 AST）
+        let mut try_lazy = || -> Option<dendro_core::embed::LazyScan> {
+            let sql_text = st.sql.to_string_lossy().to_string();
+            let sub = c.substitute_sql(&sql_text, &params).ok()?;
+            c.lazy_scan(&sub).ok()?
+        };
+        if let Some(lz) = try_lazy() {
+            st.lazy = Some(lz);
+            let st2: &mut Stmt = unsafe { &mut *stmt.cast() };
+            return match st2.lazy.as_mut().unwrap().next_row() {
+                Ok(Some(row)) => {
+                    st2.cur = Some(row);
+                    SQLITE_ROW
+                }
+                Ok(None) => {
+                    st2.cur = None;
+                    SQLITE_DONE
+                }
+                Err(e) => {
+                    let conn2: &mut Conn = unsafe { &mut *st2.conn };
+                    conn2.set_err(e)
+                }
+            };
+        }
         match c.sess_exec_prepared_mixed(&st.name, &params) {
             Ok((res, affected)) => {
                 conn.changes = affected;
@@ -497,8 +547,10 @@ pub unsafe extern "C" fn sqlite3_step(stmt: *mut sqlite3_stmt) -> c_int {
     let r = st2.result.as_ref().unwrap();
     if st2.row < r.row_count() {
         st2.row += 1;
+        st2.cur = r.row(st2.row - 1).cloned();
         SQLITE_ROW
     } else {
+        st2.cur = None;
         SQLITE_DONE
     }
 }
@@ -511,6 +563,8 @@ pub unsafe extern "C" fn sqlite3_reset(stmt: *mut sqlite3_stmt) -> c_int {
     let st: &mut Stmt = unsafe { &mut *stmt.cast() };
     st.result = None;
     st.row = 0;
+    st.lazy = None;
+    st.cur = None;
     SQLITE_OK
 }
 
@@ -671,6 +725,20 @@ pub unsafe extern "C" fn sqlite3_column_type(stmt: *mut sqlite3_stmt, i: c_int) 
     }
 }
 
+/// 语句当前行的第 i 列（惰性 cur / 物化 result 双路统一）
+unsafe fn cur_cell(stmt: *mut sqlite3_stmt, i: c_int) -> Option<dendro_core::types::SqlValue> {
+    let st: &Stmt = unsafe { &*stmt.cast() };
+    let i = i.max(0) as usize;
+    if let Some(row) = &st.cur {
+        return row.get(i).cloned();
+    }
+    st.result
+        .as_ref()?
+        .row(st.row.saturating_sub(1))
+        .and_then(|row| row.get(i))
+        .cloned()
+}
+
 macro_rules! col_fn {
     ($name:ident, $body:expr, $ret:ty, $default:expr) => {
         #[no_mangle]
@@ -678,15 +746,8 @@ macro_rules! col_fn {
             if stmt.is_null() {
                 return $default;
             }
-            let st: &Stmt = unsafe { &*stmt.cast() };
-            let Some(r) = st.result.as_ref() else {
-                return $default;
-            };
-            let v = r
-                .row(st.row.saturating_sub(1))
-                .and_then(|row| row.get(i.max(0) as usize));
-            match v {
-                Some(v) => $body(v),
+            match unsafe { cur_cell(stmt, i) } {
+                Some(v) => $body(&v),
                 None => $default,
             }
         }
@@ -724,15 +785,9 @@ pub unsafe extern "C" fn sqlite3_column_text(stmt: *mut sqlite3_stmt, i: c_int) 
         return std::ptr::null();
     }
     let st: &mut Stmt = unsafe { &mut *stmt.cast() };
-    let Some(r) = st.result.as_ref() else {
-        return std::ptr::null();
-    };
-    let v = r
-        .row(st.row.saturating_sub(1))
-        .and_then(|row| row.get(i.max(0) as usize));
-    let text = match v {
-        Some(SqlValue::Utf8(s)) => s.clone(),
-        Some(other) => value_text(other),
+    let text = match unsafe { cur_cell(stmt, i) } {
+        Some(SqlValue::Utf8(s)) => s,
+        Some(other) => value_text(&other),
         None => return std::ptr::null(),
     };
     st.scratch = text.into_bytes();
@@ -745,14 +800,7 @@ pub unsafe extern "C" fn sqlite3_column_bytes(stmt: *mut sqlite3_stmt, i: c_int)
     if stmt.is_null() {
         return 0;
     }
-    let st: &Stmt = unsafe { &*stmt.cast() };
-    let Some(r) = st.result.as_ref() else {
-        return 0;
-    };
-    match r
-        .row(st.row.saturating_sub(1))
-        .and_then(|row| row.get(i.max(0) as usize))
-    {
+    match unsafe { cur_cell(stmt, i) } {
         Some(SqlValue::Utf8(s)) => s.len() as c_int,
         Some(SqlValue::Bytes(b)) => b.len() as c_int,
         Some(SqlValue::Null) | None => 0,
@@ -765,16 +813,18 @@ pub unsafe extern "C" fn sqlite3_column_blob(stmt: *mut sqlite3_stmt, i: c_int) 
     if stmt.is_null() {
         return std::ptr::null();
     }
-    let st: &Stmt = unsafe { &*stmt.cast() };
-    let Some(r) = st.result.as_ref() else {
-        return std::ptr::null();
-    };
-    match r
-        .row(st.row.saturating_sub(1))
-        .and_then(|row| row.get(i.max(0) as usize))
-    {
-        Some(SqlValue::Bytes(b)) => b.as_ptr().cast(),
-        Some(SqlValue::Utf8(s)) => s.as_ptr().cast(),
+    // cur_cell 返回 owned 值——复制进 scratch 再取指针（直接对
+    // 临时取 as_ptr 是悬垂：match 臂结束即释放）
+    let st: &mut Stmt = unsafe { &mut *stmt.cast() };
+    match unsafe { cur_cell(stmt, i) } {
+        Some(SqlValue::Bytes(b)) => {
+            st.scratch = b;
+            st.scratch.as_ptr().cast()
+        }
+        Some(SqlValue::Utf8(s)) => {
+            st.scratch = s.into_bytes();
+            st.scratch.as_ptr().cast()
+        }
         _ => std::ptr::null(),
     }
 }
@@ -1136,5 +1186,119 @@ mod ffi_v15_tests {
         );
         assert_eq!(stmt_boundary(b"/* ; */ SELECT 1"), None);
         assert_eq!(stmt_boundary(b"SELECT [c;ol] FROM t; SELECT 2"), Some(21));
+    }
+}
+
+#[cfg(test)]
+mod ffi_lazy_tests {
+    use super::*;
+
+    fn cstr(s: &str) -> CString {
+        CString::new(s).unwrap()
+    }
+
+    fn setup(db: *mut sqlite3, n: i64) {
+        unsafe {
+            let ddl = cstr("CREATE TABLE big (id INTEGER PRIMARY KEY, v TEXT, n BIGINT)");
+            sqlite3_exec(
+                db,
+                ddl.as_ptr(),
+                None,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            );
+            // 分批插入避免巨型单语句
+            let mut i = 1i64;
+            while i <= n {
+                let hi = (i + 999).min(n);
+                let vals: Vec<String> = (i..=hi)
+                    .map(|k| format!("({k}, 'v{k}', {k} * 2)"))
+                    .collect();
+                let ins = cstr(&format!("INSERT INTO big VALUES {}", vals.join(",")));
+                sqlite3_exec(
+                    db,
+                    ins.as_ptr(),
+                    None,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                );
+                i = hi + 1;
+            }
+        }
+    }
+
+    /// 惰性游标端到端：单表 SELECT（带谓词）逐行 step 与物化路径结果
+    /// 逐行一致；early-termination 后 finalize 无泄漏/崩溃
+    #[test]
+    fn ffi_lazy_cursor_consistency() {
+        unsafe {
+            let mut db: *mut sqlite3 = std::ptr::null_mut();
+            let mem = cstr(":memory:");
+            assert_eq!(sqlite3_open(mem.as_ptr(), &mut db), SQLITE_OK);
+            setup(db, 5000);
+
+            // 无排序形态走惰性（ORDER BY 形态回落物化——双路径合同）
+            let q_lazy = cstr("SELECT id, v FROM big WHERE n > 5000");
+
+            // 惰性路径：全量 step 收集
+            let mut st: *mut sqlite3_stmt = std::ptr::null_mut();
+            let mut tail: *const c_char = std::ptr::null();
+            assert_eq!(
+                sqlite3_prepare_v2(db, q_lazy.as_ptr(), -1, &mut st, &mut tail),
+                SQLITE_OK
+            );
+            let mut lazy_rows: Vec<(i64, String)> = Vec::new();
+            loop {
+                let rc = sqlite3_step(st);
+                if rc == SQLITE_DONE {
+                    break;
+                }
+                assert_eq!(rc, SQLITE_ROW);
+                lazy_rows.push((
+                    sqlite3_column_int64(st, 0),
+                    CStr::from_ptr(sqlite3_column_text(st, 1).cast())
+                        .to_string_lossy()
+                        .to_string(),
+                ));
+            }
+            assert_eq!(sqlite3_finalize(st), SQLITE_OK);
+            // n > 5000 → n=2*id → id > 2500 → 2501..=5000 = 2500 行
+            assert_eq!(lazy_rows.len(), 2500);
+            assert_eq!(lazy_rows[0], (2501, "v2501".to_string()));
+            assert_eq!(lazy_rows[2499], (5000, "v5000".to_string()));
+
+            // 与物化路径逐行对拍
+            let mut st2: *mut sqlite3_stmt = std::ptr::null_mut();
+            let mut t2: *const c_char = std::ptr::null();
+            assert_eq!(
+                sqlite3_prepare_v2(db, q_lazy.as_ptr(), -1, &mut st2, &mut t2),
+                SQLITE_OK
+            );
+            let mut i = 0;
+            loop {
+                let rc = sqlite3_step(st2);
+                if rc == SQLITE_DONE {
+                    break;
+                }
+                assert_eq!(rc, SQLITE_ROW);
+                assert_eq!(sqlite3_column_int64(st2, 0), lazy_rows[i].0);
+                i += 1;
+            }
+            assert_eq!(i, 2500);
+            assert_eq!(sqlite3_finalize(st2), SQLITE_OK);
+
+            // early-termination：只 step 首行即 finalize（SQLite 最常见
+            // 消费形态——惰性下不执行剩余源）
+            let mut st3: *mut sqlite3_stmt = std::ptr::null_mut();
+            let mut t3: *const c_char = std::ptr::null();
+            assert_eq!(
+                sqlite3_prepare_v2(db, q_lazy.as_ptr(), -1, &mut st3, &mut t3),
+                SQLITE_OK
+            );
+            assert_eq!(sqlite3_step(st3), SQLITE_ROW);
+            assert_eq!(sqlite3_column_int64(st3, 0), 2501);
+            assert_eq!(sqlite3_finalize(st3), SQLITE_OK);
+            assert_eq!(sqlite3_close_v2(db), SQLITE_OK);
+        }
     }
 }

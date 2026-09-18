@@ -1499,7 +1499,7 @@ pub(crate) fn exec_prepared(
 }
 
 /// Placeholder("$1"/"?" ) → 参数字面量（copy 语句级 AST）
-fn substitute_params(mut stmt: Statement, params: &[SqlValue]) -> Result<Statement> {
+pub(crate) fn substitute_params(mut stmt: Statement, params: &[SqlValue]) -> Result<Statement> {
     use sqlparser::ast::visit_expressions_mut;
     use sqlparser::ast::Expr;
     use std::ops::ControlFlow;

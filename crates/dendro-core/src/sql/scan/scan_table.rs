@@ -173,6 +173,83 @@ pub(crate) fn ap_resolve(
     Some((schema, entry))
 }
 
+/// 惰性扫描源（v2 游标 / SQLite step 语义）：三路归并直出批迭代器，
+/// **不收集**——首行延迟 O(首批)、early-termination、输出端内存 O(批)。
+/// 诚实边界：段解码（ap.scan）仍整段物化——完整惰性随流式执行器
+///（性能基线计划 C 档）。谓词/投影由消费层逐行求值（不在此）。
+/// 非 AP 表（无列存段）返回 None（调用方回落物化路径）。
+pub(crate) fn lazy_scan_source(
+    db: &Database,
+    sess: &mut Session,
+    table: &str,
+    snapshot: u64,
+) -> Result<Option<(Vec<String>, crate::exec::source::MainPlusDeltaSource)>> {
+    let Some((schema, entry)) = (|db: &Database, sess: &mut Session| {
+        let _ = sess;
+        let resolved = resolve_table(db, &sess.branch, table).ok()?;
+        let (schema, entry) = resolved;
+        if entry.col_segments.is_empty() {
+            return None;
+        }
+        Some((schema, entry))
+    })(db, sess) else {
+        return Ok(None);
+    };
+    let Some(ap) = db.columnar() else {
+        return Ok(None);
+    };
+    let names: Vec<String> = schema.columns.iter().map(|c| c.name.clone()).collect();
+    let deletes: std::collections::HashSet<Vec<u8>> = entry
+        .col_deletes
+        .iter()
+        .filter_map(|h| {
+            (0..h.len() / 2)
+                .map(|i| u8::from_str_radix(&h[i * 2..i * 2 + 2], 16))
+                .collect::<std::result::Result<Vec<u8>, _>>()
+                .ok()
+        })
+        .collect();
+    let mut segment_batches = Vec::with_capacity(entry.col_segments.len());
+    for seg in entry.col_segments.iter() {
+        segment_batches.push(ap.scan(
+            db.obj_store(),
+            &schema,
+            std::slice::from_ref(seg),
+            &None,
+            None,
+        )?);
+    }
+    let b = db.branch(&sess.branch)?;
+    let overlay = b.mem.table(entry.id).snapshot_rows(snapshot);
+    let mut txn_writes: Vec<(Vec<u8>, Option<std::sync::Arc<Vec<u8>>>)> = Vec::new();
+    if let Some(t) = &sess.txn {
+        if t.explicit {
+            for ((tid, k), m) in &t.writes {
+                if *tid != entry.id {
+                    continue;
+                }
+                match m {
+                    crate::prolly::Mutation::Put(v) => {
+                        txn_writes.push((k.clone(), Some(std::sync::Arc::new(v.clone()))));
+                    }
+                    crate::prolly::Mutation::Delete => {
+                        txn_writes.push((k.clone(), None));
+                    }
+                }
+            }
+        }
+    }
+    let src = crate::exec::source::MainPlusDeltaSource::new(
+        segment_batches,
+        overlay,
+        txn_writes,
+        deletes,
+        schema,
+        None,
+    )?;
+    Ok(Some((names, src)))
+}
+
 pub(crate) fn try_ap_scan(
     db: &Database,
     sess: &mut Session,

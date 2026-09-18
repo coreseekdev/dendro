@@ -198,6 +198,33 @@ impl Connection {
         self.sess.close_prepared(name)
     }
 
+    /// 惰性扫描（SQLite step 语义）：单表 SELECT 形态源直驱——
+    /// 首行 O(首批)/early-term/输出内存 O(批)。非该形态返回 None
+    ///（调用方回落 [`Self::query`] 全量物化）。sql 应已代入参数
+    ///（见 [`Self::substitute_sql`]）。
+    pub fn lazy_scan(&mut self, sql: &str) -> Result<Option<LazyScan>> {
+        let stmts = crate::sql::parse_batch(sql, self.sess.dialect)?;
+        let Some(sqlparser::ast::Statement::Query(q)) = stmts.into_iter().next() else {
+            return Ok(None);
+        };
+        let Some(shape) = lazy_scan_shape(&q) else {
+            return Ok(None);
+        };
+        LazyScan::build(&self.db.clone(), &mut self.sess, &shape)
+    }
+
+    /// 占位符代入（`$N`/`?` → 字面量）——惰性路径的参数绑定
+    ///（prepared 机制之外的独立口）
+    pub fn substitute_sql(&self, sql: &str, params: &[Value]) -> Result<String> {
+        let mut stmts = crate::sql::parse_batch(sql, self.sess.dialect)?;
+        let Some(stmt) = stmts.first_mut() else {
+            return Ok(sql.to_string());
+        };
+        let sql_values = to_sql_values(params);
+        let substituted = crate::sql::substitute_params(stmt.clone(), &sql_values)?;
+        Ok(substituted.to_string())
+    }
+
     /// 最近一次成功 INSERT 的 rowid（单列整数 PK 表的末行 PK；
     /// SQLite last_insert_rowid 语义）
     pub fn last_insert_rowid(&self) -> i64 {
@@ -412,4 +439,193 @@ fn to_result(outputs: Vec<Output>) -> QueryResult {
         }
     }
     QueryResult { columns, rows }
+}
+
+// ---------------------------------------------------------------------------
+// 惰性扫描游标（v2 / SQLite step 语义）：单表 SELECT 形态源直驱——
+// 首行延迟 O(首批)、early-termination（消费者停 = 不再拉源）、输出
+// 内存 O(批)。诚实边界：段解码仍整段物化（完整惰性随流式执行器
+// C 档）；非此形态返回 None（调用方回落全量物化 query()）。
+// ---------------------------------------------------------------------------
+
+/// 形态判定：单表 + 无 join/group/having/distinct/窗口/排序/limit/
+/// 集合操作/CTE/子查询位/聚合投影——`SELECT cols FROM t [WHERE p]`
+pub fn lazy_scan_shape(q: &sqlparser::ast::Query) -> Option<LazyShape> {
+    let sel = match &*q.body {
+        sqlparser::ast::SetExpr::Select(sel) => sel,
+        _ => return None,
+    };
+    if q.with.is_some() || q.order_by.is_some() || q.limit_clause.is_some() || q.fetch.is_some() {
+        return None;
+    }
+    if sel.from.len() != 1 || !sel.from[0].joins.is_empty() {
+        return None;
+    }
+    let sqlparser::ast::TableFactor::Table { name, .. } = &sel.from[0].relation else {
+        return None;
+    };
+    let table = name
+        .0
+        .last()
+        .and_then(|p| p.as_ident())
+        .map(|i| i.value.clone())?;
+    if !matches!(&sel.group_by, sqlparser::ast::GroupByExpr::Expressions(es, _) if es.is_empty())
+        || sel.having.is_some()
+        || sel.distinct.is_some()
+    {
+        return None;
+    }
+    if crate::sql::scan::projection_aggregates(&sel.projection).is_some() {
+        return None;
+    }
+    if let Some(w) = &sel.selection {
+        if crate::sql::scan::expr_has_subquery(w) {
+            return None;
+        }
+    }
+    // 投影收集（Unnamed/ExprWithAlias；通配形态不支持——列名不可静态定）
+    let mut proj = Vec::new();
+    let mut names = Vec::new();
+    for item in &sel.projection {
+        match item {
+            sqlparser::ast::SelectItem::UnnamedExpr(e) => {
+                proj.push(e.clone());
+                names.push(crate::sql::scan::short_str_pub(e));
+            }
+            sqlparser::ast::SelectItem::ExprWithAlias { expr, alias } => {
+                proj.push(expr.clone());
+                names.push(alias.value.clone());
+            }
+            _ => return None,
+        }
+    }
+    Some(LazyShape {
+        table,
+        pred: sel.selection.clone(),
+        proj,
+        names,
+    })
+}
+
+/// 惰性形态描述
+pub struct LazyShape {
+    pub table: String,
+    pub pred: Option<sqlparser::ast::Expr>,
+    pub proj: Vec<sqlparser::ast::Expr>,
+    pub names: Vec<String>,
+}
+
+/// 惰性扫描游标：`next_row` 逐行产出（批拉取 + 行级谓词/投影）
+pub struct LazyScan {
+    src: crate::exec::source::MainPlusDeltaSource,
+    src_names: Vec<String>,
+    names: Vec<String>,
+    pred: Option<crate::sql::scalar::CompiledPredicate>,
+    pred_expr: Option<sqlparser::ast::Expr>,
+    proj: Vec<sqlparser::ast::Expr>,
+    buf: Vec<Vec<SqlValue>>,
+    pos: usize,
+    current: Option<Vec<SqlValue>>,
+    /// 已产出行数（诊断/测试）
+    pub produced: u64,
+}
+
+impl LazyScan {
+    /// 从形态 + 已代入参数的 AST 构造（失败返回 None 回落）
+    pub(crate) fn build(
+        db: &crate::engine::Database,
+        sess: &mut crate::engine::Session,
+        shape: &LazyShape,
+    ) -> Result<Option<Self>> {
+        let snapshot = sess.implicit_snapshot(db)?;
+        let Some((src_names, src)) =
+            crate::sql::scan::lazy_scan_source(db, sess, &shape.table, snapshot)?
+        else {
+            return Ok(None);
+        };
+        // 列名解析器（源行布局）
+        let resolver_names = src_names.clone();
+        let resolve = move |n: &str| -> Option<usize> {
+            resolver_names
+                .iter()
+                .position(|c| c.eq_ignore_ascii_case(n))
+        };
+        let pred_cp = shape.pred.as_ref().and_then(|p| {
+            // 不支持形态 → None：行级 expr 求值兜底
+            crate::sql::scalar::compile_predicate_cached(p, &resolve, src_names.len(), &src_names)
+                .ok()
+        });
+        let names = shape.names.clone();
+        Ok(Some(Self {
+            src,
+            src_names,
+            names,
+            pred: pred_cp,
+            pred_expr: shape.pred.clone(),
+            proj: shape.proj.clone(),
+            buf: Vec::new(),
+            pos: 0,
+            current: None,
+            produced: 0,
+        }))
+    }
+
+    pub fn column_count(&self) -> usize {
+        self.proj.len()
+    }
+
+    pub fn column_name(&self, i: usize) -> Option<&str> {
+        self.names.get(i).map(|s| s.as_str())
+    }
+
+    /// 下一行：None = 耗尽。批拉取 + 谓词短路 + 投影行级求值
+    pub fn next_row(&mut self) -> Result<Option<Vec<SqlValue>>> {
+        loop {
+            if self.pos < self.buf.len() {
+                let raw = std::mem::take(&mut self.buf[self.pos]); // 移出——批消费后即弃
+                self.pos += 1;
+                // 谓词（程序优先；不支持形态走 expr 行级）
+                let keep = if let Some(cp) = &self.pred {
+                    let mut out = SqlValue::Null;
+                    crate::sql::scalar::eval_row(&cp.prog, &raw, &[], &mut out)?;
+                    matches!(out, SqlValue::Bool(true))
+                } else if let Some(pe) = &self.pred_expr {
+                    let names = self.src_names.clone();
+                    let resolve = move |n: &str| -> Option<usize> {
+                        names.iter().position(|c| c.eq_ignore_ascii_case(n))
+                    };
+                    matches!(
+                        crate::sql::expr::eval(pe, &raw, &resolve)?,
+                        SqlValue::Bool(true)
+                    )
+                } else {
+                    true
+                };
+                if !keep {
+                    continue;
+                }
+                // 投影
+                let names = self.src_names.clone();
+                let resolve = move |n: &str| -> Option<usize> {
+                    names.iter().position(|c| c.eq_ignore_ascii_case(n))
+                };
+                let mut row = Vec::with_capacity(self.proj.len());
+                for e in &self.proj {
+                    row.push(crate::sql::expr::eval(e, &raw, &resolve)?);
+                }
+                self.produced += 1;
+                self.current = Some(row);
+                return Ok(self.current.clone());
+            }
+            // 批尽 → 拉下一批
+            match self.src.next() {
+                Some(Ok(b)) => {
+                    self.buf = b;
+                    self.pos = 0;
+                }
+                Some(Err(e)) => return Err(e),
+                None => return Ok(None),
+            }
+        }
+    }
 }
