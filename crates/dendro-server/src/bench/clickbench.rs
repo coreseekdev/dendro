@@ -259,7 +259,7 @@ pub fn bench_clickbench(
             return None;
         }
         dendro_core::engine::proc_rss_bytes()
-            .map(|b| b as f64 / 1_048_576.0)
+            .map(|b| b as f64 / (1 << 30) as f64) // GiB
             .filter(|gb| *gb > gb_cap)
     };
     let write_out = |rows: Vec<BenchRow>| -> BenchResult {
@@ -438,7 +438,9 @@ pub fn bench_clickbench(
             // 剩余查询统一标注（含天然 skip 的原样保留语义）
             let all = queries();
             for (rqi, _, rskip) in all.iter().skip_while(|(x, _, _)| *x != qi).skip(1) {
-                let reason = rskip.map(|r| r.to_string()).unwrap_or_else(|| "memcap".into());
+                let reason = rskip
+                    .map(|r| r.to_string())
+                    .unwrap_or_else(|| "memcap".into());
                 rows_out.push(BenchRow {
                     name: format!("q{rqi:02}.skipped[{reason}]"),
                     value: 0.0,
@@ -489,8 +491,11 @@ pub fn bench_clickbench(
         });
         // 逐查询打点：即使外层 memguard 硬杀，tee 日志也留有已完成
         // 查询的耗时痕迹（部分基线可从日志恢复）
-        let rss_now = dendro_core::engine::proc_rss_bytes().unwrap_or(0) as f64 / 1_048_576.0;
-        eprintln!("[clickbench] q{qi:02} done {} ms (rss {rss_now:.1}gb)", times[1]);
+        let rss_now = dendro_core::engine::proc_rss_bytes().unwrap_or(0) as f64 / (1 << 30) as f64;
+        eprintln!(
+            "[clickbench] q{qi:02} done {} ms (rss {rss_now:.1}gb)",
+            times[1]
+        );
     }
     write_out(rows_out)
 }

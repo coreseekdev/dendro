@@ -86,12 +86,18 @@ pub(crate) fn exec_aggregate_composite(
         (_, Some((gidx, specs))) => {
             let mut agg_op = crate::exec::pipeline::AggOp::new(gidx, specs);
             let mut sink = crate::exec::pipeline::CollectSink::new(None);
-            let batches: Vec<Result<Vec<Vec<SqlValue>>>> = tv_in
-                .rows
-                .chunks(crate::exec::pipeline::ROW_BATCH)
-                .map(|ch| Ok(ch.to_vec()))
-                .collect();
-            let mut it = batches.into_iter();
+            // 惰性按批切片：不预拷贝全量批（原 .collect() 先整表复制一份，
+            // 与 TableView 并存 = 双倍行内存；AggOp 消费一批丢一批后峰值
+            // 只剩 TableView + 单批）
+            let rows_ref = &tv_in.rows;
+            let mut it = (0..rows_ref.len())
+                .step_by(crate::exec::pipeline::ROW_BATCH)
+                .map(|i| {
+                    Ok(
+                        rows_ref[i..(i + crate::exec::pipeline::ROW_BATCH).min(rows_ref.len())]
+                            .to_vec(),
+                    )
+                });
             let mut pcx = crate::exec::pipeline::PipeCtx::new(
                 vec![],
                 sess.stmt_deadline,
@@ -1332,12 +1338,13 @@ where
         cols: Box::new(resolve),
     };
     let mut sink = crate::exec::pipeline::CollectSink::new(None);
-    let batches: Vec<Result<Vec<Vec<SqlValue>>>> = tv
-        .rows
-        .chunks(crate::exec::pipeline::ROW_BATCH)
-        .map(|ch| Ok(ch.to_vec()))
-        .collect();
-    let mut it = batches.into_iter();
+    // 惰性按批切片（同 GROUP BY 臂——不预拷贝全量批）
+    let rows_ref = &tv.rows;
+    let mut it = (0..rows_ref.len())
+        .step_by(crate::exec::pipeline::ROW_BATCH)
+        .map(|i| {
+            Ok(rows_ref[i..(i + crate::exec::pipeline::ROW_BATCH).min(rows_ref.len())].to_vec())
+        });
     let mut pcx =
         crate::exec::pipeline::PipeCtx::new(vec![], sess.stmt_deadline, sess.cancel_token.clone());
     crate::exec::pipeline::drive(&mut pcx, &mut it, &mut pop, &mut sink)?;
