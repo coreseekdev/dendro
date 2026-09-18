@@ -184,8 +184,47 @@ pub struct ScalarProgram {
 /// 步数上限（B5；06 §4 单条目尺寸上界的步数形态）
 pub const SCALAR_STEP_CAP: usize = 1024;
 
+#[derive(Clone)]
 pub struct CompiledPredicate {
     pub prog: ScalarProgram,
+}
+
+/// 谓词程序进程级缓存（编译面 L1——L0 = plan_cache 文本→AST 已有）。
+/// 程序是纯值（列已解析为索引）⇒ (谓词文本, 列布局) 即身份，不可变
+/// 无需失效（view/CHECK 缓存同模式）。双态缓存：Ok 程序与 Unsupported
+/// （如 LIKE——ScalarProgram 未支持形态；缓存否定结果消掉重复编译
+/// 尝试：L2 相关子查询每外层行重入时曾反复编译+失败）。
+/// 收益面：同语句重复执行（bench warm 轮 4 次编译 → 1 次）、
+/// L2 逐外层行、CHECK/约束谓词以外的全部 Filter 求值入口
+/// 缓存否定态：ScalarProgram 不支持的谓词形态（如 LIKE）——调用方
+/// 依此回落 expr::eval 逐行路径（compile-or-fallback 合同不变）
+#[derive(Clone)]
+pub struct Unsupported;
+
+pub fn compile_predicate_cached(
+    e: &Expr,
+    resolve: &dyn Fn(&str) -> Option<usize>,
+    n_cols: usize,
+    names: &[String],
+) -> std::result::Result<CompiledPredicate, Unsupported> {
+    type Entry = std::sync::Arc<std::result::Result<CompiledPredicate, Unsupported>>;
+    type Cache = std::sync::Mutex<std::collections::HashMap<(String, String), Entry>>;
+    static CACHE: std::sync::OnceLock<Cache> = std::sync::OnceLock::new();
+    const CAP: usize = 1024;
+    let cache = CACHE.get_or_init(Cache::default);
+    let key = (e.to_string(), names.join("\u{1}"));
+    if let Some(v) = cache.lock().unwrap().get(&key) {
+        return (**v).clone().map_err(|_| Unsupported);
+    }
+    let r: Entry = std::sync::Arc::new(
+        compile_predicate_named(e, resolve, n_cols, names).map_err(|_| Unsupported),
+    );
+    let mut g = cache.lock().unwrap();
+    if g.len() >= CAP {
+        g.clear(); // 简单整清（view 缓存同式；谓词程序小对象，界 1024）
+    }
+    g.insert(key, r.clone());
+    (*r).clone()
 }
 
 /// 编译谓词（终结步 = Qual）。`cols` 是名字→列偏移解析器（绑定层提供）。

@@ -233,7 +233,7 @@ fn apply_predicates_q(
 ) -> Result<TableView> {
     // cols 借用收敛在块内（闭包持有生命周期——外提会锁死结尾的 tv 移动）
     let rows: Vec<Vec<SqlValue>> = {
-        match crate::sql::scalar::compile_predicate_named(w, resolve, tv.names.len(), &tv.names) {
+        match crate::sql::scalar::compile_predicate_cached(w, resolve, tv.names.len(), &tv.names) {
             Ok(cp) if tv.rows.len() > 64 => {
                 let mut cx = crate::exec::pipeline::PipeCtx::new(
                     vec![],
