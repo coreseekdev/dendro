@@ -31,3 +31,4 @@ rand.workspace = true
 
 [dev-dependencies]
 dendro-columnar = { path = "../dendro-columnar" }
+sqlparser.workspace = true

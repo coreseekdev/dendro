@@ -115,6 +115,67 @@ fn prune_case_and_group_having() {
 }
 
 #[test]
+fn prune_like_family_references() {
+    // q21 教训（ClickBench 10M 'URL does not exist'）：列只出现在
+    // LIKE 谓词时 expr_idents 曾漏收 → 掩码丢列。差分 on/off 都会对
+    // 比行集，另钉非空结果（null 填充期此形态是静默 0 行）
+    diff(&db_like(), "SELECT count(*) FROM wl WHERE u LIKE '%zz%'");
+    diff(
+        &db_like(),
+        "SELECT id FROM wl WHERE u NOT LIKE 'plain%' LIMIT 3",
+    );
+    //（ILIKE 运行时未实现——其掩码收集覆盖在 ident_completeness）
+    // LIKE 列 + 未投影组合（掩码 = {pk, u}，投影 note 未引用则不可达——
+    // 用 a 列组合确保两列都在掩码）
+    diff(
+        &db_like(),
+        "SELECT a FROM wl WHERE u LIKE '%zz%' AND a > 0 ORDER BY id LIMIT 5",
+    );
+}
+
+/// LIKE 夹具：note/zz 高区分文本（u=plain_N / zz_N 交替）
+fn db_like() -> Arc<Database> {
+    let db = Database::open(DbOptions {
+        store: StoreConfig::Memory,
+        ..Default::default()
+    })
+    .unwrap();
+    db.set_columnar(Arc::new(dendro_columnar::integrate::CbfColumnar {
+        row_group_rows: 4096,
+    }));
+    let mut s = db.new_session();
+    s.exec("CREATE TABLE wl (id BIGINT PRIMARY KEY, a INT, u TEXT)")
+        .unwrap();
+    for chunk in 0..6 {
+        let vals: Vec<String> = (0..1000)
+            .map(|i| {
+                let id = chunk * 1000 + i + 1;
+                format!(
+                    "({id}, {}, '{}')",
+                    id % 7,
+                    if id % 4 == 0 {
+                        format!("zz_{id}")
+                    } else {
+                        format!("plain_{id}")
+                    }
+                )
+            })
+            .collect();
+        s.exec(&format!("INSERT INTO wl VALUES {}", vals.join(",")))
+            .unwrap();
+    }
+    db.checkpoint_branch("main").unwrap();
+    // 非空钉子：LIKE 命中恰 1500 行（6000/4）——静默错值回归即刻红
+    let (_, rows) = run(&db, "on", "SELECT count(*) FROM wl WHERE u LIKE '%zz%'");
+    assert!(
+        matches!(&rows[0][0], SqlValue::Int64(1500)),
+        "LIKE 命中应为 1500（静默 0 行回归）：{:?}",
+        rows[0]
+    );
+    db
+}
+
+#[test]
 fn wildcard_not_pruned() {
     let db = fixture();
     // 通配 → 不裁剪（若误裁，SELECT * 的裁掉列变 NULL——差分即刻红）

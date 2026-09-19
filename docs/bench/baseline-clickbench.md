@@ -168,3 +168,22 @@ swap 打满殃及整机。此后跑批双层防护：
 - 修复后 10M queries-only：**q01-q24 零错误全完成**（q21 6.4s、
   q24 70.3s），软上限在 q25 优雅截断（q24 后 RSS 38.9GB>16GB），
   增量 JSON 完整——双层防线按设计工作
+
+## 7. 缺陷 → 固化映射（2026-09-19 纪律批）
+
+本会话识别的每个缺陷均已固化为测试或形式化规约（"识别到的错误
+必须进测试/规约"）：
+
+| 缺陷 | 固化 | 形态 |
+|------|------|------|
+| expr_idents 漏 LIKE 家族（掩码丢列；null 填充期静默错值） | `ident_completeness.rs`（黄金用例集）+ `prune_differential::prune_like_family_references`（差分 + 非空钉子）+ **实现重写到 sqlparser 派生 Visit（按构造完备）** | 测试 + 结构性根治 |
+| Arrow 捷径忽略 DISTINCT / COUNT(*) 通配 / 未物化增量丢行 | `arrow_agg_differential.rs` 7 项（有重复值强判别 / 通配 / overlay/txn/deletes 门） | 差分测试 |
+| 估算器窄 names × 全宽 stats 错位（est=0） | `stats_half_open_range_and_actual_agreement`（曾红） | 既有测试验证有效 |
+| memcap GiB 除数（2.5GB 误读 2523GB） | `memcap_gib_conversion`（精确值 + 量级回归） | 单元测试 |
+| 硬杀丢结果 | bench 逐查询增量写盘（done/error 双路径） | 机制 |
+| 三路归并可见性 + 捷径门可靠性 | **`DendroMerge.tla`**：InvGateSound / InvGateClosedWithDelta，TLC 无错；GateIgnoresDelta=TRUE 否定性验证违反（模型可检出该缺陷类） | 形式化规约 |
+| CAS tmp 碰撞（前会话） | DendroCAS.tla + local.rs 回归测试（前会话已固化） | 形式化 + 测试 |
+
+已知缺口（记录未修）：相关子查询内的外层列引用不进外层掩码
+（L2 逐行代入语义下需因子键上下文——`ident_completeness` 中已钉
+现状语义）。

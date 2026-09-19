@@ -212,92 +212,62 @@ pub fn factor_key(tf: &sqlparser::ast::TableFactor) -> Option<String> {
     }
 }
 
-/// 收集表达式内的标识符（限定名保前缀；CompoundIdentifier 取全路径）
-pub(crate) fn expr_idents_pub(e: &Expr, out: &mut Vec<String>) {
-    expr_idents(e, out)
+/// 收集表达式内的标识符（限定名保前缀；CompoundIdentifier 取全路径）。
+/// 实现走 sqlparser 派生 `Visit`——**按构造完备**（新 Expr 变体自动
+/// 覆盖）。历史教训（ClickBench 10M q21）：手写 match 逐臂遍历漏了
+/// LIKE 家族 → 列掩码丢列 → 窄行扫描后响亮报错（null 填充期为
+/// 静默错值）。子查询内的标识符**不属于**本层（其计划独立求值）：
+/// 以 Query 边界为深度闸。
+pub fn expr_idents_pub(e: &Expr, out: &mut Vec<String>) {
+    use sqlparser::ast::{Visit, Visitor};
+    use std::ops::ControlFlow;
+
+    struct IdentsCollector {
+        depth: usize, // >0 = 子查询内部
+        out: Vec<String>,
+    }
+    impl Visitor for IdentsCollector {
+        type Break = ();
+        fn pre_visit_query(&mut self, _q: &sqlparser::ast::Query) -> ControlFlow<()> {
+            self.depth += 1;
+            ControlFlow::Continue(())
+        }
+        fn post_visit_query(&mut self, _q: &sqlparser::ast::Query) -> ControlFlow<()> {
+            self.depth -= 1;
+            ControlFlow::Continue(())
+        }
+        fn pre_visit_expr(&mut self, e: &Expr) -> ControlFlow<()> {
+            if self.depth == 0 {
+                match e {
+                    Expr::Identifier(id) => {
+                        self.out.push(id.value.to_ascii_lowercase());
+                    }
+                    Expr::CompoundIdentifier(parts) => {
+                        let path = parts
+                            .iter()
+                            .map(|i| i.value.to_ascii_lowercase())
+                            .collect::<Vec<_>>()
+                            .join(".");
+                        if !path.is_empty() {
+                            self.out.push(path);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            ControlFlow::Continue(())
+        }
+    }
+    let mut v = IdentsCollector {
+        depth: 0,
+        out: Vec::new(),
+    };
+    let _ = e.visit(&mut v);
+    out.extend(v.out);
 }
 
 fn expr_idents(e: &Expr, out: &mut Vec<String>) {
-    match e {
-        Expr::Identifier(id) => out.push(id.value.to_ascii_lowercase()),
-        Expr::CompoundIdentifier(parts) => {
-            let path = parts
-                .iter()
-                .map(|i| i.value.to_ascii_lowercase())
-                .collect::<Vec<_>>()
-                .join(".");
-            if !path.is_empty() {
-                out.push(path);
-            }
-        }
-        Expr::BinaryOp { left, right, .. } => {
-            expr_idents(left, out);
-            expr_idents(right, out);
-        }
-        Expr::UnaryOp { expr, .. }
-        | Expr::Nested(expr)
-        | Expr::IsNull(expr)
-        | Expr::IsNotNull(expr)
-        | Expr::IsTrue(expr)
-        | Expr::IsFalse(expr) => expr_idents(expr, out),
-        Expr::InList { expr, list, .. } => {
-            expr_idents(expr, out);
-            for i in list {
-                expr_idents(i, out);
-            }
-        }
-        Expr::Between {
-            expr, low, high, ..
-        } => {
-            expr_idents(expr, out);
-            expr_idents(low, out);
-            expr_idents(high, out);
-        }
-        // LIKE 家族：被匹配列与模式都可能引用列（原缺失——ClickBench
-        // 10M q21 'URL does not exist (available:[rid])' 的根因：列只
-        // 出现在 LIKE 谓词 → idents 空 → 掩码只剩 pk。更早的 null 填充
-        // 期这是**静默错值**（NULL LIKE → 0 行——1M 基线 q20 n=0 铁证），
-        // P0 窄行后转为响亮报错方才暴露）
-        Expr::Like { expr, pattern, .. }
-        | Expr::ILike { expr, pattern, .. }
-        | Expr::SimilarTo { expr, pattern, .. } => {
-            expr_idents(expr, out);
-            expr_idents(pattern, out);
-        }
-        Expr::Cast { expr, .. } => expr_idents(expr, out),
-        // CASE：条件/结果均可能引用列（原缺失——裁剪掉 CASE 引用列会
-        // 静默错值，O-3 差分补齐）
-        Expr::Case {
-            operand,
-            conditions,
-            else_result,
-            ..
-        } => {
-            if let Some(o) = operand {
-                expr_idents(o, out);
-            }
-            for cw in conditions {
-                expr_idents(&cw.condition, out);
-                expr_idents(&cw.result, out);
-            }
-            if let Some(e) = else_result {
-                expr_idents(e, out);
-            }
-        }
-        Expr::Function(f) => {
-            if let sqlparser::ast::FunctionArguments::List(l) = &f.args {
-                for a in &l.args {
-                    if let sqlparser::ast::FunctionArg::Unnamed(
-                        sqlparser::ast::FunctionArgExpr::Expr(e),
-                    ) = a
-                    {
-                        expr_idents(e, out);
-                    }
-                }
-            }
-        }
-        _ => {}
-    }
+    expr_idents_pub(e, out)
 }
 
 /// R2：合取项的下推归属。Some(key) = 全部标识符限定且前缀同因子；

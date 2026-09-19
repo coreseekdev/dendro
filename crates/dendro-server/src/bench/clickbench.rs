@@ -237,6 +237,22 @@ fn sql_lit(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
 }
 
+/// RSS 字节 → GiB（memcap 换算——曾有 /1MiB 当 GiB 用的缺陷：2.5GB
+/// 实际占用被读成 "2523GB"，10M 装载秒触上限退出）
+fn rss_bytes_to_gib(b: u64) -> f64 {
+    b as f64 / (1u64 << 30) as f64
+}
+
+#[test]
+fn memcap_gib_conversion() {
+    // 5 GiB 精确；2.46GB 实际值不得被放大三个数量级（历史缺陷形态）
+    assert_eq!(rss_bytes_to_gib(5 * (1 << 30)), 5.0);
+    let real = 2_643_148_800u64; // ≈2.46 GiB（10M 装载实测峰值）
+    let v = rss_bytes_to_gib(real);
+    assert!((2.4..2.5).contains(&v), "应为 ~2.46，得 {v}");
+    assert!(v < 16.0, "不得复现 2523GB 误读");
+}
+
 /// 跑 ClickBench：装载（COPY FROM，.gz 自动解压；rows_limit>0 先截样）
 /// → 检查点/ANALYZE → 查询计时。ckpt_every 在 COPY 路径下不生效
 ///（单语句装载；保留参数兼容旧签名）
@@ -250,8 +266,8 @@ pub fn bench_clickbench(
     data_dir: &Path,
     rows_limit: usize, // 0 = 全量
     chunk_rows: usize,
-    ckpt_every: usize, // 每 N 行 CHECKPOINT（界内存tx/WAL）；0 = 不做
-    max_rss_mb: u64,   // 0 = 不设限；>0 = 超限优雅截断（mb）
+    ckpt_every: usize,  // 每 N 行 CHECKPOINT（界内存tx/WAL）；0 = 不做
+    max_rss_mb: u64,    // 0 = 不设限；>0 = 超限优雅截断（mb）
     queries_only: bool, // 跳过装载/物化/ANALYZE——对既有库直接跑查询
     out: &PathBuf,
 ) -> BenchResult {
@@ -260,7 +276,7 @@ pub fn bench_clickbench(
             return None;
         }
         dendro_core::engine::proc_rss_bytes()
-            .map(|b| b as f64 / (1 << 30) as f64) // GiB
+            .map(rss_bytes_to_gib)
             .filter(|gb| *gb > gb_cap)
     };
     let write_out = |rows: Vec<BenchRow>| -> BenchResult {
@@ -277,92 +293,98 @@ pub fn bench_clickbench(
     let gb_cap = max_rss_mb as f64 / 1024.0;
 
     // ---- 查询：warmup 1 + 中位数 of 3 ----
-    let run_queries = |s: &mut dendro_core::engine::Session,
-                       rows_out: &mut Vec<BenchRow>|
-     -> BenchResult {
-        let from: usize = std::env::var("CB_FROM").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
-        let to: usize = std::env::var("CB_TO").ok().and_then(|v| v.parse().ok()).unwrap_or(99);
-        for (qi, sql, skip) in queries() {
-            if qi < from || (qi > to && qi != 21) {
-                continue; // 二分复现面：前缀 [from,to] + 恒跑 q21
-            }
-        // 内存上限（步间防线）：上一条查询（或 warmup 后）RSS 仍超
-        // → 本条及剩余全部标记 memcap skip，写出部分结果优雅退出
-        if let Some(gb) = rss_over_cap(gb_cap) {
-            rows_out.push(BenchRow {
-                name: format!("q{qi:02}.skipped[memcap rss {gb:.1}gb > {gb_cap:.0}gb]"),
-                value: 0.0,
-                unit: "skip",
-            });
-            eprintln!("[clickbench] MEMCAP queries: {gb:.1}gb > {gb_cap:.0}gb @ q{qi:02}");
-            // 剩余查询统一标注（含天然 skip 的原样保留语义）
-            let all = queries();
-            for (rqi, _, rskip) in all.iter().skip_while(|(x, _, _)| *x != qi).skip(1) {
-                let reason = rskip
-                    .map(|r| r.to_string())
-                    .unwrap_or_else(|| "memcap".into());
+    let run_queries =
+        |s: &mut dendro_core::engine::Session, rows_out: &mut Vec<BenchRow>| -> BenchResult {
+            let from: usize = std::env::var("CB_FROM")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1);
+            let to: usize = std::env::var("CB_TO")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(99);
+            for (qi, sql, skip) in queries() {
+                if qi < from || (qi > to && qi != 21) {
+                    continue; // 二分复现面：前缀 [from,to] + 恒跑 q21
+                }
+                // 内存上限（步间防线）：上一条查询（或 warmup 后）RSS 仍超
+                // → 本条及剩余全部标记 memcap skip，写出部分结果优雅退出
+                if let Some(gb) = rss_over_cap(gb_cap) {
+                    rows_out.push(BenchRow {
+                        name: format!("q{qi:02}.skipped[memcap rss {gb:.1}gb > {gb_cap:.0}gb]"),
+                        value: 0.0,
+                        unit: "skip",
+                    });
+                    eprintln!("[clickbench] MEMCAP queries: {gb:.1}gb > {gb_cap:.0}gb @ q{qi:02}");
+                    // 剩余查询统一标注（含天然 skip 的原样保留语义）
+                    let all = queries();
+                    for (rqi, _, rskip) in all.iter().skip_while(|(x, _, _)| *x != qi).skip(1) {
+                        let reason = rskip
+                            .map(|r| r.to_string())
+                            .unwrap_or_else(|| "memcap".into());
+                        rows_out.push(BenchRow {
+                            name: format!("q{rqi:02}.skipped[{reason}]"),
+                            value: 0.0,
+                            unit: "skip",
+                        });
+                    }
+                    return write_out(std::mem::take(rows_out));
+                }
+                if let Some(reason) = skip {
+                    rows_out.push(BenchRow {
+                        name: format!("q{qi:02}.skipped[{reason}]"),
+                        value: 0.0,
+                        unit: "skip",
+                    });
+                    continue;
+                }
+                // warmup（不计时）+ 结果行数校验留痕
+                let w = s.exec(&sql);
+                let rowcount = match &w {
+                    Ok(outs) => outs
+                        .iter()
+                        .map(|o| match o {
+                            dendro_core::types::Output::Rows(rs) => rs.text_rows().len(),
+                            _ => 1,
+                        })
+                        .sum::<usize>(),
+                    Err(e) => {
+                        rows_out.push(BenchRow {
+                            name: format!("q{qi:02}.error[{}]", e.state),
+                            value: 0.0,
+                            unit: "err",
+                        });
+                        eprintln!("[clickbench] q{qi:02} ERROR: {e}");
+                        let _ = write_out(rows_out.clone());
+                        continue;
+                    }
+                };
+                let mut times = Vec::with_capacity(3);
+                for _ in 0..3 {
+                    let t = Instant::now();
+                    let _ = std::hint::black_box(s.exec(&sql));
+                    times.push(t.elapsed().as_secs_f64() * 1e3);
+                }
+                times.sort_by(|a, b| a.partial_cmp(b).unwrap());
                 rows_out.push(BenchRow {
-                    name: format!("q{rqi:02}.skipped[{reason}]"),
-                    value: 0.0,
-                    unit: "skip",
+                    name: format!("q{qi:02}.median_ms[n={rowcount}]"),
+                    value: times[1],
+                    unit: "ms",
                 });
-            }
-            return write_out(std::mem::take(rows_out));
-            }
-            if let Some(reason) = skip {
-            rows_out.push(BenchRow {
-                name: format!("q{qi:02}.skipped[{reason}]"),
-                value: 0.0,
-                unit: "skip",
-            });
-            continue;
-        }
-        // warmup（不计时）+ 结果行数校验留痕
-        let w = s.exec(&sql);
-        let rowcount = match &w {
-            Ok(outs) => outs
-                .iter()
-                .map(|o| match o {
-                    dendro_core::types::Output::Rows(rs) => rs.text_rows().len(),
-                    _ => 1,
-                })
-                .sum::<usize>(),
-            Err(e) => {
-                rows_out.push(BenchRow {
-                    name: format!("q{qi:02}.error[{}]", e.state),
-                    value: 0.0,
-                    unit: "err",
-                });
-                eprintln!("[clickbench] q{qi:02} ERROR: {e}");
+                // 逐查询打点：即使外层 memguard 硬杀，tee 日志也留有已完成
+                // 查询的耗时痕迹（部分基线可从日志恢复）
+                let rss_now =
+                    dendro_core::engine::proc_rss_bytes().unwrap_or(0) as f64 / (1 << 30) as f64;
+                eprintln!(
+                    "[clickbench] q{qi:02} done {} ms (rss {rss_now:.1}gb)",
+                    times[1]
+                );
+                // 增量落盘（首跑实证：error 路径已写而 done 路径锚文本失配
+                // 漏打——q22/q23 计时只存在于日志）
                 let _ = write_out(rows_out.clone());
-                continue;
             }
+            write_out(std::mem::take(rows_out))
         };
-        let mut times = Vec::with_capacity(3);
-        for _ in 0..3 {
-            let t = Instant::now();
-            let _ = std::hint::black_box(s.exec(&sql));
-            times.push(t.elapsed().as_secs_f64() * 1e3);
-        }
-        times.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        rows_out.push(BenchRow {
-            name: format!("q{qi:02}.median_ms[n={rowcount}]"),
-            value: times[1],
-            unit: "ms",
-        });
-        // 逐查询打点：即使外层 memguard 硬杀，tee 日志也留有已完成
-        // 查询的耗时痕迹（部分基线可从日志恢复）
-        let rss_now = dendro_core::engine::proc_rss_bytes().unwrap_or(0) as f64 / (1 << 30) as f64;
-        eprintln!(
-            "[clickbench] q{qi:02} done {} ms (rss {rss_now:.1}gb)",
-            times[1]
-        );
-            // 增量落盘（首跑实证：error 路径已写而 done 路径锚文本失配
-            // 漏打——q22/q23 计时只存在于日志）
-            let _ = write_out(rows_out.clone());
-        }
-        write_out(std::mem::take(rows_out))
-    };
 
     let db = Database::open(DbOptions {
         store: StoreConfig::LocalDir(data_dir.to_path_buf()),
