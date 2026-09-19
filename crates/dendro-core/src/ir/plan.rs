@@ -19,7 +19,7 @@ use sqlparser::ast::{Expr, Query, SetExpr, TableFactor};
 
 /// 窗口调用（阶段1 IR 自足化：从 scan/window.rs 升格——计划与 AST
 /// 路径共用同一结构；display 保留原文供打印/匹配）
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct WindowCall {
     // 函数名（row_number / rank / dense_rank / sum / count / min / max / avg）
     pub func: String,
@@ -63,7 +63,7 @@ impl ScanVersion {
 
 /// 逻辑计划节点（v1 形状集 = eval 支持的形状；select.from 仅首因子
 /// 与其 join 链——与 eval_from 现状一致，逗号多因子 not_supported）
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Plan {
     // 无 FROM 常量输入（单行零列）
     Values,

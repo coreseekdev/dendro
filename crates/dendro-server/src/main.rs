@@ -121,6 +121,33 @@ enum Cmd {
         #[arg(long, default_value = "benches/results/clickbench.json")]
         out: PathBuf,
     },
+    /// dump：SQL → 未优化 IR（前端快速裁决原语 1/3）
+    Ir {
+        /// 被检 SQL（单条 SELECT）
+        #[arg(long)]
+        sql: String,
+        /// 方言（pg | sqlite | mysql）
+        #[arg(long, default_value = "pg")]
+        dialect: String,
+    },
+    /// unparse：SQL → IR → 重构 SQL'（前端快速裁决原语 2/3）
+    Unparse {
+        #[arg(long)]
+        sql: String,
+        #[arg(long, default_value = "pg")]
+        dialect: String,
+    },
+    /// compare：两段 SQL → IR 结构等价裁决（前端快速裁决原语 3/3）
+    Compare {
+        /// SQL A
+        #[arg(long)]
+        a: String,
+        /// SQL B
+        #[arg(long)]
+        b: String,
+        #[arg(long, default_value = "pg")]
+        dialect: String,
+    },
     /// A/B 配对评测（qorl 纪律：预热/交替配对/中位数/±5% 平局区/愚弄率）
     BenchPair {
         /// 事实表行数
@@ -154,6 +181,14 @@ enum Cmd {
         #[arg(default_value = "SELECT 1+1 AS two")]
         sql: String,
     },
+}
+
+fn parse_dialect(s: &str) -> dendro_core::sql::SqlDialect {
+    match s.to_ascii_lowercase().as_str() {
+        "sqlite" => dendro_core::sql::SqlDialect::Sqlite,
+        "mysql" => dendro_core::sql::SqlDialect::MySql,
+        _ => dendro_core::sql::SqlDialect::Pg,
+    }
 }
 
 fn main() {
@@ -414,6 +449,45 @@ fn main() {
                 out.parent().unwrap_or(&out).display()
             );
         }
+        Cmd::Ir { sql, dialect } => {
+            let d = parse_dialect(&dialect);
+            match dendro_core::ir::unparse::dump_ir(&sql, d) {
+                Ok(ir) => println!("{ir}"),
+                Err(e) => {
+                    eprintln!("ir: {e}");
+                    std::process::exit(2);
+                }
+            }
+        }
+        Cmd::Unparse { sql, dialect } => {
+            let d = parse_dialect(&dialect);
+            match dendro_core::ir::unparse::unparse_sql(&sql, d) {
+                Ok(u) => println!("{u}"),
+                Err(e) => {
+                    eprintln!("unparse: {e}");
+                    std::process::exit(2);
+                }
+            }
+        }
+        Cmd::Compare { a, b, dialect } => {
+            let d = parse_dialect(&dialect);
+            let r = match dendro_core::ir::unparse::compare_sql(&a, &b, d) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("compare: {e}");
+                    std::process::exit(2);
+                }
+            };
+            println!("IR equal: {}", if r.equal { "YES" } else { "NO" });
+            if !r.equal {
+                if let Some(div) = &r.divergence {
+                    println!("divergence: {div}");
+                }
+                println!("--- IR A ---\n{}", r.ir_a);
+                println!("--- IR B ---\n{}", r.ir_b);
+                std::process::exit(2);
+            }
+        }
         Cmd::Bench { out } => {
             dendro_server::bench::run_all(&out);
         }
@@ -428,7 +502,14 @@ fn main() {
             out,
         } => {
             let s = dendro_server::bench::clickbench::bench_clickbench(
-                &csv, &data, rows, chunk, ckpt_every, max_rss_mb, queries_only, &out,
+                &csv,
+                &data,
+                rows,
+                chunk,
+                ckpt_every,
+                max_rss_mb,
+                queries_only,
+                &out,
             );
             println!("wrote {}", out.display());
             for r in &s.rows {
