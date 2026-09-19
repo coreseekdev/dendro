@@ -7,3 +7,5 @@ verification/kani/*.out
 verification/kani/*.symtab.out
 verification/kani/*.rlib
 verification/kani/*.json
+docs/research/states/
+docs/research/*_TTrace_*
