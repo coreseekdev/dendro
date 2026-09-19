@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 fn opts(dir: &std::path::Path, ttl_ms: i64) -> DbOptions {
     DbOptions {
+        mem_sample_interval_ms: 0,
         max_cursor_bytes: 0,
         max_prepared_per_session: 0,
         max_result_bytes: 0,
@@ -30,6 +31,7 @@ fn opts(dir: &std::path::Path, ttl_ms: i64) -> DbOptions {
 
 fn opts_ro(dir: &std::path::Path) -> DbOptions {
     DbOptions {
+        mem_sample_interval_ms: 0,
         read_only: true,
         ..opts(dir, 800)
     }
@@ -273,6 +275,7 @@ fn fence_expired_writer_rejected() {
     };
     let obj: std::sync::Arc<dyn dendro_core::objstore::ObjStore> = std::sync::Arc::new(store);
     let opts = DbOptions {
+        mem_sample_interval_ms: 0,
         max_cursor_bytes: 0,
         max_prepared_per_session: 0,
         max_result_bytes: 0,
@@ -451,6 +454,7 @@ fn reopen_branch_sql_recovers_poisoned_writer() {
     });
     let obj: std::sync::Arc<dyn dendro_core::objstore::ObjStore> = store.clone();
     let db = Database::open(DbOptions {
+        mem_sample_interval_ms: 0,
         store: StoreConfig::Obj(obj.clone()),
         durability: dendro_core::Durability::Group,
         wal_flush_interval_ms: 5,
@@ -523,6 +527,7 @@ fn lazy_open_and_drop_branch_gc() {
         );
         std::thread::sleep(Duration::from_millis(350));
         let db = Database::open(DbOptions {
+            mem_sample_interval_ms: 0,
             max_cursor_bytes: 0,
             max_prepared_per_session: 0,
             max_result_bytes: 0,

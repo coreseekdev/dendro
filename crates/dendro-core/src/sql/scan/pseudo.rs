@@ -99,3 +99,62 @@ pub(crate) fn pseudo_commit_log(db: &Database, sess: &mut Session) -> Result<Tab
 }
 
 // ---------- 输出 ----------
+
+/// 内存自省表（memprof 实时快照；cambium.memory_usage）
+/// 行型：meter 一行 + 包络/未归因/分配器明细行——SQL 可 join/聚合
+pub(crate) fn pseudo_memory(db: &Database) -> Result<TableView> {
+    let _ = db; // 快照进程级（meters 全局），db 仅作存在性锚
+    let snap = crate::memprof::get().snapshot();
+    let names = vec![
+        "kind".into(),
+        "name".into(),
+        "bytes".into(),
+        "items".into(),
+        "detail".into(),
+    ];
+    let mut rows = Vec::new();
+    let gi = |v: u64| SqlValue::Int64(v as i64);
+    rows.push(vec![
+        SqlValue::Utf8("envelope".into()),
+        SqlValue::Utf8("rss".into()),
+        gi(snap.rss_bytes),
+        SqlValue::Null,
+        SqlValue::Utf8("进程驻留（/proc statm）".into()),
+    ]);
+    rows.push(vec![
+        SqlValue::Utf8("envelope".into()),
+        SqlValue::Utf8("hwm".into()),
+        gi(snap.hwm_bytes),
+        SqlValue::Null,
+        SqlValue::Utf8("峰值驻留 VmHWM".into()),
+    ]);
+    rows.push(vec![
+        SqlValue::Utf8("envelope".into()),
+        SqlValue::Utf8("unattributed".into()),
+        gi(snap.unattributed),
+        SqlValue::Null,
+        SqlValue::Utf8("RSS − Σmeters（未归因：堆碎片/第三方/计量盲区）".into()),
+    ]);
+    for m in &snap.meters {
+        rows.push(vec![
+            SqlValue::Utf8(if m.estimated { "meter.est" } else { "meter" }.into()),
+            SqlValue::Utf8(m.name.into()),
+            gi(m.bytes),
+            gi(m.items),
+            SqlValue::Utf8(m.desc.into()),
+        ]);
+    }
+    if let Some(a) = &snap.allocator {
+        rows.push(vec![
+            SqlValue::Utf8("allocator".into()),
+            SqlValue::Utf8(a.flavor.into()),
+            gi(a.allocated),
+            SqlValue::Null,
+            SqlValue::Utf8(format!(
+                "allocated={} retained(未归还OS)={}",
+                a.allocated, a.retained
+            )),
+        ]);
+    }
+    Ok(TableView { names, rows })
+}

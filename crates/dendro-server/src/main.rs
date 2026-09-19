@@ -47,6 +47,9 @@ enum Cmd {
         /// 运维 HTTP 端口（/readyz /metrics；0 = 关闭）
         #[arg(long, default_value_t = 9469)]
         metrics_port: u16,
+        /// 内存采样间隔毫秒（memprof 环形窗口/峰值归因；0 = 关）
+        #[arg(long, default_value_t = 1000)]
+        mem_sample_ms: u64,
         /// 只读模式（读副本）：不领写者租约，拒绝一切写
         #[arg(long, default_value_t = false)]
         read_only: bool,
@@ -183,6 +186,32 @@ enum Cmd {
     },
 }
 
+// jemalloc 默认开（unix-only；win 自动回落系统分配器——决策见
+// docs/research/allocator-evaluation.md）。tikv 维护分支。
+#[cfg(all(unix, feature = "jemalloc"))]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+/// jemalloc 物理明细 → memprof 快照（allocated/retained——碎片与
+/// 滞留的分配器级解释；epoch 推进后读缓存统计）
+#[cfg(all(unix, feature = "jemalloc"))]
+fn register_memprof_allocator_detail() {
+    dendro_core::memprof::set_allocator_detail(Box::new(|| {
+        use tikv_jemalloc_ctl as ctl;
+        let _ = ctl::epoch::advance();
+        let a = ctl::stats::allocated::read().unwrap_or(0) as u64;
+        let r = ctl::stats::retained::read().unwrap_or(0) as u64;
+        Some(dendro_core::memprof::AllocatorDetail {
+            flavor: "jemalloc",
+            allocated: a,
+            retained: r,
+        })
+    }));
+}
+
+#[cfg(not(all(unix, feature = "jemalloc")))]
+fn register_memprof_allocator_detail() {}
+
 fn parse_dialect(s: &str) -> dendro_core::sql::SqlDialect {
     match s.to_ascii_lowercase().as_str() {
         "sqlite" => dendro_core::sql::SqlDialect::Sqlite,
@@ -192,6 +221,7 @@ fn parse_dialect(s: &str) -> dendro_core::sql::SqlDialect {
 }
 
 fn main() {
+    register_memprof_allocator_detail();
     // 日志初始化（第八轮 R8-5：此前 17 处 tracing 全部无 subscriber——毒化/
     // WAL 失败/checkpoint 失败等关键事件生产环境全部静默）
     tracing_subscriber::fmt()
@@ -206,6 +236,7 @@ fn main() {
             data,
             kv_port,
             metrics_port,
+            mem_sample_ms,
             read_only,
             gc_retention_ms,
             max_connections,
@@ -245,6 +276,7 @@ fn main() {
                 StoreConfig::LocalDir(data.clone())
             };
             let opts = DbOptions {
+                mem_sample_interval_ms: mem_sample_ms,
                 max_cursor_bytes: 0,
                 max_prepared_per_session: 0,
                 max_result_bytes: 0,

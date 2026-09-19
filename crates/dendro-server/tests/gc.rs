@@ -14,6 +14,7 @@ use std::time::Duration;
 
 fn opts(obj: Arc<dyn ObjStore>, retention_ms: i64) -> DbOptions {
     DbOptions {
+        mem_sample_interval_ms: 0,
         max_cursor_bytes: 0,
         max_prepared_per_session: 0,
         max_result_bytes: 0,

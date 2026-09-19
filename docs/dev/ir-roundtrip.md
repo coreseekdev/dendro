@@ -54,3 +54,18 @@ SQL → IR₁ → unparse → SQL' → IR₂；判 canonical(IR₁) == canonical
   / WITH RECURSIVE）诚实拒绝
 - 唯一性契约双向：表面不同语义等价（大小写/空白/包裹/合取序/列别名）
   ⟹ 相等；语义不同（谓词/列序/聚合参数）⟹ 可区分
+
+---
+
+# 内存监控三表面（memprof，2026-09-19 同批）
+
+SQL：`SELECT * FROM cambium.memory_usage`（kind/name/bytes/items/detail
+——meter 行 + rss/hwm/unattributed 包络行 + 分配器明细行）
+HTTP：`/metrics`（Prometheus 文本——dendro_mem_* 族 + 峰值归因）
+embed：`Connection::memory_snapshot_json()`
+
+分层：语义 meters（memtx.pending / columnar.scan_active / query.rows，
+RAII 作用域）+ RSS 包络（unattributed = 计量盲区持续自检）+ 分配器
+物理明细（jemalloc stats.allocated/retained，默认 feature；Linux 无
+feature 时 glibc mallinfo2 兜底）+ 后台采样环（--mem-sample-ms，默认
+1s，600 帧窗口 + RSS 峰值帧归因）。

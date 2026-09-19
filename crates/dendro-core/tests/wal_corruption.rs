@@ -18,6 +18,7 @@ use std::time::Duration;
 
 fn opts_store(store: StoreConfig) -> DbOptions {
     DbOptions {
+        mem_sample_interval_ms: 0,
         max_cursor_bytes: 0,
         max_prepared_per_session: 0,
         max_result_bytes: 0,
@@ -261,6 +262,7 @@ fn open_rejects_corrupted_wal_segment() {
 /// 小段阈值（4KB）强制多段，确保存在"非最后段"可测严格路径
 fn seed_db_closed(dir: &std::path::Path) {
     let db = Database::open(DbOptions {
+        mem_sample_interval_ms: 0,
         wal_segment_bytes: 4096,
         ..opts_store(StoreConfig::LocalDir(dir.to_path_buf()))
     })
@@ -878,6 +880,7 @@ fn append_mode_batches_segments_by_size() {
     let dir = std::env::temp_dir().join(format!("dendro-append-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let db = Database::open(DbOptions {
+        mem_sample_interval_ms: 0,
         store: StoreConfig::LocalDir(dir.clone()),
         durability: dendro_core::Durability::Group,
         ..opts_store(StoreConfig::LocalDir(dir.clone()))

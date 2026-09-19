@@ -18,6 +18,7 @@ pub mod exec;
 pub mod ir;
 pub mod journal;
 pub mod kv;
+pub mod memprof;
 pub mod memtx;
 pub mod recovery;
 pub mod sql;

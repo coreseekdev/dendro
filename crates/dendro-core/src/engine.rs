@@ -84,6 +84,9 @@ pub struct DbOptions {
     pub max_prepared_per_session: usize,
     /// 会话配额（S-3）：单语句结果集字节上限（0 = 不限）
     pub max_result_bytes: u64,
+    /// 内存采样间隔毫秒（memprof：环形窗口 + 峰值归因；0 = 关采样器，
+    /// meters 仍可查——默认 1000，快照读原子量，开销可忽略）
+    pub mem_sample_interval_ms: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,6 +120,7 @@ impl Default for DbOptions {
             max_cursor_bytes: 64 << 20,
             max_prepared_per_session: 1_000,
             max_result_bytes: 0,
+            mem_sample_interval_ms: 1_000,
         }
     }
 }
@@ -585,6 +589,8 @@ pub struct Database {
     pub lat_commit_us: AtomicU64,
     pub lat_commit_sum_us: AtomicU64,
     pub lat_commit_cnt: AtomicU64,
+    /// 内存采样器（DbOptions::mem_sample_interval_ms；Drop 随库停止）
+    pub(crate) mem_sampler: Option<crate::memprof::Sampler>,
 
     pub lat_manifest_us: AtomicU64,
     pub lat_manifest_sum_us: AtomicU64,
@@ -611,6 +617,9 @@ impl Database {
 impl Database {
     /// 打开（不存在则初始化）一个库
     pub fn open(opts: DbOptions) -> Result<Arc<Database>> {
+        // memprof：内建 meters 注册 + 采样间隔（opts 稍后被移动）
+        crate::memprof::init_builtin_meters();
+        let mem_sample_ms = opts.mem_sample_interval_ms;
         let obj: Arc<dyn ObjStore> = match &opts.store {
             StoreConfig::LocalDir(p) => Arc::new(LocalObjStore::open(p)?),
             StoreConfig::Memory => Arc::new(MemoryObjStore::new()),
@@ -668,7 +677,7 @@ impl Database {
         let plan_cache = (0..16)
             .map(|_| parking_lot::Mutex::new(std::collections::HashMap::new()))
             .collect();
-        let db = Arc::new(Database {
+        let mut db = Arc::new(Database {
             opts,
             obj,
             cas,
@@ -683,6 +692,7 @@ impl Database {
             chunk_seen: Mutex::new(HashSet::new()),
             stop_cp: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             stopping: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            mem_sampler: None,
             lat_commit_us: AtomicU64::new(0),
             lat_commit_sum_us: AtomicU64::new(0),
             lat_commit_cnt: AtomicU64::new(0),
@@ -699,6 +709,14 @@ impl Database {
         // 打库回收 pass：清理上次运行遗留的到期墓碑（失败不阻塞打开）
         if let Err(e) = db.gc_sweep() {
             tracing::warn!("gc sweep on open: {e}");
+        }
+        // 内存采样器（memprof：环形窗口 + 峰值归因；0 = 关）
+        let sampler = crate::memprof::Sampler::start(mem_sample_ms);
+        if let Some(db2) = Arc::get_mut(&mut db) {
+            db2.mem_sampler = Some(sampler);
+        } else {
+            // open 内无共享者——防御：泄漏式启动由进程退出回收
+            std::mem::forget(sampler);
         }
         Ok(db)
     }
@@ -1361,7 +1379,8 @@ impl Database {
     pub(crate) fn checkpoint_locked(&self, b: &Branch) -> Result<Option<Hash>> {
         let pending: HashMap<u32, BTreeMap<Vec<u8>, Mutation>> =
             std::mem::take(&mut *b.pending.lock());
-        b.pending_bytes.store(0, Ordering::Release);
+        let prior = b.pending_bytes.swap(0, Ordering::Release);
+        crate::memprof::memtx_sub(prior);
         let out = self.checkpoint_locked_inner(b, &pending);
         if out.is_err() {
             let mut bytes = 0usize;
@@ -1380,6 +1399,7 @@ impl Database {
                 }
             }
             b.pending_bytes.fetch_add(bytes as u64, Ordering::Release);
+            crate::memprof::memtx_add(bytes as u64);
         }
         out
     }
@@ -1971,6 +1991,7 @@ pub(crate) fn commit_tx(db: &Database, sess_branch: &str, txn: &Txn) -> Result<u
             }
         }
         b.pending_bytes.fetch_add(plen as u64, Ordering::Release);
+        crate::memprof::memtx_add(plen as u64);
         // 可见性推进：无间隙前沿 = min(installed_max, min(剩余 in-flight) − 1)
         //（模型检查 R8-WM 后统一走助手；公式与错误/恐慌路径一致）
         {

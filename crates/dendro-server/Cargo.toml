@@ -28,7 +28,16 @@ clap = { version = "4", features = ["derive"] }
 rand.workspace = true
 signal-hook = "0.3"
 
+tikv-jemallocator = { version = "0.6", optional = true }
+tikv-jemalloc-ctl = { version = "0.6", optional = true, features = ["use_std", "stats"] }
+
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }
 tokio-postgres = "0.7"
 mysql = "26"
+
+[features]
+# tikv 维护的 jemalloc 绑定（决策见 docs/research/allocator-evaluation.md）：
+# 默认开启（unix-only；win port 自动回落系统分配器）；--no-default-features 保留 A/B 逃生口
+default = ["jemalloc"]
+jemalloc = ["tikv-jemallocator", "tikv-jemalloc-ctl"]

@@ -134,6 +134,76 @@ fn render_metrics(db: &Arc<Database>) -> String {
     let _ = writeln!(out, "# HELP dendro_up process serving requests");
     let _ = writeln!(out, "# TYPE dendro_up gauge");
     let _ = writeln!(out, "dendro_up 1");
+    // memprof：分用途内存计量 + 包络 + 峰值归因（实时）
+    {
+        let reg = dendro_core::memprof::get();
+        let snap = reg.snapshot();
+        let _ = writeln!(out, "# HELP dendro_mem_rss_bytes process RSS envelope");
+        let _ = writeln!(out, "# TYPE dendro_mem_rss_bytes gauge");
+        let _ = writeln!(out, "dendro_mem_rss_bytes {}", snap.rss_bytes);
+        let _ = writeln!(out, "# HELP dendro_mem_hwm_bytes process peak RSS (VmHWM)");
+        let _ = writeln!(out, "# TYPE dendro_mem_hwm_bytes gauge");
+        let _ = writeln!(out, "dendro_mem_hwm_bytes {}", snap.hwm_bytes);
+        let _ = writeln!(
+            out,
+            "# HELP dendro_mem_unattributed_bytes RSS minus attributed meters"
+        );
+        let _ = writeln!(out, "# TYPE dendro_mem_unattributed_bytes gauge");
+        let _ = writeln!(out, "dendro_mem_unattributed_bytes {}", snap.unattributed);
+        let _ = writeln!(out, "# HELP dendro_mem_meter_bytes per-purpose meter bytes");
+        let _ = writeln!(out, "# TYPE dendro_mem_meter_bytes gauge");
+        for m in &snap.meters {
+            let _ = writeln!(
+                out,
+                "dendro_mem_meter_bytes{{meter=\"{}\"}} {}",
+                m.name, m.bytes
+            );
+            let _ = writeln!(
+                out,
+                "dendro_mem_meter_items{{meter=\"{}\"}} {}",
+                m.name, m.items
+            );
+        }
+        if let Some(a) = &snap.allocator {
+            let _ = writeln!(
+                out,
+                "# HELP dendro_mem_allocator_bytes allocator physical detail"
+            );
+            let _ = writeln!(out, "# TYPE dendro_mem_allocator_bytes gauge");
+            let _ = writeln!(
+                out,
+                "dendro_mem_allocator_bytes{{kind=\"allocated\",flavor=\"{}\"}} {}",
+                a.flavor, a.allocated
+            );
+            let _ = writeln!(
+                out,
+                "dendro_mem_allocator_bytes{{kind=\"retained\",flavor=\"{}\"}} {}",
+                a.flavor, a.retained
+            );
+        }
+        if let Some(pk) = reg.peak_attribution() {
+            let _ = writeln!(
+                out,
+                "# HELP dendro_mem_peak_rss_bytes peak RSS in sample window"
+            );
+            let _ = writeln!(out, "# TYPE dendro_mem_peak_rss_bytes gauge");
+            let _ = writeln!(out, "dendro_mem_peak_rss_bytes {}", pk.rss_bytes);
+            let _ = writeln!(
+                out,
+                "# HELP dendro_mem_peak_meter_bytes meter bytes at RSS peak frame"
+            );
+            let _ = writeln!(out, "# TYPE dendro_mem_peak_meter_bytes gauge");
+            for m in &pk.meters {
+                if m.bytes > 0 {
+                    let _ = writeln!(
+                        out,
+                        "dendro_mem_peak_meter_bytes{{meter=\"{}\"}} {}",
+                        m.name, m.bytes
+                    );
+                }
+            }
+        }
+    }
     let now = now_ms();
     let mut branches = db.active_branches();
     branches.sort_by(|a, b| a.name.cmp(&b.name));

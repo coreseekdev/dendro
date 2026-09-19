@@ -373,6 +373,21 @@ pub(crate) fn try_ap_scan(
             .map(|(i, _)| i)
             .collect()
     });
+    // 计量：活动段批（Arrow 内存——RAII 覆盖 src 生命周期）；
+    // 字节须在 move 进 source 前收账
+    use arrow::array::Array as _;
+    let scan_bytes: u64 = segment_batches
+        .iter()
+        .flatten()
+        .map(|b| b.get_array_memory_size() as u64)
+        .sum();
+    let scan_rows: u64 = segment_batches
+        .iter()
+        .flatten()
+        .map(|b| b.num_rows() as u64)
+        .sum();
+    let _scan_guard =
+        crate::memprof::MeterGuard::new(crate::memprof::colscan_active(), scan_bytes, scan_rows);
     let src = crate::exec::source::MainPlusDeltaSource::new(
         segment_batches,
         overlay,
@@ -388,6 +403,13 @@ pub(crate) fn try_ap_scan(
     for item in src {
         rows.extend(item?);
     }
+    // 计量：物化中间行（RAII——覆盖本函数余下生命周期；消费侧持有
+    // 由 TableView 外层另行归因，v1 口径见 memprof 模块注释）
+    let _rows_guard = crate::memprof::MeterGuard::new(
+        crate::memprof::query_rows(),
+        crate::memprof::rows_bytes(&rows),
+        rows.len() as u64,
+    );
     // names 与产出行同宽：投影时只含活跃列名（消费端名字解析自适应）
     let names = match &active {
         Some(a) => a.iter().map(|&i| schema.columns[i].name.clone()).collect(),
@@ -514,6 +536,9 @@ pub(crate) fn table_scan(
             }
             match low.as_str() {
                 "cambium.branches" | "branches" => return pseudo_branches(db),
+                "cambium.memory_usage" | "memory_usage" => {
+                    return crate::sql::scan::pseudo_memory(db)
+                }
                 "information_schema.tables" | "pg_catalog.pg_tables" | "pg_tables" => {
                     return pseudo_tables(db)
                 }

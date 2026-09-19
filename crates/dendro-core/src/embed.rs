@@ -133,6 +133,13 @@ impl Connection {
         crate::engine::proc_rss_bytes().unwrap_or(0)
     }
 
+    /// 内存快照 JSON（memprof：包络 + 分用途 meters + 分配器明细；
+    /// 嵌入方预算回路/监控的消费口）
+    pub fn memory_snapshot_json(&self) -> String {
+        let _ = &self.sess;
+        crate::memprof::snapshot_json(&crate::memprof::get().snapshot())
+    }
+
     pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self> {
         let db = Database::open(crate::DbOptions {
             store: crate::StoreConfig::LocalDir(path.as_ref().to_path_buf()),

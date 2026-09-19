@@ -74,3 +74,20 @@
   / tcmalloc~13MB；负载主导结论，需自测
 - "Heap Fragmentation in Rust"（2026-03）：jemalloc 快 ~17% 但
   drop 后滞留显著（配比不当的实证）
+
+## 决策修订（2026-09-19，owner 定向）
+
+1. **P0 平台可选**：glibc 内省改为 `cfg(target_os = "linux")` 条件
+   接线——非 Linux 平台该明细缺席（win/mac port 不受影响），非
+   feature 门控（零依赖无需门）。
+2. **tikv 维护 ⇒ jemalloc 默认开启**（server 二进制 feature 默认 on，
+   `--no-default-features` 保留 A/B 逃生口；unix-only 门控——jemalloc
+   不支持 Windows，win port 自动回落系统分配器）。
+3. **dendro-sqlite（cdylib）host 注入 alloc：v1 不做，预留面**。
+   判定：SQLite 的 SQLITE_CONFIG_MALLOC 先例真实存在但极少被宿主
+   使用；注入意味着宿主分配器的对齐/realloc/size 语义全兼容责任
+   转移到我们（对齐 ≥ max_align_t、realloc 保内容、线程安全），
+   收益面（宿主统一记账）在真实嵌入方出现前是 speculative。
+   预留：C ABI 版本化配置入口（后续加 `DENDRO_SQLITE_CONFIG_ALLOC`
+   不破坏 ABI）；cdylib 保持进程系统分配器（与宿主同堆纪律）。
+   触发重评条件：出现游戏引擎/预算严格嵌入式宿主的真实需求。

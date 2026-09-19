@@ -113,6 +113,7 @@ pub(crate) fn replay_branch(
     }
     drop(pend);
     b.pending_bytes.store(pending_bytes, Ordering::Release);
+    crate::memprof::memtx_add(pending_bytes);
     b.watermark.store(max_ts, Ordering::Release);
     b.restore_seq(max_ts);
     // P0-2 恢复不变量断言（debug/test 构建）：已安装集 ⊆ 回放历史
