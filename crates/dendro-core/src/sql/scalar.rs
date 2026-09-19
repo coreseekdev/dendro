@@ -201,22 +201,34 @@ pub struct CompiledPredicate {
 #[derive(Clone)]
 pub struct Unsupported;
 
+/// 谓词程序进程级缓存（模块级静态——census 可见）
+type PredCacheEntry = std::sync::Arc<std::result::Result<CompiledPredicate, Unsupported>>;
+type PredCache = std::sync::Mutex<std::collections::HashMap<(String, String), PredCacheEntry>>;
+static PRED_CACHE: std::sync::OnceLock<PredCache> = std::sync::OnceLock::new();
+
+/// 谓词程序缓存条数（memprof census——有界性/泄漏趋势观测）
+pub fn predicate_cache_len() -> usize {
+    PRED_CACHE
+        .get_or_init(PredCache::default)
+        .lock()
+        .unwrap()
+        .len()
+}
+
 pub fn compile_predicate_cached(
     e: &Expr,
     resolve: &dyn Fn(&str) -> Option<usize>,
     n_cols: usize,
     names: &[String],
 ) -> std::result::Result<CompiledPredicate, Unsupported> {
-    type Entry = std::sync::Arc<std::result::Result<CompiledPredicate, Unsupported>>;
-    type Cache = std::sync::Mutex<std::collections::HashMap<(String, String), Entry>>;
-    static CACHE: std::sync::OnceLock<Cache> = std::sync::OnceLock::new();
+    let cache = PRED_CACHE.get_or_init(PredCache::default);
     const CAP: usize = 1024;
-    let cache = CACHE.get_or_init(Cache::default);
+    
     let key = (e.to_string(), names.join("\u{1}"));
     if let Some(v) = cache.lock().unwrap().get(&key) {
         return (**v).clone().map_err(|_| Unsupported);
     }
-    let r: Entry = std::sync::Arc::new(
+    let r: PredCacheEntry = std::sync::Arc::new(
         compile_predicate_named(e, resolve, n_cols, names).map_err(|_| Unsupported),
     );
     let mut g = cache.lock().unwrap();

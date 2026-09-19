@@ -576,6 +576,11 @@ pub fn analyze_impl(
 }
 
 /// addr → 分析产物（进程级缓存；内容寻址不可变 ⇒ 键即身份）
+/// ANALYZE 产物缓存条数（memprof census）
+pub fn analyze_cache_len() -> usize {
+    analyze_cache().lock().unwrap().len()
+}
+
 fn analyze_cache(
 ) -> &'static std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<TableAnalyze>>> {
     static CACHE: std::sync::OnceLock<

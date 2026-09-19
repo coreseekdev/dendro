@@ -39,7 +39,17 @@ fn memory_introspection_sql_surface() {
         format!("{:?}", r.rows).contains("3"),
         "rss/hwm/unattributed 三行"
     );
+    // 缓存 census：查询后 plan 缓存有条目
+    let r = c
+        .query("SELECT items FROM cambium.memory_usage WHERE name = 'cache.plan_entries'")
+        .unwrap();
+    let n = match &r.rows[0][0] {
+        dendro_core::types::SqlValue::Int64(v) => *v,
+        o => panic!("{o:?}"),
+    };
+    assert!(n > 0, "查询后 plan 缓存 census > 0：{n}");
     // embed JSON 面
     let j = c.memory_snapshot_json();
     assert!(j.contains("\"unattributed\":"), "{j}");
+    assert!(j.contains("cache.plan_entries"), "{j}");
 }

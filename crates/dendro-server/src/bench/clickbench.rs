@@ -375,14 +375,21 @@ pub fn bench_clickbench(
                 // 查询的耗时痕迹（部分基线可从日志恢复）
                 let rss_now =
                     dendro_core::engine::proc_rss_bytes().unwrap_or(0) as f64 / (1 << 30) as f64;
+                let hwm_now =
+                    dendro_core::memprof::proc_hwm_bytes().unwrap_or(0) as f64 / (1 << 30) as f64;
                 eprintln!(
-                    "[clickbench] q{qi:02} done {} ms (rss {rss_now:.1}gb)",
+                    "[clickbench] q{qi:02} done {} ms (rss {rss_now:.1}gb hwm {hwm_now:.1}gb)",
                     times[1]
                 );
                 // 增量落盘（首跑实证：error 路径已写而 done 路径锚文本失配
                 // 漏打——q22/q23 计时只存在于日志）
                 let _ = write_out(rows_out.clone());
             }
+            // A/B 判据：内存终局快照（unattributed/分配器明细——日志留痕）
+            eprintln!(
+                "[clickbench] memprof: {}",
+                dendro_core::memprof::snapshot_json(&dendro_core::memprof::get().snapshot())
+            );
             write_out(std::mem::take(rows_out))
         };
 

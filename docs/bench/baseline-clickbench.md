@@ -187,3 +187,10 @@ swap 打满殃及整机。此后跑批双层防护：
 已知缺口（记录未修）：相关子查询内的外层列引用不进外层掩码
 （L2 逐行代入语义下需因子键上下文——`ident_completeness` 中已钉
 现状语义）。
+
+### 1M 基线刷新（2026-09-19 A/B 批，P0+LIKE 修复+jemalloc）
+
+装载 412s / ANALYZE 27.8s（P0 窄列使 ANALYZE 从 ~200s 降一个量级）；
+查询时延总和 28.8s（glibc 臂 33.4s）；峰值 HWM 5.88GB（q24 主导）、
+终局 RSS 0.62GB。代表值：q01 1.4ms / q04 11.8ms / q24 3576ms。
+详见 docs/research/allocator-evaluation.md A/B 节。

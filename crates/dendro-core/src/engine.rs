@@ -710,6 +710,8 @@ impl Database {
         if let Err(e) = db.gc_sweep() {
             tracing::warn!("gc sweep on open: {e}");
         }
+        // memprof：库弱引用注册（plan 缓存 census 汇总——无环）
+        crate::memprof::register_db(&db);
         // 内存采样器（memprof：环形窗口 + 峰值归因；0 = 关）
         let sampler = crate::memprof::Sampler::start(mem_sample_ms);
         if let Some(db2) = Arc::get_mut(&mut db) {

@@ -272,6 +272,16 @@ impl ArrowAggregate for crate::integrate::CbfColumnar {
         let batches =
             crate::integrate::CbfColumnar::scan(self, obj, schema, segments, &None, Some(&mask))
                 .map_err(|e| crate::Error::InvalidInput(format!("cbf scan: {e}")))?;
+        // 计量：活动段批（RAII——覆盖聚合计算期）
+        use arrow::array::Array as _;
+        let _guard = dendro_core::memprof::MeterGuard::new(
+            dendro_core::memprof::colscan_active(),
+            batches
+                .iter()
+                .map(|b| b.get_array_memory_size() as u64)
+                .sum::<u64>(),
+            batches.iter().map(|b| b.num_rows() as u64).sum::<u64>(),
+        );
         // P0-2 后掩码扫描产窄批（只含活跃列）——名字表同步收窄，
         // col_index 按窄名定位
         let active_names: Vec<String> = names

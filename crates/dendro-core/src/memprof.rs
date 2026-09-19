@@ -84,7 +84,7 @@ impl Registry {
     pub fn snapshot(&self) -> Snapshot {
         let rss = crate::engine::proc_rss_bytes().unwrap_or(0);
         let hwm = proc_hwm_bytes().unwrap_or(0);
-        let meters: Vec<MeterSample> = self
+        let mut meters: Vec<MeterSample> = self
             .meters
             .lock()
             .unwrap()
@@ -97,6 +97,7 @@ impl Registry {
                 desc: m.desc,
             })
             .collect();
+        meters.extend(census_samples());
         let attributed: u64 = meters.iter().map(|m| m.bytes).sum();
         Snapshot {
             ts_ms: now_ms(),
@@ -301,6 +302,32 @@ pub fn set_allocator_detail(f: DetailFn) {
     *DETAIL_HOOK.lock().unwrap() = Some(f);
 }
 
+/// 缓存普查 provider（条目数——census；字节口径不可得时不虚报）
+type CensusFn = Box<dyn Fn() -> Vec<(&'static str, u64, &'static str)> + Send + Sync>;
+static CENSUS: Mutex<Vec<CensusFn>> = Mutex::new(Vec::new());
+
+/// 注册缓存普查（子系统懒注册或初始化时注册）
+pub fn add_census(f: CensusFn) {
+    CENSUS.lock().unwrap().push(f);
+}
+
+fn census_samples() -> Vec<MeterSample> {
+    let g = CENSUS.lock().unwrap();
+    g.iter()
+        .flat_map(|f| {
+            f().into_iter()
+                .map(|(name, items, desc)| MeterSample {
+                    name,
+                    bytes: 0, // 条目 census——字节不可得，不虚报
+                    items,
+                    estimated: true,
+                    desc,
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
 fn allocator_detail() -> Option<AllocatorDetail> {
     let g = DETAIL_HOOK.lock().unwrap();
     g.as_ref()?()
@@ -365,6 +392,7 @@ pub fn snapshot_json(s: &Snapshot) -> String {
             if m.estimated { ",\"est\":true" } else { "" }
         );
     }
+    out.push_str("]"); // meters 数组先闭合——allocator 在对象层
     if let Some(a) = &s.allocator {
         let _ = write!(
             out,
@@ -372,7 +400,7 @@ pub fn snapshot_json(s: &Snapshot) -> String {
             a.flavor, a.allocated, a.retained
         );
     }
-    out.push_str("]}");
+    out.push('}');
     out
 }
 
@@ -418,10 +446,45 @@ pub fn query_rows() -> &'static Meter {
     QUERY_ROWS.get_or_init(|| meter("query.rows", false, "物化中间行字节（TableView 收集期）"))
 }
 
+/// 打开库的弱引用注册表（census 汇总 plan 缓存——无环：Weak）
+static DBS: Mutex<Vec<std::sync::Weak<crate::engine::Database>>> = Mutex::new(Vec::new());
+
+pub(crate) fn register_db(db: &std::sync::Arc<crate::engine::Database>) {
+    let mut g = DBS.lock().unwrap();
+    g.retain(|w| w.upgrade().is_some());
+    g.push(std::sync::Arc::downgrade(db));
+}
+
+fn open_dbs_plan_cache_len() -> usize {
+    let mut g = DBS.lock().unwrap();
+    g.retain(|w| w.upgrade().is_some());
+    g.iter().filter_map(|w| w.upgrade()).map(|d| d.plan_cache_len()).sum()
+}
+
 pub fn init_builtin_meters() {
     let _ = memtx_pending();
     let _ = colscan_active();
     let _ = query_rows();
+    // 缓存普查：条目数（有界性/泄漏趋势的观测面——字节不虚报为 0）
+    add_census(Box::new(|| {
+        vec![
+            (
+                "cache.plan_entries",
+                open_dbs_plan_cache_len() as u64,
+                "计划缓存条目（SQL hash→AST，16 分片界 4096）",
+            ),
+            (
+                "cache.predicate_entries",
+                crate::sql::scalar::predicate_cache_len() as u64,
+                "谓词程序缓存条目（文本+布局→ScalarProgram，界 1024）",
+            ),
+            (
+                "cache.analyze_entries",
+                crate::sql::stats::analyze_cache_len() as u64,
+                "ANALYZE 产物缓存条目（stats_addr→TableAnalyze）",
+            ),
+        ]
+    }));
 }
 
 #[cfg(test)]
