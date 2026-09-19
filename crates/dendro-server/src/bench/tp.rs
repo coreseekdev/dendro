@@ -58,7 +58,7 @@ pub fn bench_tp(data_dir: &PathBuf, preset: &str, rows: u64, out: &PathBuf) -> B
                 let r = c
                     .query(&format!(
                         "SELECT v, tag FROM t WHERE id = {}",
-                        (i * 7919) % 1_000_000 + 1
+                        (i * 7919) % rows + 1
                     ))
                     .unwrap();
                 !r.rows.is_empty()
@@ -67,7 +67,7 @@ pub fn bench_tp(data_dir: &PathBuf, preset: &str, rows: u64, out: &PathBuf) -> B
         (
             "range100",
             Box::new(|c: &mut Connection, i: u64| {
-                let lo = (i * 7919) % 900_000 + 1;
+                let lo = (i * 7919) % (rows - 100_000).max(1) + 1;
                 let r = c
                     .query(&format!(
                         "SELECT id, v FROM t WHERE id >= {lo} AND id < {}",
@@ -80,7 +80,7 @@ pub fn bench_tp(data_dir: &PathBuf, preset: &str, rows: u64, out: &PathBuf) -> B
         (
             "write",
             Box::new(|c: &mut Connection, i: u64| {
-                let id = (i * 104729) % 1_000_000 + 1;
+                let id = (i * 104729) % rows + 1;
                 c.execute(&format!("UPDATE t SET v = v + 1 WHERE id = {id}"))
                     .unwrap()
                     > 0
@@ -120,6 +120,23 @@ pub fn bench_tp(data_dir: &PathBuf, preset: &str, rows: u64, out: &PathBuf) -> B
         value: rss(),
         unit: "gb",
     });
+    // 页缓存 census：命中率（opt1 验证面——预算 vs 工作集的缓存有效性）
+    {
+        let (h, m, resident) = dendro_core::prolly::store::global_cache_stats();
+        let total = h + m;
+        rows_out.push(BenchRow { name: "nodecache.hits".into(), value: h as f64, unit: "cnt" });
+        rows_out.push(BenchRow { name: "nodecache.misses".into(), value: m as f64, unit: "cnt" });
+        rows_out.push(BenchRow {
+            name: "nodecache.hit_rate".into(),
+            value: if total > 0 { (h as f64 / total as f64 * 1000.0).round() / 1000.0 } else { 0.0 },
+            unit: "ratio",
+        });
+        rows_out.push(BenchRow {
+            name: "nodecache.resident_mb".into(),
+            value: resident as f64 / (1u64 << 20) as f64,
+            unit: "mb",
+        });
+    }
     // memprof 快照（unattributed + 分配器 + 页缓存命中）
     rows_out.push(BenchRow {
         name: "memprof.unattributed_gb".into(),
