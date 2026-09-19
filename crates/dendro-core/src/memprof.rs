@@ -406,7 +406,10 @@ pub fn snapshot_json(s: &Snapshot) -> String {
 
 // ---------- 内建 meter（核心子系统；其余按需注册） ----------
 
-/// memtx pending 行字节（精确；分支聚合，由 engine 写路径更新）
+/// memtx pending 载荷字节（分支聚合，engine 写路径更新）。
+/// 口径（docs/research/关键数据结构内存分析.md）：**载荷**（key+val
+/// 编码长）；全链路结构驻留实测 ~20× 载荷——不在本 meter，
+/// 用 memtx.entries census × 系数外推
 pub static MEMTX_PENDING: OnceLock<&'static Meter> = OnceLock::new();
 
 pub fn memtx_pending() -> &'static Meter {
@@ -414,7 +417,7 @@ pub fn memtx_pending() -> &'static Meter {
         meter(
             "memtx.pending",
             false,
-            "未 checkpoint 的内存行字节（分支聚合）",
+            "未 checkpoint 的载荷字节（结构开销 ~20× 载荷——见关键数据结构内存分析）",
         )
     })
 }
@@ -455,10 +458,22 @@ pub(crate) fn register_db(db: &std::sync::Arc<crate::engine::Database>) {
     g.push(std::sync::Arc::downgrade(db));
 }
 
+fn open_dbs_memtx_entries() -> usize {
+    let mut g = DBS.lock().unwrap();
+    g.retain(|w| w.upgrade().is_some());
+    g.iter()
+        .filter_map(|w| w.upgrade())
+        .map(|d| d.memtx_entries())
+        .sum()
+}
+
 fn open_dbs_plan_cache_len() -> usize {
     let mut g = DBS.lock().unwrap();
     g.retain(|w| w.upgrade().is_some());
-    g.iter().filter_map(|w| w.upgrade()).map(|d| d.plan_cache_len()).sum()
+    g.iter()
+        .filter_map(|w| w.upgrade())
+        .map(|d| d.plan_cache_len())
+        .sum()
 }
 
 pub fn init_builtin_meters() {
@@ -468,6 +483,11 @@ pub fn init_builtin_meters() {
     // 缓存普查：条目数（有界性/泄漏趋势的观测面——字节不虚报为 0）
     add_census(Box::new(|| {
         vec![
+            (
+                "memtx.entries",
+                open_dbs_memtx_entries() as u64,
+                "memtx 全表键数（结构驻留 = 条目 × 系数，见关键数据结构内存分析）",
+            ),
             (
                 "cache.plan_entries",
                 open_dbs_plan_cache_len() as u64,

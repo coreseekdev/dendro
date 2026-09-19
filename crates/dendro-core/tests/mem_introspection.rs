@@ -21,7 +21,8 @@ fn memory_introspection_sql_surface() {
         o => panic!("{o:?}"),
     };
     assert!(b > 40_000, "memtx pending 应计入 500×~100B：{b}");
-    // checkpoint 后归零
+    // checkpoint 后归零；entries census 仍在（段化前的键数——表已空则 0，
+    // 但 INSERT 期间 census 必须能读到 >0——上面查询前已验证）
     c.execute("CHECKPOINT").unwrap();
     let r = c
         .query("SELECT bytes FROM cambium.memory_usage WHERE name = 'memtx.pending'")
@@ -31,6 +32,19 @@ fn memory_introspection_sql_surface() {
         o => panic!("{o:?}"),
     };
     assert_eq!(b, 0, "checkpoint 后 pending 归零：{b}");
+    // entries census（写后即查——memtx 键数）
+    let mut c2 = Connection::memory().unwrap();
+    c2.execute("CREATE TABLE e (id BIGINT PRIMARY KEY)")
+        .unwrap();
+    c2.execute("INSERT INTO e VALUES (1),(2),(3)").unwrap();
+    let r = c2
+        .query("SELECT items FROM cambium.memory_usage WHERE name = 'memtx.entries'")
+        .unwrap();
+    let n = match &r.rows[0][0] {
+        dendro_core::types::SqlValue::Int64(v) => *v,
+        o => panic!("{o:?}"),
+    };
+    assert_eq!(n, 3, "memtx.entries census = 键数：{n}");
     // 包络行存在
     let r = c
         .query("SELECT count(*) FROM cambium.memory_usage WHERE kind = 'envelope'")

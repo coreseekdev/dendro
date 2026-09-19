@@ -143,6 +143,11 @@ impl TableMem {
         out
     }
 
+    /// 键数（含各版本链的全部键——结构驻留 census 口径）
+    pub fn len(&self) -> usize {
+        self.shards.iter().map(|sh| sh.map.read().len()).sum()
+    }
+
     /// 快照时点是否存在任何可见条目（Put 或墓碑均算——两者都会改变
     /// 全表聚合结果）。全局聚合的列存捷径用它做安全性门：非空即说明
     /// 有未物化增量，必须回落行式路径。首键命中即返，不克隆值。
@@ -228,6 +233,11 @@ pub struct BranchMem {
 }
 
 impl BranchMem {
+    /// 全表键数（census——memtx.entries 的口径）
+    pub fn len(&self) -> usize {
+        self.tables.read().values().map(|t| t.len()).sum()
+    }
+
     pub fn table(&self, table_id: u32) -> Arc<TableMem> {
         {
             let g = self.tables.read();

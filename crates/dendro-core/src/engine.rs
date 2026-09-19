@@ -723,6 +723,11 @@ impl Database {
         Ok(db)
     }
 
+    /// memtx 全表键数（活跃分支聚合——结构驻留估算的 census 口径）
+    pub fn memtx_entries(&self) -> usize {
+        self.branches.read().values().map(|b| b.mem.len()).sum()
+    }
+
     /// 计划缓存条数（观测/测试用；S-3 有界性验证）
     pub fn plan_cache_len(&self) -> usize {
         self.plan_cache.iter().map(|s| s.lock().len()).sum()
