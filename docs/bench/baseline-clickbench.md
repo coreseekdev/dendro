@@ -154,3 +154,17 @@ swap 打满殃及整机。此后跑批双层防护：
  （undefined_column 附带可用列名）随重跑验证
 - q24（SELECT * LIKE ORDER，外推 ~50GB）触 24GB 硬杀——SELECT \*
   全宽类待 P1/P2；此后 bench 逐查询增量写 JSON（硬杀不丢结果）
+
+### q21 "URL does not exist" 根因闭环（2026-09-19）
+
+- 根因：`expr_idents` 收集器缺 `Expr::Like/ILike/SimilarTo` 臂——列只
+  出现在 LIKE 谓词时 idents=[] → 列掩码只剩 pk → P0 窄行扫描丢列
+- **更早是静默错值**：null 填充期被裁列变 NULL，`NULL LIKE` 过滤成
+  0 行——旧 1M 基线 q21-q24 的 LIKE 相关**值**不可信（行数恰正常）；
+  P0 窄行化把静默错值转成响亮报错方才暴露。已补 LIKE 家族臂 + 回归
+  测试（`like_referenced_column_must_survive_mask_pruning`）
+- 定位链：undefined_column 富化可用列名（`available: [rid]`）→ 掩码
+  轨迹（q21 的 idents=[]）→ LIKE 臂缺失。诊断投资一次回本
+- 修复后 10M queries-only：**q01-q24 零错误全完成**（q21 6.4s、
+  q24 70.3s），软上限在 q25 优雅截断（q24 后 RSS 38.9GB>16GB），
+  增量 JSON 完整——双层防线按设计工作

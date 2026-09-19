@@ -253,6 +253,17 @@ fn expr_idents(e: &Expr, out: &mut Vec<String>) {
             expr_idents(low, out);
             expr_idents(high, out);
         }
+        // LIKE 家族：被匹配列与模式都可能引用列（原缺失——ClickBench
+        // 10M q21 'URL does not exist (available:[rid])' 的根因：列只
+        // 出现在 LIKE 谓词 → idents 空 → 掩码只剩 pk。更早的 null 填充
+        // 期这是**静默错值**（NULL LIKE → 0 行——1M 基线 q20 n=0 铁证），
+        // P0 窄行后转为响亮报错方才暴露）
+        Expr::Like { expr, pattern, .. }
+        | Expr::ILike { expr, pattern, .. }
+        | Expr::SimilarTo { expr, pattern, .. } => {
+            expr_idents(expr, out);
+            expr_idents(pattern, out);
+        }
         Expr::Cast { expr, .. } => expr_idents(expr, out),
         // CASE：条件/结果均可能引用列（原缺失——裁剪掉 CASE 引用列会
         // 静默错值，O-3 差分补齐）

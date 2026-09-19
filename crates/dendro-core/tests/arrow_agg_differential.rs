@@ -202,3 +202,47 @@ fn ineligible_shapes_fall_back_cleanly() {
     let _ = query(&mut s, "SELECT AVG(id) FROM h ORDER BY 1");
     let _ = db;
 }
+
+#[test]
+fn like_referenced_column_must_survive_mask_pruning() {
+    // 回归（ClickBench 10M q21）：列只出现在 LIKE 谓词时 expr_idents
+    // 曾漏收 → 掩码只剩 pk → 窄行扫描丢列。旧 null 填充期是静默错值
+    //（NULL LIKE → 0 行），P0 窄行后转响亮报错
+    let db = Database::open(DbOptions {
+        store: StoreConfig::Memory,
+        ..Default::default()
+    })
+    .unwrap();
+    db.set_columnar(Arc::new(dendro_columnar::integrate::CbfColumnar {
+        row_group_rows: 4096,
+    }));
+    let mut s = db.new_session();
+    s.exec("CREATE TABLE l (id BIGINT PRIMARY KEY, u TEXT, note TEXT)")
+        .unwrap();
+    for c in 0..4 {
+        let vals: Vec<String> = (0..1000)
+            .map(|i| {
+                let id = c * 1000 + i + 1;
+                format!(
+                    "({id}, '{}', 'n')",
+                    if id % 3 == 0 { "xxgoogleyy" } else { "plain" }
+                )
+            })
+            .collect();
+        s.exec(&format!("INSERT INTO l VALUES {}", vals.join(",")))
+            .unwrap();
+    }
+    db.checkpoint_branch("main").unwrap();
+    // LIKE 命中 1/3（3334 行）——两路径都必须是非零且相等
+    let on = query(&mut s, "SELECT COUNT(*) FROM l WHERE u LIKE '%google%'");
+    s.exec("SET dendro.optimize = off").unwrap();
+    let off = query(&mut s, "SELECT COUNT(*) FROM l WHERE u LIKE '%google%'");
+    assert_eq!(on, off, "LIKE 两路径一致");
+    assert_eq!(on, "Int64(1333)", "LIKE 命中数（列未被掩码裁掉）：{on}");
+    // NOT LIKE / ILike 同族
+    let on2 = query(
+        &mut s,
+        "SELECT COUNT(*) FROM l WHERE u NOT LIKE '%google%' AND note LIKE '%n%'",
+    );
+    assert_eq!(on2, "Int64(2667)", "NOT LIKE + LIKE 组合：{on2}");
+}

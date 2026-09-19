@@ -114,6 +114,9 @@ enum Cmd {
         /// 写出已完成部分的结果后退出——防大表物化压垮整机）
         #[arg(long, default_value_t = 0)]
         max_rss_mb: u64,
+        /// 跳过装载/物化/ANALYZE——对既有库直接跑查询套件
+        #[arg(long, default_value_t = false)]
+        queries_only: bool,
         /// 结果 JSON 输出
         #[arg(long, default_value = "benches/results/clickbench.json")]
         out: PathBuf,
@@ -421,10 +424,11 @@ fn main() {
             chunk,
             ckpt_every,
             max_rss_mb,
+            queries_only,
             out,
         } => {
             let s = dendro_server::bench::clickbench::bench_clickbench(
-                &csv, &data, rows, chunk, ckpt_every, max_rss_mb, &out,
+                &csv, &data, rows, chunk, ckpt_every, max_rss_mb, queries_only, &out,
             );
             println!("wrote {}", out.display());
             for r in &s.rows {

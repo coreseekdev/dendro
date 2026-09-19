@@ -33,7 +33,7 @@ fn main() {
         ("proj_1col", "SELECT AdvEngineID FROM hits"),
         ("proj_2col", "SELECT WatchID, AdvEngineID FROM hits"),
         ("cnt_where_pkl", "SELECT COUNT(*) FROM hits WHERE WatchID > 0"),
-        ("q21_multiagg", "SELECT SearchPhrase, MIN(URL), COUNT(*) AS c FROM hits WHERE URL LIKE '%google%' AND SearchPhrase <> '' GROUP BY SearchPhrase ORDER BY c DESC LIMIT 10"),
+        ("q21_likecnt", "SELECT COUNT(*) FROM hits WHERE URL LIKE '%google%'"),
     ];
     let (name, sql) = qs[which.min(qs.len() - 1)];
     let seq = std::env::var("PROBE_SEQ").is_ok();
@@ -52,16 +52,30 @@ fn main() {
         s.exec("SET dendro.force_agg = 'pipeline'").unwrap();
     }
     if seq {
-        // 复现基准全序列：ANALYZE → q01..q20（bench 同会话状态交互）
+        // 精确复刻 bench 查询循环机制：warmup+text_rows+black_box×3
+        let _ = std::env::var("PROBE_BENCHLOOP").map(|_| {
+            eprintln!("(bench-loop replication on q01...)");
+            let w = s.exec("SELECT COUNT(*) FROM hits").unwrap();
+            let _n = w.iter().map(|o| match o {
+                dendro_core::types::Output::Rows(rs) => rs.text_rows().len(),
+                _ => 1,
+            }).sum::<usize>();
+            for _ in 0..3 {
+                let _ = std::hint::black_box(s.exec("SELECT COUNT(*) FROM hits"));
+            }
+        });
         let _ = std::env::var("PROBE_ANALYZE").map(|_| {
             eprintln!("(analyze...)");
             s.exec("ANALYZE hits").unwrap();
         });
         let prefix = std::fs::read_to_string(std::env::var("PROBE_PREFIX").unwrap_or("/tmp/prefix_q20.sql".into())).unwrap_or_default();
+        let reps: usize = std::env::var("PROBE_REPS").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
         for (i, q) in prefix.lines().filter(|l| !l.is_empty()).enumerate() {
-            match s.exec(q) {
-                Ok(_) => {}
-                Err(e) => eprintln!("(prefix q{:02} err: {e})", i + 1),
+            for _ in 0..reps {
+                match s.exec(q) {
+                    Ok(_) => {}
+                    Err(e) => eprintln!("(prefix q{:02} err: {e})", i + 1),
+                }
             }
         }
         eprintln!("(q01..q20 prefix done)");
