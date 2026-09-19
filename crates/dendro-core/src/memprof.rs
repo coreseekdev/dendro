@@ -484,6 +484,21 @@ pub fn init_builtin_meters() {
     add_census(Box::new(|| {
         vec![
             (
+                "prolly.nodecache_hits",
+                crate::prolly::store::global_cache_stats().0,
+                "prolly 节点页缓存命中次数",
+            ),
+            (
+                "prolly.nodecache_misses",
+                crate::prolly::store::global_cache_stats().1,
+                "prolly 节点页缓存未命中次数",
+            ),
+            (
+                "prolly.nodecache_bytes",
+                crate::prolly::store::global_cache_stats().2,
+                "prolly 节点页缓存驻留字节",
+            ),
+            (
                 "memtx.entries",
                 open_dbs_memtx_entries() as u64,
                 "memtx 全表键数（结构驻留 = 条目 × 系数，见关键数据结构内存分析）",

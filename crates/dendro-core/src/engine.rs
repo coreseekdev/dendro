@@ -100,6 +100,36 @@ pub enum Durability {
     Always,
 }
 
+impl DbOptions {
+    /// 嵌入式预设（opt1-prolly-tp-base）：prolly 树为 TP 底座——
+    /// 有界 memtx（8MB 写缓冲 + 越阈值即时 checkpoint 踢醒）、小节点
+    /// 页缓存（64MB）、紧凑资源上界。内存上界 ≈ 缓冲 + 页缓存 +
+    /// 会话/查询工作集（memtx 的 26.7× 结构开销被阈值封顶——见
+    /// docs/research/关键数据结构内存分析.md）
+    pub fn embedded(store: StoreConfig) -> Self {
+        Self {
+            store,
+            wal_flush_interval_ms: 20,
+            wal_segment_bytes: 8 << 20,
+            durability: Durability::Group,
+            checkpoint_threshold_bytes: 8 << 20,
+            checkpoint_interval_s: 1, // 踢醒的兜底轮询
+            cache_budget_bytes: 64 << 20,
+            lease_ttl_ms: 30_000,
+            read_only: false,
+            gc_retention_ms: 24 * 3600 * 1000,
+            max_connections: 16,
+            max_branches: 64,
+            max_txn_bytes: 32 << 20,
+            default_statement_timeout_ms: 30_000,
+            max_cursor_bytes: 8 << 20,
+            max_prepared_per_session: 64,
+            max_result_bytes: 16 << 20,
+            mem_sample_interval_ms: 1_000,
+        }
+    }
+}
+
 impl Default for DbOptions {
     fn default() -> Self {
         Self {
@@ -583,6 +613,9 @@ pub struct Database {
     #[allow(dead_code)]
     pub(crate) chunk_seen: Mutex<HashSet<Hash>>,
     stop_cp: Arc<std::sync::atomic::AtomicBool>,
+    /// checkpoint 即时唤醒（opt1 有界 memtx：提交路径越阈值踢醒检查点
+    /// 线程——轮询间隔只是兜底，不再是有界性的组成部分）
+    pub(crate) cp_kick: (parking_lot::Mutex<bool>, parking_lot::Condvar),
     /// 优雅关闭进行中标志（Q-12b：/readyz 据此返回 503 排流）
     pub(crate) stopping: Arc<std::sync::atomic::AtomicBool>,
     /// M-5 延迟计数器：(count_us, sum_us, count) — commit/WAL flush/manifest
@@ -658,7 +691,15 @@ impl Database {
             StoreConfig::Obj(a) => a.clone(),
         };
         let cas = Arc::new(CasStore::new(obj.clone()));
-        let store = Arc::new(NodeStore::new(cas.clone(), 4096));
+        // opt1：节点缓存字节预算接线（此前硬编码 4096 节点 ≈ 16MB 恒定，
+        // cache_budget_bytes 旋钮形同虚设）。预算/4KB 得防御性条数上限
+        let node_cache_cap = (opts.cache_budget_bytes / 4096).clamp(1024, 1 << 20) as usize;
+        let store = Arc::new(NodeStore::with_byte_budget(
+            cas.clone(),
+            opts.cache_budget_bytes as usize,
+            node_cache_cap,
+        ));
+        store.register_for_census();
         let manifest_store = Arc::new(ManifestStore::new(obj.clone()));
         // 初始化 / 恢复
         if opts.read_only {
@@ -691,6 +732,7 @@ impl Database {
             session_seq: AtomicU64::new(1),
             chunk_seen: Mutex::new(HashSet::new()),
             stop_cp: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            cp_kick: (parking_lot::Mutex::new(false), parking_lot::Condvar::new()),
             stopping: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             mem_sampler: None,
             lat_commit_us: AtomicU64::new(0),
@@ -1678,7 +1720,22 @@ impl Database {
                 // sleep，Database 在整个 sleep 期间存活（30s/轮）——遗弃分支
                 // 的 Branch/WalWriter/租约保活随之"永生"，GC 删除已删分支的
                 // fence 对象后会被复活（回归 lazy_open_and_drop_branch_gc）。
-                std::thread::sleep(std::time::Duration::from_secs(interval));
+                // 越阈值踢醒（提交路径 notify）——超时 = 轮询兜底
+                // 越阈值踢醒（提交路径 notify）；超时 = 轮询兜底。
+                // 注意持 Weak 升级仅限等待窗口（等待在锁上释放 Arc）
+                {
+                    let Some(db) = db.upgrade() else {
+                        return;
+                    };
+                    let mut g = db.cp_kick.0.lock();
+                    if !*g {
+                        let _ = db
+                            .cp_kick
+                            .1
+                            .wait_for(&mut g, std::time::Duration::from_secs(interval));
+                    }
+                    *g = false;
+                }
                 let Some(db) = db.upgrade() else {
                     return; // 外部 Arc 全释放：Database 已死，检查点线程随之退出
                 };
@@ -1999,6 +2056,12 @@ pub(crate) fn commit_tx(db: &Database, sess_branch: &str, txn: &Txn) -> Result<u
         }
         b.pending_bytes.fetch_add(plen as u64, Ordering::Release);
         crate::memprof::memtx_add(plen as u64);
+        // opt1 有界 memtx：越阈值即时踢醒检查点线程（轮询仅兜底——
+        // 内存上界 = threshold + 检查点进行期的在途写入）
+        if b.pending_bytes.load(Ordering::Relaxed) >= db.opts.checkpoint_threshold_bytes {
+            *db.cp_kick.0.lock() = true;
+            db.cp_kick.1.notify_one();
+        }
         // 可见性推进：无间隙前沿 = min(installed_max, min(剩余 in-flight) − 1)
         //（模型检查 R8-WM 后统一走助手；公式与错误/恐慌路径一致）
         {
