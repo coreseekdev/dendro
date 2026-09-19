@@ -765,6 +765,24 @@ impl Database {
         Ok(db)
     }
 
+    /// 裸树点查（诊断/嵌入式直读 API：绕过 SQL 层的存储路径）——
+    /// 返回行字节（无则 None）；不读 memtx（纯树路径的口径）
+    pub fn debug_tree_get(
+        &self,
+        branch: &str,
+        table: &str,
+        pk: i64,
+    ) -> Result<Option<Vec<u8>>> {
+        let (_, entry) = crate::sql::scan::resolve_table(self, branch, table)?;
+        let root = entry
+            .table_root
+            .as_ref()
+            .and_then(|s| crate::format::hash::Hash::from_base32(s))
+            .ok_or_else(|| SqlError::internal("no tree root (checkpoint first)"))?;
+        let key = crate::format::row::encode_key(&[SqlValue::Int64(pk)]);
+        crate::prolly::cursor::lookup(&self.store, &root, &key)
+    }
+
     /// memtx 全表键数（活跃分支聚合——结构驻留估算的 census 口径）
     pub fn memtx_entries(&self) -> usize {
         self.branches.read().values().map(|b| b.mem.len()).sum()
