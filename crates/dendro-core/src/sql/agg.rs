@@ -9,7 +9,7 @@ use sqlparser::ast::Expr;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AggCall {
     pub func: String, // count/sum/avg/min/max
     pub arg: Option<Expr>,
