@@ -474,6 +474,7 @@ pub fn bench_clickbench(
                     unit: "err",
                 });
                 eprintln!("[clickbench] q{qi:02} ERROR: {e}");
+                let _ = write_out(rows_out.clone());
                 continue;
             }
         };

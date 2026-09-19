@@ -17,6 +17,7 @@ pub struct BenchResult {
     pub rows: Vec<BenchRow>,
 }
 
+#[derive(Clone)]
 pub struct BenchRow {
     #[allow(dead_code)]
     pub name: String,

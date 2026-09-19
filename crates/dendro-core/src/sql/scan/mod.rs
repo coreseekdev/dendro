@@ -244,6 +244,16 @@ fn apply_predicates_q(
     sess: &Session,
     resolve: &dyn Fn(&str) -> Option<usize>,
 ) -> Result<TableView> {
+    // 诊断富化：undefined_column 携带当前布局的可用列名（窄行后列缺席
+    // 类缺陷的定位面——10M q21 "URL does not exist" 一次锁定错位层）
+    let avail = tv.names.join(", ");
+    let enrich = |e: SqlError| match &*e.state {
+        "42703" => SqlError::undefined_column(format!(
+            "{msg} (available: [{avail}])",
+            msg = e.message,
+        )),
+        _ => e,
+    };
     // cols 借用收敛在块内（闭包持有生命周期——外提会锁死结尾的 tv 移动）
     let rows: Vec<Vec<SqlValue>> = {
         match crate::sql::scalar::compile_predicate_cached(w, resolve, tv.names.len(), &tv.names) {
@@ -257,7 +267,8 @@ fn apply_predicates_q(
                 let mut src = std::iter::once(Ok(all));
                 let mut op = crate::exec::pipeline::FilterOp::new(cp.prog);
                 let mut sink = crate::exec::pipeline::CollectSink::new(None);
-                crate::exec::pipeline::drive(&mut cx, &mut src, &mut op, &mut sink)?;
+                crate::exec::pipeline::drive(&mut cx, &mut src, &mut op, &mut sink)
+                    .map_err(enrich)?;
                 sink.rows
             }
             // 小结果集走紧循环（点查 1 行：管线包装的常数开销在 µs 级
@@ -283,7 +294,7 @@ fn apply_predicates_q(
                     match expr::eval(w, &row, resolve) {
                         Ok(SqlValue::Bool(true)) => filtered.push(row),
                         Ok(_) => {} // NULL/false → 丢行（正确语义）
-                        Err(e) => return Err(e),
+                        Err(e) => return Err(enrich(e)),
                     }
                 }
                 filtered

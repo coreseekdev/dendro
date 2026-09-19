@@ -33,10 +33,12 @@ fn main() {
         ("proj_1col", "SELECT AdvEngineID FROM hits"),
         ("proj_2col", "SELECT WatchID, AdvEngineID FROM hits"),
         ("cnt_where_pkl", "SELECT COUNT(*) FROM hits WHERE WatchID > 0"),
+        ("q21_multiagg", "SELECT SearchPhrase, MIN(URL), COUNT(*) AS c FROM hits WHERE URL LIKE '%google%' AND SearchPhrase <> '' GROUP BY SearchPhrase ORDER BY c DESC LIMIT 10"),
     ];
     let (name, sql) = qs[which.min(qs.len() - 1)];
+    let seq = std::env::var("PROBE_SEQ").is_ok();
     let db = Database::open(DbOptions {
-        store: StoreConfig::LocalDir("/home/nzinfo/cb/dbagg".into()),
+        store: StoreConfig::LocalDir(std::path::PathBuf::from(std::env::var("PROBE_DB").unwrap_or_else(|_| "/home/nzinfo/cb/dbagg".into()))),
         durability: dendro_core::Durability::NoWait,
         checkpoint_interval_s: 0,
         ..Default::default()
@@ -49,9 +51,33 @@ fn main() {
     if force {
         s.exec("SET dendro.force_agg = 'pipeline'").unwrap();
     }
+    if seq {
+        // 复现基准全序列：ANALYZE → q01..q20（bench 同会话状态交互）
+        let _ = std::env::var("PROBE_ANALYZE").map(|_| {
+            eprintln!("(analyze...)");
+            s.exec("ANALYZE hits").unwrap();
+        });
+        let prefix = std::fs::read_to_string(std::env::var("PROBE_PREFIX").unwrap_or("/tmp/prefix_q20.sql".into())).unwrap_or_default();
+        for (i, q) in prefix.lines().filter(|l| !l.is_empty()).enumerate() {
+            match s.exec(q) {
+                Ok(_) => {}
+                Err(e) => eprintln!("(prefix q{:02} err: {e})", i + 1),
+            }
+        }
+        eprintln!("(q01..q20 prefix done)");
+    }
     let r0 = rss();
     let t = std::time::Instant::now();
-    let out = s.exec(sql).unwrap();
+    let out = match s.exec(sql) {
+        Ok(o) => o,
+        Err(e) => { println!("{name}: ERROR(run1) {e}"); return; }
+    };
+    for run in 2..=4u32 {
+        if let Err(e) = s.exec(sql) {
+            println!("{name}: ERROR(run{run}) {e}");
+            return;
+        }
+    }
     let el = t.elapsed().as_secs_f64();
     let rows = out
         .iter()
