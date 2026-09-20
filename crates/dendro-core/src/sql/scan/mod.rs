@@ -331,7 +331,7 @@ fn try_point_early(
     q: &Query,
     snapshot: u64,
 ) -> Result<Option<TableView>> {
-    use sqlparser::ast::{SetExpr, SelectItem, TableFactor};
+    use sqlparser::ast::{SelectItem, SetExpr, TableFactor};
     let SetExpr::Select(sel) = &*q.body else {
         return Ok(None);
     };
@@ -369,7 +369,8 @@ fn try_point_early(
     }
     // 复用下推资格判定 + 点取（与计划路径同一实现——语义一致由构造保证）
     let tf = crate::sql::scan::synthetic_tf(&table, None);
-    let Some((schema, entry)) = crate::sql::scan::try_pk_pushdown(db, sess, &tf, Some(pred), snapshot)?
+    let Some((schema, entry)) =
+        crate::sql::scan::try_pk_pushdown(db, sess, &tf, Some(pred), snapshot)?
     else {
         return Ok(None);
     };
@@ -390,7 +391,11 @@ fn try_point_early(
                 continue;
             }
             SelectItem::UnnamedExpr(sqlparser::ast::Expr::Identifier(id)) => {
-                let Some(ci) = tv.names.iter().position(|n| n.eq_ignore_ascii_case(&id.value)) else {
+                let Some(ci) = tv
+                    .names
+                    .iter()
+                    .position(|n| n.eq_ignore_ascii_case(&id.value))
+                else {
                     return Ok(None); // 未知名——回落（诚实）
                 };
                 if out_rows.is_empty() && !tv.rows.is_empty() {

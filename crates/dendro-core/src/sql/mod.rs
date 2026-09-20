@@ -8,6 +8,7 @@ pub use ddl::in_open_quote;
 pub mod expr;
 pub mod optimize;
 pub mod scan;
+pub mod shapecache;
 
 use crate::engine::{commit_tx, Database, Prepared, Session};
 use crate::error::{Result, SqlError};
@@ -171,6 +172,23 @@ pub(crate) fn exec_batch(db: &Database, sess: &mut Session, sql: &str) -> Result
                     cached.as_ref().clone()
                 }
                 None => {
+                    // 形状缓存（literal 模板化自动 prepare）：唯一文本
+                    // 的模板命中免 tokenize+parse，走 prepare 同一
+                    // 代入机制。模板不适用/解析失败 → fail-open 全量
+                    if let Some((tmpl_ast, lits)) =
+                        crate::sql::shapecache::parse_or_get(&raw, sess.dialect)?
+                    {
+                        drop(_t_parse);
+                        let stmt = substitute_params(tmpl_ast, &lits)?;
+                        let _t_exec = crate::perf::enter(crate::perf::Stage::Exec);
+                        let r = exec_statement(db, sess, stmt);
+                        crate::perf::exit(crate::perf::Stage::Exec, _t_exec);
+                        let out = r?;
+                        if let Some(o) = out {
+                            outs.push(o);
+                        }
+                        continue;
+                    }
                     let parsed = {
                         let _g = crate::perf::scope(crate::perf::Stage::Parse);
                         parse_batch(&raw, sess.dialect)?

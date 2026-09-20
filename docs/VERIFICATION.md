@@ -7,6 +7,23 @@
 
 ## 0. 状态
 
+- **2026-09-20 账本 #28 验证覆盖率度量 + Kani B2 真源绑定**：三件事——
+  ① wal.rs 编解码段抽出 wal/codec.rs（纯移动 + `pub use`，调用方零
+  改动），verification/kani 升级为 cargo 包 dendro-kani：`#[path]`
+  直接编译真源（**B2 绑定**），旧镜像副本退役。镜像三处实证缺陷：
+  FRAME_MAGIC 漂移仅常量测试兜底、CRC 从未验过真实现（镜像手写逐位
+  vs 真 crate SIMD）、FrameType 四变体只验过 Txn/Checkpoint——Fence/
+  Seal 零探索（本版 H2 全定义域符号化补齐）。
+  ② CRC 缝隙闭合：crc32c-soft 规范模型顶替（真 crate cpuid 内联汇编
+  Kani 不可验，615 项 UNDETERMINED 实证）+ 差分测试实证模型≡真实现
+  （已知向量 + 0..=256 全长度 + 大块，verify.sh [6/7]）。
+  ③ 度量落地（§5）：scripts/verif-coverage.py 三维度报告接入
+  verify.sh [7/7]——不变式 9/30=30%、vLOC（B2 131 行 / 硬核 6622）、
+  cover 路径 14 条。新 harness：H5 txn 往返 + P 系列坏帧拒绝 ×5
+  （magic/version/type/len/CRC——CRC 不等式 8s 得证）。
+  工程教训：harness 必须**显式 unwind**（payload_len 无属性时 symex
+  对 CRC 循环展开至 282+ 轮不收敛、定界后秒过）；Vec::clone 的分配
+  建模会使下游循环长度符号化（同 harness 去 clone 即愈）。
 - **2026-09-16 v2 后大阶段（执行层收口）**：四方向全绿——
   ① AggOp/ProjectOp 接线 eval_select（聚合/投影消除双路径；伴生修复
   count(文本列) 报错、SUM(DISTINCT) 不去重、混合 int/float 列丢整数
@@ -346,9 +363,9 @@ schema 绑定、快照选取全部逐次执行，因此 DDL 漂移（加列/重�
 | 层 | 对象 | 工具 | 状态 |
 |---|---|---|---|
 | L0 语言安全 | 全部 | unsafe deny（部分 crate）、clippy -D warnings | ✅ |
-| L1 无 panic | 格式编解码 / WAL FrameIter / 范围提取 | Kani 0.67 | 🚧 harness 起步 |
+| L1 无 panic | WAL codec（真源编译，B2） | Kani 0.67（dendro-kani #[path]） | ✅ 11 harness；🚧 范围提取/列存 codec 待接 |
 | L2 设计正确 | 两段式提交 / 水位 / OCC | TLA+ TLC | ✅ CommitPipeline；⬜ OCC/合并模型 |
-| L3 函数级正确 | encode_key 保序 / zigzag 类 / CRC 容错 | Verus（引入待定） | ⬜ |
+| L3 函数级正确 | encode_key 保序 / zigzag 类 / CRC 容错 | Verus | 🚧 3 文件（B1 镜像绑定，待升 B2） |
 | 外壳 | wire 协议 / 真实 OSS / tokio | e2e 对拍 + opfuzz chaos | ✅ 部分 |
 
 ## 3. 故障模型单一事实源
@@ -361,8 +378,60 @@ torn_write_prob、enospc_after、fail_writes 确定性注入。
 
 ## 4. 工具链
 
-TLC（tools/tla2tools.jar，basalt 同版）、Kani 0.67.0（verification/kani/
-standalone harness 口径）、Verus（未引入；触发条件见 basalt §4.1 同款协议）。
+TLC（tools/tla2tools.jar，basalt 同版）、Kani 0.67.0（dendro-kani：
+verification/kani 独立 cargo 包，#[path] 真源编译生产 codec，B2 绑定；
+CRC 以 crc32c-soft 模型顶替 + 差分闭合）、Verus 0.2026.09（scripts/
+verus.sh，B1 镜像）。覆盖率执行器：scripts/verif-coverage.py（§5）。
+
+## 5. 验证覆盖率（度量定义与执行器）
+
+> 类比测试覆盖率的验证侧度量。**不是一个数，是三个正交维度**——只报
+> 一个会自欺（"30% 形式化"会掩盖"代码级绑定曾是零"）。执行器：
+> `python3 scripts/verif-coverage.py [--kani-log <运行输出>]`，已接入
+> verify.sh [7/7]。
+
+### V1 不变式覆盖率（业务路径承诺）
+
+- 分母 = §1 的 I 目录（30 条），不是 LOC——每条不变式即一条业务
+  路径上的正确性承诺；
+- 按检测机制最强者分类：Kani/Verus=形式化-代码级、TLC=形式化-设计级、
+  opfuzz=fuzz、✅/回归/测试=测试、⬜（无 ✅/TLC/Kani 佐证）=无覆盖；
+- **现状 9/30 (30%)** = 代码级 1（I-C6）+ 设计级 8（I-A1..A7、I-C7）；
+  其余 fuzz 4 / 测试 10 / 无覆盖 7。
+
+### V2 vLOC（代码级验证行覆盖）
+
+- 分子：被证明直接覆盖的生产函数 LOC，按绑定级分层——
+  B2 真源编译：wal/codec.rs 7 函数 131 行；B1 镜像：Verus 3 文件
+  41+35+23 行（镜像口径，漂移风险同旧 Kani 镜像）；
+- 分母 = **硬核**（I-A..I-H 实现面；manifest =
+  scripts/verif-coverage.py `HARD_CORE`，当前 6622 行 / 32 文件）；
+- manifest 函数名与源文件失配 → 脚本警告退出：证明对象存在性的
+  机械防线（防"证明还在、对象已改"）。
+
+### V3 cover 路径覆盖（符号世界的分支覆盖）
+
+- `kani::cover!(cond, "Pxx…")` 标记业务路径点，Kani 给可达性证明 +
+  见证输入；UNSATISFIED = 路径死或 harness 过约束，均须解释；
+- 声明 14 条：P1 终止 / P2 对偶 / P3 拒绝×5（magic、version、type、
+  len 越界、CRC）/ P4 撕尾 / P5 段尾小帧 / P6 全帧型 / P7a/b 记录形态；
+- cover 放**输入整形**的 harness（贵的 SAT 查询——任意缓冲上反解
+  CRC 的 GF(2) 级联——实测 19min 不收敛，已移入整形侧）。
+
+### 完备性内界（单个证明的"部分覆盖"）
+
+- 每个 harness 显式 `#[kani::unwind(N)]`：N 是该证明对循环空间的
+  完备性上界（类比测试的"跑到/没跑到"）；无属性的默认界展开行为
+  不可复现（symex 爆炸实证）；
+- UNDETERMINED / 求解超时 = 部分覆盖，须在 harness 注释记录。
+
+### 绑定链残余缝隙（B2 的诚实清单）
+
+1. CRC 原语：crc32c-soft 规范模型顶替真 SIMD crate——差分测试实证
+   逐字节等价（唯一以测试闭合的缝隙）；
+2. SqlError：最小面 shim（codec 仅构造它；真 error.rs 移除
+   internal() 即破坏主构建，不可静默漂移）；
+3. 其余（FrameType/FrameIter/encode_*/decode_*）：真源编译，零缝隙。
 
 ## 12. 缺陷 → 检测机制矩阵
 

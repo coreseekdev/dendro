@@ -155,3 +155,23 @@ perf 框架扩展（build_plan/optimize/batch_split/to_result 四阶段）+
 find_by_pk 基线参照：6.4µs。统一路径与基线的剩余差距 = parse +
 lower/arrow 检查 + 会话机器 ≈ 19µs——形状缓存（literal 模板化
 plan cache）是下一个大头。
+
+## 形状缓存：literal 模板化自动 prepare（2026-09-19 第二轮）
+
+解析层主优化（perf 拆解定位 parse 4.6µs = 唯一文本必 miss）：
+`sql::shapecache` —— SQL 文本中**边界完整**的字面量（引号串/数字，
+`col1`/`t2` 等标识符内数字不动）替换为 `$N` 占位符得模板；模板
+哈希 → 缓存模板 AST；命中即 克隆 + `substitute_params` 代入——
+**与显式 prepare 同一机制**（自动 prepare）。fail-open：注释/引用
+标识符/未闭合/科学计数 → 透传全量 parse。
+
+实测（10M 树驻留点查）：**39.4k → 52-58k ops/s（25.4→17-19µs）**，
+parse 阶段从拆解中消失。与点查早退叠加：统一路径累计
+26.8k → ~55k ops/s（**2.05×**）。
+
+方言陷阱（embed_api rowid 用例当场抓获）：MySQL/SQLite 方言把
+`$1` 解析成**标识符**而非 Placeholder（静默变形不报错）——占位符
+计数校验入缓存的硬门（不匹配即 fail-open）。
+
+prepare 机制本体（审查结论）：schema 版本重校验 + 透明重编译 +
+AST 克隆代入——设计正确；形状缓存是其文本侧的自然延伸。

@@ -188,34 +188,10 @@ fn frame_iter_tiny_frame_at_segment_end_decodes() {
     }
 }
 
-// ── Kani harness 同源守卫（账本 #19 附带机制）──
-// harness 是真实现的独立副本（kani standalone 不支持外部 crate），
-// 曾发生 FRAME_MAGIC 漂移（副本 0x4C41_5345 vs 真实现 0x4F524E44）
-// 而无任何告警。常量级同步测试：漂移即红。
-#[test]
-fn kani_harness_constants_in_sync() {
-    let src = include_str!("../../../verification/kani/wal_frame.rs");
-    assert!(
-        src.contains("pub const FRAME_MAGIC: u32 = 0x4F524E44;"),
-        "Kani harness FRAME_MAGIC 与 wal.rs 漂移"
-    );
-    assert!(
-        src.contains("pub const SEGMENT_MAGIC: u32 = 0x4C415345;"),
-        "Kani harness SEGMENT_MAGIC 与 wal.rs 漂移"
-    );
-    assert!(
-        src.contains(&format!("pub const HEADER_LEN: usize = {HEADER_LEN};")),
-        "Kani harness HEADER_LEN 与 wal.rs 漂移"
-    );
-    assert!(
-        src.contains(&format!("pub const TRAILER_LEN: usize = {TRAILER_LEN};")),
-        "Kani harness TRAILER_LEN 与 wal.rs 漂移"
-    );
-    assert!(
-        src.contains("pub const FRAME_VERSION: u16 = 1;"),
-        "Kani harness FRAME_VERSION 与 wal.rs 漂移"
-    );
-}
+// ── Kani 绑定（账本 #28）──
+// 旧"常量同步测试"已随镜像副本退役：harness 现经 verification/kani 的
+// #[path] 直接编译本 crate 的 wal/codec.rs 真源（B2 绑定），不存在可
+// 漂移的副本。CRC 模型缝隙由 verification/crc32c-soft 差分测试闭合。
 
 // ── e2e：打库路径对损坏段 fail-fast ──
 

@@ -198,7 +198,13 @@ mod tests {
         }
         let r = report();
         let p = r.iter().find(|x| x.name == "parse").unwrap();
-        assert_eq!(p.count, before + 2);
+        // 并行兄弟测试可并发计入同阶段——区间断言（≥ 本测试的 2 次）
+        assert!(
+            p.count >= before + 2 && p.count <= before + 200,
+            "并行容差：before={before} after={}"
+        ,
+            p.count
+        );
         // 并行干扰下 avg 被兄弟打点稀释——只断言本测试贡献的总量增长
         assert!(
             p.total_ms >= before as f64 * 0.0 + 0.1,
