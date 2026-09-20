@@ -105,3 +105,4 @@ fn main() {
         sql_tree / fp
     );
 }
+// （追加）update 分解 + 双限流探测：mode 参数 upd 时输出

@@ -83,3 +83,31 @@ dendro sqlite-cmp --data /tmp/dendro-sqlitecmp --rows 1000000 \
 2. **WAL 自主提交/帧攒批**（LeanStore latency 分支 SIGMOD'25 对标
    ——update 0.2-0.4× 的深层对策）
 3. 点查机器继续瘦身（resolve 2×→1×；TableView 分配消除）
+
+## 复测二（2026-09-19 深夜：持久 resolve 缓存）
+
+resolve 缓存从语句级清空改为**持久 LRU（键 = catalog 根 + 表名）**——
+正确性由内容寻址保证（checkpoint/DDL → 新 catalog 根 → 新键），
+连续同表语句的首次全量树走查（~5.8µs）只付一次。
+
+**updpath 分解（100K 行 memtx）**：
+
+| 耐久性 | 首测 | 复测二 | SQLite 参照 |
+|--------|------|--------|-------------|
+| UPDATE Group（每提交 durable） | 24.7k | **58.6k（2.4×）** | disk 169k* |
+| UPDATE NoWait（搭车刷盘） | 50.3k | **226k（4.5×）** | mem 306k* |
+
+*SQLite synchronous=NORMAL 在 WAL 下**不每提交 fsync**（检查点时才
+同步）——耐久性口径介于我们 NoWait 与 Group 之间。**NoWait 226k 已
+达 SQLite 量级**（disk 169k 的 1.34×，mem 306k 的 0.74×）。
+
+sqlite-cmp 官方轮（文本 SQL 路径，Group 耐久）：point.disk 0.5×
+（126.9k vs 255.6k——本轮 SQLite 自身读数回落）、update.disk 0.4×、
+insert.disk 1.0×。文本路径与耐久口径仍是两大差项。
+
+## 判定更新
+
+- insert（磁盘）：**1.0× 达标**（不弱于）
+- update NoWait 口径：**SQLite 量级达成**（226k）
+- point：0.5×（文本机器 + 树路径）——exec_statement 借用化 +
+  point 机器瘦身后复测

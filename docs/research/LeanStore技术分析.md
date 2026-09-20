@@ -110,6 +110,11 @@ SQLite 的 2.1µs 里几乎全是执行。LeanStore 启示的优先序：
 | `WATT`/`ssd-*` | 驱逐价值模型 / SSD 行为研究 | — | LRU→采样驱逐进阶 |
 | `mvcc` | OSIC 细节 | 部分在 master | §4 已映射 |
 
+**三分支已深入开箱**：代码级解剖 + 论文存档见
+[LeanStore候选分支深入分析.md](LeanStore候选分支深入分析.md)
+（latency 价值最高：WILO_STEAL 偷日志 + RFA + 五阶段协调器全解剖；
+blob = prolly 大值分层蓝本；io = 单机档位记档）。
+
 **关键新发现（latency，SIGMOD'25 自主提交）**：组提交的批间隔是
 延迟下限；自主提交让每事务在 NVMe 队列深度允许时立即 durable
 （"Moving on From Group Commit"）。我们的 WAL Group + 20ms flush

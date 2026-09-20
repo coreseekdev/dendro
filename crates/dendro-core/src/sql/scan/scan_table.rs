@@ -747,22 +747,37 @@ pub(crate) fn table_scan(
 /// ——dispatch/下推/优化器各查一遍，3.6µs × 8 = 29µs = SQL 层主体）。
 /// 正确性：单语句执行内 catalog 不可变（DDL 不可能中途插入），同根
 /// 同名解析结果必然一致。thread_local + 语句守卫清空。
-thread_local! {
-    static RESOLVE_MEMO: std::cell::RefCell<std::collections::HashMap<(u64, String), std::sync::Arc<(crate::versioned::TableSchema, crate::versioned::TableEntry)>>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
+/// 持久 resolve 缓存（跨语句）：键 = (catalog 根, 表名)。正确性由
+/// 内容寻址保证——checkpoint/DDL 改动任何表项都产生新 catalog 根
+/// → 新键 → 重新解析；旧键条目由 LRU 容量自然驱逐。此前语句级
+/// 清空使每条语句的首个 resolve（~5.8µs 全量树走查+schema 解码）
+/// 重复支付——持久化后连续同表语句全部命中。
+static RESOLVE_CACHE: std::sync::OnceLock<
+    std::sync::Mutex<
+        lru::LruCache<
+            (u64, String),
+            std::sync::Arc<(crate::versioned::TableSchema, crate::versioned::TableEntry)>,
+        >,
+    >,
+> = std::sync::OnceLock::new();
+fn resolve_cache(
+) -> &'static std::sync::Mutex<
+    lru::LruCache<
+        (u64, String),
+        std::sync::Arc<(crate::versioned::TableSchema, crate::versioned::TableEntry)>,
+    >,
+> {
+    RESOLVE_CACHE.get_or_init(|| {
+        std::sync::Mutex::new(lru::LruCache::new(std::num::NonZeroUsize::new(1024).unwrap()))
+    })
 }
 
-/// 语句级 resolve 记忆化守卫（Session::exec 入口安装，Drop 清空）
+/// 兼容保留（Session::exec 调用点）——持久缓存无需语句守卫
 pub struct ResolveMemoGuard;
-
 impl Drop for ResolveMemoGuard {
-    fn drop(&mut self) {
-        RESOLVE_MEMO.with(|m| m.borrow_mut().clear());
-    }
+    fn drop(&mut self) {}
 }
-
 pub fn resolve_memo_guard() -> ResolveMemoGuard {
-    RESOLVE_MEMO.with(|m| m.borrow_mut().clear());
     ResolveMemoGuard
 }
 
@@ -790,19 +805,19 @@ pub(crate) fn resolve_table_at(
     short_name: &str,
 ) -> Result<(crate::versioned::TableSchema, crate::versioned::TableEntry)> {
     let _g = crate::perf::scope(crate::perf::Stage::Resolve);
-    // 语句内记忆化（收口点：所有调用方——dispatch/下推/优化器/点查——
-    // 共享；同根同名结果必然一致——单语句内 catalog 不可变）
+    // 持久缓存（收口点：所有调用方共享；根键控内容寻址——见上）
     let key = (
         root.map(|r| r.as_u64()).unwrap_or(0),
         short_name.to_string(),
     );
-    if let Some(hit) = RESOLVE_MEMO.with(|m| m.borrow().get(&key).cloned()) {
+    if let Some(hit) = resolve_cache().lock().unwrap().get(&key) {
         return Ok((hit.0.clone(), hit.1.clone()));
     }
     let out = resolve_table_at_inner(db, root, short_name)?;
-    RESOLVE_MEMO.with(|m| {
-        m.borrow_mut().insert(key, std::sync::Arc::new(out.clone()));
-    });
+    resolve_cache()
+        .lock()
+        .unwrap()
+        .put(key, std::sync::Arc::new(out.clone()));
     Ok(out)
 }
 
