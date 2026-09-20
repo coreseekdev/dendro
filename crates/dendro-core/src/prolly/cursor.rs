@@ -142,6 +142,7 @@ fn build_path(
 
 /// 点查
 pub fn lookup(store: &NodeStore, root: &Hash, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    let _g = crate::perf::scope(crate::perf::Stage::StorageGet);
     let mut addr = *root;
     loop {
         let node = store.get_node(&addr)?;

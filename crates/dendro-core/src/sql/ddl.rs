@@ -1258,7 +1258,18 @@ pub(crate) fn update_impl(
     let short = table.rsplit('.').next().unwrap_or(table).to_string();
     let (schema, entry) = scan::resolve_table(db, &sess.branch, &short)?;
     let snapshot = sess.implicit_snapshot(db)?;
-    let tv = scan::table_scan_by_name(db, sess, &short, snapshot)?;
+    // TP pk 下推：单列 pk 等值/IN 谓词走点查路径（此前全表扫描 + 全
+    // 物化——1M 行表实测 UPDATE ~340ms/条；TP 基准暴露的写瓶颈）。
+    // 显式事务已由 try_pk_pushdown 的冻结根语义覆盖（R7-3 同口径）
+    let tv = if let Some(sel) = &selection {
+        let tf = crate::sql::scan::synthetic_tf(&short, None);
+        match scan::try_pk_pushdown(db, sess, &tf, Some(sel), snapshot)? {
+            Some(_) => scan::build_point_view(db, sess, &schema, &entry, sel, snapshot)?,
+            None => scan::table_scan_by_name(db, sess, &short, snapshot)?,
+        }
+    } else {
+        scan::table_scan_by_name(db, sess, &short, snapshot)?
+    };
     let cols: std::collections::HashMap<String, usize> = std::collections::HashMap::from_iter(
         tv.names
             .iter()

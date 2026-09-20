@@ -138,6 +138,8 @@ pub(crate) fn exec_batch(db: &Database, sess: &mut Session, sql: &str) -> Result
         }
     }
     let mut outs = Vec::new();
+    // 语句级 resolve 记忆化（perf 框架实测 8 次/点查 → 1 次）
+    let _resolve_memo = scan::resolve_memo_guard();
     for raw in split_statements(sql) {
         if branch_sql_kind(&raw).is_some() {
             let out = exec_branch_statement(db, sess, &raw)?;
@@ -148,6 +150,7 @@ pub(crate) fn exec_batch(db: &Database, sess: &mut Session, sql: &str) -> Result
             outs.extend(out);
             continue;
         }
+        let _t_plan_cache = crate::perf::enter(crate::perf::Stage::PlanCache);
         // P2-6 v2a 计划缓存：hash(SQL)+dialect → 已解析 AST。
         // 命中时 clone（Statement 结构性拷贝 << tokenize+parse 微秒级开销）。
         // 注意：guard 必须显式落语句——if-let 审视位的临时 guard 活到
@@ -155,12 +158,21 @@ pub(crate) fn exec_batch(db: &Database, sess: &mut Session, sql: &str) -> Result
         let stmts = {
             let key = xxhash_rust::xxh3::xxh3_64(raw.as_bytes())
                 ^ (sess.dialect as usize as u64).rotate_left(32);
+            crate::perf::exit(crate::perf::Stage::PlanCache, _t_plan_cache);
+            let _t_parse = crate::perf::enter(crate::perf::Stage::Parse);
             let shard = db.plan_shard(key);
             let hit = shard.lock().get(&key).cloned();
             match hit {
-                Some(cached) => cached.as_ref().clone(),
+                Some(cached) => {
+                    drop(_t_parse);
+                    cached.as_ref().clone()
+                }
                 None => {
-                    let parsed = parse_batch(&raw, sess.dialect)?;
+                    let parsed = {
+                        let _g = crate::perf::scope(crate::perf::Stage::Parse);
+                        parse_batch(&raw, sess.dialect)?
+                    };
+                    drop(_t_parse);
                     let mut cache = shard.lock();
                     // 有界缓存（S-3 同源，分桶后按桶清）：拼接字面量的海量
                     // 唯一 SQL（未参数化客户端）只冲垮自己的桶（Q15——
@@ -177,7 +189,10 @@ pub(crate) fn exec_batch(db: &Database, sess: &mut Session, sql: &str) -> Result
             continue;
         }
         for stmt in stmts {
-            let out = exec_statement(db, sess, stmt)?;
+            let _t_exec = crate::perf::enter(crate::perf::Stage::Exec);
+            let r = exec_statement(db, sess, stmt);
+            crate::perf::exit(crate::perf::Stage::Exec, _t_exec);
+            let out = r?;
             if let Some(o) = out {
                 outs.push(o);
             }

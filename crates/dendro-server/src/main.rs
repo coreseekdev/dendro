@@ -124,6 +124,20 @@ enum Cmd {
         #[arg(long, default_value = "benches/results/clickbench.json")]
         out: PathBuf,
     },
+    /// TP 基准（opt1 A/B：点查/范围/写 × default|embedded 预设）
+    TpBench {
+        /// 数据目录
+        #[arg(long, default_value = "/tmp/dendro-tpbench")]
+        data: PathBuf,
+        /// 预设（default = memtx 惯性形态；embedded = 有界 memtx + 页缓存）
+        #[arg(long, default_value = "embedded")]
+        preset: String,
+        /// 行数
+        #[arg(long, default_value_t = 1_000_000)]
+        rows: u64,
+        #[arg(long, default_value = "benches/results/tp.json")]
+        out: PathBuf,
+    },
     /// dump：SQL → 未优化 IR（前端快速裁决原语 1/3）
     Ir {
         /// 被检 SQL（单条 SELECT）
@@ -480,6 +494,18 @@ fn main() {
                 "compression curves done → {}",
                 out.parent().unwrap_or(&out).display()
             );
+        }
+        Cmd::TpBench {
+            data,
+            preset,
+            rows,
+            out,
+        } => {
+            let s = dendro_server::bench::tp::bench_tp(&data, &preset, rows, &out);
+            println!("wrote {}", out.display());
+            for r in &s.rows {
+                println!("  {:<40} {:>12.1} {}", r.name, r.value, r.unit);
+            }
         }
         Cmd::Ir { sql, dialect } => {
             let d = parse_dialect(&dialect);

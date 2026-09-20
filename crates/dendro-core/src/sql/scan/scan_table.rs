@@ -539,6 +539,9 @@ pub(crate) fn table_scan(
                 "cambium.memory_usage" | "memory_usage" => {
                     return crate::sql::scan::pseudo_memory(db)
                 }
+                "cambium.perf_stages" | "perf_stages" => {
+                    return crate::sql::scan::pseudo_perf_stages(db)
+                }
                 "information_schema.tables" | "pg_catalog.pg_tables" | "pg_tables" => {
                     return pseudo_tables(db)
                 }
@@ -740,6 +743,29 @@ pub(crate) fn table_scan(
     }
 }
 
+/// 语句内 resolve 记忆化（perf 框架实测：单条点查 resolve 被调 8 次
+/// ——dispatch/下推/优化器各查一遍，3.6µs × 8 = 29µs = SQL 层主体）。
+/// 正确性：单语句执行内 catalog 不可变（DDL 不可能中途插入），同根
+/// 同名解析结果必然一致。thread_local + 语句守卫清空。
+thread_local! {
+    static RESOLVE_MEMO: std::cell::RefCell<std::collections::HashMap<(u64, String), std::sync::Arc<(crate::versioned::TableSchema, crate::versioned::TableEntry)>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// 语句级 resolve 记忆化守卫（Session::exec 入口安装，Drop 清空）
+pub struct ResolveMemoGuard;
+
+impl Drop for ResolveMemoGuard {
+    fn drop(&mut self) {
+        RESOLVE_MEMO.with(|m| m.borrow_mut().clear());
+    }
+}
+
+pub fn resolve_memo_guard() -> ResolveMemoGuard {
+    RESOLVE_MEMO.with(|m| m.borrow_mut().clear());
+    ResolveMemoGuard
+}
+
 /// 解析表（catalog 查找；可能带 schema 前缀 public.t / t）
 pub fn resolve_table(
     db: &Database,
@@ -759,6 +785,28 @@ pub fn resolve_table(
 /// 以**给定 catalog 根**解析（显式事务冻结读，第七轮 R7-3：事务内树的
 /// 可见性以 BEGIN 时的根为准，不随 checkpoint 推进翻转）
 pub(crate) fn resolve_table_at(
+    db: &Database,
+    root: Option<&crate::format::hash::Hash>,
+    short_name: &str,
+) -> Result<(crate::versioned::TableSchema, crate::versioned::TableEntry)> {
+    let _g = crate::perf::scope(crate::perf::Stage::Resolve);
+    // 语句内记忆化（收口点：所有调用方——dispatch/下推/优化器/点查——
+    // 共享；同根同名结果必然一致——单语句内 catalog 不可变）
+    let key = (
+        root.map(|r| r.as_u64()).unwrap_or(0),
+        short_name.to_string(),
+    );
+    if let Some(hit) = RESOLVE_MEMO.with(|m| m.borrow().get(&key).cloned()) {
+        return Ok((hit.0.clone(), hit.1.clone()));
+    }
+    let out = resolve_table_at_inner(db, root, short_name)?;
+    RESOLVE_MEMO.with(|m| {
+        m.borrow_mut().insert(key, std::sync::Arc::new(out.clone()));
+    });
+    Ok(out)
+}
+
+fn resolve_table_at_inner(
     db: &Database,
     root: Option<&crate::format::hash::Hash>,
     short_name: &str,
