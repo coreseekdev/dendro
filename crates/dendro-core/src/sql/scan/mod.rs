@@ -374,47 +374,55 @@ fn try_point_early(
     else {
         return Ok(None);
     };
-    let mut tv = crate::sql::scan::build_point_view(db, sess, &schema, &entry, pred, snapshot)?;
-    // 投影：裸列/通配/别名（表达式投影回落计划路径——project 机器
-    // 的布局依赖计划上下文，不在此重复实现）
-    let mut out_names = Vec::new();
-    let mut out_rows = Vec::new();
+    // 投影形态先判（裸列/通配才覆盖——聚合/表达式必须回落计划
+    // 路径：空集聚合返回单行 0，直出会得 0 行——ap_txn q14 实证）
+    let mut out_idx: Vec<usize> = Vec::new();
+    let mut wildcard = false;
     for item in &sel.projection {
         match item {
-            SelectItem::Wildcard(_) => {
-                out_names.extend(tv.names.iter().cloned());
-                for (r, o) in tv.rows.iter().zip(out_rows.len()..) {
-                    let _ = o;
-                }
-                // 通配：保留全部行（下方统一搬运）
-                out_rows = tv.rows.clone();
-                continue;
-            }
+            SelectItem::Wildcard(_) => wildcard = true,
             SelectItem::UnnamedExpr(sqlparser::ast::Expr::Identifier(id)) => {
-                let Some(ci) = tv
-                    .names
+                let Some(ci) = schema
+                    .columns
                     .iter()
-                    .position(|n| n.eq_ignore_ascii_case(&id.value))
+                    .position(|c| c.name.eq_ignore_ascii_case(&id.value))
                 else {
                     return Ok(None); // 未知名——回落（诚实）
                 };
-                if out_rows.is_empty() && !tv.rows.is_empty() {
-                    out_rows = vec![Vec::new(); tv.rows.len()];
-                }
-                for (o, r) in out_rows.iter_mut().zip(tv.rows.iter()) {
-                    o.push(r[ci].clone());
-                }
-                out_names.push(tv.names[ci].clone());
+                out_idx.push(ci);
             }
-            _ => return Ok(None), // 表达式/限定通配——回落计划路径
+            _ => return Ok(None), // 表达式/聚合/限定通配——回落计划路径
         }
     }
-    if out_rows.is_empty() {
-        out_rows = tv.rows;
-    }
+    // 字节级点取（免中转：不解码全行/不建中间 TableView）
+    let key = crate::sql::scan::point_key_of(pred, &schema)?;
+    let Some(bytes) =
+        crate::sql::scan::fetch_row_bytes(db, sess, &entry, &key, snapshot)?
+    else {
+        // 键不存在：0 行（与计划路径点取语义一致）
+        return Ok(Some(TableView {
+            names: Vec::new(),
+            rows: Vec::new(),
+        }));
+    };
+    let full = row_from_bytes(&schema, &bytes)?;
+    // 直出（无中转行拷贝）
+    let out_names: Vec<String> = if wildcard {
+        schema.columns.iter().map(|c| c.name.clone()).collect()
+    } else {
+        out_idx
+            .iter()
+            .map(|&i| schema.columns[i].name.clone())
+            .collect()
+    };
+    let out_row: Vec<SqlValue> = if wildcard {
+        full
+    } else {
+        out_idx.iter().map(|&i| full[i].clone()).collect()
+    };
     Ok(Some(TableView {
         names: out_names,
-        rows: out_rows,
+        rows: vec![out_row],
     }))
 }
 

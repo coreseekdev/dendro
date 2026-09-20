@@ -368,6 +368,94 @@ pub(crate) fn expr_to_literal(e: &Expr) -> Option<SqlValue> {
     }
 }
 
+/// pk 等值谓词 → 行键（单键形态；IN/非等值由调用方回落）
+pub(crate) fn point_key_of(
+    pred: &Expr,
+    schema: &crate::versioned::TableSchema,
+) -> Result<Vec<u8>> {
+    use sqlparser::ast::{BinaryOperator, Expr};
+    let pk_name = schema.columns[schema.pk[0] as usize].name.clone();
+    let v: &Expr = match pred {
+        Expr::BinaryOp {
+            left,
+            op: BinaryOperator::Eq,
+            right,
+        } => {
+            if is_col_vs_value(left, right, &pk_name) {
+                right.as_ref()
+            } else if is_col_vs_value(right, left, &pk_name) {
+                left.as_ref()
+            } else {
+                return Err(SqlError::internal("point_key_of: not pk eq"));
+            }
+        }
+        // IN(单值) = 等值（optimize 侧 rewrite 前的形态）
+        Expr::InList {
+            expr,
+            list,
+            negated: false,
+        } if list.len() == 1 => {
+            let is_pk = match expr.as_ref() {
+                Expr::Identifier(id) => id.value.eq_ignore_ascii_case(&pk_name),
+                _ => false,
+            };
+            if !is_pk {
+                return Err(SqlError::internal("point_key_of: not pk in"));
+            }
+            &list[0]
+        }
+        _ => return Err(SqlError::internal("point_key_of: not eq")),
+    };
+    let lit = expr_to_literal(v)
+        .ok_or_else(|| SqlError::internal("point_key_of: non-literal"))?;
+    Ok(crate::format::row::encode_key(std::slice::from_ref(&lit)))
+}
+
+/// 字节级单键点取（try_point_early 的免中转形态：不解码、不建
+/// TableView——调用方按需解码投影列）。语义与 build_point_view
+/// 的单键路径一致：memtx ∪ 树、墓碑隐藏、事务自身写。
+pub(crate) fn fetch_row_bytes(
+    db: &Database,
+    sess: &Session,
+    entry: &crate::versioned::TableEntry,
+    key: &[u8],
+    snapshot: u64,
+) -> Result<Option<std::sync::Arc<Vec<u8>>>> {
+    let b = db.branch(&sess.branch)?;
+    let tm = b.mem.table(entry.id);
+    let mut found: Option<std::sync::Arc<Vec<u8>>> = match tm.get(key, snapshot) {
+        Some(v) => Some(v),
+        None => {
+            let tombstoned = tm.latest_ts(key).is_some_and(|ts| ts <= snapshot);
+            if tombstoned {
+                None
+            } else {
+                entry
+                    .table_root
+                    .as_ref()
+                    .and_then(|s| crate::format::hash::Hash::from_base32(s))
+                    .map(|r| crate::prolly::cursor::lookup(&db.store, &r, key))
+                    .transpose()?
+                    .flatten()
+                    .map(std::sync::Arc::new)
+            }
+        }
+    };
+    if let Some(t) = &sess.txn {
+        if t.explicit {
+            if let Some(m) = t.writes.get(&(entry.id, key.to_vec())) {
+                match m {
+                    crate::prolly::Mutation::Put(v) => {
+                        found = Some(std::sync::Arc::new(v.clone()))
+                    }
+                    crate::prolly::Mutation::Delete => found = None,
+                }
+            }
+        }
+    }
+    Ok(found)
+}
+
 pub(crate) fn build_point_view(
     db: &Database,
     sess: &mut Session,

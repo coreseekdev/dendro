@@ -154,3 +154,25 @@ pointbreak：point 213k → 237k（4.27µs）。sqlite-cmp 第 5 轮：
 累计（首测 → 第 5 轮）：point 0.23×→0.4×、insert 0.97×→1.6×、
 update 0.37×→0.6×。剩余差项不变：SQL 机器 ~4µs 的 eval/投影中转、
 Group 组提交等待（update）、range 流式首批。
+
+## 复测五（2026-09-20：点查免中转——字节点取 + 直出列）
+
+try_point_early 重构：`fetch_row_bytes`（字节级单键点取：memtx ∪
+树、墓碑、事务自身写——不解码不建 TableView）+ 投影形态**先判**
+（聚合/表达式回落计划路径——空集聚合须返回单行 0，直出会得 0 行，
+ap_txn q14 实证；IN(单值) = 等值臂补齐，join_reorder 实证）→
+单次解码直出列。IN 单值查询（`WHERE id IN (2)`）同享早退。
+
+pointbreak：point 254→262k（3.8µs）。sqlite-cmp 第 6 轮：
+
+| 场景 | vs SQLite | 累计（首测→今） |
+|------|-----------|-----------------|
+| insert.disk | **1.8×**（372k vs 210k） | 0.97→1.8× |
+| insert.mem | 0.8× | 0.36→0.8× |
+| update.disk | 0.5× | 0.37→0.5× |
+| point.disk | 0.4×（185k） | 0.23→0.4× |
+
+**disk vs mem 同速现象解释**（owner 质询）：基准 mem 臂不
+CHECKPOINT——1M 行全驻 memtx（26.7× 结构开销 → ~1.7GB 工作集、
+缓存局部性差）；disk 臂 checkpoint 后紧凑段 + LRU 热页（64MB）。
+memtx 是写缓冲不是读存储——opt1 架构的实证。
