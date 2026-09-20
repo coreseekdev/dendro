@@ -102,8 +102,16 @@ fn embedded_bounded_memtx() {
     // 等待 kick 检查点完成后的归零（轮询 5s 窗口）
     // 末轮残余 < 阈值不会再触发 kick（正确行为——kick 只在越界时）：
     // 有界性已由循环内断言保证；显式 CHECKPOINT 后归零收口
+    let before = pending_bytes_of(&c);
     c.execute("CHECKPOINT").unwrap();
-    assert_eq!(pending_bytes_of(&c), 0, "显式 checkpoint 后 pending 归零");
+    // 全局 meter 可被并行测试的写入污染（SERIAL 仅本文件内）——
+    // 容差断言：显式 checkpoint 后本测试的 pending（MB 级）归零，
+    // 残余 ≤ 4KB 视为兄弟噪声
+    let after = pending_bytes_of(&c);
+    assert!(
+        after < 4096 && after <= before,
+        "显式 checkpoint 后 pending 归零（容差 4KB）：before={before} after={after}"
+    );
 }
 
 fn pending_bytes_of(_c: &Connection) -> u64 {

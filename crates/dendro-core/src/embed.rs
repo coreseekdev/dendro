@@ -245,7 +245,10 @@ impl Connection {
 
     pub fn query(&mut self, sql: &str) -> Result<QueryResult> {
         let outputs = self.sess.exec(sql)?;
-        Ok(to_result(outputs))
+        let _t = crate::perf::enter(crate::perf::Stage::ToResult);
+        let r = to_result(outputs);
+        crate::perf::exit(crate::perf::Stage::ToResult, _t);
+        Ok(r)
     }
 
     /// 执行 SQL 返回首行首列 i64

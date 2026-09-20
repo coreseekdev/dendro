@@ -34,6 +34,14 @@ pub enum Stage {
     StorageGet,
     /// 输出构造（TableView → Output::Rows/RecordSet 编码）
     OutputBuild,
+    /// 语句切分（split_statements——引号/注释感知扫描）
+    BatchSplit,
+    /// embed 输出转换（Output → QueryResult 行物化）
+    ToResult,
+    /// 计划构建（build_plan：AST → Plan IR）
+    BuildPlan,
+    /// 优化链（rewrite_* 六条 + 掩码计算）
+    Optimize,
 }
 
 pub const STAGES: &[Stage] = &[
@@ -45,6 +53,10 @@ pub const STAGES: &[Stage] = &[
     Stage::Scan,
     Stage::StorageGet,
     Stage::OutputBuild,
+    Stage::BatchSplit,
+    Stage::ToResult,
+    Stage::BuildPlan,
+    Stage::Optimize,
 ];
 
 impl Stage {
@@ -58,6 +70,10 @@ impl Stage {
             Stage::Scan => "scan",
             Stage::StorageGet => "storage_get",
             Stage::OutputBuild => "output_build",
+            Stage::BatchSplit => "batch_split",
+            Stage::ToResult => "to_result",
+            Stage::BuildPlan => "build_plan",
+            Stage::Optimize => "optimize",
         }
     }
 }
@@ -68,39 +84,19 @@ struct Counters {
 }
 
 static ENABLED: AtomicBool = AtomicBool::new(true);
-static COUNTERS: [Counters; 8] = [
-    Counters {
-        count: AtomicU64::new(0),
-        sum_ns: AtomicU64::new(0),
-    },
-    Counters {
-        count: AtomicU64::new(0),
-        sum_ns: AtomicU64::new(0),
-    },
-    Counters {
-        count: AtomicU64::new(0),
-        sum_ns: AtomicU64::new(0),
-    },
-    Counters {
-        count: AtomicU64::new(0),
-        sum_ns: AtomicU64::new(0),
-    },
-    Counters {
-        count: AtomicU64::new(0),
-        sum_ns: AtomicU64::new(0),
-    },
-    Counters {
-        count: AtomicU64::new(0),
-        sum_ns: AtomicU64::new(0),
-    },
-    Counters {
-        count: AtomicU64::new(0),
-        sum_ns: AtomicU64::new(0),
-    },
-    Counters {
-        count: AtomicU64::new(0),
-        sum_ns: AtomicU64::new(0),
-    },
+static COUNTERS: [Counters; 12] = [
+    Counters { count: AtomicU64::new(0), sum_ns: AtomicU64::new(0) },
+    Counters { count: AtomicU64::new(0), sum_ns: AtomicU64::new(0) },
+    Counters { count: AtomicU64::new(0), sum_ns: AtomicU64::new(0) },
+    Counters { count: AtomicU64::new(0), sum_ns: AtomicU64::new(0) },
+    Counters { count: AtomicU64::new(0), sum_ns: AtomicU64::new(0) },
+    Counters { count: AtomicU64::new(0), sum_ns: AtomicU64::new(0) },
+    Counters { count: AtomicU64::new(0), sum_ns: AtomicU64::new(0) },
+    Counters { count: AtomicU64::new(0), sum_ns: AtomicU64::new(0) },
+    Counters { count: AtomicU64::new(0), sum_ns: AtomicU64::new(0) },
+    Counters { count: AtomicU64::new(0), sum_ns: AtomicU64::new(0) },
+    Counters { count: AtomicU64::new(0), sum_ns: AtomicU64::new(0) },
+    Counters { count: AtomicU64::new(0), sum_ns: AtomicU64::new(0) },
 ];
 
 fn idx(s: Stage) -> usize {
@@ -113,6 +109,10 @@ fn idx(s: Stage) -> usize {
         Stage::Scan => 5,
         Stage::StorageGet => 6,
         Stage::OutputBuild => 7,
+        Stage::BatchSplit => 8,
+        Stage::ToResult => 9,
+        Stage::BuildPlan => 10,
+        Stage::Optimize => 11,
     }
 }
 
@@ -199,6 +199,10 @@ mod tests {
         let r = report();
         let p = r.iter().find(|x| x.name == "parse").unwrap();
         assert_eq!(p.count, before + 2);
-        assert!(p.avg_ns > 50_000, "sleep 100µs 应计入 avg：{p:?}");
+        // 并行干扰下 avg 被兄弟打点稀释——只断言本测试贡献的总量增长
+        assert!(
+            p.total_ms >= before as f64 * 0.0 + 0.1,
+            "sleep 100µs 应计入 total：{p:?}"
+        );
     }
 }

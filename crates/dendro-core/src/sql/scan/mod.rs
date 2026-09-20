@@ -161,15 +161,29 @@ pub(crate) fn eval_query(
     if let Some(tv) = try_arrow_global_agg(db, sess, &q_owned, snapshot)? {
         return Ok(tv);
     }
+    // 统一框架内点查早退（perf 拆解定位：exec_plan/扫描机器 ~8µs——
+    // pk 等值形态在计划构建前直接走 point 路径）。形态门保守：单表 +
+    // 无 GROUP/ORDER/LIMIT/DISTINCT/HAVING/join/子查询 + 投影为裸列
+    // 或通配。SET dendro.optimize=off 时关闭（差分轴）
+    if sess.optimize_enabled && sess.force_source.is_none() {
+        if let Some(tv) = try_point_early(db, sess, &q_owned, snapshot)? {
+            return Ok(tv);
+        }
+    }
+    let _t_bp = crate::perf::enter(crate::perf::Stage::BuildPlan);
     let mut plan = crate::ir::plan::build_plan(&q_owned)?;
+    crate::perf::exit(crate::perf::Stage::BuildPlan, _t_bp);
+    let _t_opt = crate::perf::enter(crate::perf::Stage::Optimize);
     if sess.optimize_enabled {
         crate::sql::optimize::rewrite_in_list(&mut plan);
         crate::ir::plan::rewrite_pushdown(&mut plan);
         crate::sql::optimize::rewrite_stat_prop(&mut plan, db, sess);
         crate::sql::optimize::rewrite_eq_copy(&mut plan);
+        crate::sql::optimize::rewrite_eq_copy(&mut plan);
         crate::sql::optimize::rewrite_join_order(&mut plan, db, sess);
         crate::sql::optimize::rewrite_filter_order(&mut plan);
     }
+    crate::perf::exit(crate::perf::Stage::Optimize, _t_opt);
     // 结构侧安全网：不可执行节点集 = 诚实报错（无回落可吞）
     if !plan_nodes_exec_ok(&plan) {
         return Err(SqlError::not_supported(format!(
@@ -307,6 +321,96 @@ fn apply_predicates_q(
     };
     tv.rows = rows;
     Ok(tv)
+}
+
+/// 点查早退（统一框架内——非旁路 API）：pk 等值形态的最窄安全门。
+/// 返回 None = 形态不覆盖，透传计划路径（差分安全）。
+fn try_point_early(
+    db: &Database,
+    sess: &mut Session,
+    q: &Query,
+    snapshot: u64,
+) -> Result<Option<TableView>> {
+    use sqlparser::ast::{SetExpr, SelectItem, TableFactor};
+    let SetExpr::Select(sel) = &*q.body else {
+        return Ok(None);
+    };
+    if q.order_by.is_some()
+        || q.limit_clause.is_some()
+        || q.fetch.is_some()
+        || sel.distinct.is_some()
+        || sel.having.is_some()
+        || !matches!(&sel.group_by, sqlparser::ast::GroupByExpr::Expressions(es, _) if es.is_empty())
+        || sel.from.len() != 1
+        || !sel.from[0].joins.is_empty()
+    {
+        return Ok(None);
+    }
+    let TableFactor::Table { name, version, .. } = &sel.from[0].relation else {
+        return Ok(None);
+    };
+    if version.is_some() {
+        return Ok(None);
+    }
+    let Some(pred) = &sel.selection else {
+        return Ok(None);
+    };
+    if crate::sql::scan::expr_has_subquery(pred) {
+        return Ok(None);
+    }
+    let table = name
+        .0
+        .last()
+        .and_then(|p| p.as_ident())
+        .map(|i| i.value.clone())
+        .unwrap_or_default();
+    if table.is_empty() {
+        return Ok(None);
+    }
+    // 复用下推资格判定 + 点取（与计划路径同一实现——语义一致由构造保证）
+    let tf = crate::sql::scan::synthetic_tf(&table, None);
+    let Some((schema, entry)) = crate::sql::scan::try_pk_pushdown(db, sess, &tf, Some(pred), snapshot)?
+    else {
+        return Ok(None);
+    };
+    let mut tv = crate::sql::scan::build_point_view(db, sess, &schema, &entry, pred, snapshot)?;
+    // 投影：裸列/通配/别名（表达式投影回落计划路径——project 机器
+    // 的布局依赖计划上下文，不在此重复实现）
+    let mut out_names = Vec::new();
+    let mut out_rows = Vec::new();
+    for item in &sel.projection {
+        match item {
+            SelectItem::Wildcard(_) => {
+                out_names.extend(tv.names.iter().cloned());
+                for (r, o) in tv.rows.iter().zip(out_rows.len()..) {
+                    let _ = o;
+                }
+                // 通配：保留全部行（下方统一搬运）
+                out_rows = tv.rows.clone();
+                continue;
+            }
+            SelectItem::UnnamedExpr(sqlparser::ast::Expr::Identifier(id)) => {
+                let Some(ci) = tv.names.iter().position(|n| n.eq_ignore_ascii_case(&id.value)) else {
+                    return Ok(None); // 未知名——回落（诚实）
+                };
+                if out_rows.is_empty() && !tv.rows.is_empty() {
+                    out_rows = vec![Vec::new(); tv.rows.len()];
+                }
+                for (o, r) in out_rows.iter_mut().zip(tv.rows.iter()) {
+                    o.push(r[ci].clone());
+                }
+                out_names.push(tv.names[ci].clone());
+            }
+            _ => return Ok(None), // 表达式/限定通配——回落计划路径
+        }
+    }
+    if out_rows.is_empty() {
+        out_rows = tv.rows;
+    }
+    Ok(Some(TableView {
+        names: out_names,
+        rows: out_rows,
+    }))
 }
 
 pub(crate) fn short_str_pub(s: &impl std::fmt::Display) -> String {

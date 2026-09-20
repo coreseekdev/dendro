@@ -86,7 +86,7 @@ fn main() {
             (i * 7919) % 10_000_000 + 1
         ));
     });
-    println!("\n== perf 拆解（SQL×树，统一框架内）==");
+    println!("\n== perf 拆解（SQL×树，统一框架内；含包装层）==");
     for r in dendro_core::perf::report() {
         if r.count > 0 {
             println!(

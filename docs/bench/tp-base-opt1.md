@@ -136,3 +136,22 @@ exec/eval/scan/storage_get/output_build），M-5 同型三原子计数
 墙钟持平（~33µs）揭示下一层：embed 包装（to_result/split/format
 ~10µs）——已列为下一打点与优化对象。剩余栈（诚实账）：parse 4.7
 （形状缓存可消）/ eval 核心 ~10（计划构建+优化链）/ 包装 ~5-10。
+
+## 持续优化第一轮（master 直推，2026-09-19）
+
+perf 框架扩展（build_plan/optimize/batch_split/to_result 四阶段）+
+ 两个统一路径优化：
+
+1. **点查早退**（try_point_early）：pk 等值 + 单表 + 裸列/通配投影 +
+   无 GROUP/ORDER/LIMIT/DISTINCT/HAVING/子查询 的最窄安全门，在
+   build_plan 前复用 try_pk_pushdown + build_point_view（同一实现，
+   语义一致由构造保证）。`SET dendro.optimize=off` 与 `force_source
+   ≠ auto` 时关闭（差分轴 + dispatch 合同测试锁定）。
+   **统一路径点查 30.6k → 39.4k ops/s（32.7→25.4µs，+29%）**。
+2. 拆解更新：build_plan 0.8µs / optimize 0.2µs / batch_split 0.5µs
+   / to_result 0.25µs——**均非热点**；剩余 SQL 层 = parse 4.6（键值
+   全异必 miss——形状缓存待做）+ point 路径本体 + 会话前导 ~3µs。
+
+find_by_pk 基线参照：6.4µs。统一路径与基线的剩余差距 = parse +
+lower/arrow 检查 + 会话机器 ≈ 19µs——形状缓存（literal 模板化
+plan cache）是下一个大头。

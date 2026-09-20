@@ -140,7 +140,10 @@ pub(crate) fn exec_batch(db: &Database, sess: &mut Session, sql: &str) -> Result
     let mut outs = Vec::new();
     // 语句级 resolve 记忆化（perf 框架实测 8 次/点查 → 1 次）
     let _resolve_memo = scan::resolve_memo_guard();
-    for raw in split_statements(sql) {
+    let _t_split = crate::perf::enter(crate::perf::Stage::BatchSplit);
+    let stmts_split = split_statements(sql);
+    crate::perf::exit(crate::perf::Stage::BatchSplit, _t_split);
+    for raw in stmts_split {
         if branch_sql_kind(&raw).is_some() {
             let out = exec_branch_statement(db, sess, &raw)?;
             outs.extend(out);
