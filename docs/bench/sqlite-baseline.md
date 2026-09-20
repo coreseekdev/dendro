@@ -111,3 +111,27 @@ insert.disk 1.0×。文本路径与耐久口径仍是两大差项。
 - update NoWait 口径：**SQLite 量级达成**（226k）
 - point：0.5×（文本机器 + 树路径）——exec_statement 借用化 +
   point 机器瘦身后复测
+
+## 复测三（2026-09-20：exec_statement 借用化 + memtx 瓶颈验证）
+
+**用户假设验证（pointbreak 探针）**：memtx **不是**瓶颈——裸
+find_by_pk 2.8M ops/s（0.35µs）、树 1.9M（0.52µs）；瓶颈是
+SQL 文本机器（4.7µs = 存储 0.35 + 机器 4.3）。
+
+**借用化**：exec_statement(Statement) → (&Statement)——Query 臂
+克隆一次 Query，DDL 臂按需 clone；形状缓存路径的 AST 深克隆
+消除（模板直接借用执行）。
+
+| 场景 | 复测二 | 复测三 | SQLite（本轮） |
+|------|--------|--------|---------------|
+| point.disk | 126.9k | **167.2k** | 471k |
+| point.mem | 121.6k | **159.9k** | 569k |
+| insert.disk | 197.4k（1.0×） | **366.8k（1.7×）** | 210k |
+| insert.mem | 123.8k | **398.4k（0.8×）** | 502k |
+| update.disk | 63.9k | 61.8k | 166k |
+| range100.disk | — | 10.4k | 112k |
+
+**里程碑**：insert.disk **1.7× 达标并超越**；insert.mem 0.8×
+（SQLite 量级内）。point 0.3-0.4×、update 0.4×、range 0.1×
+为剩余差项——SQL 机器 4.3µs 的进一步分解（eval 1.7 内点取
+0.35 + TableView/投影 ~1.3；形状缓存查找+代入 ~1.5）。

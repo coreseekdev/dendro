@@ -181,7 +181,7 @@ pub(crate) fn exec_batch(db: &Database, sess: &mut Session, sql: &str) -> Result
                         drop(_t_parse);
                         let stmt = substitute_params(tmpl_ast, &lits)?;
                         let _t_exec = crate::perf::enter(crate::perf::Stage::Exec);
-                        let r = exec_statement(db, sess, stmt);
+                        let r = exec_statement(db, sess, &stmt);
                         crate::perf::exit(crate::perf::Stage::Exec, _t_exec);
                         let out = r?;
                         if let Some(o) = out {
@@ -211,7 +211,7 @@ pub(crate) fn exec_batch(db: &Database, sess: &mut Session, sql: &str) -> Result
         }
         for stmt in stmts {
             let _t_exec = crate::perf::enter(crate::perf::Stage::Exec);
-            let r = exec_statement(db, sess, stmt);
+            let r = exec_statement(db, sess, &stmt);
             crate::perf::exit(crate::perf::Stage::Exec, _t_exec);
             let out = r?;
             if let Some(o) = out {
@@ -635,7 +635,7 @@ fn is_ddl(stmt: &Statement) -> bool {
 pub(crate) fn exec_statement(
     db: &Database,
     sess: &mut Session,
-    stmt: Statement,
+    stmt: &Statement,
 ) -> Result<Option<Output>> {
     // Q-10（保守口径）：显式事务内拒绝 DDL——catalog 写不经事务写集，
     // 立即生效且 ROLLBACK 不可撤销（第十八轮 R18-2 实证可见性漂移）。
@@ -719,10 +719,10 @@ pub(crate) fn exec_statement(
         Statement::Query(q) => {
             // CTE 在 eval_query 内展开（expand_ctes）——此处不再拒绝
             let snap_tx = sess.implicit_snapshot(db)?;
-            let out = scan::exec_query(db, sess, *q, snap_tx)?;
+            let out = scan::exec_query(db, sess, q.as_ref().clone(), snap_tx)?;
             Ok(Some(out))
         }
-        Statement::Insert(insert) => ddl::exec_insert(db, sess, insert),
+        Statement::Insert(insert) => ddl::exec_insert(db, sess, insert.clone()),
         Statement::Update(upd) => {
             let name = match &upd.table.relation {
                 sqlparser::ast::TableFactor::Table { name, .. } => name
@@ -755,7 +755,7 @@ pub(crate) fn exec_statement(
                 .collect::<Result<Vec<_>>>()?;
             ddl::update_impl(db, sess, &name, assignments, upd.selection.clone())
         }
-        Statement::Delete(delete) => ddl::exec_delete(db, sess, delete),
+        Statement::Delete(delete) => ddl::exec_delete(db, sess, delete.clone()),
         Statement::CreateView(cv) => {
             let name = cv
                 .name
@@ -789,7 +789,7 @@ pub(crate) fn exec_statement(
             if_exists,
             ..
         } => {
-            for name_obj in &names {
+            for name_obj in names.iter() {
                 let name = name_obj
                     .0
                     .iter()
@@ -798,7 +798,7 @@ pub(crate) fn exec_statement(
                     .join(".");
                 let exists = db.manifest().manifest.views.contains_key(&name);
                 if !exists {
-                    if if_exists {
+                    if *if_exists {
                         continue;
                     }
                     return Err(SqlError::undefined_table(format!(
@@ -816,13 +816,13 @@ pub(crate) fn exec_statement(
                 affected: 0,
             }))
         }
-        Statement::CreateTable(create) => ddl::exec_create_table(db, sess, create),
+        Statement::CreateTable(create) => ddl::exec_create_table(db, sess, create.clone()),
         Statement::Drop {
             object_type: sqlparser::ast::ObjectType::Table,
             names,
             if_exists,
             ..
-        } => ddl::drop_table_impl(db, sess, names, if_exists),
+        } => ddl::drop_table_impl(db, sess, names.clone(), *if_exists),
         Statement::AlterTable(alt) => {
             if let [op] = alt.operations.as_slice() {
                 ddl::alter_table_impl(db, sess, alt.name.clone(), op.clone())
@@ -830,7 +830,7 @@ pub(crate) fn exec_statement(
                 Err(SqlError::not_supported("multiple ALTER TABLE operations"))
             }
         }
-        Statement::Truncate(tr) => ddl::truncate_impl(db, sess, tr.table_names),
+        Statement::Truncate(tr) => ddl::truncate_impl(db, sess, tr.table_names.clone()),
         Statement::Copy {
             source,
             to: false,
@@ -858,8 +858,8 @@ pub(crate) fn exec_statement(
             // 实际行数/子树墙钟（`!` 注解通道）。SELECT 且计划覆盖形态；
             // 其余诚实拒绝。时间量纲微秒（机器相关——slt 不固化，Rust
             // 断言 rows 精确 + 标签序列）
-            if analyze {
-                let inner = *statement;
+            if *analyze {
+                let inner = statement.as_ref().clone();
                 let sqlparser::ast::Statement::Query(q) = inner else {
                     return Err(SqlError::not_supported(
                         "EXPLAIN ANALYZE: SELECT statements only",
@@ -923,7 +923,7 @@ pub(crate) fn exec_statement(
             // 输出（原单表形态的 "Seq Scan" + dispatch + 标量块退役——
             // 与 join/集合操作形态同一输出面；派发/标量可观测面由
             // EXPLAIN ANALYZE 的 est/actual 与 force 轴差分承接）
-            let inner = *statement;
+            let inner = statement.as_ref().clone();
             let mut lines: Vec<String> = Vec::new();
             let mut described = false;
             if let sqlparser::ast::Statement::Query(q) = &inner {
@@ -1518,12 +1518,12 @@ pub(crate) fn exec_prepared(
             guard.with_snapshot(|o| o.clone())
         };
         // 守卫已 Drop（还原完成）——快照是代入后的形态
-        if let Some(o) = exec_statement(db, sess, snapshot)? {
+        if let Some(o) = exec_statement(db, sess, &snapshot)? {
             return Ok(o);
         }
     } else {
         let stmt = substitute_params(p.stmt, params)?;
-        if let Some(o) = exec_statement(db, sess, stmt)? {
+        if let Some(o) = exec_statement(db, sess, &stmt)? {
             return Ok(o);
         }
     }
