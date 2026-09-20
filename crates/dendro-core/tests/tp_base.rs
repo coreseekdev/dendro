@@ -120,3 +120,46 @@ fn pending_bytes_of(_c: &Connection) -> u64 {
         .bytes
         .load(std::sync::atomic::Ordering::Relaxed)
 }
+
+#[test]
+fn range_early_semantics() {
+    let _g = SERIAL.lock().unwrap();
+    let mut c = conn_fresh("range");
+    c.execute("CREATE TABLE r (id BIGINT PRIMARY KEY, v BIGINT, tag TEXT)").unwrap();
+    for ch in 0..10 {
+        let vals: Vec<String> = (0..1000)
+            .map(|i| { let id = ch*1000+i+1; format!("({id}, {}, 't')", id % 7) })
+            .collect();
+        c.execute(&format!("INSERT INTO r VALUES {}", vals.join(","))).unwrap();
+    }
+    c.execute("CHECKPOINT").unwrap();
+    // overlay 尾巴 + 墓碑
+    c.execute("INSERT INTO r VALUES (20001, 99, 'tail')").unwrap();
+    c.execute("DELETE FROM r WHERE id = 5001").unwrap();
+    // 差分：范围早退 vs optimize=off（全表扫描+过滤）
+    let queries = [
+        "SELECT id, v FROM r WHERE id >= 2000 AND id < 2100",
+        "SELECT id FROM r WHERE id > 19995",
+        "SELECT id, v, tag FROM r WHERE id >= 5000 AND id <= 5010",
+        "SELECT id FROM r WHERE id < 3",
+        "SELECT v FROM r WHERE id >= 20000 AND id < 20002",
+    ];
+    for sql in queries {
+        let on = c.query(sql).unwrap();
+        c.execute("SET dendro.optimize = 'off'").unwrap();
+        let off = c.query(sql).unwrap();
+        c.execute("SET dendro.optimize = 'on'").unwrap();
+        assert_eq!(
+            format!("{:?}", on.rows),
+            format!("{:?}", off.rows),
+            "`{sql}` 范围早退 vs 行路径"
+        );
+        assert!(!on.rows.is_empty() || sql.contains("< 3") == false, "{sql}");
+    }
+    // overlay 尾巴行计入
+    let r = c.query("SELECT count(*) FROM r WHERE id >= 20000").unwrap();
+    assert!(format!("{:?}", r.rows).contains("1"), "{:?}", r.rows);
+    // 墓碑不可见
+    let r = c.query("SELECT count(*) FROM r WHERE id >= 5000 AND id < 5002").unwrap();
+    assert!(format!("{:?}", r.rows).contains("1"), "5001 已删：{:?}", r.rows);
+}

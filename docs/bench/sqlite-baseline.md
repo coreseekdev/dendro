@@ -204,3 +204,20 @@ WAL 安全测试全绿（wal_corruption 19、tp_base 2、concurrent 11）。
 更大；ClickBench 106 列场景是真正受益面）。第 8 轮：insert.disk
 **1.9×**（397k）、update.disk 0.6×（103k，本轮 SQLite 自身 179k
 偏高）、point 0.4× 稳定。
+
+## 复测八（2026-09-20：pk 范围早退 try_range_early）
+
+range 0.1× 的根因定位：dispatch 只识别 pk **等值**（CurrentPoint），
+范围谓词（`id >= a AND id < b`）走 AP 全表扫描+过滤。对策：
+`try_range_early`——单表 + 单列数字 pk 的范围合取
+（extract_pk_int_range）+ 残差谓词保留（非 pk 合取如 `a = 3`
+拆出后逐行求值——prune_differential 差分当场抓获此语义缺陷）+
+树 range_scan（seek 直达）+ overlay 区间预并（墓碑 remove——
+范围语义差分抓获）+ 事务自身写 + 投影解码直出。
+
+差分锁定（tp_base range_early_semantics）：5 种范围形态 ×
+optimize on/off 逐行相等 + overlay 尾巴计入 + 墓碑不可见。
+
+第 9 轮：range100 **10.4k → 30.2k（2.9×）**，vs SQLite 0.2×。
+剩余 range 差距 = 100 行逐行解码（decode_row_proj 已接）+ BTreeMap
+归并物化——流式首批（C 档）是下一步。

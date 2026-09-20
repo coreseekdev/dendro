@@ -169,6 +169,9 @@ pub(crate) fn eval_query(
         if let Some(tv) = try_point_early(db, sess, &q_owned, snapshot)? {
             return Ok(tv);
         }
+        if let Some(tv) = try_range_early(db, sess, &q_owned, snapshot)? {
+            return Ok(tv);
+        }
     }
     let _t_bp = crate::perf::enter(crate::perf::Stage::BuildPlan);
     let mut plan = crate::ir::plan::build_plan(&q_owned)?;
@@ -325,6 +328,293 @@ fn apply_predicates_q(
 
 /// 点查早退（统一框架内——非旁路 API）：pk 等值形态的最窄安全门。
 /// 返回 None = 形态不覆盖，透传计划路径（差分安全）。
+/// pk 范围早退（range 0.1× 的对策——dispatch 未识别范围谓词时
+/// 走 AP 全表扫描+过滤）。形态门：单表 + 单列数字 pk 的纯范围
+/// 合取（extract_pk_int_range）+ 裸列/通配投影 + 无子句/子查询。
+/// 路径：树 range_scan（seek 直达）+ overlay 区间预并 + 直出列。
+fn try_range_early(
+    db: &Database,
+    sess: &mut Session,
+    q: &Query,
+    snapshot: u64,
+) -> Result<Option<TableView>> {
+    use sqlparser::ast::{SetExpr, SelectItem, TableFactor};
+    let SetExpr::Select(sel) = &*q.body else {
+        return Ok(None);
+    };
+    if q.order_by.is_some()
+        || q.limit_clause.is_some()
+        || q.fetch.is_some()
+        || sel.distinct.is_some()
+        || sel.having.is_some()
+        || !matches!(&sel.group_by, sqlparser::ast::GroupByExpr::Expressions(es, _) if es.is_empty())
+        || sel.from.len() != 1
+        || !sel.from[0].joins.is_empty()
+    {
+        return Ok(None);
+    }
+    let TableFactor::Table { name, version, .. } = &sel.from[0].relation else {
+        return Ok(None);
+    };
+    if version.is_some() {
+        return Ok(None);
+    }
+    let Some(pred) = &sel.selection else {
+        return Ok(None);
+    };
+    if crate::sql::scan::expr_has_subquery(pred) {
+        return Ok(None);
+    }
+    // 投影先判（同点查早退——聚合/表达式回落）
+    let table = name
+        .0
+        .last()
+        .and_then(|p| p.as_ident())
+        .map(|i| i.value.clone())
+        .unwrap_or_default();
+    if table.is_empty() {
+        return Ok(None);
+    }
+    // 伪表过滤（resolve 会 42P01——点查早退经 try_pk_pushdown 内部
+    // 过滤同口径；此处显式）
+    let low = table.to_ascii_lowercase();
+    if matches!(
+        low.as_str(),
+        "cambium.branches"
+            | "branches"
+            | "cambium.memory_usage"
+            | "memory_usage"
+            | "cambium.perf_stages"
+            | "perf_stages"
+            | "information_schema.tables"
+            | "pg_catalog.pg_tables"
+            | "pg_tables"
+            | "information_schema.columns"
+            | "pg_catalog.pg_columns"
+            | "pg_columns"
+            | "pg_catalog.pg_settings"
+            | "pg_settings"
+            | "cambium.commit_log"
+            | "commit_log"
+    ) {
+        return Ok(None);
+    }
+    let Ok((schema, entry)) = crate::sql::scan::resolve_table(db, &sess.branch, &table) else {
+        return Ok(None); // 表不存在等——回落（让常规路径给准确报错）
+    };
+    if schema.pk.len() != 1 {
+        return Ok(None);
+    }
+    let pk_name = schema.columns[schema.pk[0] as usize].name.clone();
+    let Some((lo, hi)) = crate::sql::scan::extract_pk_int_range(pred, &pk_name) else {
+        return Ok(None);
+    };
+    if lo.is_none() && hi.is_none() {
+        return Ok(None); // 无界——等同全表，交给常规路径
+    }
+    // 残差谓词：非 pk 合取项（a = 3 之类）不能丢——提取 pk 合取后
+    // 其余项逐行求值过滤。提取方式：拆顶层 AND，剔除纯 pk 比较
+    let residual = extract_non_pk_conjuncts(pred, &pk_name);
+    let _ = &residual;
+    let mut out_idx: Vec<usize> = Vec::new();
+    let mut wildcard = false;
+    for item in &sel.projection {
+        match item {
+            SelectItem::Wildcard(_) => wildcard = true,
+            SelectItem::UnnamedExpr(sqlparser::ast::Expr::Identifier(id)) => {
+                let Some(ci) = schema
+                    .columns
+                    .iter()
+                    .position(|c| c.name.eq_ignore_ascii_case(&id.value))
+                else {
+                    return Ok(None);
+                };
+                out_idx.push(ci);
+            }
+            _ => return Ok(None),
+        }
+    }
+    // 树范围（seek 直达）+ overlay 区间
+    let (start_key, end_key) = crate::sql::scan::pk_range_keys(&lo, &hi);
+    if let (Some(a), Some(b)) = (&start_key, &end_key) {
+        if a >= b {
+            return Ok(Some(TableView {
+                names: Vec::new(),
+                rows: Vec::new(),
+            }));
+        }
+    }
+    let root = entry
+        .table_root
+        .as_ref()
+        .and_then(|s| crate::format::hash::Hash::from_base32(s));
+    let b = db.branch(&sess.branch)?;
+    let tm = b.mem.table(entry.id);
+    let overlay =
+        tm.snapshot_rows_in_range(start_key.as_deref(), end_key.as_deref(), snapshot);
+    let mut visible: std::collections::BTreeMap<Vec<u8>, std::sync::Arc<Vec<u8>>> =
+        std::collections::BTreeMap::new();
+    if let Some(r) = &root {
+        for (k, v) in crate::prolly::cursor::range_scan(
+            db.store.clone(),
+            r,
+            start_key.as_deref(),
+            end_key.as_deref(),
+        )? {
+            visible.insert(k, std::sync::Arc::new(v));
+        }
+    }
+    for (k, v) in overlay {
+        match v {
+            Some(v) => {
+                visible.insert(k, v);
+            }
+            None => {
+                visible.remove(&k); // 墓碑隐藏树行
+            }
+        }
+    }
+    // 显式事务自身写
+    if let Some(t) = &sess.txn {
+        if t.explicit {
+            for ((tid, k), m) in &t.writes {
+                if *tid != entry.id {
+                    continue;
+                }
+                let in_range = start_key
+                    .as_ref()
+                    .map_or(true, |s| k.as_slice() >= s.as_slice())
+                    && end_key
+                        .as_ref()
+                        .map_or(true, |e| k.as_slice() < e.as_slice());
+                if in_range {
+                    match m {
+                        crate::prolly::Mutation::Put(v) => {
+                            visible.insert(k.clone(), std::sync::Arc::new(v.clone()));
+                        }
+                        crate::prolly::Mutation::Delete => {
+                            visible.remove(k);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // 直出（投影解码同点查早退）
+    let out_names: Vec<String> = if wildcard {
+        schema.columns.iter().map(|c| c.name.clone()).collect()
+    } else {
+        out_idx
+            .iter()
+            .map(|&i| schema.columns[i].name.clone())
+            .collect()
+    };
+    // 残差过滤的列定位（行内求值口径与行路径同——全行名 → 下标）
+    let colpos: std::collections::HashMap<String, usize> = schema
+        .columns
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (c.name.to_ascii_lowercase(), i))
+        .collect();
+    let resolv = |n: &str| -> Option<usize> { colpos.get(&n.to_ascii_lowercase()).copied() };
+    let mut out_rows = Vec::with_capacity(visible.len());
+    for (_, bytes) in visible {
+        // 残差谓词先在全行上求值（谓词可引用任意列）
+        if residual.len() == 1 {
+            let full_tmp = row_from_bytes(&schema, &bytes)?;
+            let keep = match crate::sql::expr::eval(
+                &residual[0],
+                &full_tmp,
+                &resolv,
+            ) {
+                Ok(SqlValue::Bool(true)) => true,
+                Ok(_) => false,
+                Err(_) => return Ok(None), // 求值失败——回落（诚实）
+            };
+            if !keep {
+                continue;
+            }
+        } else if residual.len() > 1 {
+            // 多残差：全 AND——逐个求值
+            let full_tmp = row_from_bytes(&schema, &bytes)?;
+            let mut keep = true;
+            for r in &residual {
+                match crate::sql::expr::eval(r, &full_tmp, &resolv) {
+                    Ok(SqlValue::Bool(true)) => {}
+                    Ok(_) => {
+                        keep = false;
+                        break;
+                    }
+                    Err(_) => return Ok(None),
+                }
+            }
+            if !keep {
+                continue;
+            }
+        }
+        let row: Vec<SqlValue> = if wildcard {
+            row_from_bytes(&schema, &bytes)?
+        } else {
+            let mut idx = out_idx.clone();
+            idx.sort_unstable();
+            idx.dedup();
+            let vals = crate::format::row::decode_row_proj(&bytes, &idx)?;
+            let back: std::collections::HashMap<usize, SqlValue> =
+                idx.into_iter().zip(vals.into_iter()).collect();
+            out_idx.iter().map(|&i| back[&i].clone()).collect()
+        };
+        out_rows.push(row);
+    }
+    Ok(Some(TableView {
+        names: out_names,
+        rows: out_rows,
+    }))
+}
+
+/// 拆顶层 AND，剔除"纯 pk 比较"合取——其余为残差谓词（范围早退
+/// 需逐行求值）。含 OR/子查询的形态返回原谓词整体（调用方回落——
+/// 此处保守：结果 >0 且原谓词非纯 pk 比较时由调用方判定）
+fn extract_non_pk_conjuncts(pred: &sqlparser::ast::Expr, pk: &str) -> Vec<sqlparser::ast::Expr> {
+    use sqlparser::ast::Expr;
+    fn is_pk_cmp(e: &Expr, pk: &str) -> bool {
+        match e {
+            Expr::BinaryOp { left, op, right } => {
+                let col = matches!(left.as_ref(), Expr::Identifier(id) if id.value.eq_ignore_ascii_case(pk))
+                    || matches!(right.as_ref(), Expr::Identifier(id) if id.value.eq_ignore_ascii_case(pk));
+                col && matches!(
+                    op,
+                    sqlparser::ast::BinaryOperator::Gt
+                        | sqlparser::ast::BinaryOperator::GtEq
+                        | sqlparser::ast::BinaryOperator::Lt
+                        | sqlparser::ast::BinaryOperator::LtEq
+                        | sqlparser::ast::BinaryOperator::Eq
+                )
+            }
+            _ => false,
+        }
+    }
+    fn walk(e: &Expr, pk: &str, out: &mut Vec<Expr>) {
+        match e {
+            Expr::BinaryOp {
+                left,
+                op: sqlparser::ast::BinaryOperator::And,
+                right,
+            } => {
+                walk(left, pk, out);
+                walk(right, pk, out);
+            }
+            other => {
+                if !is_pk_cmp(other, pk) {
+                    out.push(other.clone());
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(pred, pk, &mut out);
+    out
+}
+
 fn try_point_early(
     db: &Database,
     sess: &mut Session,
