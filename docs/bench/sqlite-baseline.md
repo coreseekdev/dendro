@@ -59,3 +59,27 @@ resolve 2× + eval/exec 机器 ~5µs。SQLite 同场景 = 绑定 + B-tree
 dendro sqlite-cmp --data /tmp/dendro-sqlitecmp --rows 1000000 \
   --out benches/results/sqlite_cmp.json
 ```
+
+## 复测一（2026-09-19 晚：prepare 原位代入 + LeanStore 档案批）
+
+| 场景 | 首测 disk | 复测 disk | 首测 mem | 复测 mem |
+|------|-----------|-----------|----------|----------|
+| point | 107.9k | 112.6k | 114.9k | 115.0k |
+| insert | 196.4k | 195.0k | 164.0k | **205.4k**（+25%） |
+| update | 56.0k | 39.7k* | 61.7k | 66.8k |
+| range100 | 18.4k | 10.4k* | 17.7k | 18.1k |
+
+*disk 臂 update/range 的波动与 jemalloc/页缓存状态相关（同日多次
+运行 ±30%）；point/insert 稳定。
+
+**诚实结论**：prepare 原位代入是**克隆中性**（快照仍需一次深克隆
+——sqlparser AST 按值传递，真实免克隆需 exec_statement 借用化，
+已列为下一步）；insert mem 臂 +25% 疑似 jemalloc 预热。差距的
+主要来源确认不在 prepare 层而在 **每次执行的 SQL 机器本身**。
+
+## 追赶路径修订（LeanStore 档案吸收后）
+
+1. **exec_statement 借用化**（真免克隆的前提）
+2. **WAL 自主提交/帧攒批**（LeanStore latency 分支 SIGMOD'25 对标
+   ——update 0.2-0.4× 的深层对策）
+3. 点查机器继续瘦身（resolve 2×→1×；TableView 分配消除）

@@ -1506,13 +1506,106 @@ pub(crate) fn exec_prepared(
             .next()
             .ok_or_else(|| SqlError::internal("empty branch output"));
     }
-    let stmt = substitute_params(p.stmt, params)?;
-    match exec_statement(db, sess, stmt)? {
-        Some(o) => Ok(o),
-        None => Ok(Output::Command {
-            tag: "OK".into(),
-            affected: 0,
-        }),
+    // P0 免克隆（LeanStore 预算论）：原位代入 + Drop 守卫还原——
+    // 执行器视角即参数槽。安全闸门：语句的 Value 节点数必须等于
+    // 占位符数（即除占位符外无其他字面量——还原时按序对应不错位）；
+    // 不满足则退回克隆路径（保守正确）
+    let ph_count = count_value_nodes(&p.stmt);
+    if ph_count == p.param_types.len() && ph_count > 0 {
+        let mut owned = p.stmt;
+        let snapshot = {
+            let mut guard = ParamSwapGuard::new(&mut owned, params);
+            guard.with_snapshot(|o| o.clone())
+        };
+        // 守卫已 Drop（还原完成）——快照是代入后的形态
+        if let Some(o) = exec_statement(db, sess, snapshot)? {
+            return Ok(o);
+        }
+    } else {
+        let stmt = substitute_params(p.stmt, params)?;
+        if let Some(o) = exec_statement(db, sess, stmt)? {
+            return Ok(o);
+        }
+    }
+    Ok(Output::Command {
+        tag: "OK".into(),
+        affected: 0,
+    })
+}
+
+/// 语句中 Value 节点数（占位符 + 字面量——原位路径的安全闸门：
+/// 仅当 == 占位符数时可按序还原）
+fn count_value_nodes(stmt: &Statement) -> usize {
+    use sqlparser::ast::{visit_expressions, Expr};
+    use std::ops::ControlFlow;
+    let mut n = 0;
+    let _ = visit_expressions(stmt, |e: &Expr| {
+        if matches!(e, Expr::Value(_)) {
+            n += 1;
+        }
+        ControlFlow::<()>::Continue(())
+    });
+    n
+}
+
+/// 原位代入守卫：构造时把模板 AST 的 Placeholder 换为参数值，
+/// Drop 时按序还原。执行期 panic/错误路径亦还原（AST 是缓存
+/// 共享物，不可带值残留）
+struct ParamSwapGuard<'a> {
+    stmt: &'a mut Statement,
+    restore: Vec<String>,
+}
+
+impl<'a> ParamSwapGuard<'a> {
+    fn new(stmt: &'a mut Statement, params: &[SqlValue]) -> Self {
+        use sqlparser::ast::{visit_expressions_mut, Expr};
+        use std::ops::ControlFlow;
+        let mut restore = Vec::new();
+        let _ = visit_expressions_mut(stmt, |e: &mut Expr| {
+            if let Expr::Value(vws) = e {
+                if let PV::Placeholder(id) = &vws.value {
+                    let n = id
+                        .trim_start_matches('$')
+                        .trim_start_matches('?')
+                        .parse::<usize>()
+                        .unwrap_or(1);
+                    let v = params.get(n - 1).cloned().unwrap_or(SqlValue::Null);
+                    let lit = expr::value_to_value_expr(&v);
+                    restore.push(id.clone());
+                    vws.value = lit;
+                    vws.span = sqlparser::tokenizer::Span::empty();
+                }
+            }
+            ControlFlow::<()>::Continue(())
+        });
+        ParamSwapGuard { stmt, restore }
+    }
+}
+
+impl<'a> ParamSwapGuard<'a> {
+    /// 守卫存活期内取代入后 AST 的快照（执行物）——Drop 时还原模板
+    fn with_snapshot<R>(&mut self, f: impl FnOnce(&Statement) -> R) -> R {
+        f(self.stmt)
+    }
+}
+
+impl Drop for ParamSwapGuard<'_> {
+    fn drop(&mut self) {
+        use sqlparser::ast::{visit_expressions_mut, Expr};
+        use std::ops::ControlFlow;
+        let params: Vec<String> = self.restore.clone();
+        let mut idx = 0usize;
+        let _ = visit_expressions_mut(self.stmt, |e: &mut Expr| {
+            if let Expr::Value(_) = e {
+                if idx < params.len() {
+                    if let Expr::Value(vws) = e {
+                        vws.value = PV::Placeholder(params[idx].clone());
+                    }
+                    idx += 1;
+                }
+            }
+            ControlFlow::<()>::Continue(())
+        });
     }
 }
 
