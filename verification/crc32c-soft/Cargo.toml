@@ -1,0 +1,13 @@
+[package]
+name = "crc32c-soft"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# 独立包：脱离 dendro 根 workspace
+
+[workspace]
+
+[dev-dependencies]
+# 差分测试对照：真 SIMD 实现
+crc32c = "0.6"

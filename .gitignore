@@ -9,3 +9,4 @@ verification/kani/*.rlib
 verification/kani/*.json
 docs/research/states/
 docs/research/*_TTrace_*
+verification/*/target/

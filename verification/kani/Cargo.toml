@@ -1,0 +1,17 @@
+[package]
+name = "dendro-kani"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# 独立包：脱离 dendro 根 workspace（源码经 #[path] 引用生产文件）
+
+[workspace]
+
+[dependencies]
+# 依赖别名：codec.rs 的 `crc32c::crc32c` 解析到软模型（真 crate 含
+# cpuid 内联汇编，Kani 不可验证）。模型↔真实现等价由
+# verification/crc32c-soft/tests/diff_real.rs 差分测试实证（门禁项）。
+crc32c = { path = "../crc32c-soft", package = "crc32c-soft" }
+# format/hash.rs（真源包含）所需；harness 不触 Hash::of（Sha512 不入证明）
+sha2 = "0.10"
