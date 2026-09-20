@@ -158,3 +158,25 @@ pub(crate) fn pseudo_memory(db: &Database) -> Result<TableView> {
     }
     Ok(TableView { names, rows })
 }
+
+/// 分阶段性能自省表（perf 框架——cambium.perf_stages）
+pub(crate) fn pseudo_perf_stages(_db: &Database) -> Result<TableView> {
+    let names = vec![
+        "stage".into(),
+        "count".into(),
+        "avg_ns".into(),
+        "total_ms".into(),
+    ];
+    let rows = crate::perf::report()
+        .into_iter()
+        .map(|r| {
+            vec![
+                SqlValue::Utf8(r.name.into()),
+                SqlValue::Int64(r.count as i64),
+                SqlValue::Int64(r.avg_ns as i64),
+                SqlValue::Float64(r.total_ms),
+            ]
+        })
+        .collect();
+    Ok(TableView { names, rows })
+}

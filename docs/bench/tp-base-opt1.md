@@ -107,3 +107,32 @@ stprobe 实测（10M 树驻留）：
 差分锁定（embed_fastpath.rs 2 项）：三形态（memtx 驻留/树驻留/
 树+overlay 尾巴）× 7 键与 SQL 点查逐行相等；事务内读自身写、
 墓碑不复活、提交后可见性。
+
+## 统一分阶段性能分析框架（perf.rs，2026-09-19 补充）
+
+> 架构修正（owner 定向）：pk 类优化必须在统一 SQL 框架内，不做
+> 旁路 API；`find_by_pk` 保留为优化基线（存储上限参照 ~9µs）。
+
+**框架**：`crate::perf` —— 八阶段固定枚举（parse/plan_cache/resolve/
+exec/eval/scan/storage_get/output_build），M-5 同型三原子计数
+（~20ns/语句/阶段，常开）；SQL 自省表 `cambium.perf_stages`
+（name/count/avg_ns/total_ms）——任何负载跑完即可归因；
+`perf::reset()` 基准臂间复位。
+
+**首次拆解**（SQL×树点查，10M，124K 样本）：
+
+| 阶段 | avg | 次数/查询 | 判定 |
+|------|-----|----------|------|
+| resolve | 3.6µs | **8** | **29µs 之谜主体**——dispatch/下推/优化器各查一遍 |
+| parse | 5.2µs | 1（键值全异必 miss；参数化则为 0） | 次 |
+| storage_get | 1.4µs | 5（catalog 树走查 + 数据点取） | 含在 resolve 内 |
+| output_build | 0.7µs | 1 | 小 |
+
+**第一个统一路径优化：语句内 resolve 记忆化**（thread_local +
+语句守卫；单语句内 catalog 不可变——正确性平凡）。效果：resolve
+8→4 次/查询、**exec 33.4→22.7µs（−32%）**、resolve avg 3.6→1.5µs。
+**所有查询形态受益**（join/优化器/点查的重复解析全部消除）。
+
+墙钟持平（~33µs）揭示下一层：embed 包装（to_result/split/format
+~10µs）——已列为下一打点与优化对象。剩余栈（诚实账）：parse 4.7
+（形状缓存可消）/ eval 核心 ~10（计划构建+优化链）/ 包装 ~5-10。

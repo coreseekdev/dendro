@@ -51,7 +51,10 @@ pub(crate) fn exec_query(
     q: Query,
     snapshot: u64,
 ) -> Result<Output> {
+    let _t_eval = crate::perf::enter(crate::perf::Stage::Eval);
     let view = eval_query(db, sess, &q, snapshot)?;
+    crate::perf::exit(crate::perf::Stage::Eval, _t_eval);
+    let _t_out = crate::perf::enter(crate::perf::Stage::OutputBuild);
     let colmeta: Vec<ColumnMeta> = view
         .names
         .iter()
@@ -74,10 +77,12 @@ pub(crate) fn exec_query(
         .collect();
     // 列型按数据推断（空表回退 Utf8）
     let colmeta = fix_colmeta(view.rows.first(), &view.names, colmeta);
-    Ok(Output::Rows(RecordSet {
+    let out = Output::Rows(RecordSet {
         columns: colmeta,
         batches: rows_to_batches(&view.names, &view.rows)?,
-    }))
+    });
+    crate::perf::exit(crate::perf::Stage::OutputBuild, _t_out);
+    Ok(out)
 }
 
 fn fix_colmeta(
@@ -248,10 +253,9 @@ fn apply_predicates_q(
     // 类缺陷的定位面——10M q21 "URL does not exist" 一次锁定错位层）
     let avail = tv.names.join(", ");
     let enrich = |e: SqlError| match &*e.state {
-        "42703" => SqlError::undefined_column(format!(
-            "{msg} (available: [{avail}])",
-            msg = e.message,
-        )),
+        "42703" => {
+            SqlError::undefined_column(format!("{msg} (available: [{avail}])", msg = e.message,))
+        }
         _ => e,
     };
     // cols 借用收敛在块内（闭包持有生命周期——外提会锁死结尾的 tv 移动）

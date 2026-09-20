@@ -223,7 +223,7 @@ pub fn compile_predicate_cached(
 ) -> std::result::Result<CompiledPredicate, Unsupported> {
     let cache = PRED_CACHE.get_or_init(PredCache::default);
     const CAP: usize = 1024;
-    
+
     let key = (e.to_string(), names.join("\u{1}"));
     if let Some(v) = cache.lock().unwrap().get(&key) {
         return (**v).clone().map_err(|_| Unsupported);

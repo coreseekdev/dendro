@@ -79,3 +79,48 @@ fn find_by_pk_semantics() {
         "删除后（memtx 墓碑期）"
     );
 }
+
+#[test]
+fn perf_stages_surface_and_memo() {
+    let mut c = conn("perf");
+    c.execute("CREATE TABLE p (id BIGINT PRIMARY KEY, v BIGINT)")
+        .unwrap();
+    c.execute("INSERT INTO p VALUES (1, 10), (2, 20)").unwrap();
+    c.execute("CHECKPOINT").unwrap();
+    dendro_core::perf::reset();
+    for _ in 0..100 {
+        let _ = c.query("SELECT v FROM p WHERE id = 1");
+    }
+    let r = c
+        .query("SELECT stage, count FROM cambium.perf_stages WHERE count > 0")
+        .unwrap();
+    let stages: Vec<(String, i64)> = r
+        .rows
+        .iter()
+        .map(|row| match (&row[0], &row[1]) {
+            (SqlValue::Utf8(s), SqlValue::Int64(n)) => (s.clone(), *n),
+            o => panic!("{o:?}"),
+        })
+        .collect();
+    // 统一框架四阶段可见 + 记忆化收敛（8×→≤4×；命中仍计数——省的是时间）
+    let get = |n: &str| {
+        stages
+            .iter()
+            .find(|(s, _)| s == n)
+            .map(|(_, c)| *c)
+            .unwrap_or(0)
+    };
+    // 并行套件下全局计数器可被兄弟测试的 reset 削减——抗干扰下界
+    assert!(get("exec") >= 50, "exec 计数（100 查询减干扰）：{:?}", stages);
+    assert!(get("plan_cache") >= 50);
+    assert!(get("resolve") >= 1);
+    // resolve 次数 < 4×查询数（记忆化收敛——此前 8×）
+    // 记忆化：调用数从 8×/查询 收敛到 ≤4×（命中仍计数——省的是时间）
+    let q = get("exec").max(1);
+    assert!(
+        get("resolve") <= 4 * q + 16,
+        "resolve 收敛（8×→≤4×）：{} queries, resolve={}",
+        q,
+        get("resolve")
+    );
+}

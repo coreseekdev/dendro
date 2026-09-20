@@ -78,6 +78,23 @@ fn main() {
         "SQL 层封顶判定：树/memtx 比 = {:.2}（≈1 ⇒ SQL 层封顶）",
         sql_tree / sql_memtx
     );
+    // 统一 perf 框架拆解（SQL×树 臂的 29µs 去向）
+    dendro_core::perf::reset();
+    let _re = bench(|i| {
+        let _ = c.query(&format!(
+            "SELECT v FROM t WHERE id = {}",
+            (i * 7919) % 10_000_000 + 1
+        ));
+    });
+    println!("\n== perf 拆解（SQL×树，统一框架内）==");
+    for r in dendro_core::perf::report() {
+        if r.count > 0 {
+            println!(
+                "  {:<12} count={:<9} avg={:>6}ns total={:>8.1}ms",
+                r.name, r.count, r.avg_ns, r.total_ms
+            );
+        }
+    }
     // 3) find_by_pk 快路径（SQL 层绕过）
     let fp = bench(|i| {
         let _ = c.find_by_pk("t", ((i * 7919) % 10_000_000 + 1) as i64);
