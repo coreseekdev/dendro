@@ -69,3 +69,38 @@ fn shape_cache_populates() {
         dendro_core::sql::shapecache::len()
     );
 }
+
+#[test]
+fn projected_decode_matches_full() {
+    use dendro_core::types::SqlValue;
+    let row = dendro_core::format::row::encode_row(&[
+        SqlValue::Int64(1),
+        SqlValue::Utf8("hello".into()),
+        SqlValue::Null,
+        SqlValue::Float64(2.5),
+        SqlValue::Int32(7),
+    ]);
+    let full = dendro_core::format::row::decode_row(&row).unwrap();
+    // 投影各子集
+    for proj in [
+        vec![0usize],
+        vec![1],
+        vec![2],
+        vec![0, 4],
+        vec![4, 0], // 乱序投影
+        vec![3],
+        vec![0, 1, 2, 3, 4],
+        vec![],
+    ] {
+        // decode_row_proj 契约：proj 升序（调用方保证——try_point_early
+        // 已排序）；乱序投影先排序再按原序重排对照
+        let mut sorted = proj.clone();
+        sorted.sort_unstable();
+        let vals = dendro_core::format::row::decode_row_proj(&row, &sorted).unwrap();
+        let back: std::collections::HashMap<usize, SqlValue> =
+            sorted.into_iter().zip(vals.into_iter()).collect();
+        let got: Vec<SqlValue> = proj.iter().map(|&i| back[&i].clone()).collect();
+        let want: Vec<SqlValue> = proj.iter().map(|&i| full[i].clone()).collect();
+        assert_eq!(got, want, "proj={proj:?}");
+    }
+}

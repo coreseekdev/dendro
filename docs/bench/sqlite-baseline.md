@@ -194,3 +194,13 @@ updpath：Group 107→137k（9.3→7.3µs，−28% 等待）。sqlite-cmp：
 | insert.mem | 0.7× | 0.36→0.7× |
 
 WAL 安全测试全绿（wal_corruption 19、tp_base 2、concurrent 11）。
+
+## 复测七（2026-09-20：投影解码——decode_row_proj）
+
+点查早退的解码瘦身：`decode_row_proj(bytes, proj)` 只解码选中列
+（跳过未选——3 列宽表的 `SELECT v FROM t WHERE id=?` 免解码其余）；
+乱序投影由调用方排序后按原序重排（契约文档化 + 差分测试锁定
+8 种投影子集）。pointbreak 262k 持平（本表仅 3 列——宽表收益
+更大；ClickBench 106 列场景是真正受益面）。第 8 轮：insert.disk
+**1.9×**（397k）、update.disk 0.6×（103k，本轮 SQLite 自身 179k
+偏高）、point 0.4× 稳定。

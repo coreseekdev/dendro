@@ -405,20 +405,29 @@ fn try_point_early(
             rows: Vec::new(),
         }));
     };
-    let full = row_from_bytes(&schema, &bytes)?;
-    // 直出（无中转行拷贝）
-    let out_names: Vec<String> = if wildcard {
-        schema.columns.iter().map(|c| c.name.clone()).collect()
+    // 投影解码：只解码选中的列（跳过未选——免全行解码）
+    let (out_names, out_row): (Vec<String>, Vec<SqlValue>) = if wildcard {
+        let full = row_from_bytes(&schema, &bytes)?;
+        (
+            schema.columns.iter().map(|c| c.name.clone()).collect(),
+            full,
+        )
     } else {
-        out_idx
-            .iter()
-            .map(|&i| schema.columns[i].name.clone())
-            .collect()
-    };
-    let out_row: Vec<SqlValue> = if wildcard {
-        full
-    } else {
-        out_idx.iter().map(|&i| full[i].clone()).collect()
+        let mut idx = out_idx.clone();
+        idx.sort_unstable();
+        idx.dedup();
+        let vals = crate::format::row::decode_row_proj(&bytes, &idx)?;
+        let back: std::collections::HashMap<usize, SqlValue> = idx
+            .into_iter()
+            .zip(vals.into_iter())
+            .collect();
+        (
+            out_idx
+                .iter()
+                .map(|&i| schema.columns[i].name.clone())
+                .collect(),
+            out_idx.iter().map(|&i| back[&i].clone()).collect(),
+        )
     };
     Ok(Some(TableView {
         names: out_names,

@@ -212,6 +212,126 @@ pub fn encode_row(vals: &[SqlValue]) -> Vec<u8> {
     out
 }
 
+/// 只解码选中的列（跳过未选——点查直出的免全行解码形态）。
+/// **契约：`proj` 必须升序**（调用方保证——try_point_early 已排序；
+/// 乱序输入只返回首个前缀）。返回与 proj 等长的值向量
+pub fn decode_row_proj(bytes: &[u8], proj: &[usize]) -> Result<Vec<SqlValue>> {
+    if bytes.len() < 2 {
+        return Err(SqlError::internal("row truncated"));
+    }
+    let n = u16::from_le_bytes([bytes[0], bytes[1]]) as usize;
+    let mut vals = Vec::with_capacity(proj.len());
+    let mut r = &bytes[2..];
+    let mut pi = 0usize;
+    for ci in 0..n {
+        if r.is_empty() {
+            return Err(SqlError::internal("row truncated at tag"));
+        }
+        let want = pi < proj.len() && proj[pi] == ci;
+        let tag = r[0];
+        r = &r[1..];
+        // 各类型读取长度（不构造值——非选中列跳过）
+        match tag {
+            V_NULL => {
+                if want {
+                    vals.push(SqlValue::Null);
+                    pi += 1;
+                }
+            }
+            _ => {
+                // 借 decode_row 的逐类型逻辑但只 push 选中列：
+                // 为免重复实现，读出后按 want 决定去留（值构造廉价——
+                // 数值 inline；字符串按需克隆）
+                match decode_one(&mut r, tag)? {
+                    Some(v) => {
+                        if want {
+                            vals.push(v);
+                            pi += 1;
+                        }
+                    }
+                    None => {
+                        if want {
+                            vals.push(SqlValue::Null);
+                            pi += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(vals)
+}
+
+/// 读单值（r 前移；None = NULL 标签）——decode_row_proj 的内部件，
+/// 语义与 decode_row 各臂逐一相同
+fn decode_one(r: &mut &[u8], tag: u8) -> Result<Option<SqlValue>> {
+    match tag {
+        V_NULL => Ok(None),
+        V_BOOL => {
+            if r.is_empty() {
+                return Err(SqlError::internal("row truncated: bool"));
+            }
+            let v = SqlValue::Bool(r[0] == 1);
+            *r = &r[1..];
+            Ok(Some(v))
+        }
+        V_I32 => {
+            if r.len() < 4 {
+                return Err(SqlError::internal("row truncated: i32"));
+            }
+            let v = SqlValue::Int32(i32::from_le_bytes(r[..4].try_into().unwrap()));
+            *r = &r[4..];
+            Ok(Some(v))
+        }
+        V_I64 => {
+            if r.len() < 8 {
+                return Err(SqlError::internal("row truncated: i64"));
+            }
+            let v = SqlValue::Int64(i64::from_le_bytes(r[..8].try_into().unwrap()));
+            *r = &r[8..];
+            Ok(Some(v))
+        }
+        V_F64 => {
+            if r.len() < 8 {
+                return Err(SqlError::internal("row truncated: f64"));
+            }
+            let v = SqlValue::Float64(f64::from_le_bytes(r[..8].try_into().unwrap()));
+            *r = &r[8..];
+            Ok(Some(v))
+        }
+        V_UTF8 => {
+            let (sv, rest) = take_bytes(r)?;
+            let v = SqlValue::Utf8(
+                String::from_utf8(sv).map_err(|_| SqlError::invalid_text("bad utf8 in row"))?,
+            );
+            *r = rest;
+            Ok(Some(v))
+        }
+        V_BYTES => {
+            let (b, rest) = take_bytes(r)?;
+            *r = rest;
+            Ok(Some(SqlValue::Bytes(b)))
+        }
+        V_DATE => {
+            if r.len() < 4 {
+                return Err(SqlError::internal("row truncated: date"));
+            }
+            let v = SqlValue::Date32(i32::from_le_bytes(r[..4].try_into().unwrap()));
+            *r = &r[4..];
+            Ok(Some(v))
+        }
+        V_TS => {
+            if r.len() < 8 {
+                return Err(SqlError::internal("row truncated: ts"));
+            }
+            let v = SqlValue::TimestampMs(i64::from_le_bytes(r[..8].try_into().unwrap()));
+            *r = &r[8..];
+            Ok(Some(v))
+        }
+        other => Err(SqlError::internal(format!("unknown row tag {other}"))),
+    }
+}
+
 pub fn decode_row(bytes: &[u8]) -> Result<Vec<SqlValue>> {
     if bytes.len() < 2 {
         return Err(SqlError::internal("row truncated"));
