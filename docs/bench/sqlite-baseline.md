@@ -176,3 +176,21 @@ pointbreak：point 254→262k（3.8µs）。sqlite-cmp 第 6 轮：
 CHECKPOINT——1M 行全驻 memtx（26.7× 结构开销 → ~1.7GB 工作集、
 缓存局部性差）；disk 臂 checkpoint 后紧凑段 + LRU 热页（64MB）。
 memtx 是写缓冲不是读存储——opt1 架构的实证。
+
+## 复测六（2026-09-20：自主提交——Group 提交线程 opportunistic 直刷）
+
+LeanStore latency 分支思想落地：`wait_durable` Group 路径在拿到
+单飞锁（flush_mu try_lock）且仍不 durable 时，提交线程**自己直刷**
+——免 唤醒→调度→刷盘→再唤醒等待者 的两次上下文切换；刷盘线程
+在途则让路给组提交（并发帧自然并入在途批，批语义不变）。
+
+updpath：Group 107→137k（9.3→7.3µs，−28% 等待）。sqlite-cmp：
+
+| 场景 | vs SQLite | 累计 |
+|------|-----------|------|
+| **insert.disk** | **2.7×**（383k vs 140k） | 0.97→2.7× |
+| **update.disk** | **0.8×**（96k vs 123k） | 0.37→0.8× 量级内 |
+| point.disk | 0.4× | 0.23→0.4× |
+| insert.mem | 0.7× | 0.36→0.7× |
+
+WAL 安全测试全绿（wal_corruption 19、tp_base 2、concurrent 11）。

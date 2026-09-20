@@ -283,9 +283,36 @@ impl WalWriter {
                 self.flush_now()?;
                 self.await_durable(seq)
             }
-            crate::engine::Durability::Group => self.await_durable(seq),
+            crate::engine::Durability::Group => {
+                // 自主提交（LeanStore latency 思想）：低并发时提交线程
+                // opportunistic 直刷——免 唤醒→调度→刷→再唤醒 的两次
+                // 上下文切换；刷盘线程在途（flush_mu 占用）则让路给
+                // 组提交（并发帧自然并入在途批）
+                {
+                    let already = {
+                        let g = self.shared.lock();
+                        g.durable_seq >= seq
+                    };
+                    if !already {
+                        if let Some(_inflight_guard) = self.flush_mu.try_lock() {
+                            // 拿到单飞权且仍不 durable → 直刷（flush_now
+                            // 自带单飞互斥；此处先查避免无谓 fsync）
+                            let still = {
+                                let g = self.shared.lock();
+                                g.durable_seq < seq && !g.buf.is_empty()
+                            };
+                            if still {
+                                drop(_inflight_guard);
+                                self.flush_now()?;
+                            }
+                        }
+                    }
+                }
+                self.await_durable(seq)
+            }
         }
     }
+
 
     fn await_durable(&self, seq: u64) -> Result<()> {
         let mut g = self.shared.lock();
