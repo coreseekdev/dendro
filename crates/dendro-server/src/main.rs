@@ -138,6 +138,17 @@ enum Cmd {
         #[arg(long, default_value = "benches/results/tp.json")]
         out: PathBuf,
     },
+    /// dendro × SQLite TP 对比基线（磁盘不弱于 / MemTx 远超）
+    SqliteCmp {
+        /// 数据目录（sqlite 文件 + dendro 库）
+        #[arg(long, default_value = "/tmp/dendro-sqlitecmp")]
+        data: PathBuf,
+        /// 行数
+        #[arg(long, default_value_t = 1_000_000)]
+        rows: u64,
+        #[arg(long, default_value = "benches/results/sqlite_cmp.json")]
+        out: PathBuf,
+    },
     /// dump：SQL → 未优化 IR（前端快速裁决原语 1/3）
     Ir {
         /// 被检 SQL（单条 SELECT）
@@ -505,6 +516,13 @@ fn main() {
             println!("wrote {}", out.display());
             for r in &s.rows {
                 println!("  {:<40} {:>12.1} {}", r.name, r.value, r.unit);
+            }
+        }
+        Cmd::SqliteCmp { data, rows, out } => {
+            let s = dendro_server::bench::sqlite_cmp::bench_sqlite_cmp(&data, rows, &out);
+            println!("wrote {}", out.display());
+            for r in &s.rows {
+                println!("  {:<36} {:>12.1} {}", r.name, r.value, r.unit);
             }
         }
         Cmd::Ir { sql, dialect } => {

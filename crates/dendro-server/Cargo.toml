@@ -28,6 +28,7 @@ clap = { version = "4", features = ["derive"] }
 rand.workspace = true
 signal-hook = "0.3"
 
+rusqlite = { version = "0.37", features = ["bundled"] }
 tikv-jemallocator = { version = "0.6", optional = true }
 tikv-jemalloc-ctl = { version = "0.6", optional = true, features = ["use_std", "stats"] }
 

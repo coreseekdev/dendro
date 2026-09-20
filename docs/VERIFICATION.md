@@ -24,6 +24,14 @@
   工程教训：harness 必须**显式 unwind**（payload_len 无属性时 symex
   对 CRC 循环展开至 282+ 轮不收敛、定界后秒过）；Vec::clone 的分配
   建模会使下游循环长度符号化（同 harness 去 clone 即愈）。
+- **2026-09-20 账本 #29 Harness 实施手册**：docs/HARNESS-GUIDE.md——
+  人/Agent 双读者的验证 harness 实施规范：需求分类（层×绑定×输入
+  空间）→ K 系列设计规则（真源编译/依赖面/模型+差分/unwind 推导/
+  栈数组/固定推进/assume 域/cover 整形侧）→ W 系列墙识别表（symex
+  爆炸/堆墙/原语墙/SAT 不收敛的日志特征与处置，停泊流程）→ 成本
+  预期表（全部来自 #19/#28 实测）→ DoD 验收清单与 Agent 工作流。
+  历史坑全集 14 条带证据落点。规则编号可引用，违反 K 系列的完成
+  声明无效（AGENTS.md 口径）。
 - **2026-09-16 v2 后大阶段（执行层收口）**：四方向全绿——
   ① AggOp/ProjectOp 接线 eval_select（聚合/投影消除双路径；伴生修复
   count(文本列) 报错、SUM(DISTINCT) 不去重、混合 int/float 列丢整数
@@ -382,6 +390,7 @@ TLC（tools/tla2tools.jar，basalt 同版）、Kani 0.67.0（dendro-kani：
 verification/kani 独立 cargo 包，#[path] 真源编译生产 codec，B2 绑定；
 CRC 以 crc32c-soft 模型顶替 + 差分闭合）、Verus 0.2026.09（scripts/
 verus.sh，B1 镜像）。覆盖率执行器：scripts/verif-coverage.py（§5）。
+Harness 实施手册（设计规则/墙处置/成本预期）：docs/HARNESS-GUIDE.md。
 
 ## 5. 验证覆盖率（度量定义与执行器）
 
@@ -414,7 +423,8 @@ verus.sh，B1 镜像）。覆盖率执行器：scripts/verif-coverage.py（§5�
 - `kani::cover!(cond, "Pxx…")` 标记业务路径点，Kani 给可达性证明 +
   见证输入；UNSATISFIED = 路径死或 harness 过约束，均须解释；
 - 声明 14 条：P1 终止 / P2 对偶 / P3 拒绝×5（magic、version、type、
-  len 越界、CRC）/ P4 撕尾 / P5 段尾小帧 / P6 全帧型 / P7a/b 记录形态；
+  len 越界、CRC）/ P4 撕尾 / P5 段尾小帧 / P6 全帧型 / P7a/b 记录形态
+  （P7a/b 随受阻的 H5 停泊，门禁评估集为 12）；
 - cover 放**输入整形**的 harness（贵的 SAT 查询——任意缓冲上反解
   CRC 的 GF(2) 级联——实测 19min 不收敛，已移入整形侧）。
 

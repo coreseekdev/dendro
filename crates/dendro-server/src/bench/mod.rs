@@ -10,6 +10,7 @@ use std::time::Instant;
 
 pub mod clickbench;
 pub mod pair;
+pub mod sqlite_cmp;
 pub mod tp;
 
 pub struct BenchResult {
