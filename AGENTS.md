@@ -67,7 +67,8 @@ SimStore 故障注入（环境模型采样）→ opfuzz（状态机交互采样�
 
 ## 7. 参考索引
 
-- 验证总纲与账本：docs/VERIFICATION.md（§12 缺陷→机制矩阵）
+- 验证总纲与账本：docs/VERIFICATION.md（§12 缺陷→机制矩阵；§5 覆盖率度量）
+- Harness 实施手册：docs/HARNESS-GUIDE.md（写形式化验证 harness 前必读；K/W 规则编号可引用）
 - 规约目录：spec/（CommitPipeline.tla 等；`make -C spec check`）
 - opfuzz：crates/dendro-core/tests/opfuzz.rs（SimStore 随机操作序列）
 - 故障模型单一事实源：crates/dendro-core/src/objstore/sim.rs
