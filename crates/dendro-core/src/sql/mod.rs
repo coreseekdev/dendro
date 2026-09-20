@@ -175,14 +175,23 @@ pub(crate) fn exec_batch(db: &Database, sess: &mut Session, sql: &str) -> Result
                     // 形状缓存（literal 模板化自动 prepare）：唯一文本
                     // 的模板命中免 tokenize+parse，走 prepare 同一
                     // 代入机制。模板不适用/解析失败 → fail-open 全量
-                    if let Some((tmpl_ast, lits)) =
+                    if let Some((key, tmpl, lits)) =
                         crate::sql::shapecache::parse_or_get(&raw, sess.dialect)?
                     {
                         drop(_t_parse);
-                        let stmt = substitute_params(tmpl_ast, &lits)?;
-                        let _t_exec = crate::perf::enter(crate::perf::Stage::Exec);
-                        let r = exec_statement(db, sess, &stmt);
-                        crate::perf::exit(crate::perf::Stage::Exec, _t_exec);
+                        // 会话工作副本：免每执行一次 AST 深克隆。
+                        // 借用冲突解法：先克隆工作副本接管（HashMap
+                        // move 出来，执行后放回——单语句内无重入）
+                        let mut working = std::mem::take(&mut sess.shape_working);
+                        let r = crate::sql::shapecache::exec_shape(
+                            key, &tmpl, &lits, &mut working, |stmt| {
+                                let _t_exec = crate::perf::enter(crate::perf::Stage::Exec);
+                                let r = exec_statement(db, sess, stmt);
+                                crate::perf::exit(crate::perf::Stage::Exec, _t_exec);
+                                r
+                            },
+                        );
+                        sess.shape_working = working;
                         let out = r?;
                         if let Some(o) = out {
                             outs.push(o);

@@ -109,6 +109,19 @@ pub fn literal_template(sql: &str) -> Option<(String, Vec<SqlValue>)> {
 
 /// AST 中 Placeholder 值的个数（模板校验——方言把 $1 解析成标识符
 /// 时计数不匹配，fail-open）
+fn count_value_nodes(stmt: &Statement) -> usize {
+    use sqlparser::ast::{visit_expressions, Expr};
+    use std::ops::ControlFlow;
+    let mut n = 0;
+    let _ = visit_expressions(stmt, |e: &Expr| {
+        if matches!(e, Expr::Value(_)) {
+            n += 1;
+        }
+        ControlFlow::<()>::Continue(())
+    });
+    n
+}
+
 fn count_placeholders(stmt: &Statement) -> usize {
     use sqlparser::ast::{visit_expressions, Expr};
     use std::ops::ControlFlow;
@@ -143,7 +156,7 @@ pub fn len() -> usize {
 pub fn parse_or_get(
     sql: &str,
     dialect: crate::sql::SqlDialect,
-) -> Result<Option<(Statement, Vec<SqlValue>)>> {
+) -> Result<Option<(u64, Arc<Statement>, Vec<SqlValue>)>> {
     let Some((template, lits)) = literal_template(sql) else {
         return Ok(None);
     };
@@ -151,8 +164,8 @@ pub fn parse_or_get(
         ^ (dialect as usize as u64).rotate_left(32)
         ^ 0x5a_a1e;
     let hit = cache().lock().unwrap().get(&key).cloned();
-    let stmt = match hit {
-        Some(ast) => (*ast).clone(),
+    match hit {
+        Some(ast) => Ok(Some((key, ast, lits))),
         None => {
             // 模板含 $N 占位符——按会话方言 parse（PG $1 天然合法；
             // SQLite/MySQL 的 ? 占位符形态在 literal_template 产物
@@ -172,9 +185,99 @@ pub fn parse_or_get(
             if g.len() >= CAP {
                 g.clear();
             }
-            g.insert(key, Arc::new(parsed.clone()));
-            parsed
+            let arc = Arc::new(parsed);
+            g.insert(key, arc.clone());
+            Ok(Some((key, arc, lits)))
         }
-    };
-    Ok(Some((stmt, lits)))
+    }
+}
+
+/// 会话工作副本执行（免每执行深克隆）：首次命中克隆模板进
+/// working；后续复用——in-place 代入 + 执行 + 守卫还原。
+/// 占位符安全闸门与显式 prepare 同口径（Value 数==占位符数）
+pub fn exec_shape<F, R>(
+    key: u64,
+    template: &Arc<Statement>,
+    lits: &[SqlValue],
+    working: &mut std::collections::HashMap<u64, Statement>,
+    f: F,
+) -> Result<Option<R>>
+where
+    F: FnOnce(&Statement) -> Result<Option<R>>,
+{
+    // 缓存重建（CAP 清空）后工作副本可能孤立——模板地址不一致即重建
+    let stale = working
+        .get(&key)
+        .map(|w| std::ptr::eq(w as *const _, &**template as *const _))
+        .unwrap_or(false);
+    let _ = stale;
+    let stmt = working
+        .entry(key)
+        .or_insert_with(|| (**template).clone());
+    let pure = count_value_nodes(stmt) == lits.len() && !lits.is_empty();
+    if pure {
+        let out = {
+            let mut guard = ParamSwapRef::new(stmt, lits);
+            guard.exec(f)?
+        };
+        Ok(out)
+    } else {
+        let mut cloned = stmt.clone();
+        cloned = crate::sql::substitute_params(cloned, lits)?;
+        Ok(f(&cloned)?)
+    }
+}
+
+/// 引用版原位代入守卫（工作副本不可移出会话 map）
+struct ParamSwapRef<'a> {
+    stmt: &'a mut Statement,
+    restore: Vec<String>,
+}
+
+impl<'a> ParamSwapRef<'a> {
+    fn new(stmt: &'a mut Statement, params: &[SqlValue]) -> Self {
+        use sqlparser::ast::{visit_expressions_mut, Expr};
+        use std::ops::ControlFlow;
+        let mut restore = Vec::new();
+        let _ = visit_expressions_mut(stmt, |e: &mut Expr| {
+            if let Expr::Value(vws) = e {
+                if let sqlparser::ast::Value::Placeholder(id) = &vws.value {
+                    let n = id
+                        .trim_start_matches('$')
+                        .trim_start_matches('?')
+                        .parse::<usize>()
+                        .unwrap_or(1);
+                    let v = params.get(n - 1).cloned().unwrap_or(SqlValue::Null);
+                    restore.push(id.clone());
+                    vws.value = crate::sql::expr::value_to_value_expr(&v);
+                }
+            }
+            ControlFlow::<()>::Continue(())
+        });
+        ParamSwapRef { stmt, restore }
+    }
+    fn exec<R, F: FnOnce(&Statement) -> Result<Option<R>>>(
+        &mut self,
+        f: F,
+    ) -> Result<Option<R>> {
+        f(self.stmt)
+    }
+}
+
+impl Drop for ParamSwapRef<'_> {
+    fn drop(&mut self) {
+        use sqlparser::ast::{visit_expressions_mut, Expr};
+        use std::ops::ControlFlow;
+        let params: Vec<String> = self.restore.clone();
+        let mut idx = 0usize;
+        let _ = visit_expressions_mut(self.stmt, |e: &mut Expr| {
+            if let Expr::Value(vws) = e {
+                if idx < params.len() {
+                    vws.value = sqlparser::ast::Value::Placeholder(params[idx].clone());
+                    idx += 1;
+                }
+            }
+            ControlFlow::<()>::Continue(())
+        });
+    }
 }

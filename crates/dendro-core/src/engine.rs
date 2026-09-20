@@ -829,6 +829,7 @@ impl Database {
             stmt_deadline: None,
             cancel_token: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             force_source: None,
+            shape_working: Default::default(),
             force_agg: None,
             user: crate::sql::privs::SUPERUSER.to_string(),
             optimize_enabled: true,
@@ -1816,6 +1817,10 @@ pub struct Session {
     /// 语句取消令牌（S-3 后续：CancelRequest 从另一连接设置）
     pub(crate) cancel_token: Arc<std::sync::atomic::AtomicBool>,
     /// 强制派发目标（v2c-1 / ADR-5）：仅调试/测试构建可经
+    /// 形状缓存的工作副本（会话私有）：模板 hash → 已克隆 AST。
+    /// 命中形状缓存时优先取工作副本，in-place 代入 + ParamSwapGuard
+    /// 还原后**复用**——免每执行一次 Arc 深克隆（会话单线程安全）
+    pub shape_working: std::collections::HashMap<u64, sqlparser::ast::Statement>,
     /// `SET dendro.force_source` 设置（release 的 SET 处理忽略——调试面
     /// 不进生产语义）。差分测试的枚举轴。
     pub(crate) force_source: Option<crate::sql::dispatch::ScanAlt>,
