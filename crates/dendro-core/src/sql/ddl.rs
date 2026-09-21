@@ -850,7 +850,7 @@ pub(crate) fn exec_insert(
                 let new_key = encode_key(pk_vals);
                 txn.writes.insert(
                     (entry.id, new_key),
-                    crate::prolly::Mutation::Put(crate::format::row::encode_row(&updated)),
+                    crate::prolly::Mutation::Put(crate::format::row::encode_row(&updated).into()),
                 );
                 Ok((true, 1))
             }

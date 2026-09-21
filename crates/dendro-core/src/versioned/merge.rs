@@ -115,7 +115,7 @@ pub fn merge_map(
 
 fn push_change(out: &mut Vec<(Vec<u8>, Mutation)>, key: &[u8], new: &Option<Vec<u8>>) {
     let m = match new {
-        Some(v) => Mutation::Put(v.clone()),
+        Some(v) => Mutation::Put(v.clone().into()),
         None => Mutation::Delete,
     };
     out.push((key.to_vec(), m));
@@ -334,9 +334,9 @@ mod tests {
             ck.apply(
                 base.as_ref(),
                 &[
-                    (k(10), Mutation::Put(b"left10".to_vec())),
+                    (k(10), Mutation::Put(b"left10".to_vec().into())),
                     (k(20), Mutation::Delete),
-                    (k(200), Mutation::Put(b"left200".to_vec())),
+                    (k(200), Mutation::Put(b"left200".to_vec().into())),
                 ],
             )
             .unwrap()
@@ -347,9 +347,9 @@ mod tests {
             ck.apply(
                 base.as_ref(),
                 &[
-                    (k(30), Mutation::Put(b"right30".to_vec())),
-                    (k(40), Mutation::Put(b"right40".to_vec())),
-                    (k(300), Mutation::Put(b"right300".to_vec())),
+                    (k(30), Mutation::Put(b"right30".to_vec().into())),
+                    (k(40), Mutation::Put(b"right40".to_vec().into())),
+                    (k(300), Mutation::Put(b"right300".to_vec().into())),
                 ],
             )
             .unwrap()
@@ -382,12 +382,12 @@ mod tests {
         // 冲突：两边改同一 key 不同值
         let l2 = {
             let mut ck = Chunker::new(&s, &mut sess);
-            ck.apply(base.as_ref(), &[(k(50), Mutation::Put(b"L".to_vec()))])
+            ck.apply(base.as_ref(), &[(k(50), Mutation::Put(b"L".to_vec().into()))])
                 .unwrap()
         };
         let r2 = {
             let mut ck = Chunker::new(&s, &mut sess);
-            ck.apply(base.as_ref(), &[(k(50), Mutation::Put(b"R".to_vec()))])
+            ck.apply(base.as_ref(), &[(k(50), Mutation::Put(b"R".to_vec().into()))])
                 .unwrap()
         };
         match merge_map(&s, base, l2, r2, &mut sess).unwrap() {
@@ -404,15 +404,15 @@ mod tests {
             ck.apply(
                 base.as_ref(),
                 &[
-                    (k(51), Mutation::Put(b"SAME".to_vec())),
-                    (k(10), Mutation::Put(b"only-left".to_vec())),
+                    (k(51), Mutation::Put(b"SAME".to_vec().into())),
+                    (k(10), Mutation::Put(b"only-left".to_vec().into())),
                 ],
             )
             .unwrap()
         };
         let r3 = {
             let mut ck = Chunker::new(&s, &mut sess);
-            ck.apply(base.as_ref(), &[(k(51), Mutation::Put(b"SAME".to_vec()))])
+            ck.apply(base.as_ref(), &[(k(51), Mutation::Put(b"SAME".to_vec().into()))])
                 .unwrap()
         };
         match merge_map(&s, base, l3, r3, &mut sess).unwrap() {
@@ -428,12 +428,12 @@ mod tests {
         // 两树完全相同（同改同值且无其他差异）：内容寻址 ⇒ NoOp
         let l4 = {
             let mut ck = Chunker::new(&s, &mut sess);
-            ck.apply(base.as_ref(), &[(k(52), Mutation::Put(b"S".to_vec()))])
+            ck.apply(base.as_ref(), &[(k(52), Mutation::Put(b"S".to_vec().into()))])
                 .unwrap()
         };
         let r4 = {
             let mut ck = Chunker::new(&s, &mut sess);
-            ck.apply(base.as_ref(), &[(k(52), Mutation::Put(b"S".to_vec()))])
+            ck.apply(base.as_ref(), &[(k(52), Mutation::Put(b"S".to_vec().into()))])
                 .unwrap()
         };
         assert!(matches!(
@@ -453,7 +453,7 @@ mod tests {
         );
         let right = {
             let mut ck = Chunker::new(&s, &mut sess);
-            ck.apply(base.as_ref(), &[(k(99), Mutation::Put(b"y".to_vec()))])
+            ck.apply(base.as_ref(), &[(k(99), Mutation::Put(b"y".to_vec().into()))])
                 .unwrap()
         };
         match merge_map(&s, base, base, right, &mut sess).unwrap() {

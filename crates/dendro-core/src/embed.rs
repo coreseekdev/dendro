@@ -147,7 +147,7 @@ impl Connection {
         let key = crate::format::row::encode_key(&[crate::types::SqlValue::Int64(pk)]);
         let b = self.db.branch(&self.sess.branch)?;
         let tm = b.mem.table(entry.id);
-        let mut found: Option<std::sync::Arc<Vec<u8>>> = match tm.get(&key, snapshot) {
+        let mut found: Option<std::sync::Arc<[u8]>> = match tm.get(&key, snapshot) {
             Some(v) => Some(v),
             None => {
                 // 墓碑判定（与点查路径同语义）：memtx 可见墓碑不得回退树
@@ -162,7 +162,7 @@ impl Connection {
                         .map(|r| crate::prolly::cursor::lookup(&self.db.store, &r, &key))
                         .transpose()?
                         .flatten()
-                        .map(std::sync::Arc::new)
+                        .map(std::sync::Arc::from)
                 }
             }
         };
@@ -172,7 +172,7 @@ impl Connection {
                 if let Some(m) = t.writes.get(&(entry.id, key.clone())) {
                     match m {
                         crate::prolly::Mutation::Put(v) => {
-                            found = Some(std::sync::Arc::new(v.clone()))
+                            found = Some(v.clone())
                         }
                         crate::prolly::Mutation::Delete => found = None,
                     }

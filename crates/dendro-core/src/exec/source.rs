@@ -25,7 +25,7 @@ use std::collections::{BTreeMap, BinaryHeap, HashSet};
 use std::sync::Arc;
 
 /// 尾巴条目：行键 → 行字节覆盖（Some）/ 墓碑（None）
-type TailEntry = (Vec<u8>, Option<Arc<Vec<u8>>>);
+type TailEntry = (Vec<u8>, Option<Arc<[u8]>>);
 
 /// 段游标：一段的 Arrow 批序列 + 懒解码（进入新批时整批解码）
 struct SegCursor {
@@ -122,7 +122,7 @@ impl MainPlusDeltaSource {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         segment_batches: Vec<Vec<arrow::record_batch::RecordBatch>>,
-        overlay: BTreeMap<Vec<u8>, Option<Arc<Vec<u8>>>>,
+        overlay: BTreeMap<Vec<u8>, Option<Arc<[u8]>>>,
         txn_writes: Vec<TailEntry>,
         deletes: HashSet<Vec<u8>>,
         schema: TableSchema,

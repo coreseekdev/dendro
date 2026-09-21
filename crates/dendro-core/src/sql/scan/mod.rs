@@ -453,7 +453,7 @@ fn try_range_early(
     let overlay =
         tm.snapshot_rows_in_range(start_key.as_deref(), end_key.as_deref(), snapshot);
     // 显式事务自身写（区间内）
-    let mut txn_writes: std::collections::BTreeMap<Vec<u8>, Option<std::sync::Arc<Vec<u8>>>> =
+    let mut txn_writes: std::collections::BTreeMap<Vec<u8>, Option<std::sync::Arc<[u8]>>> =
         std::collections::BTreeMap::new();
     if let Some(t) = &sess.txn {
         if t.explicit {
@@ -472,7 +472,7 @@ fn try_range_early(
                         crate::prolly::Mutation::Put(v) => {
                             txn_writes.insert(
                                 k.clone(),
-                                Some(std::sync::Arc::new(v.clone())),
+                                Some(v.clone()),
                             );
                         }
                         crate::prolly::Mutation::Delete => {
@@ -503,7 +503,7 @@ fn try_range_early(
         }
         None => None,
     };
-    let mut overlay_it: Vec<(Vec<u8>, Option<std::sync::Arc<Vec<u8>>>)> =
+    let mut overlay_it: Vec<(Vec<u8>, Option<std::sync::Arc<[u8]>>)> =
         overlay.into_iter().collect();
     let mut oi = 0usize;
     let mut ti = txn_writes.into_iter().collect::<Vec<_>>();
@@ -538,7 +538,7 @@ fn try_range_early(
             }
         }
         // 优先级合并：txn > overlay > 树（同键高优先级生效）
-        let mut value: Option<std::sync::Arc<Vec<u8>>> = None;
+        let mut value: Option<std::sync::Arc<[u8]>> = None;
         let mut skip = false;
         if xk.as_ref().map_or(false, |k| k == &mk) {
             match &ti[xi].1 {
@@ -566,7 +566,7 @@ fn try_range_early(
             // 树独有
             let item = tree_it.as_mut().unwrap().next_item()?;
             if let Some((_, v)) = item {
-                value = Some(std::sync::Arc::new(v));
+                value = Some(std::sync::Arc::from(v));
             }
         }
         if skip || value.is_none() {

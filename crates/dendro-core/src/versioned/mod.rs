@@ -211,7 +211,7 @@ impl Versioned {
             .into_iter()
             .map(|(name, e)| {
                 let m = match e {
-                    Some(t) => crate::prolly::chunker::Mutation::Put(encode_table_entry(&t)),
+                    Some(t) => crate::prolly::chunker::Mutation::Put(encode_table_entry(&t).into()),
                     None => crate::prolly::chunker::Mutation::Delete,
                 };
                 (name.into_bytes(), m)

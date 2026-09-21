@@ -256,7 +256,7 @@ impl Kv {
     pub fn put(&mut self, key: impl AsRef<[u8]>, value: impl AsRef<[u8]>) -> Result<()> {
         let (k, v) = (key.as_ref().to_vec(), value.as_ref().to_vec());
         let row = enc_row(&k, &v);
-        self.apply(&k, Mutation::Put(row))
+        self.apply(&k, Mutation::Put(row.into()))
     }
 
     /// 删除（自动提交模式：立即提交）
@@ -393,7 +393,7 @@ fn val_bytes(v: &SqlValue) -> Option<Vec<u8>> {
 
 fn m_val(m: &Mutation) -> Vec<u8> {
     match m {
-        Mutation::Put(v) => v.clone(),
+        Mutation::Put(v) => v.to_vec(),
         Mutation::Delete => Vec::new(),
     }
 }

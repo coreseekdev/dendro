@@ -233,6 +233,83 @@ optimize on/off 逐行相等 + overlay 尾巴计入 + 墓碑不可见。
 100 行/查询，物化本就小；流式的真实收益面在大范围/ClickBench 形
 态，标记待验）。vs SQLite 0.3×。insert.mem 本轮 **1.0×**。
 
+## 复测十（2026-09-21：P0-A 值共享 + memtx 紧凑布局——根因翻转与修正）
+
+**根因翻转**（P0 任务书开篇结论的证伪，memres 三臂探针实证）：
+复测五"mem 臂不 CHECKPOINT、1M 全驻 memtx ~1.7GB 工作集"**不成立**
+——embedded 预设的 8MB 自动 checkpoint 正常工作（load 期间 memtx.entries
+锯齿 20 万→4 万、终态驻留 ~12 万条 / 4.5MB pending）。point.mem <
+point.disk 的直接原因是**基准口径不对称**：disk 臂 load 后显式
+CHECKPOINT（memtx 清空）再测；mem 臂带 12 万条驻留窗口直接测——
+实测该驻留拖累 26%（115k vs 155k）。物化后两臂等速（155k ≈ 150k，
+树 51MB 全在 64MB LRU 内，命中率 100%）。**"point.mem/point.disk ≥ 2.0"
+在 1M 负载下结构性不可达**：disk 臂 LRU 全命中即零 I/O，与 mem 同代码
+路径——需要 10M 行（树 510MB ≫ LRU 预算）或 SQL 机器大幅缩减才能
+拉开差距（验收口径建议 owner 重新裁定）。
+
+**实现**（两项，全量测试绿）：
+1. **P0-A 值共享**：`Mutation::Put(Vec<u8>)` → `Put(Arc<[u8]>)`——
+   写集/memtx VerCell/branch.pending 三方持同一分配（此前每条 Put
+   两份独立驻留克隆 ~220B）。`VerCell.val` 与 TableMem 接口全线
+   `Arc<[u8]>`（省 Vec 头 24B + 一次分配）。
+2. **P1 memtx 紧凑布局**（HANA delta store 思想，调研见
+   docs/research/HANA族内存TP只读数据结构调研-2026.md）：分片
+   `BTreeMap<Box, Arc<VersionVec>>`（每条 5 次堆分配 + 节点分散）→
+   **sorted 主区**（(key,ts) 升序不可变紧凑数组，24B Cell，二分）+
+   **delta 增量区**（追加 + key→下标哈希索引，点查 O(1)）。归并摊销
+   O(RATIO)/写（delta_max = 4096 + sorted/4）；锁序 delta→sorted 单向。
+   **读触发归并**（A/B 抓获回归后补）：范围/全表扫描前 delta > 1024
+   先归并——无序 delta 线性扫曾使 range100.mem 崩到 1.6k（−94%）。
+
+**sqlite-cmp 第 11 轮**（四轮 A/B 迭代，最终值；基线为第 10 轮）：
+
+| 场景 | 基线 | 第 11 轮 | 备注 |
+|------|------|----------|------|
+| point.disk | 186k | 176k | 波动内 |
+| point.mem | 158k | **179k** | **+14%——与 disk 等速（0.85→1.02），倒挂消除** |
+| range100.disk | 30.3k | 29.0k | ≈ |
+| range100.mem | 25.2k | 24.8k | 中间轮曾崩至 1.6k/964（见下） |
+| update.disk | 86k | **101k** | +17% |
+| update.mem | 90k | 95k | ≈ |
+| insert.disk | 396k | 367k | 波动内 |
+| insert.mem | 394k | 331k | 波动下沿（第 3 轮 379k），待观察 |
+
+**A/B 抓获的两起回归与修复**（紧凑布局的代价逐层偿清）：
+1. **range100.mem 崩盘（25k→1.6k→964）**：①delta 无序只能线性扫（旧
+   BTreeMap 键序 range 裁剪）→ **读触发归并**（扫描前 delta>1024 先
+   归并，DELTA_READ_MERGE）；②snapshot_rows_in_range 从头线性扫 →
+   sorted **二分定位 + 出界即停**；③sorted 二分每步解引用 Arc key
+   （64 分片 × log n 次 cache miss）→ **P0-C SmolKey**：≤23B 内联
+   （手写 Ord 恒字节序 + Borrow<[u8]> 直查哈希），range100 未物化
+   探针 6.8k→10.2k（+50%），终验 24.8k 恢复。
+2. point/insert 无回归确认（多轮波动带内）。
+
+**验收对照（诚实账单）**：任务书 P0 目标 point.mem/disk ≥ 2.0、
+update ≥ 2.0、range ≥ 1.5、vs SQLite :memory: ≥ 0.5——实际 1.02 /
+0.94 / 0.86 / 0.32，**全部未达**。差距归因（实证，非猜测）：1M 行树
+51MB 全驻 64MB LRU（命中率 100%）——disk 臂零 I/O 与 mem 同代码
+路径，比值结构性封顶在 ~1.0；SQL 机器 4-6µs 是两臂共同底座（未物化
+早退路径另有 ~1.5µs 未定位开销，resolve 1419 vs 327ns 待查）。
+**达标路径**：(a) 负载升到 10M 行（树 510MB ≫ LRU，disk 出现真
+I/O）；(b) SQL 机器砍半（任务书第 2 项范畴）。验收口径请 owner 裁定。
+
+**探针沉淀**：memres（三臂驻留+LRU+perf 分解）、pointearly（未物化
+早退/冷 get/差分）、pointbreak（参数化 rows + full/diff 模式，已修
+历史跳批 bug）。
+
+**实测**（memres/pointbreak 探针，A/B 前后同机同负载）：
+- memtx 裸 get（1M 键全驻，冷 key）：旧结构推算 ~3.4µs → **0.73µs**
+  （4.7×）；10 万键 0.57µs / 冷 414ns
+- 驻留：全驻 1M 行 RSS 700 → **419MB（−40%，−281B/条）**；mem 臂
+  load 终态 325 → 279MB（−14%）
+- point 无回归（早退差分证明触发：裸列 9.3µs vs 表达式投影 22µs）；
+  未物化表早退路径仍比物化慢 ~1.5-3.7µs（resolve 未物化臂 1419ns
+  vs 物化臂 327ns——缓存 miss 混入未定位，待办）
+
+**历史基准陷阱**（顺带发现）：旧 pointbreak"点查 3.8µs/262k"实为
+1 万行跳批插入（探针 bug）——10 万行真实数字 4.0→6.8µs 量级，此前
+轮次的对比基线部分失真。
+
 ## 十轮总战绩（vs SQLite 首测 → 今）
 
 | 场景 | 首测 | 第 10 轮 |

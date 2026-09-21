@@ -1164,7 +1164,7 @@ impl Database {
                 .map(|(n, e)| {
                     (
                         n.as_bytes().to_vec(),
-                        crate::prolly::Mutation::Put(crate::versioned::encode_table_entry(e)),
+                        crate::prolly::Mutation::Put(crate::versioned::encode_table_entry(e).into()),
                     )
                 })
                 .collect();
@@ -2011,7 +2011,7 @@ pub(crate) fn commit_tx(db: &Database, sess_branch: &str, txn: &Txn) -> Result<u
         let mut txn_bytes = 0u64;
         for (tid, key, m) in iter_writes(txn) {
             let val = match m {
-                Mutation::Put(v) => Some(v.clone()),
+                Mutation::Put(v) => Some(v.to_vec()),
                 Mutation::Delete => None,
             };
             txn_bytes += (key.len()

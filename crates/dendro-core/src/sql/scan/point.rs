@@ -420,10 +420,10 @@ pub(crate) fn fetch_row_bytes(
     entry: &crate::versioned::TableEntry,
     key: &[u8],
     snapshot: u64,
-) -> Result<Option<std::sync::Arc<Vec<u8>>>> {
+) -> Result<Option<std::sync::Arc<[u8]>>> {
     let b = db.branch(&sess.branch)?;
     let tm = b.mem.table(entry.id);
-    let mut found: Option<std::sync::Arc<Vec<u8>>> = match tm.get(key, snapshot) {
+    let mut found: Option<std::sync::Arc<[u8]>> = match tm.get(key, snapshot) {
         Some(v) => Some(v),
         None => {
             let tombstoned = tm.latest_ts(key).is_some_and(|ts| ts <= snapshot);
@@ -437,7 +437,7 @@ pub(crate) fn fetch_row_bytes(
                     .map(|r| crate::prolly::cursor::lookup(&db.store, &r, key))
                     .transpose()?
                     .flatten()
-                    .map(std::sync::Arc::new)
+                    .map(std::sync::Arc::from)
             }
         }
     };
@@ -446,7 +446,7 @@ pub(crate) fn fetch_row_bytes(
             if let Some(m) = t.writes.get(&(entry.id, key.to_vec())) {
                 match m {
                     crate::prolly::Mutation::Put(v) => {
-                        found = Some(std::sync::Arc::new(v.clone()))
+                        found = Some(v.clone())
                     }
                     crate::prolly::Mutation::Delete => found = None,
                 }
@@ -500,7 +500,7 @@ pub(crate) fn build_point_view(
         let key = crate::format::row::encode_key(std::slice::from_ref(&pkv));
         // memtx 优先；**墓碑判定**（第七轮 R7-1 伴生①）：memtx 无值时可能是
         // "可见墓碑"（该 key 在快照前已被删除）——此时不得回退树复活被删行
-        let mut found: Option<Arc<Vec<u8>>> = match tm.get(&key, snapshot) {
+        let mut found: Option<Arc<[u8]>> = match tm.get(&key, snapshot) {
             Some(v) => Some(v),
             None => {
                 let tombstoned = tm.latest_ts(&key).is_some_and(|ts| ts <= snapshot);
@@ -508,7 +508,7 @@ pub(crate) fn build_point_view(
                     None
                 } else {
                     match &tree_root {
-                        Some(r) => crate::prolly::cursor::lookup(&db.store, r, &key)?.map(Arc::new),
+                        Some(r) => crate::prolly::cursor::lookup(&db.store, r, &key)?.map(Arc::from),
                         None => None,
                     }
                 }
@@ -519,7 +519,7 @@ pub(crate) fn build_point_view(
             if t.explicit {
                 if let Some(m) = t.writes.get(&(entry.id, key.clone())) {
                     match m {
-                        crate::prolly::Mutation::Put(v) => found = Some(Arc::new(v.clone())),
+                        crate::prolly::Mutation::Put(v) => found = Some(v.clone()),
                         crate::prolly::Mutation::Delete => found = None,
                     }
                 }

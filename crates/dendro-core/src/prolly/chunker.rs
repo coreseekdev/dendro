@@ -11,10 +11,16 @@ use super::NodeStore;
 use crate::error::{Result, SqlError};
 use crate::format::hash::Hash;
 use std::collections::HashSet;
+use std::sync::Arc;
 
+/// 值以 `Arc<[u8]>` 共享（P0-A）：Txn 写集 → memtx VerCell → branch.pending
+/// 三方持同一分配——写路径此前每条 Put 值克隆两份独立驻留拷贝
+/// （memtx install 的 `Arc::new(v.clone())` + pending 登记的 `m.clone()`，
+/// 1M 行 ≈ 220B/条 ×2）。树物化（apply → EntryVal::Item）时一次性
+/// `to_vec`（CHECKPOINT 路径，本来就有编码拷贝）。
 #[derive(Debug, Clone)]
 pub enum Mutation {
-    Put(Vec<u8>),
+    Put(Arc<[u8]>),
     Delete,
 }
 
@@ -164,7 +170,7 @@ impl<'a> Chunker<'a> {
                 let items: Vec<(Vec<u8>, Vec<u8>)> = muts
                     .iter()
                     .filter_map(|(k, m)| match m {
-                        Mutation::Put(v) => Some((k.clone(), v.clone())),
+                        Mutation::Put(v) => Some((k.clone(), v.to_vec())),
                         Mutation::Delete => None,
                     })
                     .collect();
@@ -317,14 +323,14 @@ fn merge_leaf(node: &Node, muts: &[(Vec<u8>, Mutation)]) -> Result<Vec<(Vec<u8>,
             ei += 1;
         } else if ei >= node.count() || node.key_slice(ei) > muts[mi].0.as_slice() {
             match &muts[mi].1 {
-                Mutation::Put(v) => out.push((muts[mi].0.clone(), EntryVal::Item(v.clone()))),
+                Mutation::Put(v) => out.push((muts[mi].0.clone(), EntryVal::Item(v.to_vec()))),
                 Mutation::Delete => {}
             }
             mi += 1;
         } else {
             // 同 key：变更覆盖
             match &muts[mi].1 {
-                Mutation::Put(v) => out.push((muts[mi].0.clone(), EntryVal::Item(v.clone()))),
+                Mutation::Put(v) => out.push((muts[mi].0.clone(), EntryVal::Item(v.to_vec()))),
                 Mutation::Delete => {}
             }
             ei += 1;
@@ -386,8 +392,8 @@ mod tests {
 
         // 单点更新
         let muts = vec![
-            (b"k00000100".to_vec(), Mutation::Put(b"updated".to_vec())),
-            (b"k00009999".to_vec(), Mutation::Put(b"new".to_vec())),
+            (b"k00000100".to_vec(), Mutation::Put(b"updated".to_vec().into())),
+            (b"k00009999".to_vec(), Mutation::Put(b"new".to_vec().into())),
             (b"k00000005".to_vec(), Mutation::Delete),
         ];
         let mut ck2 = Chunker::new(&s, &mut sess);
@@ -432,7 +438,7 @@ mod tests {
         let root3 = ck3
             .apply(
                 root2.as_ref(),
-                &[(b"a".to_vec(), Mutation::Put(b"1".to_vec()))],
+                &[(b"a".to_vec(), Mutation::Put(b"1".to_vec().into()))],
             )
             .unwrap()
             .unwrap();
@@ -450,7 +456,7 @@ mod tests {
             .map(|i| {
                 (
                     format!("k{i:08}").into_bytes(),
-                    Mutation::Put(format!("v{i}").into_bytes()),
+                    Mutation::Put(format!("v{i}").into_bytes().into()),
                 )
             })
             .collect();

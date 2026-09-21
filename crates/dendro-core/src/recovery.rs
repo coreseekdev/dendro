@@ -87,7 +87,7 @@ pub(crate) fn replay_branch(
                             let tm = b.mem.table(r.table_id);
                             for (key, val) in r.ops {
                                 let m = match &val {
-                                    Some(v) => crate::prolly::Mutation::Put(v.clone()),
+                                    Some(v) => crate::prolly::Mutation::Put(v.clone().into()),
                                     None => crate::prolly::Mutation::Delete,
                                 };
                                 // 陈旧写抑制：同 key 已有更高 ts（新 epoch 写过）→ 跳过
@@ -95,7 +95,7 @@ pub(crate) fn replay_branch(
                                     continue;
                                 }
                                 pend.entry(r.table_id).or_default().insert(key.clone(), m);
-                                tm.install(key.clone(), ts, val.clone().map(Arc::new));
+                                tm.install(key.clone(), ts, val.clone().map(|v| v.into()));
                                 pending_bytes +=
                                     (key.len() + val.as_ref().map(|v| v.len()).unwrap_or(0)) as u64;
                             }
@@ -184,7 +184,7 @@ mod invariant_tests {
     fn ts_bound_checker_catches_violation() {
         let mem = crate::memtx::BranchMem::default();
         let t = mem.table(7);
-        t.install(b"k1".to_vec(), 100, Some(Arc::new(vec![1u8])));
+        t.install(b"k1".to_vec(), 100, Some(vec![1u8].into()));
         assert!(mem.debug_check_ts_bound(100).is_ok());
         assert!(mem.debug_check_ts_bound(99).is_err(), "越界安装必须被检出");
     }

@@ -221,7 +221,7 @@ pub(crate) fn lazy_scan_source(
     }
     let b = db.branch(&sess.branch)?;
     let overlay = b.mem.table(entry.id).snapshot_rows(snapshot);
-    let mut txn_writes: Vec<(Vec<u8>, Option<std::sync::Arc<Vec<u8>>>)> = Vec::new();
+    let mut txn_writes: Vec<(Vec<u8>, Option<std::sync::Arc<[u8]>>)> = Vec::new();
     if let Some(t) = &sess.txn {
         if t.explicit {
             for ((tid, k), m) in &t.writes {
@@ -230,7 +230,7 @@ pub(crate) fn lazy_scan_source(
                 }
                 match m {
                     crate::prolly::Mutation::Put(v) => {
-                        txn_writes.push((k.clone(), Some(std::sync::Arc::new(v.clone()))));
+                        txn_writes.push((k.clone(), Some(v.clone())));
                     }
                     crate::prolly::Mutation::Delete => {
                         txn_writes.push((k.clone(), None));
@@ -345,7 +345,7 @@ pub(crate) fn try_ap_scan(
     let b = db.branch(&sess.branch)?;
     let overlay = b.mem.table(entry.id).snapshot_rows(snapshot);
     // 会话显式事务自身写（最后覆盖；Q-14：AP 路径读事务的写）
-    let mut txn_writes: Vec<(Vec<u8>, Option<std::sync::Arc<Vec<u8>>>)> = Vec::new();
+    let mut txn_writes: Vec<(Vec<u8>, Option<std::sync::Arc<[u8]>>)> = Vec::new();
     if let Some(t) = &sess.txn {
         if t.explicit {
             for ((tid, k), m) in &t.writes {
@@ -354,7 +354,7 @@ pub(crate) fn try_ap_scan(
                 }
                 match m {
                     crate::prolly::Mutation::Put(v) => {
-                        txn_writes.push((k.clone(), Some(std::sync::Arc::new(v.clone()))));
+                        txn_writes.push((k.clone(), Some(v.clone())));
                     }
                     crate::prolly::Mutation::Delete => {
                         txn_writes.push((k.clone(), None));
@@ -644,13 +644,13 @@ pub(crate) fn table_scan(
             // ⚠ 此处曾是键序双指针归并（`<=` vs `<` 之差产生过 R7-1 P0：
             // checkpoint 后 UPDATE 双行/DELETE 复活）——收敛为 map 覆盖语义
             // 后，键序错误在结构上无处可写。
-            let mut visible: std::collections::BTreeMap<Vec<u8>, Arc<Vec<u8>>> =
+            let mut visible: std::collections::BTreeMap<Vec<u8>, Arc<[u8]>> =
                 std::collections::BTreeMap::new();
             // ① 树（checkpoint 物化态）；范围下推时只取 [start, end)
             match &range_keys {
                 Some(rk) => {
                     for (k, v) in rk {
-                        visible.insert(k.clone(), Arc::new(v.clone()));
+                        visible.insert(k.clone(), v.clone().into());
                     }
                 }
                 None => {
@@ -662,7 +662,7 @@ pub(crate) fn table_scan(
                             if n.is_multiple_of(4096) {
                                 sess.deadline_check()?;
                             }
-                            visible.insert(k, Arc::new(v));
+                            visible.insert(k, Arc::from(v));
                         }
                     }
                 }
@@ -689,7 +689,7 @@ pub(crate) fn table_scan(
                         }
                         match m {
                             crate::prolly::Mutation::Put(v) => {
-                                visible.insert(k.clone(), Arc::new(v.clone()));
+                                visible.insert(k.clone(), v.clone().into());
                             }
                             crate::prolly::Mutation::Delete => {
                                 visible.remove(k);
