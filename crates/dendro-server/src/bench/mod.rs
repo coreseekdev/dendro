@@ -335,7 +335,7 @@ pub fn bench_plan_cache(n: usize) -> BenchResult {
         assert!(
             out.iter().all(|o| match o {
                 dendro_core::types::Output::Rows(r) => {
-                    r.batches.iter().map(|b| b.num_rows()).sum::<usize>() == 0
+                    r.total_rows() == 0
                 }
                 _ => false,
             }),

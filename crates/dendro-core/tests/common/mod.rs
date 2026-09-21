@@ -62,6 +62,12 @@ pub fn canonicalize(outs: &[Output]) -> Canonical {
 
 /// arrow 批 → SqlValue 行（测试侧转换；与引擎内部 rows_from_batches 无关）
 fn record_rows(rs: &RecordSet) -> Vec<Vec<SqlValue>> {
+    if let Some(rows) = &rs.direct_rows {
+        return rows
+            .iter()
+            .map(|r| r.iter().map(|c| c.clone()).collect())
+            .collect();
+    }
     use arrow::array::{
         Array, BooleanArray, Date32Array, Float64Array, Int32Array, Int64Array, StringArray,
         TimestampMillisecondArray,

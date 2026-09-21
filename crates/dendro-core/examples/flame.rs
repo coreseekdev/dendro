@@ -14,7 +14,11 @@ fn main() {
 
     let dir = std::env::temp_dir().join(format!("flame-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let mut opts = DbOptions::embedded(StoreConfig::Memory);
+    let mut opts = DbOptions::embedded(if mode == "updatedisk" {
+        StoreConfig::LocalDir(std::env::temp_dir().join(format!("flamedisk-{}", std::process::id())))
+    } else {
+        StoreConfig::Memory
+    });
     if mode == "point" {
         opts.checkpoint_threshold_bytes = 4 << 30; // 未物化全驻
     }
@@ -27,7 +31,7 @@ fn main() {
         c.execute(&format!("INSERT INTO t VALUES {}", vals.join(","))).unwrap();
         id += n;
     }
-    if mode == "tree" || mode == "update" {
+    if mode == "tree" || mode == "update" || mode == "updatedisk" {
         c.execute("CHECKPOINT").unwrap();
     }
     println!("load 完成（{mode} 模式，{rows} 行）——采样 {secs}s…");
@@ -41,7 +45,7 @@ fn main() {
     let mut cnt = 0u64;
     while t.elapsed().as_secs_f64() < secs as f64 {
         match mode.as_str() {
-            "insert" => {
+            "update" | "updatedisk" => {
                 let nid = rows + (i % 50_000) + 1;
                 let _ = c.execute(&format!("INSERT OR REPLACE INTO t VALUES ({nid}, 1, 'z')"));
             }

@@ -87,7 +87,7 @@ fn named_prepared_execute_revalidates() {
         .unwrap();
     let o1 = sess.exec_prepared("p", &[]).unwrap();
     let n1 = match o1 {
-        Output::Rows(r) => format!("{:?}", r.batches),
+        Output::Rows(r) => format!("{:?}", r.typed_rows()),
         Output::Command { .. } => String::new(),
     };
     assert!(n1.contains("1"), "首次执行：{n1}");
@@ -96,7 +96,7 @@ fn named_prepared_execute_revalidates() {
     sess.exec("INSERT INTO t VALUES (8, 1)").unwrap();
     let o2 = sess.exec_prepared("p", &[]).unwrap();
     let n2 = match o2 {
-        Output::Rows(r) => format!("{:?}", r.batches),
+        Output::Rows(r) => format!("{:?}", r.typed_rows()),
         Output::Command { .. } => String::new(),
     };
     assert!(

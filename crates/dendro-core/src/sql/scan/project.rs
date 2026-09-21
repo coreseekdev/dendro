@@ -176,6 +176,7 @@ pub fn rows_to_record_set(columns: &[ColumnMeta], rows: Vec<Vec<SqlValue>>) -> R
     RecordSet {
         columns: columns.to_vec(),
         batches: rows_to_batches_typed(columns, &rows),
+        direct_rows: None,
     }
 }
 

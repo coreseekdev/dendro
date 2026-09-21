@@ -140,17 +140,29 @@ pub enum Output {
     Rows(RecordSet),
 }
 
-/// 行集：Arrow 批（AP/TP 统一货币）+ 列元数据
+/// 行集：Arrow 批（AP/TP 统一货币）+ 列元数据。
+/// `direct_rows` = 小结果集直出行形态（免 SqlValue→Arrow→SqlValue
+/// 往返——点查早退路径，行数 ≤ DIRECT_ROWS_MAX 时 view_to_output
+/// 选用；typed_rows/text_rows/total_rows/memory_bytes 旁路直出，
+/// batches 消费者（exec 源/embed_stream 流式）不接触此构造）
 #[derive(Debug, Clone)]
 pub struct RecordSet {
     pub columns: Vec<ColumnMeta>,
     pub batches: Vec<arrow::record_batch::RecordBatch>,
+    pub direct_rows: Option<Vec<Vec<SqlValue>>>,
 }
+
+/// direct_rows 旁路的行数上限（之上 Arrow 列批的批量优势胜过直出）
+pub const DIRECT_ROWS_MAX: usize = 16;
 
 impl RecordSet {
     /// 物化内存估算（Arrow 数组自报尺寸之和；列元数据可忽略）
     /// ——游标保留上限与结果集守卫（S-3 会话配额）的度量口径
     pub fn memory_bytes(&self) -> u64 {
+        if let Some(rows) = &self.direct_rows {
+            // 直出形态：行值粗估（SqlValue 无自报尺寸；预留上限口径足够）
+            return rows.len() as u64 * rows.first().map_or(0, |r| r.len() as u64) * 16;
+        }
         self.batches
             .iter()
             .map(|b| b.get_array_memory_size() as u64)
@@ -161,10 +173,17 @@ impl RecordSet {
         Self {
             columns,
             batches: vec![],
+            direct_rows: None,
         }
     }
     /// 迭代为文本行（协议 text 格式），None=列内 NULL
     pub fn text_rows(&self) -> Vec<Vec<Option<String>>> {
+        if let Some(rows) = &self.direct_rows {
+            return rows
+                .iter()
+                .map(|r| r.iter().map(|c| Some(crate::sql::expr::to_text(c.clone()))).collect())
+                .collect();
+        }
         let mut rows = Vec::new();
         for batch in &self.batches {
             let n = batch.num_rows();
@@ -179,10 +198,19 @@ impl RecordSet {
         rows
     }
     pub fn total_rows(&self) -> usize {
+        if let Some(rows) = &self.direct_rows {
+            return rows.len();
+        }
         self.batches.iter().map(|b| b.num_rows()).sum()
     }
     /// 迭代为类型化行（协议 binary 编码用）；列型按 self.columns（描述口径）
     pub fn typed_rows(&self) -> Vec<Vec<Option<SqlValue>>> {
+        if let Some(rows) = &self.direct_rows {
+            return rows
+                .iter()
+                .map(|r| r.iter().map(|c| Some(c.clone())).collect())
+                .collect();
+        }
         use arrow::array::{
             Array, BinaryArray, BooleanArray, Date32Array, Float64Array, Int32Array, Int64Array,
             StringArray, TimestampMillisecondArray,

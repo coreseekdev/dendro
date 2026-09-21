@@ -116,6 +116,7 @@ pub fn rows_output_int8(name: &str, vals: &[i64], nulls: &[bool]) -> Output {
             ty: ColType::Int64,
         }],
         batches: vec![batch],
+        direct_rows: None,
     })
 }
 

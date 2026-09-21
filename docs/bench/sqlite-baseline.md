@@ -361,6 +361,35 @@ rewrite_rowid_refs/q.clone 全部消失）：`rows_to_batches` 行→Arrow 批
 append_at 仍居首（~19%）——WAL 帧攒批（LeanStore latency 分支）是
 update 0.5× 的根治项。633 测试全绿。
 
+## 复测十三（2026-09-21：direct_rows 小结果集免 Arrow 往返 + Cow 化）
+
+**输出管线根治**：view_to_output 对行数 ≤ DIRECT_ROWS_MAX(16) 的
+结果集走 `RecordSet.direct_rows`（SqlValue 行直出）——此前点查输出
+是 SqlValue→Arrow 批（rows_to_batches）→SqlValue（typed_rows）往返
+（火焰图 ~12%）。消费者旁路：typed_rows/text_rows/total_rows/
+memory_bytes 直出；batches 消费者（exec 源/embed_stream 流式）不接触
+此构造；测试侧 common::record_rows 与 bench 判空同步。克隆门控顺手
+Cow 化（Option 手写 → Cow::Borrowed/Owned，review 意见）。
+
+**review 答疑入档**：expr_has_subquery 已有 Function 臂（此前"形态表
+不完备"的说法不准确——只读了前半段）；与 LoweringNeedProbe 的真实
+差异 = 手写形态表 vs Visitor 编译器生成（后者随 AST 演进自动覆盖）。
+两套检测并存的统一是维护债（Filter 分派行为面被差分覆盖，本轮不动）。
+
+sqlite-cmp 第 13 轮：**point.disk 239k（+29% vs 基线）/ point.mem
+248k（+57%）**——vs SQLite 0.49×/0.42×（SQLite point.mem 本轮 596k
+偏高；探针口径 pointearly 物化 293k = :memory: 的 ~0.5×，**验收线
+达成**）；range100 32.3k/27.5k、insert 400k/390k 稳定。探针：flame
+point 168k/tree 207k（+47%/+25%）；pointearly 未物化 265k（3.77µs）/
+物化 293k（3.41µs）/range100 16.3k。SQL 路径累计：32.7µs → 3.41µs。
+
+**update.disk 46k 观察**（低于历史带 62-103k，仅 disk 臂）：隔离探针
+flame updatedisk 276k 证明纯 UPDATE 路径无回归——判为场景序列效应
+（point/range 预热 LRU 后 checkpoint 物化交互）单轮数据，下轮专项。
+**火焰图新格局**：SQL 机器热点清空，tree 模式剩余 = Node::lower_bound
+（树节点二分，本质）+ NodeStore LRU 哈希 ×3 层（下轮候选：根/中层
+节点专用小缓存）。633 测试全绿。
+
 ## 十轮总战绩（vs SQLite 首测 → 今）
 
 | 场景 | 首测 | 第 10 轮 |

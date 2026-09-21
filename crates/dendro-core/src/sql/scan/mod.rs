@@ -77,9 +77,22 @@ pub(crate) fn exec_query(
         .collect();
     // 列型按数据推断（空表回退 Utf8）
     let colmeta = fix_colmeta(view.rows.first(), &view.names, colmeta);
+    let mut view_rows = view.rows;
+    // 小结果集直出（点查早退的主形态）：免 SqlValue→Arrow→SqlValue
+    // 往返（rows_to_batches 批构建 + typed_rows 反解曾占 tree 火焰图
+    // ~12%）；直出上限见 DIRECT_ROWS_MAX——之上批量 Arrow 值得
     let out = Output::Rows(RecordSet {
         columns: colmeta,
-        batches: rows_to_batches(&view.names, &view.rows)?,
+        batches: if view_rows.len() <= crate::types::DIRECT_ROWS_MAX {
+            vec![]
+        } else {
+            rows_to_batches(&view.names, &view_rows)?
+        },
+        direct_rows: if view_rows.len() <= crate::types::DIRECT_ROWS_MAX {
+            Some(view_rows)
+        } else {
+            None
+        },
     });
     crate::perf::exit(crate::perf::Stage::OutputBuild, _t_out);
     Ok(out)
@@ -154,18 +167,17 @@ pub(crate) fn eval_query(
     // **免克隆门控**（火焰图：q.clone 整树深克隆 ~5% + rowid 重写/子查询
     // 内联的预处理遍历 ~30%——点查常态无子查询无 rowid 引用，白付）：
     // 确需 AST 改写才克隆；纯 Select 无改写位只保留只读的 multi-from 拒绝
-    let mut q_owned: Option<Query> = None;
-    let q_ref: &Query = if query_lowering_needs_mutation(sess, q) {
+    let q_ref: std::borrow::Cow<'_, Query> = if query_lowering_needs_mutation(sess, q) {
         let mut o = q.clone();
         lower_subqueries(db, sess, &mut o.body, snapshot)?;
-        q_owned = Some(o);
-        q_owned.as_ref().unwrap()
+        std::borrow::Cow::Owned(o)
     } else {
         if let SetExpr::Select(sel) = &*q.body {
             reject_multi_from(sel)?;
         }
-        q
+        std::borrow::Cow::Borrowed(q)
     };
+    let q_ref: &Query = &q_ref;
 
     // P0 性能批：Arrow 原生全局聚合捷径——SELECT agg(...) FROM table
     // （无 WHERE/GROUP BY/JOIN/ORDER BY/LIMIT/SetOp/CTE）直接在列存

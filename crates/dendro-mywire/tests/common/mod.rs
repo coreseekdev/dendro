@@ -405,6 +405,7 @@ fn int64_set(name: &str, vals: &[i64]) -> RecordSet {
             ty: ColType::Int64,
         }],
         batches: vec![batch],
+        direct_rows: None,
     }
 }
 
@@ -423,6 +424,7 @@ fn utf8_null_set(name: &str) -> RecordSet {
             ty: ColType::Utf8,
         }],
         batches: vec![batch],
+        direct_rows: None,
     }
 }
 
@@ -439,6 +441,7 @@ fn users_meta() -> RecordSet {
             },
         ],
         batches: vec![],
+        direct_rows: None,
     }
 }
 
