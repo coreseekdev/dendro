@@ -6,6 +6,17 @@
 
 ## 一、核心问题（本任务最高优先级）
 
+> **P0 已完成（2026-09-21，4b9d44d）**：根因翻转与修复全记录见
+> docs/bench/sqlite-baseline.md 复测十。要点：复测五"1M 全驻 1.7GB"
+> 证伪（自动 checkpoint 正常，终态 ~12 万条驻留）；真因 = 基准口径
+> 不对称 + memtx BTreeMap 局部性。修复 = P0-A 值 Arc 共享 + P1 紧凑
+> 布局（delta+sorted+SmolKey）+ 读触发归并。point.mem/disk
+> 0.85→1.02（倒挂消除）；**2.0 验收目标在 1M 负载下结构性不可达**
+> （disk 臂 LRU 100% 命中即零 I/O，与 mem 同路径）——达标需 10M
+> 负载或 SQL 机器砍半，口径待 owner 裁定。新增待办：未物化早退路径
+> ~1.5µs 未定位开销（resolve 1419 vs 327ns）；insert.mem 波动下沿
+> （331k）观察。
+
 ### P0：内存路径慢于磁盘路径——不正常，必须修复
 
 **现象**（sqlite-cmp 基准，1M 行）：
