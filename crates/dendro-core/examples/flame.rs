@@ -19,7 +19,7 @@ fn main() {
     } else {
         StoreConfig::Memory
     });
-    if mode == "point" {
+    if mode == "point" || mode == "updatefull" {
         opts.checkpoint_threshold_bytes = 4 << 30; // 未物化全驻
     }
     let mut c = Connection::open_with(&dir, opts).unwrap();
@@ -64,7 +64,7 @@ fn main() {
         match mode.as_str() {
             // 早前合并补丁误把 INSERT 体留在 update 臂——"291k"实为
             // INSERT OR REPLACE 数字，真 UPDATE 从未在真 Memory 上测过
-            "update" | "updatedisk" | "updateckpt" => {
+            "update" | "updatedisk" | "updateckpt" | "updatefull" => {
                 let uid = (i.wrapping_mul(104729) % rows) + 1;
                 let _ = c.execute(&format!("UPDATE t SET v = v + 1 WHERE id = {uid}"));
             }
@@ -81,7 +81,10 @@ fn main() {
         cnt += 1;
     }
     let rate = cnt as f64 / t.elapsed().as_secs_f64();
-    drop(guard.report().build().unwrap().flamegraph(std::fs::File::create(format!("/home/nzinfo/bench-p0/flame-{mode}.svg")).unwrap()).unwrap());
+    {
+        let report = guard.report().build().unwrap();
+        drop(report.flamegraph(std::fs::File::create(format!("/home/nzinfo/bench-p0/flame-{mode}.svg")).unwrap()).unwrap());
+    }
     println!("完成：{rate:.0} ops/s——火焰图 /home/nzinfo/bench-p0/flame-{mode}.svg");
     let _ = Duration::from_secs(0);
 }

@@ -468,6 +468,18 @@ point.disk 244k（0.5× 维持）/point.mem 253k、insert ≈。vs P0 基线
 场景收益更大，2315236 同因）。633 测试全绿（含 wal_corruption
 崩溃安全 + CAS 族）。
 
+## 归因补记（2026-09-22：UPDATE 两座山定案 + updatefull 实验）
+
+攒批恢复后 update 场景复测（火焰图，99-107k）：①旧值读
+fetch/lookup ~17%（UPDATE 随机负载下树 lookup 是本质成本——
+104729 步进 1M 内不重复，memtx 永不命中）；②checkpoint 物化
+~15%（后台 CPU 抢核 + commit_mu 持锁停顿）。**updatefull 实验**
+（4GB 阈值全驻 memtx）：107k ≈ 常规 99-105k——全驻只值 8%
+（旧值读 memtx 0.5µs vs 树 1.5µs 的差被其余成本稀释），
+**"内存引擎 UPDATE"路线单靠驻留不够——瓶颈正解 = 非阻塞
+checkpoint**（MatrixOne TAE 蓝图已入档）。UPDATE 的 SQL/DML
+机器为剩余第三块（无早退家族覆盖，下轮候选）。
+
 ## 十轮总战绩（vs SQLite 首测 → 今）
 
 | 场景 | 首测 | 第 10 轮 |
