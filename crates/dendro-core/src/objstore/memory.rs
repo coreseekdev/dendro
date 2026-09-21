@@ -1,13 +1,16 @@
-//! 内存对象存储（测试/原型）。
+//! 内存对象存储（测试/原型；真内存库的持久层——embed Connection
+//! 传 StoreConfig::Memory 时的 objstore）。
 
 use super::{HeadInfo, ObjResult, ObjStore};
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use parking_lot::RwLock;
 use std::collections::BTreeMap;
 
 #[derive(Default)]
 pub struct MemoryObjStore {
-    m: RwLock<BTreeMap<String, Bytes>>,
+    /// 值以 BytesMut 持有：WAL 追加模式（supports_append）的原地续写
+    /// O(帧)（Bytes 不可变拼接是 O(段)——每帧 8MB 拷贝不可接受）
+    m: RwLock<BTreeMap<String, BytesMut>>,
 }
 
 impl MemoryObjStore {
@@ -24,14 +27,14 @@ impl MemoryObjStore {
     pub fn total_bytes(&self) -> u64 {
         self.m.read().values().map(|b| b.len() as u64).sum()
     }
+    fn snapshot(&self, path: &str) -> Option<Bytes> {
+        self.m.read().get(path).map(|b| b.clone().freeze())
+    }
 }
 
 impl ObjStore for MemoryObjStore {
     fn get(&self, path: &str) -> ObjResult<Bytes> {
-        self.m
-            .read()
-            .get(path)
-            .cloned()
+        self.snapshot(path)
             .ok_or_else(|| super::ObjError::NotFound(path.into()))
     }
     fn get_range(&self, path: &str, off: u64, len: usize) -> ObjResult<Bytes> {
@@ -42,7 +45,7 @@ impl ObjStore for MemoryObjStore {
     }
     fn put(&self, path: &str, data: Bytes) -> ObjResult<()> {
         super::validate_path(path)?;
-        self.m.write().insert(path.into(), data);
+        self.m.write().insert(path.into(), BytesMut::from(&data[..]));
         Ok(())
     }
     fn put_if_absent(&self, path: &str, data: Bytes) -> ObjResult<()> {
@@ -51,8 +54,45 @@ impl ObjStore for MemoryObjStore {
         if m.contains_key(path) {
             return Err(super::ObjError::Exists(path.into()));
         }
-        m.insert(path.into(), data);
+        m.insert(path.into(), BytesMut::from(&data[..]));
         Ok(())
+    }
+    /// 原地续写（WAL 追加模式）：偏移必须等于当前长度（段内连续追加
+    /// 契约；空洞 = 段损坏，响亮拒绝）。不存在则建新段（偏移必为 0——
+    /// 与 LocalObjStore pwrite O_CREATE 同语义：封段后新段首个 append
+    /// 先于任何 preallocate 到达是正常时序）
+    fn append_at(&self, path: &str, offset: u64, data: &[u8]) -> ObjResult<()> {
+        super::validate_path(path)?;
+        let mut m = self.m.write();
+        let b = m.entry(path.into()).or_default();
+        if b.len() as u64 != offset {
+            return Err(super::ObjError::Io(format!(
+                "append offset {offset} != len {} for {path}",
+                b.len()
+            )));
+        }
+        b.extend_from_slice(data);
+        Ok(())
+    }
+    fn preallocate(&self, path: &str, len: u64) -> ObjResult<()> {
+        // 内存无 fsync 元数据语义：仅确保对象存在并预留容量（零化
+        // 不必——append 契约按偏移连续校验，读端只见已写前缀）
+        super::validate_path(path)?;
+        let mut m = self.m.write();
+        let b = m.entry(path.into()).or_default();
+        b.reserve(len.saturating_sub(b.len() as u64) as usize);
+        Ok(())
+    }
+    fn resize(&self, path: &str, len: u64) -> ObjResult<()> {
+        let mut m = self.m.write();
+        let b = m
+            .get_mut(path)
+            .ok_or_else(|| super::ObjError::NotFound(path.into()))?;
+        b.truncate(len as usize);
+        Ok(())
+    }
+    fn supports_append(&self) -> bool {
+        true
     }
     fn delete(&self, path: &str) -> ObjResult<()> {
         self.m.write().remove(path);
@@ -63,6 +103,7 @@ impl ObjStore for MemoryObjStore {
             len: b.len() as u64,
         }))
     }
+
     fn list_prefix(&self, prefix: &str) -> ObjResult<Vec<String>> {
         let m = self.m.read();
         Ok(m.range(prefix.to_string()..)

@@ -390,6 +390,33 @@ flame updatedisk 276k 证明纯 UPDATE 路径无回归——判为场景序列�
 （树节点二分，本质）+ NodeStore LRU 哈希 ×3 层（下轮候选：根/中层
 节点专用小缓存）。633 测试全绿。
 
+## 复测十四（2026-09-22：open_with 尊重显式 store + Memory 追加家族——真内存库首次生效）
+
+**产品级口径修复**：`embed::Connection::open_with` 此前无条件
+`store: LocalDir(path)` 覆盖——`DbOptions::embedded(StoreConfig::Memory)`
+从未生效（sqlite-cmp 的"mem 臂"一直是另一个磁盘目录；火焰图
+LocalObjStore 实证）。修复：显式 Memory/S3/Obj 尊重调用方，LocalDir/
+default 仍用 path（既有行为不变）。
+
+**MemoryObjStore 追加家族**：内部 BTreeMap<String, Bytes> → BytesMut
+（原地续写 O(帧)——Bytes 拼接是 O(段)），实现 append_at（entry 自动
+建段——与 LocalObjStore pwrite O_CREATE 同语义；**封段后新段首 append
+先于 preallocate 到达**是正常时序，tp_base 大帧复现抓获）/preallocate
+（reserve）/resize（truncate）/supports_append。WAL 追加模式（P2-6e）
+自此在 Memory 生效——此前走整段 PUT 路径。gc_wal_epochs 测试改
+NoAppend wrapper（其段独立性构造依赖整段模式；追加模式 gc 由
+LocalObjStore 生产路径覆盖）。
+
+**实测**（flame 探针，真 Memory）：**update 77k → 291-305k（4×）**——
+WAL append_at 从磁盘 pwrite+fdatasync 变 BytesMut 追加；updateckpt/
+point 前置变体同 ~291k（排除 LRU 预热效应）。读路径微降（tree 207→
+181k）：MemoryObjStore 的 BTreeMap<String> 读确实略慢于本地文件+页缓存
+（P0 时观察的现象就此定案）。sqlite-cmp 第 14 轮：**mem 臂零磁盘写入**
+（dendro-mem 目录不落盘）✓ 真内存库；point/insert/range 与 r13 持平，
+update.disk 87k 回归正常带，**update.mem 80k 未现探针 4×**（隔离探针
+291k vs 同进程多臂序列 80k——同进程效应专项待办；SQLite 臂+disk 臂
+先行后的进程状态影响，下轮用分进程基准复核）。633 测试全绿。
+
 ## 十轮总战绩（vs SQLite 首测 → 今）
 
 | 场景 | 首测 | 第 10 轮 |

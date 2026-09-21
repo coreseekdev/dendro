@@ -117,10 +117,17 @@ impl Connection {
     /// 的资源治理口；Examples: bulk 装载调大 checkpoint_threshold_bytes
     /// 降低 checkpoint 频率，或调小以压 memtx 高水位）
     pub fn open_with(path: impl AsRef<std::path::Path>, opts: crate::DbOptions) -> Result<Self> {
-        let db = Database::open(crate::DbOptions {
-            store: crate::StoreConfig::LocalDir(path.as_ref().to_path_buf()),
-            ..opts
-        })?;
+        // 显式非 LocalDir store（Memory/S3/Obj）尊重调用方——此前无条件
+        // LocalDir(path) 覆盖使 StoreConfig::Memory 从未生效（sqlite-cmp
+        // 的"mem 臂"实为另一个磁盘目录，火焰图 LocalObjStore 实证）；
+        // LocalDir/default 仍用 path（既有调用方行为不变）
+        let store = match opts.store {
+            s @ (crate::StoreConfig::Memory | crate::StoreConfig::S3(_) | crate::StoreConfig::Obj(_)) => s,
+            crate::StoreConfig::LocalDir(_) => {
+                crate::StoreConfig::LocalDir(path.as_ref().to_path_buf())
+            }
+        };
+        let db = Database::open(crate::DbOptions { store, ..opts })?;
         let mut sess = db.new_session();
         sess.dialect = crate::sql::SqlDialect::Sqlite;
         Ok(Self { db, sess })

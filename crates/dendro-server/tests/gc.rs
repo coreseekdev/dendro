@@ -7,6 +7,41 @@
 
 use dendro_columnar::integrate::CbfColumnar;
 use dendro_core::objstore::memory::MemoryObjStore;
+
+/// 整段模式 wrapper：否决 supports_append——MemoryObjStore 现支持原地
+/// 追加（WAL 走追加模式：段合并、无"每 flush 独立段"），而本测试族
+/// 的 gc 语义构造依赖整段模式的段独立性（INSERT → 独立段1 → 前缀段
+/// 回收）。追加模式下的 gc 行为由 LocalObjStore 生产路径覆盖。
+struct NoAppend(Arc<MemoryObjStore>);
+impl dendro_core::objstore::ObjStore for NoAppend {
+    fn get(&self, path: &str) -> dendro_core::objstore::ObjResult<bytes::Bytes> {
+        self.0.get(path)
+    }
+    fn get_range(&self, path: &str, off: u64, len: usize) -> dendro_core::objstore::ObjResult<bytes::Bytes> {
+        self.0.get_range(path, off, len)
+    }
+    fn put(&self, path: &str, data: bytes::Bytes) -> dendro_core::objstore::ObjResult<()> {
+        self.0.put(path, data)
+    }
+    fn put_if_absent(&self, path: &str, data: bytes::Bytes) -> dendro_core::objstore::ObjResult<()> {
+        self.0.put_if_absent(path, data)
+    }
+    fn delete(&self, path: &str) -> dendro_core::objstore::ObjResult<()> {
+        self.0.delete(path)
+    }
+    fn head(&self, path: &str) -> dendro_core::objstore::ObjResult<Option<dendro_core::objstore::HeadInfo>> {
+        self.0.head(path)
+    }
+    fn list_prefix(&self, prefix: &str) -> dendro_core::objstore::ObjResult<Vec<String>> {
+        self.0.list_prefix(prefix)
+    }
+    fn copy(&self, from: &str, to: &str) -> dendro_core::objstore::ObjResult<()> {
+        self.0.copy(from, to)
+    }
+    fn supports_append(&self) -> bool {
+        false
+    }
+}
 use dendro_core::objstore::ObjStore;
 use dendro_core::{Database, DbOptions, StoreConfig};
 use std::sync::Arc;
@@ -98,7 +133,7 @@ fn gc_columnar_segments_after_retention_window() {
 #[test]
 fn gc_wal_epochs_prefix_and_recovery() {
     let mem = Arc::new(MemoryObjStore::new());
-    let obj: Arc<dyn ObjStore> = mem.clone();
+    let obj: Arc<dyn ObjStore> = Arc::new(NoAppend(mem.clone()));
     let wal_of = |epoch: u64| format!("wal/main/e{epoch:020}/");
 
     // 写者 A（epoch 1）

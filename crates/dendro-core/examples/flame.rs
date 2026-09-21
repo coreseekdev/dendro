@@ -31,8 +31,25 @@ fn main() {
         c.execute(&format!("INSERT INTO t VALUES {}", vals.join(","))).unwrap();
         id += n;
     }
-    if mode == "tree" || mode == "update" || mode == "updatedisk" {
+    if mode == "tree" || mode == "updatedisk" {
         c.execute("CHECKPOINT").unwrap();
+    }
+    // update 基准形态：不显式 CHECKPOINT（复刻 sqlite-cmp mem 臂——
+    // 终态 12 万驻留 + 88 万行树）；updateckpt = 显式物化对照
+    if mode == "updateckpt" {
+        c.execute("CHECKPOINT").unwrap();
+    }
+    // 基准序列复刻：update 前先跑 point（sqlite-cmp mem 臂顺序效应——
+    // LRU 预热对后续 update 的影响归因用）
+    if mode == "update" {
+        let t = Instant::now();
+        let mut i = 0u64;
+        while t.elapsed().as_secs_f64() < 3.0 {
+            let qid = (i.wrapping_mul(7919) % rows) + 1;
+            let _ = c.query(&format!("SELECT v, tag FROM t WHERE id = {qid}"));
+            i += 1;
+        }
+        println!("前置 point {i} 次（{:.0}/s）", i as f64 / 3.0);
     }
     println!("load 完成（{mode} 模式，{rows} 行）——采样 {secs}s…");
 
@@ -45,7 +62,7 @@ fn main() {
     let mut cnt = 0u64;
     while t.elapsed().as_secs_f64() < secs as f64 {
         match mode.as_str() {
-            "update" | "updatedisk" => {
+            "update" | "updatedisk" | "updateckpt" => {
                 let nid = rows + (i % 50_000) + 1;
                 let _ = c.execute(&format!("INSERT OR REPLACE INTO t VALUES ({nid}, 1, 'z')"));
             }
