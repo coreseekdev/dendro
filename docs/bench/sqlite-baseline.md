@@ -428,6 +428,22 @@ apply_table_mutations → Chunker::apply → put_node/CAS put_batch，
 序列复刻模式（已修 match bug）；delegate crate 引入（gc 测试转发）。
 633 测试全绿。
 
+## 复测十五（2026-09-22：上层节点直存缓存 + 剖析设施补全）
+
+**upper 直存缓存**：NodeStore 新增距叶 ≥2 层节点（root+中层，1M 行
+树 ~40 个）的直存 HashMap（读锁单哈希直取，绕过分片 LRU 的锁+哈希+
+晋升）；读侧 get_node_at 按 depth 精确路由（leaf 零额外开销），写侧
+put_node 按 node.level() 准入（checkpoint 新根立即可点查）。不可变
+内容寻址 → 无失效。**收益诚实账**：LRU 哈希在点查成本中占比 <3%
+（Node::lower_bound 才是树点查主体）——实测波动带内（tree 165-197k
+run 间波动 15%，双跑判别非回归），保留为无害微优化。
+
+sqlite-cmp 第 16 轮：**point.disk 242k（vs SQLite 首达 0.5×）**、
+point.mem 248k、range100.disk 33.3k、update.disk 97k / update.mem 81k
+（瓶颈在 checkpoint 物化+旧值读树 lookup，见复测十四瓶颈地图）、
+insert 392k。累计 vs P0 基线：point.disk +30% / point.mem +57% /
+update.disk +13% / range100.disk +10%。633 测试全绿。
+
 ## 十轮总战绩（vs SQLite 首测 → 今）
 
 | 场景 | 首测 | 第 10 轮 |

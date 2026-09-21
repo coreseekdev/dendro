@@ -118,7 +118,7 @@ impl TreeIter {
                     EntryVal::Child(c, _) => c,
                     EntryVal::Item(_) => return Err(SqlError::internal("item at internal")),
                 };
-                let cn = self.store.get_node(&child)?;
+                let cn = self.store.get_node_at(&child, self.path.len() as u8)?;
                 let lvl = cn.level();
                 self.path.push((cn, 0));
                 if lvl == 0 {
@@ -144,8 +144,9 @@ fn build_path(
 ) -> Result<(Vec<(Node, usize)>, bool)> {
     let mut path = Vec::new();
     let mut addr = *root;
+    let mut depth = 0u8;
     loop {
-        let node = store.get_node(&addr)?;
+        let node = store.get_node_at(&addr, depth)?;
         let idx = match key_ge {
             None => 0,
             Some(k) => node.lower_bound(k),
@@ -165,6 +166,7 @@ fn build_path(
         };
         path.push((node, idx));
         addr = child;
+        depth += 1;
     }
 }
 
@@ -172,8 +174,9 @@ fn build_path(
 pub fn lookup(store: &NodeStore, root: &Hash, key: &[u8]) -> Result<Option<Vec<u8>>> {
     let _g = crate::perf::scope(crate::perf::Stage::StorageGet);
     let mut addr = *root;
+    let mut depth = 0u8;
     loop {
-        let node = store.get_node(&addr)?;
+        let node = store.get_node_at(&addr, depth)?;
         let i = node.lower_bound(key);
         if i >= node.count() {
             return Ok(None);
@@ -185,7 +188,10 @@ pub fn lookup(store: &NodeStore, root: &Hash, key: &[u8]) -> Result<Option<Vec<u
                 }
                 return Ok(None);
             }
-            EntryVal::Child(child, _) => addr = child,
+            EntryVal::Child(child, _) => {
+                addr = child;
+                depth += 1;
+            }
         }
     }
 }

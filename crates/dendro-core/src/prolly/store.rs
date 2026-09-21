@@ -5,7 +5,8 @@ use super::node::{validate, Node};
 use crate::error::Result;
 use crate::format::hash::Hash;
 use crate::objstore::cas::{CasStore, Chunk, ChunkType};
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
+use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -44,9 +45,20 @@ pub fn global_cache_stats() -> (u64, u64, u64) {
         .fold((0, 0, 0), |(h, m, r), (a, b, c)| (h + a, m + b, r + c))
 }
 
+/// 上层节点直存缓存（点查热路径）：距叶 ≥ UPPER_LEVELS 的节点
+/// （root+中层——1M 行树约 40 个）绕过分片 LRU 的锁+哈希+晋升，
+/// 单读锁哈希直取。**不可变内容寻址 → 无失效**（Hash 即内容，同
+/// Hash 永同 Node）；写侧 put_node 按 node.level() 准入，读侧
+/// get_node_at 按 depth 精确路由（leaf 访问零额外开销）。
+const UPPER_LEVELS: u8 = 2;
+/// 准入上限（满则清空重建——上层节点少且不可变，清空代价 = 数次 miss）
+const UPPER_CAP: usize = 2048;
+
 pub struct NodeStore {
     cas: Arc<CasStore>,
     shards: Vec<Mutex<Shard>>,
+    /// 上层节点直存（见 UPPER_LEVELS）
+    upper: RwLock<HashMap<Hash, Node>>,
     /// census：命中/未命中计数（memprof 观测——TP 页缓存命中率）
     hits: AtomicU64,
     misses: AtomicU64,
@@ -67,6 +79,7 @@ impl NodeStore {
         let per_shard_budget = budget_bytes / SHARDS;
         let out = Self {
             cas,
+            upper: RwLock::new(HashMap::new()),
             shards: (0..SHARDS)
                 .map(|_| {
                     Mutex::new(Shard {
@@ -119,6 +132,14 @@ impl NodeStore {
             debug_assert_eq!(chunk.addr(), h);
             self.cas.put_batch(&[chunk], session_cache)?;
         }
+        // 上层直存准入（写侧预热：checkpoint 产出的新 root/mid 立即可点查）
+        if node.level() >= UPPER_LEVELS {
+            let mut g = self.upper.write();
+            if g.len() >= UPPER_CAP {
+                g.clear();
+            }
+            g.insert(h, node.clone());
+        }
         self.cache_insert(h, node);
         Ok(h)
     }
@@ -127,6 +148,28 @@ impl NodeStore {
     /// 未命中路径不再重算节点地址（SHA-512）：地址即查询键，内容寻址的
     /// 完整性由 crc32c（validate）+ 写入端哈希保证——每次 miss 省一次
     /// 全节点 SHA-512（4KB ≈ 1-2µs）。
+    /// 深度感知读取：上层（depth < UPPER_LEVELS，root 起 0 计）走
+    /// 直存缓存——miss 时回源 LRU/CAS 并回填。leaf 层零额外开销。
+    pub fn get_node_at(&self, h: &Hash, depth: u8) -> Result<Node> {
+        if depth < UPPER_LEVELS {
+            {
+                let g = self.upper.read();
+                if let Some(n) = g.get(h) {
+                    self.hits.fetch_add(1, Ordering::Relaxed);
+                    return Ok(n.clone());
+                }
+            }
+            let n = self.get_node(h)?;
+            let mut g = self.upper.write();
+            if g.len() >= UPPER_CAP {
+                g.clear();
+            }
+            g.insert(*h, n.clone());
+            return Ok(n);
+        }
+        self.get_node(h)
+    }
+
     pub fn get_node(&self, h: &Hash) -> Result<Node> {
         let shard = self.shard(h);
         {
