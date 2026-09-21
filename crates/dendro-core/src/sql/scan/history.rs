@@ -35,7 +35,7 @@ pub(crate) fn time_travel_scan(
         }
     };
     let short_name = full_name.rsplit(['.', '@']).next().unwrap_or(full_name);
-    let (schema, entry) = resolve_table_at(db, Some(&commit.root), short_name)?;
+    let (schema, entry) = resolve_table_at(db, Some(&commit.root), short_name)?.as_ref().clone();
     let root = entry
         .table_root
         .as_ref()

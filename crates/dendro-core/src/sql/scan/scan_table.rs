@@ -102,7 +102,8 @@ pub(crate) fn table_scan_opt(
     // 执行器保持内部守卫（决策与执行间的竞态由执行器兜底回落）。
     match crate::sql::dispatch::dispatch_scan(db, sess, tf, selection, snapshot)? {
         crate::sql::dispatch::ScanAlt::CurrentPoint => {
-            if let Some((schema, entry)) = try_pk_pushdown(db, sess, tf, selection, snapshot)? {
+            if let Some(pd_rc) = try_pk_pushdown(db, sess, tf, selection, snapshot)? {
+                let (schema, entry) = (&pd_rc.0, &pd_rc.1);
                 let sel = selection.expect("pushdown implies selection");
                 return build_point_view(db, sess, &schema, &entry, sel, snapshot);
             }
@@ -163,14 +164,15 @@ pub(crate) fn ap_resolve(
         Some(r) => resolve_table_at(db, Some(&r), &short_name),
         None => resolve_table(db, &sess.branch, &short_name),
     };
-    let (schema, entry) = resolved.ok()?;
+    let resolved = resolved.ok()?;
+    let (schema, entry) = (&resolved.0, &resolved.1);
     if entry.col_segments.is_empty() {
         return None;
     }
     if !bypass_threshold && entry.col_rows < 10_000 {
         return None;
     }
-    Some((schema, entry))
+    Some((schema.clone(), entry.clone()))
 }
 
 /// 惰性扫描源（v2 游标 / SQLite step 语义）：三路归并直出批迭代器，
@@ -187,11 +189,11 @@ pub(crate) fn lazy_scan_source(
     let Some((schema, entry)) = (|db: &Database, sess: &mut Session| {
         let _ = sess;
         let resolved = resolve_table(db, &sess.branch, table).ok()?;
-        let (schema, entry) = resolved;
+        let (schema, entry) = (&resolved.0, &resolved.1);
         if entry.col_segments.is_empty() {
             return None;
         }
-        Some((schema, entry))
+        Some((schema.clone(), entry.clone()))
     })(db, sess) else {
         return Ok(None);
     };
@@ -565,7 +567,7 @@ pub(crate) fn table_scan(
                 Some(t) if t.explicit => t.head_root,
                 _ => None,
             };
-            let (schema, entry) = match frozen {
+            let resolved_rc = match frozen {
                 Some(r) => resolve_table_at(
                     db,
                     Some(&r),
@@ -573,6 +575,7 @@ pub(crate) fn table_scan(
                 )?,
                 None => resolve_table(db, &sess.branch, &full)?,
             };
+            let (schema, entry) = (&resolved_rc.0, &resolved_rc.1);
             let b = db.branch(&sess.branch)?;
             let _head = b.head.load_full();
             let root = entry
@@ -786,7 +789,7 @@ pub fn resolve_table(
     db: &Database,
     branch_name: &str,
     name: &str,
-) -> Result<(crate::versioned::TableSchema, crate::versioned::TableEntry)> {
+) -> Result<std::sync::Arc<(crate::versioned::TableSchema, crate::versioned::TableEntry)>> {
     let short_name = name.rsplit(['.', '@']).next().unwrap_or(name);
     let branch = db.branch(branch_name)?;
     let head = branch.head.load_full();
@@ -803,21 +806,23 @@ pub(crate) fn resolve_table_at(
     db: &Database,
     root: Option<&crate::format::hash::Hash>,
     short_name: &str,
-) -> Result<(crate::versioned::TableSchema, crate::versioned::TableEntry)> {
+) -> Result<std::sync::Arc<(crate::versioned::TableSchema, crate::versioned::TableEntry)>> {
     let _g = crate::perf::scope(crate::perf::Stage::Resolve);
-    // 持久缓存（收口点：所有调用方共享；根键控内容寻址——见上）
+    // 持久缓存（收口点：所有调用方共享；根键控内容寻址——见上）。
+    // **命中返回 Arc clone（两次原子递增）**——此前命中即深克隆
+    // Schema+Entry（columns String × N + 十余字段，~600ns/次 × 2 次/查询，
+    // 火焰图 to_vec/to_string 6.6%）；调用方只读借用 `&rc.0/&rc.1`，
+    // 需 owned 的（DDL 回写）显式 `.as_ref().clone()`
     let key = (
         root.map(|r| r.as_u64()).unwrap_or(0),
         short_name.to_string(),
     );
     if let Some(hit) = resolve_cache().lock().unwrap().get(&key) {
-        return Ok((hit.0.clone(), hit.1.clone()));
+        return Ok(hit.clone());
     }
     let out = resolve_table_at_inner(db, root, short_name)?;
-    resolve_cache()
-        .lock()
-        .unwrap()
-        .put(key, std::sync::Arc::new(out.clone()));
+    let out = std::sync::Arc::new(out);
+    resolve_cache().lock().unwrap().put(key, out.clone());
     Ok(out)
 }
 

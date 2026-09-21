@@ -28,7 +28,7 @@ pub struct TableStats {
 
 /// 稀疏读表统计（无段/解析失败 → None——统计面永不阻塞查询）
 pub fn table_stats(db: &Database, sess: &Session, table: &str) -> Option<TableStats> {
-    let (schema, entry) = crate::sql::scan::resolve_table(db, &sess.branch, table).ok()?;
+    let (schema, entry) = crate::sql::scan::resolve_table(db, &sess.branch, table).ok()?.as_ref().clone();
     if entry.col_segments.is_empty() {
         return None;
     }
@@ -467,7 +467,7 @@ pub fn analyze_impl(
     table: &str,
 ) -> crate::error::Result<Option<crate::types::Output>> {
     use crate::types::Output;
-    let (schema, entry) = crate::sql::scan::resolve_table(db, &sess.branch, table)?;
+    let (schema, entry) = crate::sql::scan::resolve_table(db, &sess.branch, table)?.as_ref().clone();
     if sess.txn.is_some() {
         return Err(crate::error::SqlError::new(
             "25001",
@@ -595,7 +595,7 @@ pub fn load_analyze(
     sess: &crate::engine::Session,
     table: &str,
 ) -> Option<std::sync::Arc<TableAnalyze>> {
-    let (_, entry) = crate::sql::scan::resolve_table(db, &sess.branch, table).ok()?;
+    let entry = &crate::sql::scan::resolve_table(db, &sess.branch, table).ok()?.1;
     let addr = entry.stats_addr.as_ref()?;
     if let Some(a) = analyze_cache().lock().unwrap().get(addr) {
         return Some(a.clone());

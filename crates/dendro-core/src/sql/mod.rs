@@ -1353,7 +1353,7 @@ fn infer_param_types(
                 }
                 _ => return None,
             };
-            let (schema, _) = scan::resolve_table(db, &sess.branch, &name).ok()?;
+            let schema = &scan::resolve_table(db, &sess.branch, &name).ok()?.0;
             let col_idx: Vec<usize> = if ins.columns.is_empty() {
                 (0..schema.columns.len()).collect()
             } else {
@@ -1396,7 +1396,7 @@ fn infer_param_types(
                     .join("."),
                 _ => return None,
             };
-            let (schema, _) = scan::resolve_table(db, &sess.branch, &name).ok()?;
+            let schema = &scan::resolve_table(db, &sess.branch, &name).ok()?.0;
             let col_of = |c: &str| schema.col_index(c).map(|i| schema.columns[i].ty);
             for a in &upd.assignments {
                 if let sqlparser::ast::AssignmentTarget::ColumnName(col) = &a.target {
@@ -1426,7 +1426,8 @@ fn infer_param_types(
                             .map(|i| i.value.clone())
                             .collect::<Vec<_>>()
                             .join(".");
-                        if let Ok((schema, _)) = scan::resolve_table(db, &sess.branch, &full) {
+                        if let Ok(rc) = scan::resolve_table(db, &sess.branch, &full) {
+                            let schema = &rc.0;
                             let col_of =
                                 |c: &str| schema.col_index(c).map(|i| schema.columns[i].ty);
                             if let Some(w) = &sel.selection {

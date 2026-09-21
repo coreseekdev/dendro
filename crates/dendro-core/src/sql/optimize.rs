@@ -1069,9 +1069,10 @@ fn is_pk_col(
     sess: &crate::engine::Session,
 ) -> bool {
     crate::sql::scan::resolve_table(db, &sess.branch, table)
-        .map(|(schema, _)| {
-            schema.pk.iter().any(|&p| {
-                schema
+        .map(|resolved| {
+            resolved.0.pk.iter().any(|&p| {
+                resolved
+                    .0
                     .columns
                     .get(p as usize)
                     .is_some_and(|c| c.name.eq_ignore_ascii_case(col))

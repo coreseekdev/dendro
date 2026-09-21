@@ -132,7 +132,7 @@ fn kv_persistence() {
             h.commit.as_deref().unwrap_or("-")
         );
     }
-    let entry = dendro_core::sql::scan::resolve_table(&db, "main", "__kv")
+    let entry = &dendro_core::sql::scan::resolve_table(&db, "main", "__kv")
         .unwrap()
         .1;
     eprintln!("[re] __kv id={} root={:?}", entry.id, entry.table_root);

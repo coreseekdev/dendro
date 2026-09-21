@@ -171,8 +171,8 @@ pub(crate) fn enforce(db: &Database, sess: &Session, stmt: &Statement) -> Result
                 match object_type {
                     ObjectType::Table => {
                         let t = obj_name(n);
-                        if let Ok((_, entry)) = scan::resolve_table(db, &sess.branch, &t) {
-                            require_owner(&user, &entry, &t)?;
+                        if let Ok(rc) = scan::resolve_table(db, &sess.branch, &t) {
+                            require_owner(&user, &rc.1, &t)?;
                         }
                     }
                     _ => {
@@ -186,8 +186,8 @@ pub(crate) fn enforce(db: &Database, sess: &Session, stmt: &Statement) -> Result
         }
         Statement::AlterTable(alt) => {
             let t = obj_name(&alt.name);
-            if let Ok((_, entry)) = scan::resolve_table(db, &sess.branch, &t) {
-                require_owner(&user, &entry, &t)?;
+            if let Ok(rc) = scan::resolve_table(db, &sess.branch, &t) {
+                require_owner(&user, &rc.1, &t)?;
             }
         }
         _ => {}
@@ -214,11 +214,11 @@ fn check_table_ref(
         ));
     }
     match scan::resolve_table(db, &sess.branch, table) {
-        Ok((_, entry)) => {
-            if entry_owner(&entry) == user {
+        Ok(rc) => {
+            if entry_owner(&rc.1) == user {
                 return Ok(());
             }
-            let have = entry.acl.get(user).copied().unwrap_or(0);
+            let have = rc.1.acl.get(user).copied().unwrap_or(0);
             if have & bits != bits {
                 return Err(SqlError::new(
                     "42501",
@@ -331,7 +331,7 @@ fn apply_grant_revoke(
     let user = norm_user(&sess.user);
     let mut changes = Vec::with_capacity(tables.len());
     for t in tables {
-        let (_, mut entry) = scan::resolve_table(db, &sess.branch, t)?;
+        let (_, mut entry) = scan::resolve_table(db, &sess.branch, t)?.as_ref().clone();
         require_owner(&user, &entry, t)?;
         for gr in grantees {
             if grant {

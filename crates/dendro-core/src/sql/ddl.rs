@@ -44,8 +44,8 @@ pub(crate) fn exec_create_table(
         let (ver, _) = scan_catalog(db, sess)?;
         let _ = ver;
     }
-    if let Ok((_, entry)) = scan::resolve_table(db, &sess.branch, &short) {
-        let _ = entry;
+    if let Ok(rc) = scan::resolve_table(db, &sess.branch, &short) {
+        let _ = rc;
         if create.if_not_exists {
             return Ok(Some(Output::Command {
                 tag: "CREATE TABLE".into(),
@@ -151,7 +151,7 @@ fn resolve_fk_refs(
     mut fks: Vec<crate::versioned::ForeignKeyDef>,
 ) -> Result<Vec<crate::versioned::ForeignKeyDef>> {
     for fk in fks.iter_mut() {
-        let (parent_schema, _entry) = scan::resolve_table(db, &sess.branch, &fk.ref_table)
+        let parent_rc = scan::resolve_table(db, &sess.branch, &fk.ref_table)
             .map_err(|_| {
                 SqlError::undefined_table(format!(
                     "FOREIGN KEY references non-existent table {}",
@@ -160,12 +160,12 @@ fn resolve_fk_refs(
             })?;
         // v1：ref_columns 空 = 按父表 PK 序填充
         if fk.ref_columns.is_empty() {
-            if parent_schema.pk.len() != fk.columns.len() {
+            if parent_rc.0.pk.len() != fk.columns.len() {
                 return Err(SqlError::not_supported(
                     "FOREIGN KEY must reference parent PRIMARY KEY (v1)",
                 ));
             }
-            fk.ref_columns = parent_schema.pk.clone();
+            fk.ref_columns = parent_rc.0.pk.clone();
         }
     }
     Ok(fks)
@@ -427,7 +427,7 @@ pub(crate) fn drop_table_impl(
     for n in names {
         let full = object_name(&n);
         let short = full.rsplit('.').next().unwrap_or(&full).to_string();
-        match scan::resolve_table(db, &sess.branch, &short) {
+        match scan::resolve_table(db, &sess.branch, &short).as_ref().map(|rc| (rc.0.clone(), rc.1.clone())) {
             Ok((_, entry)) => {
                 let b = db.branch(&sess.branch)?;
                 b.mem.remove_table(entry.id);
@@ -435,7 +435,7 @@ pub(crate) fn drop_table_impl(
             }
             Err(e) => {
                 if !if_exists {
-                    return Err(e);
+                    return Err(e.clone());
                 }
             }
         }
@@ -469,7 +469,7 @@ pub(crate) fn alter_table_impl(
                     "ALTER TABLE ADD COLUMN ... PRIMARY KEY（改用建表约束或重建表）",
                 ));
             }
-            let (_, entry) = scan::resolve_table(db, &sess.branch, &short)?;
+            let (_, entry) = scan::resolve_table(db, &sess.branch, &short)?.as_ref().clone();
             let catalog = crate::versioned::Versioned::new(db.store.clone());
             let mut schema = catalog.load_schema(&entry.schema_addr)?;
             schema.columns.append(&mut cols);
@@ -510,7 +510,7 @@ pub(crate) fn truncate_impl(
     for t in tables {
         let full = object_name(&t.name);
         let short = full.rsplit('.').next().unwrap_or(&full).to_string();
-        let (_, entry) = scan::resolve_table(db, &sess.branch, &short)?;
+        let (_, entry) = scan::resolve_table(db, &sess.branch, &short)?.as_ref().clone();
         // 全表删除：扫描可见行全部写 tombstone
         let tv = table_scan_pub(db, sess, &short, snapshot)?;
         for row in &tv.rows {
@@ -668,7 +668,7 @@ fn build_insert_guard(
                 }
             }
         }
-        let (_, this_entry) = scan::resolve_table(db, &sess.branch, &schema.name)?;
+        let (_, this_entry) = scan::resolve_table(db, &sess.branch, &schema.name)?.as_ref().clone();
         let root = this_entry
             .table_root
             .as_ref()
@@ -706,7 +706,7 @@ pub(crate) fn exec_insert(
         other => return Err(SqlError::not_supported(format!("INSERT target: {other}"))),
     };
     let short = table.rsplit('.').next().unwrap_or(&table).to_string();
-    let (schema, entry) = scan::resolve_table(db, &sess.branch, &short)?;
+    let (schema, entry) = scan::resolve_table(db, &sess.branch, &short)?.as_ref().clone();
     if schema.pk.is_empty() {
         return Err(SqlError::not_supported(format!(
             "table \"{short}\" has no primary key"
@@ -1209,7 +1209,7 @@ pub(crate) fn exec_delete(
         })
         .ok_or_else(|| SqlError::syntax("DELETE requires table"))?;
     let short = name.rsplit('.').next().unwrap_or(&name).to_string();
-    let (schema, entry) = scan::resolve_table(db, &sess.branch, &short)?;
+    let (schema, entry) = scan::resolve_table(db, &sess.branch, &short)?.as_ref().clone();
     let snapshot = sess.implicit_snapshot(db)?;
     // 找目标行：全扫 + WHERE（v1；pk 等值优化同 SELECT）
     let tv = table_scan_pub(db, sess, &short, snapshot)?;
@@ -1256,7 +1256,7 @@ pub(crate) fn update_impl(
     selection: Option<Expr>,
 ) -> Result<Option<Output>> {
     let short = table.rsplit('.').next().unwrap_or(table).to_string();
-    let (schema, entry) = scan::resolve_table(db, &sess.branch, &short)?;
+    let (schema, entry) = scan::resolve_table(db, &sess.branch, &short)?.as_ref().clone();
     let snapshot = sess.implicit_snapshot(db)?;
     // TP pk 下推：单列 pk 等值/IN 谓词走点查路径（此前全表扫描 + 全
     // 物化——1M 行表实测 UPDATE ~340ms/条；TP 基准暴露的写瓶颈）。
@@ -1356,7 +1356,7 @@ pub(crate) fn check_fk_parents(
         }
         let key = encode_key(&fk_vals);
         // 查父表存在性（事务写集 + memtx + 树——三段合成）
-        let (_, parent_entry) = scan::resolve_table(db, &sess.branch, &fk.ref_table)?;
+        let (_, parent_entry) = scan::resolve_table(db, &sess.branch, &fk.ref_table)?.as_ref().clone();
         let parent_id = parent_entry.id;
         // 1. 事务写集
         if let Some(crate::prolly::Mutation::Put(_)) = txn.writes.get(&(parent_id, key.clone())) {
@@ -1553,7 +1553,7 @@ pub(crate) fn exec_copy_from(
         other => return Err(SqlError::not_supported(format!("COPY target: {other:?}"))),
     };
     let short = table.rsplit('.').next().unwrap_or(&table).to_string();
-    let (schema, entry) = scan::resolve_table(db, &sess.branch, &short)?;
+    let (schema, entry) = scan::resolve_table(db, &sess.branch, &short)?.as_ref().clone();
     if schema.pk.is_empty() {
         return Err(SqlError::not_supported(format!(
             "table \"{short}\" has no primary key"

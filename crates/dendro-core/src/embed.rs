@@ -143,7 +143,8 @@ impl Connection {
         pk: i64,
     ) -> Result<Option<Vec<crate::types::SqlValue>>> {
         let snapshot = self.sess.implicit_snapshot(&self.db)?;
-        let (schema, entry) = crate::sql::scan::resolve_table(&self.db, &self.sess.branch, table)?;
+        let rc = crate::sql::scan::resolve_table(&self.db, &self.sess.branch, table)?;
+        let (schema, entry) = (&rc.0, &rc.1);
         let key = crate::format::row::encode_key(&[crate::types::SqlValue::Int64(pk)]);
         let b = self.db.branch(&self.sess.branch)?;
         let tm = b.mem.table(entry.id);

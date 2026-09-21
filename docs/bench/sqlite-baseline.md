@@ -310,6 +310,27 @@ I/O）；(b) SQL 机器砍半（任务书第 2 项范畴）。验收口径请 ow
 1 万行跳批插入（探针 bug）——10 万行真实数字 4.0→6.8µs 量级，此前
 轮次的对比基线部分失真。
 
+## 复测十一（2026-09-21：resolve 缓存命中 Arc 化 + pprof 火焰图剖析设施）
+
+**剖析设施**（perf_event_paranoid=4 禁 perf 的替代）：pprof-rs（SIGPROF
+信号采样 + backtrace-rs，进程内嵌）→ `example flame [rows] [secs]
+[point|tree|insert|update]` 出 SVG 火焰图。热点全景与下一役路线图见
+docs/research/SQL机器热点剖析与剖析设施-2026.md。
+
+**resolve 深克隆消除**：`resolve_table/resolve_table_at` 命中即深克隆
+Schema+Entry（~600ns × 2 次/查询——try_pk_pushdown + rewrite_rowid_refs；
+火焰图 to_vec/to_string 6.6%）→ 命中返回 **Arc clone**（两次原子递增）。
+40 调用点：热路径借用、DDL/管理面等价 owned。633 测试全绿。
+
+sqlite-cmp 第 12/13 轮（两轮一致）：point.disk 190k、point.mem 188k
+（双臂 +5-8%，mem ≥ disk 维持）；insert.mem 391k（回升）；range100.mem
+25.7k 稳。**update 两轮 75k/70k** 低于第 11 轮 101k——纯路径对照
+updpath Group **136,573 ops/s 与历史 137k 持平**（resolve avg 51ns），
+判定为场景方差带（update 历史区间 62-103k；基线 86k，第 11 轮为异常
+高位）——持续观察标记。火焰图显示 update 场景真实瓶颈：WAL 落盘
+append_at 20% + 旧值读取走 build_point_view 旧路径 17%（未享早退）+
+checkpoint 物化 11%——下一役素材。
+
 ## 十轮总战绩（vs SQLite 首测 → 今）
 
 | 场景 | 首测 | 第 10 轮 |

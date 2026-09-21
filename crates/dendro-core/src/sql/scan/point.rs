@@ -258,7 +258,12 @@ pub(crate) fn try_pk_pushdown(
     tf: &TableFactor,
     selection: Option<&Expr>,
     _snapshot: u64,
-) -> Result<Option<(crate::versioned::TableSchema, crate::versioned::TableEntry)>> {
+) -> Result<Option<
+    std::sync::Arc<(
+        crate::versioned::TableSchema,
+        crate::versioned::TableEntry,
+    )>,
+>> {
     let name = match tf {
         TableFactor::Table { name, version, .. } => {
             // P1-10：PK 直查读 memtx ∪ 当前树——无历史根概念。带版本子句的
@@ -303,7 +308,7 @@ pub(crate) fn try_pk_pushdown(
         Some(t) if t.explicit => t.head_root,
         _ => None,
     };
-    let (schema, entry) = match frozen {
+    let rc = match frozen {
         Some(r) => resolve_table_at(
             db,
             Some(&r),
@@ -314,6 +319,7 @@ pub(crate) fn try_pk_pushdown(
             Err(_) => return Ok(None),
         },
     };
+    let (schema, entry) = (&rc.0, &rc.1);
     if schema.pk.len() != 1 {
         return Ok(None);
     }
@@ -332,7 +338,7 @@ pub(crate) fn try_pk_pushdown(
         },
         _ => false,
     };
-    Ok(if ok { Some((schema, entry)) } else { None })
+    Ok(if ok { Some(rc) } else { None })
 }
 
 pub(crate) fn is_col_vs_value(a: &Expr, b: &Expr, pk: &str) -> bool {

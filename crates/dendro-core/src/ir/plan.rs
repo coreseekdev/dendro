@@ -844,10 +844,10 @@ pub fn db_schema_lookup<'a>(
     move |t: &str| {
         crate::sql::scan::resolve_table(db, &sess.branch, t)
             .ok()
-            .map(|(schema, _)| {
+            .map(|rc| {
                 (
-                    schema.columns.iter().map(|c| c.name.clone()).collect(),
-                    schema.pk.clone(),
+                    rc.0.columns.iter().map(|c| c.name.clone()).collect(),
+                    rc.0.pk.clone(),
                 )
             })
     }

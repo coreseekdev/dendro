@@ -103,7 +103,7 @@ impl Kv {
         let db = self.db.clone();
         let branch = self.branch.clone();
         match super::sql::scan::resolve_table(&db, &branch, KV_TABLE) {
-            Ok((_, entry)) => self.table_id = entry.id,
+            Ok(rc) => self.table_id = rc.1.id,
             Err(e) => {
                 if e.state != "42P01" {
                     return Err(e);
@@ -377,7 +377,7 @@ impl Kv {
                 ))
             }),
             None => {
-                let (_, entry) = super::sql::scan::resolve_table(&db, &self.branch, KV_TABLE)?;
+                let (_, entry) = super::sql::scan::resolve_table(&db, &self.branch, KV_TABLE)?.as_ref().clone();
                 Ok(entry)
             }
         }

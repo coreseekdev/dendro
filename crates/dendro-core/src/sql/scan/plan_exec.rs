@@ -565,9 +565,10 @@ pub(crate) fn plan_scan_masks(
         if out.contains_key(&key) {
             continue;
         }
-        let Ok((schema, _)) = resolve_table(db, &sess.branch, &table) else {
+        let Ok(rc) = resolve_table(db, &sess.branch, &table) else {
             continue; // 解析失败 → 无掩码（全解码）
         };
+        let schema = &rc.0;
         let ncols = schema.columns.len();
         let mut mask = vec![false; ncols];
         let mut any = false;

@@ -773,7 +773,7 @@ impl Database {
         table: &str,
         pk: i64,
     ) -> Result<Option<Vec<u8>>> {
-        let (_, entry) = crate::sql::scan::resolve_table(self, branch, table)?;
+        let (_, entry) = crate::sql::scan::resolve_table(self, branch, table)?.as_ref().clone();
         let root = entry
             .table_root
             .as_ref()

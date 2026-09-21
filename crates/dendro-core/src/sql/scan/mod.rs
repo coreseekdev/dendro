@@ -399,9 +399,10 @@ fn try_range_early(
     ) {
         return Ok(None);
     }
-    let Ok((schema, entry)) = crate::sql::scan::resolve_table(db, &sess.branch, &table) else {
+    let Ok(rc) = crate::sql::scan::resolve_table(db, &sess.branch, &table) else {
         return Ok(None); // 表不存在等——回落（让常规路径给准确报错）
     };
+    let (schema, entry) = (&rc.0, &rc.1);
     if schema.pk.len() != 1 {
         return Ok(None);
     }
@@ -699,11 +700,12 @@ fn try_point_early(
     }
     // 复用下推资格判定 + 点取（与计划路径同一实现——语义一致由构造保证）
     let tf = crate::sql::scan::synthetic_tf(&table, None);
-    let Some((schema, entry)) =
+    let Some(pd_rc) =
         crate::sql::scan::try_pk_pushdown(db, sess, &tf, Some(pred), snapshot)?
     else {
         return Ok(None);
     };
+    let (schema, entry) = (&pd_rc.0, &pd_rc.1);
     // 投影形态先判（裸列/通配才覆盖——聚合/表达式必须回落计划
     // 路径：空集聚合返回单行 0，直出会得 0 行——ap_txn q14 实证）
     let mut out_idx: Vec<usize> = Vec::new();
@@ -855,7 +857,7 @@ fn describe_static(db: &Database, sess: &mut Session, q: &Query) -> Option<Vec<C
         }
         _ => return None,
     };
-    let (schema, _) = resolve_table(db, &sess.branch, &full).ok()?;
+    let schema = &resolve_table(db, &sess.branch, &full).ok()?.0;
     let col_ty = |c: &str| schema.col_index(c).map(|i| schema.columns[i].ty);
     let agg_ty = |name: &str, arg: Option<&Expr>| -> ColType {
         match name {
@@ -1101,7 +1103,8 @@ fn rewrite_rowid_refs(db: &Database, sess: &Session, sel: &mut Select) {
     // 因子键 → PK 列名（可别名解析的才登记）
     let mut pk_of: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for (k, t) in &factors {
-        if let Ok((schema, _)) = crate::sql::scan::resolve_table(db, &sess.branch, t) {
+        if let Ok(rc) = crate::sql::scan::resolve_table(db, &sess.branch, t) {
+            let schema = &rc.0;
             if schema.pk.len() == 1 {
                 let pi = schema.pk[0] as usize;
                 let int_pk = matches!(
@@ -1275,9 +1278,10 @@ fn try_arrow_global_agg(
     let Some(ap) = db.columnar() else {
         return Ok(None);
     };
-    let Ok((schema, entry)) = resolve_table(db, &sess.branch, &table) else {
+    let Ok(rc) = resolve_table(db, &sess.branch, &table) else {
         return Ok(None);
     };
+    let (schema, entry) = (&rc.0, &rc.1);
     if entry.col_segments.is_empty() {
         return Ok(None);
     }

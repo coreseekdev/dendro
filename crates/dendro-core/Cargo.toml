@@ -32,3 +32,6 @@ rand.workspace = true
 [dev-dependencies]
 dendro-columnar = { path = "../dendro-columnar" }
 sqlparser.workspace = true
+# 信号采样 CPU 剖析（SIGPROF + backtrace-rs——perf_event_paranoid=4 环境
+# 不可用 perf 的替代；flame 图经 inferno 渲染）
+pprof = { version = "0.15", features = ["flamegraph"] }

@@ -57,12 +57,12 @@ pub(crate) fn pseudo_columns(db: &Database, sess: &mut Session) -> Result<TableV
     let head = b.head.load_full();
     let catalog = crate::versioned::Versioned::new(db.store.clone());
     for (n, _) in catalog.catalog_entries(head.as_ref().as_ref().map(|c| c.root).as_ref())? {
-        let (schema, _) = resolve_table(db, &sess.branch, &n)?;
-        for c in schema.columns {
+        let schema = &resolve_table(db, &sess.branch, &n)?.0;
+        for c in &schema.columns {
             rows.push(vec![
                 SqlValue::Utf8("public".into()),
                 SqlValue::Utf8(n.clone()),
-                SqlValue::Utf8(c.name),
+                SqlValue::Utf8(c.name.clone()),
                 SqlValue::Utf8(c.ty.type_name().into()),
             ]);
         }
