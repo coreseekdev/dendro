@@ -164,6 +164,15 @@ impl DbOptions {
     }
 }
 
+/// checkpoint 物化阶段产物（publish 的输入）
+struct PreparedCkpt {
+    commit: Commit,
+    /// prepare 时的 head 地址——publish 时 CAS 验证（head 变 =
+    /// 物化期间发生了 DDL/merge/接管，本轮作废防覆盖）
+    head_was: Option<Hash>,
+    gc_retired: Vec<String>,
+}
+
 pub fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1354,11 +1363,91 @@ impl Database {
 
     pub fn checkpoint_branch(&self, branch_name: &str) -> Result<Option<Hash>> {
         let b = self.branch(branch_name)?;
-        let out = {
+        // 三段式（非阻塞 checkpoint 第一步，MatrixOne TAE 蓝图轻量版）：
+        // 物化重活（树 apply/列存/计数，~百 ms 级）挪出 commit_mu——
+        // 期间 DML 提交继续（overlay 架构天然免 transfer map：新写进
+        // 新 pending 延迟一轮，树/列存语义收敛）。publish 阶段 head
+        // CAS 验证防 DDL/merge 竞态（head 变 = 本轮作废归还，下轮重做）。
+        let pending: HashMap<u32, BTreeMap<Vec<u8>, Mutation>> = {
             let _g = b.commit_mu.lock();
             b.fence_gate()?;
-            self.checkpoint_locked(&b)
+            std::mem::take(&mut *b.pending.lock())
         };
+        let prior = b.pending_bytes.swap(0, Ordering::Release);
+        crate::memprof::memtx_sub(prior);
+        // publish CAS 失败（物化期间 head 被并发 checkpoint/DDL 推进）→
+        // 归还 + **重取 pending 重做**（新写已并入；实证：显式 CHECKPOINT
+        // 语句与自动线程交错时前者必失败）。上限 3 次防活锁——放弃即
+        // 返回 Ok(None)（下轮 kick 重做），不上抛错误。
+        let superseded = |e: &SqlError| e.message.contains("superseded");
+        let mut pending = pending;
+        let mut out: Result<Option<Hash>> = Ok(None);
+        let mut retries = 0u8;
+        loop {
+            let prep = self.checkpoint_prepare(&b, &pending);
+            match prep {
+                Err(e) => {
+                    out = Err(e);
+                    break;
+                }
+                Ok(prepared) => {
+                    let r = {
+                        let _g = b.commit_mu.lock();
+                        b.fence_gate().and_then(|()| self.checkpoint_publish(&b, prepared))
+                    };
+                    match r {
+                        Ok((h, covered)) => {
+                            // 锁外 memtx 截断（R9-1 最老快照保护 + P10-5
+                            // covered_min 只在真截断时推进——语义原样）
+                            if let Some(cv) = covered {
+                                let has_active = !b.active_snaps.lock().is_empty();
+                                if !has_active {
+                                    b.mem.truncate_all(cv);
+                                    b.covered_min.store(cv, Ordering::Release);
+                                }
+                            }
+                            out = Ok(h);
+                            break;
+                        }
+                        Err(e) if superseded(&e) && retries < 3 => {
+                            retries += 1;
+                            // 归还本轮 pending 后立即重取（含期间新写）
+                            Self::give_back(&b, &mut pending);
+                            pending = std::mem::take(&mut *b.pending.lock());
+                            if pending.is_empty() {
+                                out = Ok(None);
+                                break;
+                            }
+                            let _ = b.pending_bytes.swap(0, Ordering::Release);
+                            continue;
+                        }
+                        Err(e) => {
+                            out = Err(e);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        if out.is_err() {
+            let mut bytes = 0usize;
+            {
+                let mut pend = b.pending.lock();
+                for (tid, muts) in pending {
+                    let slot = pend.entry(tid).or_default();
+                    for (k, v) in muts {
+                        bytes += k.len()
+                            + match &v {
+                                crate::prolly::Mutation::Put(val) => val.len(),
+                                crate::prolly::Mutation::Delete => 0,
+                            };
+                        slot.insert(k.clone(), v);
+                    }
+                }
+            }
+            b.pending_bytes.fetch_add(bytes as u64, Ordering::Release);
+            crate::memprof::memtx_add(bytes as u64);
+        }
         if let Err(e) = self.gc_sweep() {
             tracing::warn!("gc sweep: {e}");
         }
@@ -1370,10 +1459,11 @@ impl Database {
     fn materialize_delta(
         &self,
         col: &Arc<dyn ColumnarStore>,
-        b: &Branch,
+        _b: &Branch,
         ne: &mut crate::versioned::TableEntry,
         new_root: &Option<Hash>,
         schema: &TableSchema,
+        muts: &BTreeMap<Vec<u8>, Mutation>,
     ) -> Result<Vec<String>> {
         // 全量重建段数阈值：16 → 512（10M 实证：50 段装载中 16 段
         // 触发 3 次全量重建——write_full 物化全树 SqlValue 行 =
@@ -1383,17 +1473,27 @@ impl Database {
         const COMPACT_SEGMENTS: usize = 512;
         const DELETE_CAP: usize = 10_000;
         let mut retired: Vec<String> = Vec::new();
-        let snapshot = b.watermark.load(Ordering::Acquire);
-        let overlay = b.mem.table(ne.id).snapshot_rows(snapshot);
-        let delta_deletes: Vec<String> = overlay
+        // delta 源 = **本轮物化集合（pending muts）**而非 memtx snapshot——
+        // 物化已挪出 commit_mu（非阻塞第一步）：期间新提交进 memtx 但
+        // 不在本轮树/列存（下轮收敛）；读 memtx 会把它们提前物化进
+        // 列存 → 列存+memtx overlay 双份（AP 聚合重复）。muts 的
+        // BTreeMap insert 语义 = 同 key 末值合并，与原 overlay 等价。
+        let delta_deletes: Vec<String> = muts
             .iter()
-            .filter(|(_, v)| v.is_none())
+            .filter(|(_, m)| matches!(m, crate::prolly::Mutation::Delete))
             .map(|(k, _)| k.iter().map(|b| format!("{b:02x}")).collect::<String>())
             .collect();
-        let delta_rows: Vec<Vec<SqlValue>> = overlay
+        let delta_rows: Vec<Vec<SqlValue>> = muts
             .values()
-            .filter_map(|v| v.as_ref())
-            .filter_map(|bytes| decode_row(bytes).ok())
+            .filter_map(|m| match m {
+                crate::prolly::Mutation::Put(v) => decode_row(v).ok(),
+                crate::prolly::Mutation::Delete => None,
+            })
+            .collect();
+        let reinserted: std::collections::HashSet<String> = muts
+            .iter()
+            .filter(|(_, m)| matches!(m, crate::prolly::Mutation::Put(_)))
+            .map(|(k, _)| k.iter().map(|b| format!("{b:02x}")).collect::<String>())
             .collect();
 
         // 全量重建条件：无段（首次物化且表非空）/ 段过多 / 删除过多
@@ -1412,11 +1512,6 @@ impl Database {
         } else if !delta_rows.is_empty() {
             let seg = col.write_segment(&self.obj, &ne.name, schema, &delta_rows)?;
             // 重新插入的 key：从 deletes 集合移除（删除不再抑制新值）
-            let reinserted: std::collections::HashSet<String> = overlay
-                .iter()
-                .filter(|(_, v)| v.is_some())
-                .map(|(k, _)| k.iter().map(|b| format!("{b:02x}")).collect::<String>())
-                .collect();
             ne.col_deletes.retain(|k| !reinserted.contains(k));
             ne.col_segments.push(seg);
         }
@@ -1444,39 +1539,34 @@ impl Database {
     /// 永久丢失。归还不改 memtx/head（checkpoint 的全部远端写失败即无效果）；
     /// 若错误发生在 head.store 之后（WAL ck 帧失败），head 已前进而 manifest
     /// 未动——归还的 pending 会在下次 checkpoint 以新 head 为父重新发布，收敛。
-    pub(crate) fn checkpoint_locked(&self, b: &Branch) -> Result<Option<Hash>> {
-        let pending: HashMap<u32, BTreeMap<Vec<u8>, Mutation>> =
-            std::mem::take(&mut *b.pending.lock());
-        let prior = b.pending_bytes.swap(0, Ordering::Release);
-        crate::memprof::memtx_sub(prior);
-        let out = self.checkpoint_locked_inner(b, &pending);
-        if out.is_err() {
-            let mut bytes = 0usize;
-            {
-                let mut pend = b.pending.lock();
-                for (tid, muts) in pending {
-                    let slot = pend.entry(tid).or_default();
-                    for (k, v) in muts {
-                        bytes += k.len()
-                            + match &v {
-                                crate::prolly::Mutation::Put(val) => val.len(),
-                                crate::prolly::Mutation::Delete => 0,
-                            };
-                        slot.insert(k.clone(), v);
-                    }
+    /// 失败归还：pending 并回（字节计量与 memprof 同步还原）
+    fn give_back(b: &Branch, pending: &mut HashMap<u32, BTreeMap<Vec<u8>, Mutation>>) {
+        let mut bytes = 0usize;
+        {
+            let mut pend = b.pending.lock();
+            for (tid, muts) in pending.drain() {
+                let slot = pend.entry(tid).or_default();
+                for (k, v) in muts {
+                    bytes += k.len()
+                        + match &v {
+                            crate::prolly::Mutation::Put(val) => val.len(),
+                            crate::prolly::Mutation::Delete => 0,
+                        };
+                    slot.insert(k, v);
                 }
             }
-            b.pending_bytes.fetch_add(bytes as u64, Ordering::Release);
-            crate::memprof::memtx_add(bytes as u64);
         }
-        out
+        b.pending_bytes.fetch_add(bytes as u64, Ordering::Release);
+        crate::memprof::memtx_add(bytes as u64);
     }
 
-    fn checkpoint_locked_inner(
+    /// 阶段 2（**锁外**，重活）：per-table 树物化 + 列存增量 + catalog
+    /// apply + commit 对象写 CAS。期间 DML 提交继续（新 pending）。
+    fn checkpoint_prepare(
         &self,
         b: &Branch,
         pending: &HashMap<u32, BTreeMap<Vec<u8>, Mutation>>,
-    ) -> Result<Option<Hash>> {
+    ) -> Result<PreparedCkpt> {
         let old_head = b.head.load_full();
         let old_catalog = old_head.as_ref().as_ref().map(|c| c.root);
         let mut session: HashSet<Hash> = HashSet::new();
@@ -1530,7 +1620,7 @@ impl Database {
             ne.col_rows = ne.col_segments.iter().map(|s| s.rows).sum();
             if let Some(col) = self.columnar() {
                 if let Ok(schema) = catalog.load_schema_with_entry(&ne) {
-                    match self.materialize_delta(&col, b, &mut ne, &new_root, &schema) {
+                    match self.materialize_delta(&col, b, &mut ne, &new_root, &schema, muts) {
                         Ok(mut old) => gc_retired.append(&mut old),
                         Err(e) => tracing::warn!("materialize {}: {e}", ne.name),
                     }
@@ -1567,6 +1657,34 @@ impl Database {
         self.cas
             .put_batch(&[cchunk], &mut session)
             .map_err(SqlError::from)?;
+        Ok(PreparedCkpt {
+            head_was: old_head.as_ref().as_ref().map(|c| c.addr()),
+            commit,
+            gc_retired,
+        })
+    }
+
+    /// 阶段 3（**锁内**，短）：head CAS 验证 + 发布（head.store + WAL ck +
+    /// manifest + memtx 截断）。CAS 失败（物化期间 DDL/merge/接管改过
+    /// head）→ Err 触发 pending 归还，下轮重做
+    fn checkpoint_publish(
+        &self,
+        b: &Branch,
+        prepared: PreparedCkpt,
+    ) -> Result<(Option<Hash>, Option<u64>)> {
+        let PreparedCkpt {
+            head_was,
+            commit,
+            mut gc_retired,
+        } = prepared;
+        // CAS：head 仍 == prepare 时的 head 才发布（否则覆盖他人提交）
+        let head_now = b.head.load_full();
+        let now_addr = head_now.as_ref().as_ref().map(|c| c.addr());
+        if now_addr != head_was {
+            return Err(SqlError::internal(
+                "checkpoint superseded by concurrent head advance; pending retained for retry",
+            ));
+        }
         b.head.store(Arc::new(Some(commit.clone())));
         // WAL CHECKPOINT 帧 + 立即 flush
         let seq =
@@ -1641,21 +1759,11 @@ impl Database {
             Ok(true)
         })?;
         b.wal.set_first_seg(seg_now);
-        // 释放 memtx 历史版本。**截断水位尊重最老活跃快照**（第九轮 R9-1）：
-        // 显式事务冻结读依赖 memtx 保留其快照可见的版本——无脑截断到 covered
-        // 会把"BEGIN 前已提交、BEGIN 后首次物化"的行从事务内静默抹掉。
-        // （Q-9 的写侧 40001 不变：写冲突检测的盲区与读保留是两回事。）
-        // 活跃显式事务存在 ⇒ 本轮不截断：其冻结读依赖 memtx 保留快照可见
-        // 版本（v1 保守口径——内存随最老事务生命周期增长，已知权衡，精细化
-        // 按版本保留列 TASK Q-13）。无活跃事务时正常截断。
-        // covered_min **只在真截断时推进**（第十轮 P10-5）：截断被跳过时冲突
-        // 检测并未致盲，推进会使保留窗口内的提交被误拒 40001。
-        let has_active = !b.active_snaps.lock().is_empty();
-        if !has_active {
-            b.mem.truncate_all(covered);
-            b.covered_min.store(covered, Ordering::Release);
-        }
-        Ok(Some(commit.addr()))
+        // memtx 截断挪到锁外（checkpoint_branch 收尾执行）：head 已发布
+        // （树含本轮物化集）——截断不再需要 commit_mu；memtx 分片写锁自身
+        // 与并发 install 互斥，active_snaps 自带锁（R9-1 检查在截断前）。
+        // 返回 covered 供锁外截断。
+        Ok((Some(commit.addr()), Some(covered)))
     }
 
     /// **优雅关闭**（Q-12）：停自动 checkpoint 线程 → 对全部驻留分支

@@ -480,6 +480,29 @@ fetch/lookup ~17%（UPDATE 随机负载下树 lookup 是本质成本——
 checkpoint**（MatrixOne TAE 蓝图已入档）。UPDATE 的 SQL/DML
 机器为剩余第三块（无早退家族覆盖，下轮候选）。
 
+## 复测十七（2026-09-22：非阻塞 checkpoint 第一步——物化/truncate 挪出 commit_mu）
+
+**三段式**（MatrixOne TAE 蓝图轻量版，overlay 架构免 transfer map）：
+- 阶段 1（锁内短）：fence + take pending
+- 阶段 2（**锁外重活**）：per-table 树物化（chunker 攒批）+ 列存增量 +
+  count_rows + catalog apply + commit 对象写 CAS——期间 DML 提交继续
+  （新写进新 pending 延迟一轮，树/列存语义收敛）
+- 阶段 3（锁内短）：**head CAS 验证**（防 DDL/merge/并发 checkpoint
+  覆盖）+ head.store + WAL ck + manifest；**memtx truncate 挪锁外**
+  （head 已发布，分片写锁自身与 install 互斥；R9-1/P10-5 语义原样）
+
+**两个实战抓到的正确性点**：① 列存 delta 源必须从 pending muts 构造
+（原读 memtx snapshot——锁外后混入新一轮提交 → 列存+overlay 双份，
+AP 聚合重复）；② publish CAS 失败在显式 CHECKPOINT × 自动线程交错时
+真实触发（首轮 sqlite-cmp 崩）——修复为归还+重取 pending **重做循环**
+（上限 3 防活锁，放弃即 Ok(None) 下轮 kick）。
+
+sqlite-cmp 第 20 轮：**update.mem 153k（vs 攒批后 +35%，vs P0 基线
++70%）——mem/disk 1.38× 首次显著反超**；insert.mem 385k 回归带内
+（truncate 锁外化救回——锁内 truncate 曾致 −18% 回归）；load 双臂
+3.3s（−11~15%）；point 246k/245k（0.5× 维持）；range ≈；无回归。
+633 测试全绿（含 WAL 崩溃安全/并发族/tp_base 语义）。
+
 ## 十轮总战绩（vs SQLite 首测 → 今）
 
 | 场景 | 首测 | 第 10 轮 |
