@@ -44,6 +44,18 @@
 [docs/ops/local-k8s.md](docs/ops/local-k8s.md) — 本地 k8s 选型对比（kind/k3d/minikube/microk8s/k3s）、
 microk8s 部署手册（镜像源受限网络解法）、dendro on k8s 已验证用例、踩坑索引。
 
+## 调研：LeanStore 全分支深入分析（14 分支 + 8 篇论文存档）
+
+[docs/research/LeanStore候选分支深入分析.md](docs/research/LeanStore候选分支深入分析.md) —
+全克隆逐分支代码解剖：**自主提交**（SIGMOD'25：批间隔即延迟下限；
+WILO_STEAL 偷日志——P3 提交协议蓝本、近期帧攒批可直接平移）、
+**变长对象**（ICDE'24：前缀+哈希内联索引层——prolly 大值分层蓝本）、
+**OSIC/svcc**（wait-die 2PL vs MVCC 对比——悲观可串行化档位参照）、
+**WATT**（写感知替换——不可变架构恰好豁免）、**NVMe I/O**（单机档位
+记档）、开环延迟基准方法论；论文族谱锚定 SIGMOD'20《Rethinking
+Logging/Checkpoints/Recovery》（[已精读校验](docs/research/LeanStore-logging-SIGMOD20-精读与观点校验.md)）
+→ BtrLog（VLDB'26）一线——Journal 路线连读材料。
+
 ## 调研：SOTA 分布式事务技术（2024–2026）
 
 [docs/research/SOTA分布式事务技术调研-2026.md](docs/research/SOTA分布式事务技术调研-2026.md) —
