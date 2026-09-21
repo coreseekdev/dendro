@@ -407,15 +407,26 @@ default 仍用 path（既有行为不变）。
 NoAppend wrapper（其段独立性构造依赖整段模式；追加模式 gc 由
 LocalObjStore 生产路径覆盖）。
 
-**实测**（flame 探针，真 Memory）：**update 77k → 291-305k（4×）**——
-WAL append_at 从磁盘 pwrite+fdatasync 变 BytesMut 追加；updateckpt/
-point 前置变体同 ~291k（排除 LRU 预热效应）。读路径微降（tree 207→
-181k）：MemoryObjStore 的 BTreeMap<String> 读确实略慢于本地文件+页缓存
-（P0 时观察的现象就此定案）。sqlite-cmp 第 14 轮：**mem 臂零磁盘写入**
-（dendro-mem 目录不落盘）✓ 真内存库；point/insert/range 与 r13 持平，
-update.disk 87k 回归正常带，**update.mem 80k 未现探针 4×**（隔离探针
-291k vs 同进程多臂序列 80k——同进程效应专项待办；SQLite 臂+disk 臂
-先行后的进程状态影响，下轮用分进程基准复核）。633 测试全绿。
+**勘误（复测十五补）**：上段"update 4×"的探针数字 291-305k **实为
+INSERT OR REPLACE 误测**——flame 探针 match 臂合并补丁误把 INSERT 体
+留在 update 臂（第二 update 臂死代码）。真 UPDATE（真 Memory、修正后
+探针）：未物化 96k（与基准 69-80k 对齐——"同进程效应"之谜随之解除：
+从来不存在 4× 差异）；updateckpt（显式物化）50k——**memtx 驻留是
+UPDATE 的加速器**（12 万驻留命中省树查找）。
+
+**真 UPDATE 瓶颈**（基准内 DENDRO_FLAME 采样 + 修正探针，1M 行真
+Memory）：① checkpoint 后台物化 ~19-20%（每 8MB pending 一次，
+apply_table_mutations → Chunker::apply → put_node/CAS put_batch，
+~2 万节点/次 ~200ms——**注意 chunker 攒批是历史回退区**（58030 间歇
+丢失，注释在 chunker.rs put）；② 旧值读 build_point_view ~19%
+（UPDATE `v=v+1` 需旧行——decode 全行，投影解码候选）；③ WAL/commit
+在真 Memory 下已非热点。读路径定案：MemoryObjStore 的 BTreeMap<String>
+读略慢于本地文件+页缓存（tree 探针 207→181k）。
+
+**新增设施**：sqlite-cmp 基准内 pprof 采样（DENDRO_FLAME=path 环境
+变量——update 段出 SVG）；flame 探针 update/updateckpt/updatedisk/
+序列复刻模式（已修 match bug）；delegate crate 引入（gc 测试转发）。
+633 测试全绿。
 
 ## 十轮总战绩（vs SQLite 首测 → 今）
 

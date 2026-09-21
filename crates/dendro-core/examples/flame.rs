@@ -62,13 +62,15 @@ fn main() {
     let mut cnt = 0u64;
     while t.elapsed().as_secs_f64() < secs as f64 {
         match mode.as_str() {
+            // 早前合并补丁误把 INSERT 体留在 update 臂——"291k"实为
+            // INSERT OR REPLACE 数字，真 UPDATE 从未在真 Memory 上测过
             "update" | "updatedisk" | "updateckpt" => {
-                let nid = rows + (i % 50_000) + 1;
-                let _ = c.execute(&format!("INSERT OR REPLACE INTO t VALUES ({nid}, 1, 'z')"));
-            }
-            "update" => {
                 let uid = (i.wrapping_mul(104729) % rows) + 1;
                 let _ = c.execute(&format!("UPDATE t SET v = v + 1 WHERE id = {uid}"));
+            }
+            "insert" => {
+                let nid = rows + (i % 50_000) + 1;
+                let _ = c.execute(&format!("INSERT OR REPLACE INTO t VALUES ({nid}, 1, 'z')"));
             }
             _ => {
                 let qid = (i.wrapping_mul(7919) % rows) + 1;

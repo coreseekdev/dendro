@@ -158,10 +158,27 @@ pub fn bench_sqlite_cmp(
             ));
         });
         push(&mut ro, "dendro.range100", mode, r);
+        // 基准内剖析（DENDRO_FLAME=path）：update 段采样——同进程多臂
+        // 序列效应归因用（隔离探针 291k vs 此处 80k 的差异拆解）
+        let __flame = std::env::var("DENDRO_FLAME").ok().and_then(|path| {
+            pprof::ProfilerGuardBuilder::default()
+                .frequency(997)
+                .build()
+                .ok()
+                .map(|g| (g, path))
+        });
         let w = bench(|i| {
             let id = ((i * 104729) % rows + 1) as i64;
             let _ = c.execute(&format!("UPDATE t SET v = v + 1 WHERE id = {id}"));
         });
+        if let Some((g, path)) = __flame {
+            let _ = g
+                .report()
+                .build()
+                .unwrap()
+                .flamegraph(std::fs::File::create(&path).unwrap());
+            println!("flame -> {path}");
+        }
         push(&mut ro, "dendro.update", mode, w);
         let ins = bench(|i| {
             let id = rows + (i % 50_000) + 1;
