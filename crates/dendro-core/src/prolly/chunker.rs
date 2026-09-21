@@ -46,6 +46,11 @@ pub struct Chunker<'a> {
     pub store: &'a NodeStore,
     pub session: &'a mut HashSet<Hash>,
     pub dirty: usize,
+    /// 节点 chunk 攒批：put() 缓冲、apply() 出口一次 put_batch——
+    /// 万级节点逐 put_batch 的线程池/对象写开销摊薄为单批（2315236
+    /// 实测 8.9×）。58030 考古：当年止损回退的根因是 CAS tmp 碰撞
+    /// （b8dc722 修复 + TLA+ 验证），与攒批无关，恢复启用
+    buffered: Vec<crate::objstore::cas::Chunk>,
 }
 
 impl<'a> Chunker<'a> {
@@ -54,6 +59,7 @@ impl<'a> Chunker<'a> {
             store,
             session,
             dirty: 0,
+            buffered: Vec::new(),
         }
     }
 
@@ -62,10 +68,20 @@ impl<'a> Chunker<'a> {
         let node = Node::build(level, &entries);
         let t_build = t.elapsed();
         let t2 = std::time::Instant::now();
-        // 逐节点立即写（攒批曾引发间歇性 chunk 丢失 58030——与
-        // LRU/flush 时序交互，根因未定位即回退；put_batch 内的
-        // put_no_sync + 批末 syncfs 优化保留——8.9× 的主要来源）
-        self.store.put_node(node.clone(), self.session)?;
+        // 攒批：缓存节点即时（读可见性），chunk 缓冲到出口一次
+        // put_batch。58030 根因 = CAS tmp PID-only 碰撞（b8dc722
+        // 修复 + DendroCAS.tla 双极验证），非攒批——恢复启用
+        let h = node.addr();
+        if !self.session.contains(&h) {
+            if node.level() >= super::store::UPPER_LEVELS {
+                self.store.upper_insert(h, node.clone());
+            }
+            self.buffered.push(crate::objstore::cas::Chunk {
+                ty: crate::objstore::cas::ChunkType::Node,
+                data: node.data().to_vec(),
+            });
+        }
+        self.store.cache_insert(h, node.clone());
         let t_store = t2.elapsed();
         PROF.with(|p| {
             let mut p = p.borrow_mut();
@@ -146,7 +162,12 @@ impl<'a> Chunker<'a> {
         muts: &[(Vec<u8>, Mutation)],
     ) -> Result<Option<Hash>> {
         PROF.with(|p| p.borrow_mut().reset());
-        self.apply_inner(root, muts)
+        let out = self.apply_inner(root, muts)?;
+        // 攒批收尾：失败 = 未发布净失败（调用方的 pending 归还路径
+        // 收敛；cache_insert 的内存节点内容寻址无害）
+        let chunks = std::mem::take(&mut self.buffered);
+        self.store.put_nodes_batch(chunks, self.session)?;
+        Ok(out)
     }
 
     fn apply_inner(

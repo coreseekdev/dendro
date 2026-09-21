@@ -444,6 +444,30 @@ point.mem 248k、range100.disk 33.3k、update.disk 97k / update.mem 81k
 insert 392k。累计 vs P0 基线：point.disk +30% / point.mem +57% /
 update.disk +13% / range100.disk +10%。633 测试全绿。
 
+## 复测十六（2026-09-22：58030 考古 + chunker 攒批恢复——update.mem +39%）
+
+**考古**（git 三 commit 链）：2315236 攒批落地（8.9×，40K 行
+checkpoint 12.84s→1.44s）→ 02e2542 遇 58030 止损回退（chunker.rs
+注释"根因未定位"自此过时）→ **b8dc722 根因修复**：58030 = 
+LocalObjStore::put_no_sync 的 tmp 文件名 PID-only——同进程多线程
+并发写同内容块时 O_TRUNC 互踩（后台 checkpoint × 前台 COPY/merge/
+ANALYZE），**与攒批无关**（攒批只是放大了并发触发面）+ DendroCAS.tla
+双极验证（bug 态 TLC 反例复现 + 修复态全过）。**性能改动随止损回退
+被一并丢弃**——恢复启用。
+
+**实现**：Chunker.buffered（put 缓冲 chunk + cache_insert 即时保读
+可见性 + 上层节点即时准入 upper）→ apply 出口一次 put_nodes_batch
+（失败 = 未发布净失败，pending 归还路径收敛）；put_nodes_batch/
+upper_insert API 重建（回退时被删）。
+
+sqlite-cmp 第 17 轮：**update.mem 113k（+39%）**、update.disk 104k、
+**load.disk 3.9s（−13%）/load.mem 3.7s（−8%）**（checkpoint 密集段）、
+point.disk 244k（0.5× 维持）/point.mem 253k、insert ≈。vs P0 基线
+累计：update.mem 90→113k（+26%）、point.disk +31%、point.mem +60%。
+探针 update 103k（+8%——Memory 下 CAS put 本就便宜，disk 臂 fsync
+场景收益更大，2315236 同因）。633 测试全绿（含 wal_corruption
+崩溃安全 + CAS 族）。
+
 ## 十轮总战绩（vs SQLite 首测 → 今）
 
 | 场景 | 首测 | 第 10 轮 |

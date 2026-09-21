@@ -50,7 +50,7 @@ pub fn global_cache_stats() -> (u64, u64, u64) {
 /// 单读锁哈希直取。**不可变内容寻址 → 无失效**（Hash 即内容，同
 /// Hash 永同 Node）；写侧 put_node 按 node.level() 准入，读侧
 /// get_node_at 按 depth 精确路由（leaf 访问零额外开销）。
-const UPPER_LEVELS: u8 = 2;
+pub(crate) const UPPER_LEVELS: u8 = 2;
 /// 准入上限（满则清空重建——上层节点少且不可变，清空代价 = 数次 miss）
 const UPPER_CAP: usize = 2048;
 
@@ -115,6 +115,34 @@ impl NodeStore {
             self.misses.load(Ordering::Relaxed),
             self.resident.load(Ordering::Relaxed),
         )
+    }
+
+    /// 攒批收尾（Chunker 出口）：一次 put_batch（批内去重/并行/单次
+    /// sync 均在 put_batch 侧）。58030 考古：当年回退的根因是 CAS tmp
+    /// 文件名 PID-only 碰撞（b8dc722 已修 + DendroCAS.tla 双极验证），
+    /// 与攒批无关——性能改动随止损回退被一并丢弃，此处恢复
+    pub fn put_nodes_batch(
+        &self,
+        chunks: Vec<Chunk>,
+        session_cache: &mut std::collections::HashSet<Hash>,
+    ) -> Result<()> {
+        if chunks.is_empty() {
+            return Ok(());
+        }
+        self.cas
+            .put_batch(&chunks, session_cache)
+            .map(|_| ())
+            .map_err(crate::error::SqlError::from)
+    }
+
+    /// 上层直存准入（攒批路径绕过 put_node 时的即时准入——读侧
+    /// depth 路由立即可命中 checkpoint 新根）
+    pub(crate) fn upper_insert(&self, h: Hash, n: Node) {
+        let mut g = self.upper.write();
+        if g.len() >= UPPER_CAP {
+            g.clear();
+        }
+        g.insert(h, n);
     }
 
     pub fn put_node(
@@ -192,7 +220,7 @@ impl NodeStore {
         &self.shards[h.as_u64() as usize % SHARDS]
     }
 
-    fn cache_insert(&self, h: Hash, n: Node) {
+    pub(crate) fn cache_insert(&self, h: Hash, n: Node) {
         let shard = self.shard(&h);
         let mut g = shard.lock();
         let sz = n.data().len();
