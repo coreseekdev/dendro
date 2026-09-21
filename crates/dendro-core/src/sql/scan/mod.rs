@@ -8,7 +8,7 @@ use crate::error::{Result, SqlError};
 use crate::types::{ColType, ColumnMeta, Output, RecordSet, SqlValue};
 use sqlparser::ast::{
     Expr, FunctionArg, FunctionArgExpr, Query, Select, SelectItem, SetExpr, TableFactor,
-    Value as PV,
+    Value as PV, Visit,
 };
 use std::collections::HashMap;
 
@@ -150,15 +150,28 @@ pub(crate) fn eval_query(
     }
 
     // lowering：非相关子查询内联（标量→常量 / IN→InList / EXISTS→
-    // Bool；相关子查询诚实拒绝）；集合操作分支递归覆盖
-    let mut q_owned = q.clone();
-    lower_subqueries(db, sess, &mut q_owned.body, snapshot)?;
+    // Bool；相关子查询诚实拒绝）；集合操作分支递归覆盖。
+    // **免克隆门控**（火焰图：q.clone 整树深克隆 ~5% + rowid 重写/子查询
+    // 内联的预处理遍历 ~30%——点查常态无子查询无 rowid 引用，白付）：
+    // 确需 AST 改写才克隆；纯 Select 无改写位只保留只读的 multi-from 拒绝
+    let mut q_owned: Option<Query> = None;
+    let q_ref: &Query = if query_lowering_needs_mutation(sess, q) {
+        let mut o = q.clone();
+        lower_subqueries(db, sess, &mut o.body, snapshot)?;
+        q_owned = Some(o);
+        q_owned.as_ref().unwrap()
+    } else {
+        if let SetExpr::Select(sel) = &*q.body {
+            reject_multi_from(sel)?;
+        }
+        q
+    };
 
     // P0 性能批：Arrow 原生全局聚合捷径——SELECT agg(...) FROM table
     // （无 WHERE/GROUP BY/JOIN/ORDER BY/LIMIT/SetOp/CTE）直接在列存
     // Arrow 列上计算，免 rows_from_batches 106M SqlValue 行式转换。
     // 形态不覆盖/引擎未接 → 透传行式路径（差分安全）
-    if let Some(tv) = try_arrow_global_agg(db, sess, &q_owned, snapshot)? {
+    if let Some(tv) = try_arrow_global_agg(db, sess, q_ref, snapshot)? {
         return Ok(tv);
     }
     // 统一框架内点查早退（perf 拆解定位：exec_plan/扫描机器 ~8µs——
@@ -166,15 +179,15 @@ pub(crate) fn eval_query(
     // 无 GROUP/ORDER/LIMIT/DISTINCT/HAVING/join/子查询 + 投影为裸列
     // 或通配。SET dendro.optimize=off 时关闭（差分轴）
     if sess.optimize_enabled && sess.force_source.is_none() {
-        if let Some(tv) = try_point_early(db, sess, &q_owned, snapshot)? {
+        if let Some(tv) = try_point_early(db, sess, q_ref, snapshot)? {
             return Ok(tv);
         }
-        if let Some(tv) = try_range_early(db, sess, &q_owned, snapshot)? {
+        if let Some(tv) = try_range_early(db, sess, q_ref, snapshot)? {
             return Ok(tv);
         }
     }
     let _t_bp = crate::perf::enter(crate::perf::Stage::BuildPlan);
-    let mut plan = crate::ir::plan::build_plan(&q_owned)?;
+    let mut plan = crate::ir::plan::build_plan(q_ref)?;
     crate::perf::exit(crate::perf::Stage::BuildPlan, _t_bp);
     let _t_opt = crate::perf::enter(crate::perf::Stage::Optimize);
     if sess.optimize_enabled {
@@ -191,7 +204,7 @@ pub(crate) fn eval_query(
     if !plan_nodes_exec_ok(&plan) {
         return Err(SqlError::not_supported(format!(
             "query shape not covered by plan path: {}",
-            short_str(&q_owned.body)
+            short_str(&q_ref.body)
         )));
     }
     let masks = plan_scan_masks(db, sess, &plan);
@@ -204,6 +217,60 @@ pub(crate) fn eval_query(
     };
     let (tv, _) = exec_plan(db, sess, &plan, snapshot, &mut cx)?;
     Ok(tv)
+}
+
+/// 免克隆预检探测（完备遍历——expr_has_subquery 的形态表不完备，漏检
+/// 会使相关子查询跳过"诚实拒绝"语义，故此处必须 Visitor 全树）：
+/// 子查询位 / rowid 别名引用（Identifier 或 t.rowid 限定形）任一命中。
+struct LoweringNeedProbe<'a> {
+    aliases: &'a [&'static str],
+    needs: bool,
+}
+impl sqlparser::ast::Visitor for LoweringNeedProbe<'_> {
+    type Break = ();
+    fn pre_visit_expr(&mut self, e: &Expr) -> std::ops::ControlFlow<()> {
+        let hit = match e {
+            Expr::Subquery(_) | Expr::Exists { .. } | Expr::InSubquery { .. } => true,
+            Expr::Identifier(id) => {
+                !self.aliases.is_empty()
+                    && self.aliases
+                        .iter()
+                        .any(|a| id.value.eq_ignore_ascii_case(a))
+            }
+            Expr::CompoundIdentifier(parts) => {
+                !self.aliases.is_empty()
+                    && parts.len() == 2
+                    && self
+                        .aliases
+                        .iter()
+                        .any(|a| parts[1].value.eq_ignore_ascii_case(a))
+            }
+            _ => false,
+        };
+        if hit {
+            self.needs = true;
+            return std::ops::ControlFlow::Break(());
+        }
+        std::ops::ControlFlow::Continue(())
+    }
+}
+
+/// lowering 是否需要 AST 改写（true = 克隆整树进 lower_subqueries）
+fn query_lowering_needs_mutation(sess: &Session, q: &Query) -> bool {
+    if std::env::var_os("DENDRO_NO_GATE").is_some() { return true; }
+    if q.with.is_some() {
+        return true; // CTE VALUES 注入面
+    }
+    let SetExpr::Select(sel) = &*q.body else {
+        return true; // 集合操作/嵌套 Query 递归臂
+    };
+    let aliases: &[&'static str] = sess.dialect.profile().rowid_aliases();
+    let mut probe = LoweringNeedProbe {
+        aliases,
+        needs: false,
+    };
+    let _ = sel.visit(&mut probe);
+    probe.needs
 }
 
 /// lowering：Select 臂 WHERE/HAVING 子查询内联（SetExpr 递归——

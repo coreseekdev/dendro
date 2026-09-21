@@ -331,6 +331,36 @@ updpath Group **136,573 ops/s 与历史 137k 持平**（resolve avg 51ns），
 append_at 20% + 旧值读取走 build_point_view 旧路径 17%（未享早退）+
 checkpoint 物化 11%——下一役素材。
 
+## 复测十二（2026-09-21：SQL 预处理三件套——q.clone 门控 + 输出直出 + 点取统一）
+
+火焰图路线图（SQL机器热点剖析文档）的前三刀落地：
+1. **q.clone 门控**：`query_lowering_needs_mutation`（Visitor 完备探测
+   子查询位/rowid 别名引用——expr_has_subquery 形态表不完备，漏检会使
+   相关子查询跳过"诚实拒绝"，必须全树）——确需 AST 改写才克隆整树；
+   纯 Select 只保留只读 multi-from 拒绝。`DENDRO_NO_GATE=1` 差分轴。
+   A/B 曾见 range100 单次崩 2k——门控 on/off 二分证伪（环境波动）。
+2. **to_result 文本往返消除**：embed 输出走 `typed_rows()`（Arrow→
+   SqlValue 直出）——此前 text_rows 文本化 + typed_cell 回解，每单元格
+   一次 String 分配 + parse（火焰图 realloc ~5%）。类型语义由产出端
+   batches/columns 同源保证（账本 #26 口径）。
+3. **点取统一**：build_point_view 取行循环改走 fetch_row_bytes（消除
+   内联副本分叉；UPDATE 旧值读同享——update 场景 build_point_view 17%
+   热点）。
+
+sqlite-cmp 第 12 轮（vs P0 基线）：**point.mem 219k（+39%）**、
+point.disk 209k（+12%）、range100 32.9k/27.2k（+8-9%）、update.disk
+99k（+15%）、insert 持平。**point.mem vs SQLite :memory: 0.32→0.43×**
+（0.5× 验收线在望）；point.mem/disk 1.05。update.mem 71k 方差带下沿
+（纯路径 updpath 142k = +4% 历史新高）。探针：flame point 114k/tree
+165k（+6/12%）/update 77k（+24%）；pointearly 未物化 198k（+22%）/
+range100 13.9k（+39%）/物化 234k（+17%）。
+
+**火焰图新热点**（三件套后 tree 模式前十：lower_subqueries/
+rewrite_rowid_refs/q.clone 全部消失）：`rows_to_batches` 行→Arrow 批
+构建 ~12%（单行点查免批直出——下轮素材）；update 场景 WAL 落盘
+append_at 仍居首（~19%）——WAL 帧攒批（LeanStore latency 分支）是
+update 0.5× 的根治项。633 测试全绿。
+
 ## 十轮总战绩（vs SQLite 首测 → 今）
 
 | 场景 | 首测 | 第 10 轮 |

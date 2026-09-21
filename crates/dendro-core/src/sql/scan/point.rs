@@ -319,7 +319,7 @@ pub(crate) fn try_pk_pushdown(
             Err(_) => return Ok(None),
         },
     };
-    let (schema, entry) = (&rc.0, &rc.1);
+    let (schema, _entry) = (&rc.0, &rc.1);
     if schema.pk.len() != 1 {
         return Ok(None);
     }
@@ -495,44 +495,13 @@ pub(crate) fn build_point_view(
         }
         _ => vec![],
     };
-    let b = db.branch(&sess.branch)?;
-    let tm = b.mem.table(entry.id);
-    let tree_root = entry
-        .table_root
-        .as_ref()
-        .and_then(|s| crate::format::hash::Hash::from_base32(s));
+    // 取行统一走 fetch_row_bytes（memtx ∪ 树、墓碑遮蔽、事务自身写——
+    // 语义一致性由构造保证：此前内联副本与 fetch 分叉维护）
     let mut rows = Vec::with_capacity(keys.len());
     for pkv in keys {
         let key = crate::format::row::encode_key(std::slice::from_ref(&pkv));
-        // memtx 优先；**墓碑判定**（第七轮 R7-1 伴生①）：memtx 无值时可能是
-        // "可见墓碑"（该 key 在快照前已被删除）——此时不得回退树复活被删行
-        let mut found: Option<Arc<[u8]>> = match tm.get(&key, snapshot) {
-            Some(v) => Some(v),
-            None => {
-                let tombstoned = tm.latest_ts(&key).is_some_and(|ts| ts <= snapshot);
-                if tombstoned {
-                    None
-                } else {
-                    match &tree_root {
-                        Some(r) => crate::prolly::cursor::lookup(&db.store, r, &key)?.map(Arc::from),
-                        None => None,
-                    }
-                }
-            }
-        };
-        // 会话显式事务自身写（R8-1）：点查同样读自己的写
-        if let Some(t) = &sess.txn {
-            if t.explicit {
-                if let Some(m) = t.writes.get(&(entry.id, key.clone())) {
-                    match m {
-                        crate::prolly::Mutation::Put(v) => found = Some(v.clone()),
-                        crate::prolly::Mutation::Delete => found = None,
-                    }
-                }
-            }
-        }
-        if let Some(v) = found {
-            rows.push(row_from_bytes(schema, &v)?);
+        if let Some(bytes) = fetch_row_bytes(db, sess, entry, &key, snapshot)? {
+            rows.push(row_from_bytes(schema, &bytes)?);
         }
     }
     let names = schema.columns.iter().map(|c| c.name.clone()).collect();

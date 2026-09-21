@@ -508,20 +508,16 @@ fn to_result(outputs: Vec<Output>) -> QueryResult {
             if columns.is_empty() {
                 columns = rs.columns.iter().map(|c| c.name.clone()).collect();
             }
-            // 账本 #26（c）：按**列元数据类型**定型——此前对文本化结果
-            // 重新猜类型（i64→f64→Utf8 启发式），TEXT 列的 '1' 在 embed
-            // 视图里变回 Int64（测试视角污染源）
-            let tys: Vec<crate::types::ColType> = rs.columns.iter().map(|c| c.ty).collect();
-            for row in rs.text_rows() {
-                let sql_row: Vec<SqlValue> = row
-                    .iter()
-                    .enumerate()
-                    .map(|(i, c)| match c {
-                        Some(s) => typed_cell(s, tys.get(i).copied()),
-                        None => SqlValue::Null,
-                    })
-                    .collect();
-                rows.push(sql_row);
+            // Arrow → SqlValue 直出（typed_rows 按数组真型转换——
+            // 账本 #26（c）的类型语义由产出端保证：batches 与 columns
+            // 同源构造）。此前 text_rows 文本化 + typed_cell 回解——
+            // 每单元格一次 String 分配 + parse（火焰图 realloc ~5%）
+            for row in rs.typed_rows() {
+                rows.push(
+                    row.into_iter()
+                        .map(|c| c.unwrap_or(SqlValue::Null))
+                        .collect(),
+                );
             }
         }
     }
