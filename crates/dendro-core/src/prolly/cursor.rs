@@ -14,6 +14,8 @@ pub struct TreeIter {
     store: Arc<NodeStore>,
     path: Vec<(Node, usize)>,
     finished: bool,
+    /// peek 缓存（next_item 已取但未消费的条目）
+    peeked: Option<(Vec<u8>, Vec<u8>)>,
 }
 
 impl TreeIter {
@@ -23,6 +25,7 @@ impl TreeIter {
             store,
             path,
             finished: exhausted,
+            peeked: None,
         })
     }
 
@@ -31,6 +34,7 @@ impl TreeIter {
             store: empty_store(),
             path: vec![],
             finished: true,
+            peeked: None,
         }
     }
 
@@ -47,7 +51,31 @@ impl TreeIter {
     }
 
     /// 下一条目；耗尽返回 None
+    /// 窥视下一键（不消耗）：缓存式——首次 peek 用一次 next_item
+    /// 取值缓存，后续 peek 返回缓存；next_item 优先消费缓存。
+    /// （流式归并对位用；peeked = None 且 !finished 表示未探）
+    pub fn peek_next_key(&mut self) -> Option<Vec<u8>> {
+        if self.finished && self.peeked.is_none() {
+            return None;
+        }
+        if self.peeked.is_none() {
+            match self.next_item() {
+                Ok(Some((k, v))) => {
+                    self.peeked = Some((k, v));
+                }
+                Ok(None) | Err(_) => {
+                    self.finished = true;
+                    return None;
+                }
+            }
+        }
+        self.peeked.as_ref().map(|(k, _)| k.clone())
+    }
+
     pub fn next_item(&mut self) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
+        if let Some(item) = self.peeked.take() {
+            return Ok(Some(item));
+        }
         loop {
             if self.finished {
                 return Ok(None);

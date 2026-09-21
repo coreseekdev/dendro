@@ -221,3 +221,24 @@ optimize on/off 逐行相等 + overlay 尾巴计入 + 墓碑不可见。
 第 9 轮：range100 **10.4k → 30.2k（2.9×）**，vs SQLite 0.2×。
 剩余 range 差距 = 100 行逐行解码（decode_row_proj 已接）+ BTreeMap
 归并物化——流式首批（C 档）是下一步。
+
+## 复测九（2026-09-20：流式三路归并）
+
+范围早退物化消除：range_scan 的 Vec 全量物化 + visible BTreeMap
+全量重建 → 树 TreeIter（缓存式 peek）+ overlay/txn 写的**三路
+按键序单遍归并**逐行直出。TreeIter 增 peeked 缓存（next_item
+优先消费——peek 不重复取）。差分锁定不变（5 形态 + 尾巴/墓碑）。
+
+第 10 轮：range100 **30.7k**（流式 vs 物化版 30.2k——range100 仅
+100 行/查询，物化本就小；流式的真实收益面在大范围/ClickBench 形
+态，标记待验）。vs SQLite 0.3×。insert.mem 本轮 **1.0×**。
+
+## 十轮总战绩（vs SQLite 首测 → 今）
+
+| 场景 | 首测 | 第 10 轮 |
+|------|------|----------|
+| insert.disk | 0.97× | **1.9×** |
+| insert.mem | 0.36× | **1.0×** |
+| update.disk | 0.37× | **0.6×** |
+| range100.disk | 0.13× | **0.3×**（起始 3.6× 提升） |
+| point.disk | 0.23× | **0.4×** |

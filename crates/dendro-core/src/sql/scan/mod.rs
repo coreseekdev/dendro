@@ -452,29 +452,9 @@ fn try_range_early(
     let tm = b.mem.table(entry.id);
     let overlay =
         tm.snapshot_rows_in_range(start_key.as_deref(), end_key.as_deref(), snapshot);
-    let mut visible: std::collections::BTreeMap<Vec<u8>, std::sync::Arc<Vec<u8>>> =
+    // 显式事务自身写（区间内）
+    let mut txn_writes: std::collections::BTreeMap<Vec<u8>, Option<std::sync::Arc<Vec<u8>>>> =
         std::collections::BTreeMap::new();
-    if let Some(r) = &root {
-        for (k, v) in crate::prolly::cursor::range_scan(
-            db.store.clone(),
-            r,
-            start_key.as_deref(),
-            end_key.as_deref(),
-        )? {
-            visible.insert(k, std::sync::Arc::new(v));
-        }
-    }
-    for (k, v) in overlay {
-        match v {
-            Some(v) => {
-                visible.insert(k, v);
-            }
-            None => {
-                visible.remove(&k); // 墓碑隐藏树行
-            }
-        }
-    }
-    // 显式事务自身写
     if let Some(t) = &sess.txn {
         if t.explicit {
             for ((tid, k), m) in &t.writes {
@@ -483,24 +463,26 @@ fn try_range_early(
                 }
                 let in_range = start_key
                     .as_ref()
-                    .map_or(true, |s| k.as_slice() >= s.as_slice())
+                    .map_or(true, |st| k.as_slice() >= st.as_slice())
                     && end_key
                         .as_ref()
                         .map_or(true, |e| k.as_slice() < e.as_slice());
                 if in_range {
                     match m {
                         crate::prolly::Mutation::Put(v) => {
-                            visible.insert(k.clone(), std::sync::Arc::new(v.clone()));
+                            txn_writes.insert(
+                                k.clone(),
+                                Some(std::sync::Arc::new(v.clone())),
+                            );
                         }
                         crate::prolly::Mutation::Delete => {
-                            visible.remove(k);
+                            txn_writes.insert(k.clone(), None);
                         }
                     }
                 }
             }
         }
     }
-    // 直出（投影解码同点查早退）
     let out_names: Vec<String> = if wildcard {
         schema.columns.iter().map(|c| c.name.clone()).collect()
     } else {
@@ -509,7 +491,25 @@ fn try_range_early(
             .map(|&i| schema.columns[i].name.clone())
             .collect()
     };
-    // 残差过滤的列定位（行内求值口径与行路径同——全行名 → 下标）
+    // 三路流式归并（树迭代器 + overlay + txn 写——按键序单遍），
+    // 优先级 txn > overlay > 树（同键后写覆盖先写，末值生效）
+    let mut tree_it = match &root {
+        Some(r) => {
+            let mut it = crate::prolly::cursor::TreeIter::new(db.store.clone(), r)?;
+            if let Some(st) = &start_key {
+                it.seek(st)?;
+            }
+            Some(it)
+        }
+        None => None,
+    };
+    let mut overlay_it: Vec<(Vec<u8>, Option<std::sync::Arc<Vec<u8>>>)> =
+        overlay.into_iter().collect();
+    let mut oi = 0usize;
+    let mut ti = txn_writes.into_iter().collect::<Vec<_>>();
+    ti.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut xi = 0usize;
+    // 残差过滤的列定位
     let colpos: std::collections::HashMap<String, usize> = schema
         .columns
         .iter()
@@ -517,25 +517,64 @@ fn try_range_early(
         .map(|(i, c)| (c.name.to_ascii_lowercase(), i))
         .collect();
     let resolv = |n: &str| -> Option<usize> { colpos.get(&n.to_ascii_lowercase()).copied() };
-    let mut out_rows = Vec::with_capacity(visible.len());
-    for (_, bytes) in visible {
-        // 残差谓词先在全行上求值（谓词可引用任意列）
-        if residual.len() == 1 {
-            let full_tmp = row_from_bytes(&schema, &bytes)?;
-            let keep = match crate::sql::expr::eval(
-                &residual[0],
-                &full_tmp,
-                &resolv,
-            ) {
-                Ok(SqlValue::Bool(true)) => true,
-                Ok(_) => false,
-                Err(_) => return Ok(None), // 求值失败——回落（诚实）
-            };
-            if !keep {
-                continue;
+    let mut out_rows: Vec<Vec<SqlValue>> = Vec::new();
+    loop {
+        // 取三路当前键（升序最小者）
+        let tk = tree_it.as_mut().and_then(|it| it.peek_next_key());
+        let ok = overlay_it.get(oi).map(|(k, _)| k.clone());
+        let xk = ti.get(xi).map(|(k, _)| k.clone());
+        if tk.is_none() && ok.is_none() && xk.is_none() {
+            break;
+        }
+        // 求最小键
+        let min_key = [tk.clone(), ok.clone(), xk.clone()]
+            .into_iter()
+            .flatten()
+            .min();
+        let Some(mk) = min_key else { break };
+        if let Some(e) = &end_key {
+            if mk.as_slice() >= e.as_slice() {
+                break;
             }
-        } else if residual.len() > 1 {
-            // 多残差：全 AND——逐个求值
+        }
+        // 优先级合并：txn > overlay > 树（同键高优先级生效）
+        let mut value: Option<std::sync::Arc<Vec<u8>>> = None;
+        let mut skip = false;
+        if xk.as_ref().map_or(false, |k| k == &mk) {
+            match &ti[xi].1 {
+                Some(v) => value = Some(v.clone()),
+                None => skip = true, // txn 墓碑
+            }
+            xi += 1;
+            // 跳过低优先级同键
+            if ok.as_ref().map_or(false, |k| k == &mk) {
+                oi += 1;
+            }
+            if tk.as_ref().map_or(false, |k| k == &mk) {
+                let _ = tree_it.as_mut().unwrap().next_item()?;
+            }
+        } else if ok.as_ref().map_or(false, |k| k == &mk) {
+            match &overlay_it[oi].1 {
+                Some(v) => value = Some(v.clone()),
+                None => skip = true, // overlay 墓碑
+            }
+            oi += 1;
+            if tk.as_ref().map_or(false, |k| k == &mk) {
+                let _ = tree_it.as_mut().unwrap().next_item()?;
+            }
+        } else {
+            // 树独有
+            let item = tree_it.as_mut().unwrap().next_item()?;
+            if let Some((_, v)) = item {
+                value = Some(std::sync::Arc::new(v));
+            }
+        }
+        if skip || value.is_none() {
+            continue;
+        }
+        let bytes = value.unwrap();
+        // 残差谓词过滤
+        if !residual.is_empty() {
             let full_tmp = row_from_bytes(&schema, &bytes)?;
             let mut keep = true;
             for r in &residual {
@@ -552,6 +591,7 @@ fn try_range_early(
                 continue;
             }
         }
+        // 投影解码直出
         let row: Vec<SqlValue> = if wildcard {
             row_from_bytes(&schema, &bytes)?
         } else {
