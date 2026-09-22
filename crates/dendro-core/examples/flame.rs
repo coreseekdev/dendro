@@ -31,7 +31,7 @@ fn main() {
         c.execute(&format!("INSERT INTO t VALUES {}", vals.join(","))).unwrap();
         id += n;
     }
-    if mode == "tree" || mode == "updatedisk" {
+    if mode == "tree" || mode == "updatedisk" || mode == "range" {
         c.execute("CHECKPOINT").unwrap();
     }
     // update 基准形态：不显式 CHECKPOINT（复刻 sqlite-cmp mem 臂——
@@ -71,6 +71,13 @@ fn main() {
             "insert" => {
                 let nid = rows + (i % 50_000) + 1;
                 let _ = c.execute(&format!("INSERT OR REPLACE INTO t VALUES ({nid}, 1, 'z')"));
+            }
+            "range" => {
+                let lo = (i.wrapping_mul(7919) % (rows - 100_000).max(1)) + 1;
+                let _ = c.query(&format!(
+                    "SELECT id, v FROM t WHERE id >= {lo} AND id < {}",
+                    lo + 100
+                ));
             }
             _ => {
                 let qid = (i.wrapping_mul(7919) % rows) + 1;

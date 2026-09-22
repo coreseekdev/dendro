@@ -503,6 +503,25 @@ sqlite-cmp 第 20 轮：**update.mem 153k（vs 攒批后 +35%，vs P0 基线
 3.3s（−11~15%）；point 246k/245k（0.5× 维持）；range ≈；无回归。
 633 测试全绿（含 WAL 崩溃安全/并发族/tp_base 语义）。
 
+## 复测十八（2026-09-22：range100 三刀——投影重排去 HashMap + 直出上限 256）
+
+**差异分析驱动的选刀**（range100 0.2× 为最大差距场景）：火焰图
+（flame 探针新增 range 模式，23.4k 基线）三处浪费：
+1. **每行投影重排建 HashMap<usize, SqlValue>**（+ 每行 sort+dedup+
+   逐值 clone，~15%）——改循环外预计算 proj_sorted/proj_pos 下标
+   映射（点查早退循环内 + 范围早退单行路径同修）；
+2. **range100 的 100 行 > DIRECT_ROWS_MAX(16)**——没吃到 direct_rows
+   直出，仍走 Arrow 往返（to_result typed_rows + rows_to_batches，
+   ~13%）——上限 16→256（千行以上 Arrow 批量优势才显现）；
+3. TreeIter peek 的 key clone（未动，下一候选）。
+
+sqlite-cmp 第 21 轮：**range100.disk 44.3k（+43%）/ range100.mem
+31.1k（+15%）**——ratio 0.23→0.31/0.21→0.24；point/update/insert.disk
+持平。**insert.mem 292k 再现低位**（历史带 292-390k，方差源判为
+checkpoint publish 锁内 WAL Always fsync 的时机耦合——每 ~0.4s 一次
+1ms 停顿对 2.6µs/条吞吐的扰动；publish 锁内段是既定下一步）。
+633 测试全绿。
+
 ## 十轮总战绩（vs SQLite 首测 → 今）
 
 | 场景 | 首测 | 第 10 轮 |

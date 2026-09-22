@@ -153,7 +153,7 @@ pub struct RecordSet {
 }
 
 /// direct_rows 旁路的行数上限（之上 Arrow 列批的批量优势胜过直出）
-pub const DIRECT_ROWS_MAX: usize = 16;
+pub const DIRECT_ROWS_MAX: usize = 256;
 
 impl RecordSet {
     /// 物化内存估算（Arrow 数组自报尺寸之和；列元数据可忽略）

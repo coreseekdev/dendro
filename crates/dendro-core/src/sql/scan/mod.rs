@@ -598,6 +598,14 @@ fn try_range_early(
         .collect();
     let resolv = |n: &str| -> Option<usize> { colpos.get(&n.to_ascii_lowercase()).copied() };
     let mut out_rows: Vec<Vec<SqlValue>> = Vec::new();
+    // 投影预计算（循环外一次）：排序去重集 + out_idx→sorted 下标映射
+    let mut proj_sorted: Vec<usize> = out_idx.clone();
+    proj_sorted.sort_unstable();
+    proj_sorted.dedup();
+    let proj_pos: Vec<usize> = out_idx
+        .iter()
+        .map(|&i| proj_sorted.iter().position(|&c| c == i).unwrap_or(0))
+        .collect();
     loop {
         // 取三路当前键（升序最小者）
         let tk = tree_it.as_mut().and_then(|it| it.peek_next_key());
@@ -671,17 +679,16 @@ fn try_range_early(
                 continue;
             }
         }
-        // 投影解码直出
+        // 投影解码直出（重排经预计算的 pos_of 下标映射——此前每行
+        // sort+dedup+HashMap<SipHash>+逐值 clone，range/点查火焰图 ~15%）
         let row: Vec<SqlValue> = if wildcard {
             row_from_bytes(&schema, &bytes)?
         } else {
-            let mut idx = out_idx.clone();
-            idx.sort_unstable();
-            idx.dedup();
-            let vals = crate::format::row::decode_row_proj(&bytes, &idx)?;
-            let back: std::collections::HashMap<usize, SqlValue> =
-                idx.into_iter().zip(vals.into_iter()).collect();
-            out_idx.iter().map(|&i| back[&i].clone()).collect()
+            let vals = crate::format::row::decode_row_proj(&bytes, &proj_sorted)?;
+            proj_pos
+                .iter()
+                .map(|&p| vals[p].clone())
+                .collect()
         };
         out_rows.push(row);
     }
@@ -828,16 +835,20 @@ fn try_point_early(
         idx.sort_unstable();
         idx.dedup();
         let vals = crate::format::row::decode_row_proj(&bytes, &idx)?;
-        let back: std::collections::HashMap<usize, SqlValue> = idx
-            .into_iter()
-            .zip(vals.into_iter())
-            .collect();
+        // 单行路径：排序去重后按值查找重排（无 HashMap——下标映射
+        // 对重复投影列的语义 = 重复输出同列 ✓）
+        let lookup = |i: usize| {
+            idx.iter()
+                .position(|&c| c == i)
+                .map(|p| vals[p].clone())
+                .unwrap_or(SqlValue::Null)
+        };
         (
             out_idx
                 .iter()
                 .map(|&i| schema.columns[i].name.clone())
                 .collect(),
-            out_idx.iter().map(|&i| back[&i].clone()).collect(),
+            out_idx.iter().map(|&i| lookup(i)).collect(),
         )
     };
     Ok(Some(TableView {
