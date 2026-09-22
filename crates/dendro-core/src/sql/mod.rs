@@ -833,6 +833,13 @@ pub(crate) fn exec_statement(
             }))
         }
         Statement::CreateTable(create) => ddl::exec_create_table(db, sess, create.clone()),
+        Statement::CreateIndex(ci) => ddl::exec_create_index(db, sess, ci.clone()),
+        Statement::Drop {
+            object_type: sqlparser::ast::ObjectType::Index,
+            names,
+            if_exists,
+            ..
+        } => ddl::exec_drop_index(db, sess, names, *if_exists),
         Statement::Drop {
             object_type: sqlparser::ast::ObjectType::Table,
             names,

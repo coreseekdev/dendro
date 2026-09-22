@@ -128,6 +128,13 @@ pub struct TableEntry {
     /// 多套并存、独立卸载——不动原 schema chunk（PR2 接语句层）
     #[serde(default)]
     pub extensions: Vec<crate::catalog::provider::ExtensionDef>,
+    /// 可扩展索引（PR3 元数据面；PR4 接 prolly 索引树执行）：
+    /// 定义 + 索引树根（name → base32；构建前 None）
+    #[serde(default)]
+    pub indexes: Vec<crate::catalog::provider::IndexDef>,
+    /// 各索引的物化树根（与 indexes 按 name 对应；None = 未构建）
+    #[serde(default)]
+    pub index_roots: Vec<(String, Option<String>)>,
     /// 表级 ACL：角色 → 权限位（privs.rs PRIV_*；serde default 兼容旧 manifest）
     #[serde(default)]
     pub acl: std::collections::HashMap<String, u8>,

@@ -87,6 +87,8 @@ pub(crate) fn exec_create_table(
         unique_sets,
         check_exprs,
         extensions: Vec::new(),
+            indexes: Vec::new(),
+            index_roots: Vec::new(),
     };
     // schema chunk 先写
     db.cas
@@ -1208,6 +1210,138 @@ fn insert_row(
 // 掩码/pk/唯一集全兼容）；DDL 面走 schema_addr 直载天然拿基表 schema。
 // 旧行读端 resize 补 NULL（既有契约），新行全列编码。
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// 可扩展索引（PR3 元数据面；PR4 接 prolly 索引树执行）
+// ---------------------------------------------------------------------------
+
+pub(crate) fn exec_create_index(
+    db: &Database,
+    sess: &mut Session,
+    ci: sqlparser::ast::CreateIndex,
+) -> Result<Option<Output>> {
+    let table = object_name(&ci.table_name);
+    let short = table.rsplit('.').next().unwrap_or(&table).to_string();
+    let rc = scan::resolve_table(db, &sess.branch, &short)?;
+    let (schema, entry) = (&rc.0, &rc.1);
+    // 索引名（缺省 = 表_列1_列2..）
+    let name = ci
+        .name
+        .as_ref()
+        .map(object_name)
+        .unwrap_or_else(|| {
+            let cols: Vec<String> = ci
+                .columns
+                .iter()
+                .map(|c| c.column.expr.to_string().replace([' ', '"'], ""))
+                .collect();
+            format!("{}_{}", short, cols.join("_"))
+        });
+    if entry.indexes.iter().any(|i| i.name.eq_ignore_ascii_case(&name)) {
+        if ci.if_not_exists {
+            return Ok(Some(Output::Command { tag: format!("CREATE INDEX {name}"), affected: 0 }));
+        }
+        return Err(SqlError::duplicate_key(format!(
+            "index \"{name}\" already exists on {short}"
+        )));
+    }
+    // 列解析（裸标识符；含扩展列的合并 schema）
+    let mut cols = Vec::new();
+    for c in &ci.columns {
+        let sqlparser::ast::Expr::Identifier(id) = &c.column.expr else {
+            return Err(SqlError::not_supported("index column must be a plain identifier"));
+        };
+        let ci2 = schema
+            .col_index(&id.value)
+            .ok_or_else(|| SqlError::undefined_column(id.value.clone()))?;
+        cols.push(ci2 as u16);
+    }
+    if cols.is_empty() {
+        return Err(SqlError::syntax("index requires at least one column"));
+    }
+    let mut ne = entry.clone();
+    ne.indexes.push(crate::catalog::provider::IndexDef {
+        name: name.clone(),
+        columns: cols,
+        unique: ci.unique,
+        method: "prolly".into(),
+    });
+    ne.index_roots.push((name.clone(), None)); // PR4 构建树时回填
+    catalog_commit(db, sess, vec![(short.clone(), Some(ne))], &format!("CREATE INDEX {name}"))?;
+    Ok(Some(Output::Command { tag: format!("CREATE INDEX {name}"), affected: 0 }))
+}
+
+pub(crate) fn exec_drop_index(
+    db: &Database,
+    sess: &mut Session,
+    names: &[sqlparser::ast::ObjectName],
+    if_exists: bool,
+) -> Result<Option<Output>> {
+    let mut count = 0u64;
+    for name_obj in names {
+        // 形态：DROP INDEX ix ON t（sqlparser 将 ON 段并入 names？——
+        // 实测形态为 DROP INDEX t.ix 或纯名）
+        let parts: Vec<String> = name_obj
+            .0
+            .iter()
+            .map(|p| p.as_ident().map(|i| i.value.clone()).unwrap_or_default())
+            .collect();
+        let (short, name) = if parts.len() >= 2 {
+            (parts[0].clone(), parts[1..].join("."))
+        } else {
+            (String::new(), parts.join("."))
+        };
+        let (short, entry, name) = if !short.is_empty() {
+            let rc = scan::resolve_table(db, &sess.branch, &short)?;
+            (short, rc.1.clone(), name)
+        } else {
+            let (name, hit) = locate_index_by_name(db, &sess.branch, &name)?;
+            let (tn, e) = hit;
+            (tn, e, name)
+        };
+        let _ = if_exists;
+        let (short, entry, name) = (short, entry, name);
+        let _ = (&short, &entry, &name);
+        let idx = entry
+            .indexes
+            .iter()
+            .position(|i| i.name.eq_ignore_ascii_case(&name))
+            .ok_or_else(|| {
+                SqlError::new("42704", format!("index \"{name}\" does not exist"))
+            })?;
+        let mut ne = entry.clone();
+        ne.indexes.remove(idx);
+        ne.index_roots.retain(|(n, _)| !n.eq_ignore_ascii_case(&name));
+        catalog_commit(db, sess, vec![(short.clone(), Some(ne))], &format!("DROP INDEX {name}"))?;
+        count += 1;
+    }
+    Ok(Some(Output::Command { tag: format!("DROP INDEX {count}"), affected: count }))
+}
+
+fn locate_index_by_name(
+    db: &Database,
+    branch: &str,
+    name: &str,
+) -> Result<(String, (String, crate::versioned::TableEntry))> {
+    let _ = branch;
+    let b = db.branch("main")?;
+    let head = b.head.load_full();
+    let root = head.as_ref().as_ref().map(|c| c.root);
+    let catalog = crate::versioned::Versioned::new(db.store.clone());
+    let mut hit = None;
+    for (tn, e) in catalog.catalog_entries(root.as_ref())? {
+        if e.indexes.iter().any(|i| i.name.eq_ignore_ascii_case(name)) {
+            if hit.is_some() {
+                return Err(SqlError::new("42702", format!(
+                    "index \"{name}\" exists on multiple tables; use DROP INDEX table.index"
+                )));
+            }
+            hit = Some((tn, e));
+        }
+    }
+    hit.map(|(tn, e)| (name.to_string(), (tn, e)))
+        .ok_or_else(|| SqlError::new("42704", format!("index \"{name}\" does not exist")))
+}
 
 pub(crate) enum ExtensionOp {
     Attach { table: String, ext: String, cols_sql: String },
