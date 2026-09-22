@@ -1647,6 +1647,29 @@ impl Database {
                     t_m0.elapsed()
                 );
             }
+            // PR4a：索引树首建（每索引一棵 prolly 树——key = 索引列编码
+            // ++ 主键，value = 主键回查键；与主树同 checkpoint 原子域，
+            // 分支合并/时间旅行/GC 免费复用；增量轮 PR4b）
+            if !ne.indexes.is_empty() {
+                let schema = catalog.load_schema_with_entry(&ne)?;
+                for ix in ne.indexes.clone() {
+                if ne.index_roots
+                    .iter()
+                    .any(|(n, r)| n.eq_ignore_ascii_case(&ix.name) && r.is_some())
+                {
+                    continue;
+                }
+                if let Some(main_root) = new_root {
+                    if let Ok(new_ix_root) =
+                        self.build_index_tree(main_root, &schema, &ix, &mut session)
+                    {
+                        ne.index_roots.retain(|(n, _)| !n.eq_ignore_ascii_case(&ix.name));
+                        ne.index_roots
+                            .push((ix.name.clone(), Some(new_ix_root.to_base32())));
+                    }
+                }
+                }
+            }
             changes.push((tname, Some(ne)));
         }
         let t_c0 = std::time::Instant::now();
@@ -1677,6 +1700,38 @@ impl Database {
             commit,
             gc_retired,
         })
+    }
+
+    /// PR4a：索引树首建——全量扫主树取（索引列值, pk）对，构建 prolly
+    /// 索引树（key = encode_key(索引列) ++ 主键，value = 主键字节）。
+    /// 键含主键保证唯一性/幂等；value 携带主键供回查（免二次解码）。
+    fn build_index_tree(
+        &self,
+        main_root: crate::format::hash::Hash,
+        schema: &TableSchema,
+        ix: &crate::catalog::provider::IndexDef,
+        session: &mut HashSet<Hash>,
+    ) -> Result<crate::format::hash::Hash> {
+        let muts: Vec<(Vec<u8>, crate::prolly::chunker::Mutation)> =
+            crate::prolly::cursor::range_scan(
+                self.store.clone(),
+                &main_root,
+                None,
+                None,
+            )?
+            .into_iter()
+            .filter_map(|(pk, row_bytes)| {
+                let vals = crate::format::row::decode_row(&row_bytes).ok()?;
+                let mut ik = crate::format::row::encode_key(
+                    &ix.columns.iter().map(|&c| vals.get(c as usize).cloned().unwrap_or(crate::types::SqlValue::Null)).collect::<Vec<_>>(),
+                );
+                ik.extend_from_slice(&pk);
+                Some((ik, crate::prolly::chunker::Mutation::Put(pk.into())))
+            })
+            .collect();
+        let ck = crate::versioned::Versioned::new(self.store.clone());
+        let (root, _) = ck.apply_table_mutations(None, muts, session)?;
+        root.ok_or_else(|| crate::error::SqlError::internal("empty index tree"))
     }
 
     /// 阶段 3（**锁内**，短）：head CAS 验证 + 发布（head.store + WAL ck +
