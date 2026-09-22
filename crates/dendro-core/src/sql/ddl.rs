@@ -707,6 +707,10 @@ pub(crate) fn exec_insert(
     };
     let short = table.rsplit('.').next().unwrap_or(&table).to_string();
     let (schema, entry) = scan::resolve_table(db, &sess.branch, &short)?.as_ref().clone();
+    let cached_root: Option<Hash> = entry
+        .table_root
+        .as_ref()
+        .and_then(|s| Hash::from_base32(s));
     if schema.pk.is_empty() {
         return Err(SqlError::not_supported(format!(
             "table \"{short}\" has no primary key"
@@ -920,6 +924,7 @@ pub(crate) fn exec_insert(
                     row,
                     &entry.foreign_keys,
                     &guard,
+                    cached_root.as_ref(),
                 )?;
                 guard.record_keys(rec);
                 last_pk_vals = Some(row_raw);
@@ -963,6 +968,7 @@ pub(crate) fn exec_insert(
                     row,
                     &entry.foreign_keys,
                     &guard,
+                    cached_root.as_ref(),
                 )?;
                 guard.record_keys(rec);
                 last_pk_vals = Some(row_raw);
@@ -1077,6 +1083,10 @@ fn insert_row(
     row: Vec<SqlValue>,
     fks: &[crate::versioned::ForeignKeyDef],
     guard: &InsertGuard,
+    // C1（架构重审 §4-C1）：表树根由调用方从 entry 解出（批内一次）——
+    // 此前每行 memtx miss（新键常态）走 entry_root = catalog 全量
+    // range_scan + 每表 TableEntry JSON 解码
+    tree_root: Option<&Hash>,
 ) -> Result<()> {
     let pk_vals: Vec<SqlValue> = schema.pk.iter().map(|&i| row[i as usize].clone()).collect();
     if pk_vals.iter().any(|v| v.is_null()) {
@@ -1164,7 +1174,7 @@ fn insert_row(
     let exists_tree = if tombstoned || txn_deleted {
         false
     } else {
-        match &entry_root(db, sess, table_id)? {
+        match tree_root {
             Some(r) => crate::prolly::cursor::lookup(&db.store, r, &key)?.is_some(),
             None => false,
         }
@@ -1177,19 +1187,6 @@ fn insert_row(
     let val = encode_row(&row);
     txn.put(table_id, key, val);
     Ok(())
-}
-
-fn entry_root(db: &Database, sess: &Session, table_id: u32) -> Result<Option<Hash>> {
-    let b = db.branch(&sess.branch)?;
-    let head = b.head.load_full();
-    let catalog = crate::versioned::Versioned::new(db.store.clone());
-    let entries = catalog.catalog_entries(head.as_ref().as_ref().map(|c| c.root).as_ref())?;
-    for (_, e) in entries {
-        if e.id == table_id {
-            return Ok(e.table_root.as_ref().and_then(|s| Hash::from_base32(s)));
-        }
-    }
-    Ok(None)
 }
 
 pub(crate) fn exec_delete(
@@ -1210,6 +1207,10 @@ pub(crate) fn exec_delete(
         .ok_or_else(|| SqlError::syntax("DELETE requires table"))?;
     let short = name.rsplit('.').next().unwrap_or(&name).to_string();
     let (schema, entry) = scan::resolve_table(db, &sess.branch, &short)?.as_ref().clone();
+    let cached_root: Option<Hash> = entry
+        .table_root
+        .as_ref()
+        .and_then(|s| Hash::from_base32(s));
     let snapshot = sess.implicit_snapshot(db)?;
     // 找目标行：全扫 + WHERE（v1；pk 等值优化同 SELECT）
     let tv = table_scan_pub(db, sess, &short, snapshot)?;
@@ -1257,6 +1258,10 @@ pub(crate) fn update_impl(
 ) -> Result<Option<Output>> {
     let short = table.rsplit('.').next().unwrap_or(table).to_string();
     let (schema, entry) = scan::resolve_table(db, &sess.branch, &short)?.as_ref().clone();
+    let cached_root: Option<Hash> = entry
+        .table_root
+        .as_ref()
+        .and_then(|s| Hash::from_base32(s));
     let snapshot = sess.implicit_snapshot(db)?;
     // TP pk 下推：单列 pk 等值/IN 谓词走点查路径（此前全表扫描 + 全
     // 物化——1M 行表实测 UPDATE ~340ms/条；TP 基准暴露的写瓶颈）。
@@ -1554,6 +1559,10 @@ pub(crate) fn exec_copy_from(
     };
     let short = table.rsplit('.').next().unwrap_or(&table).to_string();
     let (schema, entry) = scan::resolve_table(db, &sess.branch, &short)?.as_ref().clone();
+    let cached_root: Option<Hash> = entry
+        .table_root
+        .as_ref()
+        .and_then(|s| Hash::from_base32(s));
     if schema.pk.is_empty() {
         return Err(SqlError::not_supported(format!(
             "table \"{short}\" has no primary key"
@@ -1672,7 +1681,7 @@ pub(crate) fn exec_copy_from(
             // 达成（harness 层已接）
         }
         let rec = guard.keys_of(&row);
-        insert_row(db, sess, &schema, entry.id, &mut txn, row, &fks, &guard)?;
+        insert_row(db, sess, &schema, entry.id, &mut txn, row, &fks, &guard, cached_root.as_ref())?;
         guard.record_keys(rec);
         count += 1;
     }
