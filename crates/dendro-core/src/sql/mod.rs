@@ -150,6 +150,13 @@ pub(crate) fn exec_batch(db: &Database, sess: &mut Session, sql: &str) -> Result
             outs.extend(out);
             continue;
         }
+        // SAP 式扩展层语句（同 branch 的字符串拦截模式——sqlparser 无
+        // 此方言形态）
+        if let Some(op) = ddl::extension_sql_kind(&raw) {
+            let out = ddl::exec_extension_statement(db, sess, op)?;
+            outs.extend(out);
+            continue;
+        }
         if let Some(out) = exec_cursor_statement(db, sess, &raw)? {
             outs.extend(out);
             continue;

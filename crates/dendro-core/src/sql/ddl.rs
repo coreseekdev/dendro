@@ -867,7 +867,18 @@ pub(crate) fn exec_insert(
             let value_rows = values.rows;
             // 列投影（INSERT INTO t (a, b) VALUES ...）
             let col_idx: Vec<usize> = if insert.columns.is_empty() {
-                (0..schema.columns.len()).collect()
+                // 裸 VALUES：合并列（基表++扩展）。宽容：值数 == 基表
+                // 列数（attach 前的既有语句形态）时按基表前缀接受，
+                // 扩展列落 NULL
+                let base_len = schema.columns.len()
+                    - entry.extensions.iter().map(|e| e.columns.len()).sum::<usize>();
+                (0..schema.columns.len())
+                    .take(if value_rows.iter().all(|r| r.len() == base_len) {
+                        base_len
+                    } else {
+                        schema.columns.len()
+                    })
+                    .collect()
             } else {
                 insert
                     .columns
@@ -1188,6 +1199,173 @@ fn insert_row(
     let val = encode_row(&row);
     txn.put(table_id, key, val);
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// SAP 式扩展层（append structure，PR2）：ATTACH/DETACH EXTENSION——
+// 基表定义之外的追加列集，多套并存、独立卸载，不动原 schema chunk。
+// 列合并发生在 resolve_table_at_inner（append 尾部——基表列下标稳定，
+// 掩码/pk/唯一集全兼容）；DDL 面走 schema_addr 直载天然拿基表 schema。
+// 旧行读端 resize 补 NULL（既有契约），新行全列编码。
+// ---------------------------------------------------------------------------
+
+pub(crate) enum ExtensionOp {
+    Attach { table: String, ext: String, cols_sql: String },
+    Detach { table: String, ext: String },
+}
+
+/// 语句文本形态识别（branch_sql_kind 同模式）：
+/// `ALTER TABLE t ATTACH EXTENSION name ADD COLUMNS (col defs...)`
+/// `ALTER TABLE t DETACH EXTENSION name`
+pub(crate) fn extension_sql_kind(sql: &str) -> Option<ExtensionOp> {
+    let up = sql.trim_start().to_ascii_uppercase();
+    if !up.starts_with("ALTER TABLE") {
+        return None;
+    }
+    if up.contains("ATTACH EXTENSION") {
+        // 解析：ALTER TABLE <t> ATTACH EXTENSION <name> ADD COLUMNS (...)
+        let rest = sql.trim_start()["ALTER TABLE".len()..].trim();
+        let (table, rest) = split_ident(rest)?;
+        let rest = rest.trim_start();
+        let after = rest.to_ascii_uppercase();
+        if !after.starts_with("ATTACH EXTENSION") {
+            return None;
+        }
+        let rest = rest["ATTACH EXTENSION".len()..].trim_start();
+        let (ext, rest) = split_ident(rest)?;
+        let rest = rest.trim_start();
+        let after = rest.to_ascii_uppercase();
+        if !after.starts_with("ADD COLUMNS") {
+            return None;
+        }
+        let cols = rest["ADD COLUMNS".len()..].trim();
+        if !cols.starts_with('(') || !cols.ends_with(')') {
+            return None;
+        }
+        return Some(ExtensionOp::Attach {
+            table,
+            ext,
+            cols_sql: cols.to_string(),
+        });
+    }
+    if up.contains("DETACH EXTENSION") {
+        let rest = sql.trim_start()["ALTER TABLE".len()..].trim();
+        let (table, rest) = split_ident(rest)?;
+        let rest = rest.trim_start();
+        let after = rest.to_ascii_uppercase();
+        if !after.starts_with("DETACH EXTENSION") {
+            return None;
+        }
+        let rest = rest["DETACH EXTENSION".len()..].trim_start();
+        let (ext, _) = split_ident(rest)?;
+        return Some(ExtensionOp::Detach { table, ext });
+    }
+    None
+}
+
+fn split_ident(s: &str) -> Option<(String, &str)> {
+    let s = s.trim_start();
+    // 句尾标识符（无后续空白）合法——扩展名常居句尾
+    let end = s.find(|c: char| c.is_whitespace()).unwrap_or(s.len());
+    if end == 0 {
+        return None;
+    }
+    let tail = &s[end..];
+    Some((s[..end].trim_matches('"').to_string(), tail))
+}
+
+/// 从 `ADD COLUMNS (a INT, b TEXT)` 提取列定义——复用 sqlparser：
+/// 包一层 CREATE TABLE 解析后取列（DDL 低频路径，复用胜过手写）
+fn parse_ext_columns(cols_sql: &str, dialect: crate::sql::SqlDialect) -> Result<Vec<ColumnDef>> {
+    let wrapped = format!("CREATE TABLE __ext_parse__ {cols_sql}");
+    let stmts = crate::sql::parse_batch(&wrapped, dialect)?;
+    let sqlparser::ast::Statement::CreateTable(create) = &stmts[0] else {
+        return Err(SqlError::syntax("extension columns parse failed"));
+    };
+    let columns = &create.columns;
+    let mut out = Vec::new();
+    for c in columns {
+        let ty = ColType::from_parse(&c.data_type.to_string())
+            .ok_or_else(|| SqlError::not_supported(format!("type {}", c.data_type)))?;
+        let mut nullable = true;
+        for opt in &c.options {
+            if matches!(opt.option, sqlparser::ast::ColumnOption::NotNull) {
+                nullable = false;
+            }
+        }
+        out.push(ColumnDef {
+            name: c.name.value.clone(),
+            ty,
+            nullable,
+        });
+    }
+    Ok(out)
+}
+
+pub(crate) fn exec_extension_statement(
+    db: &Database,
+    sess: &mut Session,
+    op: ExtensionOp,
+) -> Result<Vec<Output>> {
+    match op {
+        ExtensionOp::Attach { table, ext, cols_sql } => {
+            let short = table.rsplit(['.', '@']).next().unwrap_or(&table).to_string();
+            let rc = scan::resolve_table(db, &sess.branch, &short)?;
+            let entry = &rc.1;
+            // 列名冲突：基表列 ∪ 既有扩展列（42701）
+            let mut seen: Vec<String> = rc
+                .0
+                .columns
+                .iter()
+                .map(|c| c.name.to_ascii_lowercase())
+                .collect();
+            for e in &entry.extensions {
+                seen.extend(e.columns.iter().map(|c| c.name.to_ascii_lowercase()));
+            }
+            if entry.extensions.iter().any(|e| e.name.eq_ignore_ascii_case(&ext)) {
+                return Err(SqlError::duplicate_key(format!(
+                    "extension \"{ext}\" already attached to {short}"
+                )));
+            }
+            let cols = parse_ext_columns(&cols_sql, sess.dialect)?;
+            for c in &cols {
+                let ln = c.name.to_ascii_lowercase();
+                if seen.contains(&ln) {
+                    return Err(SqlError::new(
+                        "42701",
+                        format!("extension column \"{}\" conflicts with existing column", c.name),
+                    ));
+                }
+                seen.push(ln);
+            }
+            let mut ne = entry.clone();
+            ne.extensions.push(crate::catalog::provider::ExtensionDef {
+                name: ext.clone(),
+                owner: sess.user.clone(),
+                columns: cols,
+            });
+            catalog_commit(db, sess, vec![(short.clone(), Some(ne))],
+                &format!("ATTACH EXTENSION {ext}"))?;
+            Ok(vec![Output::Command { tag: format!("ATTACH EXTENSION {ext}"), affected: 0 }])
+        }
+        ExtensionOp::Detach { table, ext } => {
+            let short = table.rsplit(['.', '@']).next().unwrap_or(&table).to_string();
+            let rc = scan::resolve_table(db, &sess.branch, &short)?;
+            let entry = &rc.1;
+            let idx = entry
+                .extensions
+                .iter()
+                .position(|e| e.name.eq_ignore_ascii_case(&ext))
+                .ok_or_else(|| {
+                    SqlError::new("42783", format!("extension \"{ext}\" not attached to {short}"))
+                })?;
+            let mut ne = entry.clone();
+            ne.extensions.remove(idx);
+            catalog_commit(db, sess, vec![(short.clone(), Some(ne))],
+                &format!("DETACH EXTENSION {ext}"))?;
+            Ok(vec![Output::Command { tag: format!("DETACH EXTENSION {ext}"), affected: 0 }])
+        }
+    }
 }
 
 pub(crate) fn exec_delete(

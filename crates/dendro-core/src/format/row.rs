@@ -259,6 +259,13 @@ pub fn decode_row_proj(bytes: &[u8], proj: &[usize]) -> Result<Vec<SqlValue>> {
             }
         }
     }
+    // 扩展层语义（row_from_bytes 的 resize 补 NULL 同口径）：旧行
+    // 编码列数 < 投影索引（attach 前的行读扩展列）——未解的投影位
+    // 补 NULL 而非缺省
+    while pi < proj.len() {
+        vals.push(SqlValue::Null);
+        pi += 1;
+    }
     Ok(vals)
 }
 

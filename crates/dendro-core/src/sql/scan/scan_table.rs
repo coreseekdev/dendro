@@ -836,7 +836,15 @@ fn resolve_table_at_inner(
         .catalog_lookup(root, short_name)?
         .map(
             |e| -> Result<(crate::versioned::TableSchema, crate::versioned::TableEntry)> {
-                let schema = catalog.load_schema(&e.schema_addr)?;
+                let mut schema = catalog.load_schema(&e.schema_addr)?;
+                // SAP 式扩展层合并（append 尾部——基表列下标稳定：掩码/
+                // pk/唯一集全兼容；DDL 面走 schema_addr 直载拿基表
+                // schema，不受影响）。旧行读端 resize 补 NULL 既有契约。
+                if !e.extensions.is_empty() {
+                    for ext in &e.extensions {
+                        schema.columns.extend(ext.columns.iter().cloned());
+                    }
+                }
                 Ok((schema, e))
             },
         )
