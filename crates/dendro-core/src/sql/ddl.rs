@@ -86,6 +86,7 @@ pub(crate) fn exec_create_table(
         foreign_keys: resolve_fk_refs(db, sess, fk_defs)?,
         unique_sets,
         check_exprs,
+        extensions: Vec::new(),
     };
     // schema chunk 先写
     db.cas

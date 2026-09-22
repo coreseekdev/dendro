@@ -4,6 +4,7 @@
 //! → catalog → sql → engine。
 //! 性能红线：热路径无 Rc/RefCell；共享仅限不可变 Arc；见 spec/00-overview.md §6。
 
+pub mod catalog;
 pub mod error;
 pub mod format;
 pub mod objstore;

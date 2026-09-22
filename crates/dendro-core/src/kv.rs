@@ -442,6 +442,7 @@ fn create_kv_table(db: &Arc<Database>, branch: &str) -> Result<u32> {
         unique_sets: vec![],
         stats_addr: None,
         check_exprs: vec![],
+        extensions: Vec::new(),
     };
     db.cas
         .put_batch(&[schema.to_chunk()], &mut session_chunks)

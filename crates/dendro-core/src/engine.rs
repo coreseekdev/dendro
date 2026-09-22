@@ -638,10 +638,23 @@ pub struct Database {
     pub lat_manifest_sum_us: AtomicU64,
     pub lat_manifest_cnt: AtomicU64,
     columnar: arc_swap::ArcSwap<Option<std::sync::Arc<dyn ColumnarStore>>>,
+    /// 元数据 Provider 注入位（None = 内建 DendroSemantics——Session
+    /// 按会话分支临时构造）。SQL 审计网关：注入外部元数据源实现，
+    /// SQL 前端（解析/校验/审计）零存储依赖
+    catalog_provider: arc_swap::ArcSwap<Option<std::sync::Arc<dyn crate::catalog::SemanticsProvider>>>,
 }
 
 impl Database {
     /// 注入列存引擎（必须在打开后、写负载前）
+    /// 注入元数据 Provider（Database 级；Session 级可经
+    /// set_catalog_provider_override 覆写——网关多租户）
+    pub fn set_catalog_provider(
+        self: &Arc<Self>,
+        p: std::sync::Arc<dyn crate::catalog::SemanticsProvider>,
+    ) {
+        self.catalog_provider.store(std::sync::Arc::new(Some(p)));
+    }
+
     pub fn set_columnar(self: &Arc<Self>, c: std::sync::Arc<dyn ColumnarStore>) {
         self.columnar.store(std::sync::Arc::new(Some(c)));
     }
@@ -728,6 +741,7 @@ impl Database {
             .map(|_| parking_lot::Mutex::new(std::collections::HashMap::new()))
             .collect();
         let mut db = Arc::new(Database {
+            catalog_provider: arc_swap::ArcSwap::from_pointee(None),
             opts,
             obj,
             cas,
@@ -834,6 +848,7 @@ impl Database {
             dialect: crate::sql::SqlDialect::Pg,
             last_rowid: 0,
             cursors: HashMap::new(),
+            catalog_provider_override: None,
             statement_timeout_ms: self.opts.default_statement_timeout_ms,
             stmt_deadline: None,
             cancel_token: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -1918,6 +1933,9 @@ pub struct Session {
     pub(crate) last_rowid: i64,
     /// 已声明游标（Q-1b v1：INSENSITIVE/READ ONLY——DECLARE 时物化结果集）
     pub(crate) cursors: HashMap<String, (crate::types::RecordSet, usize)>,
+    /// 元数据 Provider 会话级覆写位（网关多租户：各会话接不同源）
+    pub(crate) catalog_provider_override:
+        Option<std::sync::Arc<dyn crate::catalog::SemanticsProvider>>,
     /// 语句超时毫秒（S-3 生产化：0 = 不限；`SET statement_timeout = N` 可调）
     pub(crate) statement_timeout_ms: u64,
     /// 当前语句的截止时刻（exec 入口按 statement_timeout 设置）
@@ -1944,6 +1962,28 @@ pub struct Session {
 }
 
 impl Session {
+    /// 会话生效的元数据 Provider（覆写 > Database 注入 > 内建
+    /// DendroSemantics(会话分支)——内建为无状态临时构造，轻）
+    pub fn semantics_provider(
+        &self,
+    ) -> std::sync::Arc<dyn crate::catalog::SemanticsProvider> {
+        if let Some(p) = &self.catalog_provider_override {
+            return p.clone();
+        }
+        if let Some(p) = &*self.db.catalog_provider.load_full() {
+            return p.clone();
+        }
+        std::sync::Arc::new(crate::catalog::DendroSemantics::new(&self.db, &self.branch))
+    }
+
+    /// 会话级 Provider 覆写（网关多租户）
+    pub fn set_catalog_provider_override(
+        &mut self,
+        p: std::sync::Arc<dyn crate::catalog::SemanticsProvider>,
+    ) {
+        self.catalog_provider_override = Some(p);
+    }
+
     /// 语句超时检查点（S-3）：重循环每 4096 次迭代调用。
     /// 超时 → 57014 query_canceled（PG 同码），当前语句终止、无副作用
     /// （只读扫描本就无写；写事务超时 = 事务失败回滚语义，ROLLBACK 可清）。

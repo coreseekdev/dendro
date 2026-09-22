@@ -21,7 +21,7 @@ pub struct TableSchema {
     pub pk: Vec<u16>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ColumnDef {
     pub name: String,
     pub ty: ColType,
@@ -124,6 +124,10 @@ pub struct TableEntry {
     /// serde default 兼容）
     #[serde(default)]
     pub check_exprs: Vec<String>,
+    /// SAP 式扩展层（append structure）：基表定义之外的追加列集，
+    /// 多套并存、独立卸载——不动原 schema chunk（PR2 接语句层）
+    #[serde(default)]
+    pub extensions: Vec<crate::catalog::provider::ExtensionDef>,
     /// 表级 ACL：角色 → 权限位（privs.rs PRIV_*；serde default 兼容旧 manifest）
     #[serde(default)]
     pub acl: std::collections::HashMap<String, u8>,
